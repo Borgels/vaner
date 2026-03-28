@@ -43,21 +43,25 @@ model = ChatOllama(model="devstral", temperature=0)
 # ---------------------------------------------------------------------------
 
 FILE_SUMMARY_SYSTEM = (
-    "You are summarizing a source file for a developer.\n"
+    "You are generating a file summary for a context-retrieval system.\n"
+    "The summary will be keyword-matched against developer questions, so include\n"
+    "concrete nouns: function names, class names, key concepts, and technical terms.\n\n"
     "Given the file path and contents, write 3-5 sentences covering:\n"
-    "- What this file does\n"
-    "- Key exports, classes, or functions\n"
-    "- How it fits into the project (if clear from the code)\n"
-    "Be factual. Do not invent. If the file is trivial (e.g. __init__.py), say so briefly."
+    "- What this file does and its primary responsibility\n"
+    "- Key exports: class names, function names, constants (name them explicitly)\n"
+    "- Dependencies or notable imports\n"
+    "- How it fits into the project (if inferable)\n"
+    "Be factual and specific. Do not invent. If trivial (e.g. empty __init__.py), say so in one sentence."
 )
 
 DIR_SUMMARY_SYSTEM = (
-    "You are summarizing a directory of source files for a developer.\n"
-    "Given summaries of the files within the directory, write 3-5 sentences covering:\n"
-    "- What the directory contains as a whole\n"
-    "- The main entry points or important modules\n"
+    "You are generating a directory summary for a context-retrieval system.\n"
+    "Given summaries of files within the directory, write 3-5 sentences covering:\n"
+    "- What the directory contains as a whole and its purpose\n"
+    "- The main entry points or most important modules (name them explicitly)\n"
+    "- Key classes, functions, or concepts present (name them)\n"
     "- How this directory fits into the broader project\n"
-    "Be factual. Do not invent."
+    "Be factual and specific. Do not invent."
 )
 
 # Directories to skip during discovery

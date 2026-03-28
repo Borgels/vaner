@@ -10,11 +10,15 @@ Supports:
   - read_file
   - find_files
   - grep_text
+  - write_file
+  - run_command
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,7 +29,7 @@ from langgraph.runtime import Runtime
 from typing_extensions import TypedDict
 
 from vaner_tools.artefact_store import is_stale, list_artefacts, read_repo_index
-from vaner_tools.paths import REPO_ROOT
+from vaner_tools.paths import REPO_ROOT, resolve_repo_path
 from vaner_tools.repo_tools import find_files, grep_text, list_files, read_file
 
 model = ChatOllama(
@@ -34,38 +38,47 @@ model = ChatOllama(
 )
 
 
-SYSTEM_PROMPT = f"""You are a software engineering agent working inside a git repository.
+SYSTEM_PROMPT = f"""You are a software engineering agent working on Vaner — a predictive context platform.
 
-Repository root:
-{REPO_ROOT}
+Vaner's core idea: instead of only reacting at prompt time, the system pre-computes likely-useful context
+in the background (repo-analyzer agent), and a broker (you) decides at prompt time what cached material
+is still fresh and relevant to inject into the model's context.
+
+You are the broker agent. Your job is to help developers build, navigate, debug, and extend the Vaner
+codebase. You have access to cached file summaries from the repo-analyzer (injected above as Pre-loaded
+context when available) and a set of tools to read and write files directly.
+
+Repository root: {REPO_ROOT}
+
+Architecture:
+- apps/studio-agent/   → broker agent (you)
+- apps/repo-analyzer/  → analyzer agent (pre-computes file/dir summaries)
+- libs/vaner-tools/    → shared tools and artefact store
+- .vaner/cache/        → artefact cache (file summaries, dir summaries, repo index)
+- docs/                → architecture docs and build specs
 
 Rules:
-- Be concise.
-- Prefer action over explanation.
-- Do not be chatty.
-- For non-trivial tasks, first think in a compact plan.
-- When you need repository information, you may call tools.
-- To call tools, respond ONLY with valid JSON.
-- You may return either:
-  1) a single tool call:
-     {{"name": "tool_name", "arguments": {{"arg1": "value"}}}}
-  2) multiple tool calls, one JSON object per line
-- Available tools:
-  - list_files(path: string = ".") -> list files in a directory
-  - read_file(path: string) -> read a text file
-  - find_files(pattern: string, path: string = ".") -> find files by glob-style pattern
-  - grep_text(query: string, path: string = ".", file_pattern: string = "*", max_results: int = 50) -> search text in files
-- Paths are relative to the repository root unless absolute.
+- Be concise. Prefer action over explanation.
+- Do not be chatty or add filler.
+- For non-trivial tasks, plan briefly first, then act.
+- Use tools to read and write files. Do not invent file contents.
+- To call a tool, respond ONLY with valid JSON (one object per line for multiple calls).
+- After receiving tool results, answer the user in plain language. Do not output JSON then.
 - Stay inside the repository root.
-- Prefer targeted tools over broad ones when possible.
-- After receiving tool results, continue normally and answer the user.
-- Do not output tool-call JSON unless you are making a tool call.
-- Do not invent files, APIs, or project details.
+- Prefer targeted reads over broad ones.
+
+Available tools:
+  - list_files(path: string = ".") -> list files in a directory
+  - read_file(path: string) -> read a text file (max 50KB)
+  - find_files(pattern: string, path: string = ".") -> glob-style file search
+  - grep_text(query: string, path: string = ".", file_pattern: string = "*", max_results: int = 50) -> text search
+  - write_file(path: string, content: string) -> write or overwrite a file inside the repo
+  - run_command(command: string, cwd: string = ".") -> run a safe shell command inside the repo (read-only: ls, cat, python, pytest, grep, find, git status, git log, git diff — no destructive commands)
 """
 
 
 class Context(TypedDict, total=False):
-    my_configurable_param: str
+    extra_context: str
 
 
 @dataclass
@@ -76,6 +89,80 @@ class State:
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     cached_context: str = ""
     cache_hit: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Tool implementations: write_file and run_command
+# ---------------------------------------------------------------------------
+
+
+def _write_file_sync(path: str, content: str) -> str:
+    try:
+        target = resolve_repo_path(path)
+    except ValueError as e:
+        return f"Error: {e}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return f"Written: {path} ({len(content)} bytes)"
+
+
+async def write_file_tool(path: str, content: str) -> str:
+    try:
+        return await asyncio.to_thread(_write_file_sync, path, content)
+    except Exception as e:
+        return f"Error writing {path}: {e}"
+
+
+SAFE_COMMANDS = {"ls", "cat", "python", "python3", "pytest", "grep", "find", "git", "uv", "pip", "head", "tail", "wc", "echo", "tree"}
+
+
+def _run_command_sync(command: str, cwd: str = ".") -> str:
+    import shlex
+    import subprocess
+    try:
+        cwd_path = resolve_repo_path(cwd)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    try:
+        parts = shlex.split(command)
+    except ValueError as e:
+        return f"Invalid command: {e}"
+
+    if not parts:
+        return "Empty command"
+
+    if parts[0] not in SAFE_COMMANDS:
+        return f"Command not allowed: {parts[0]}. Allowed: {', '.join(sorted(SAFE_COMMANDS))}"
+
+    try:
+        result = subprocess.run(
+            parts,
+            cwd=cwd_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = result.stdout
+        if result.stderr:
+            output += f"\n[stderr]\n{result.stderr}"
+        return output.strip() or "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Command timed out (30s)"
+    except Exception as e:
+        return f"Error running command: {e}"
+
+
+async def run_command_tool(command: str, cwd: str = ".") -> str:
+    try:
+        return await asyncio.to_thread(_run_command_sync, command, cwd)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Tool call parser
+# ---------------------------------------------------------------------------
 
 
 def try_parse_tool_calls(text: str) -> list[dict[str, Any]]:
@@ -134,7 +221,6 @@ async def load_context_from_cache(state: State, runtime: Runtime[Context]) -> di
 
     # Check staleness of the index itself (treat generated_at as its own timestamp)
     generated_at = index.get("generated_at", 0)
-    import time
     age = time.time() - generated_at
     if age > 3600:
         return {"cache_hit": False, "cached_context": ""}
@@ -181,10 +267,10 @@ async def first_model_call(state: State, runtime: Runtime[Context]) -> dict[str,
         return {"response": "No input provided."}
 
     extra_context = ""
-    if runtime.context and runtime.context.get("my_configurable_param"):
+    if runtime.context and runtime.context.get("extra_context"):
         extra_context = (
             "\n\nAdditional runtime context:\n"
-            f"{runtime.context['my_configurable_param']}"
+            f"{runtime.context['extra_context']}"
         )
 
     cache_section = ""
@@ -253,6 +339,19 @@ async def run_tools(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
                     file_pattern=arguments.get("file_pattern", "*"),
                     max_results=int(arguments.get("max_results", 50)),
                 )
+        elif name == "write_file":
+            path = arguments.get("path")
+            content = arguments.get("content", "")
+            if not path:
+                result = "Missing required argument: path"
+            else:
+                result = await write_file_tool(path, content)
+        elif name == "run_command":
+            command = arguments.get("command")
+            if not command:
+                result = "Missing required argument: command"
+            else:
+                result = await run_command_tool(command, arguments.get("cwd", "."))
         else:
             result = f"Unknown tool: {name}"
 
@@ -273,12 +372,17 @@ async def run_tools(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
 
 
 async def second_model_call(state: State, runtime: Runtime[Context]) -> dict[str, str]:
+    cache_section = ""
+    if state.cache_hit and state.cached_context:
+        cache_section = f"\n\n{state.cached_context}"
+
     prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
+        f"{SYSTEM_PROMPT}"
+        f"{cache_section}\n\n"
         f"Original user request:\n{state.user_input}\n\n"
         f"Tool calls used:\n{json.dumps(state.tool_requests, indent=2)}\n\n"
         f"Tool results:\n{json.dumps(state.tool_results, indent=2)}\n\n"
-        "Now answer the user normally. Do not output tool-call JSON."
+        "Now answer the user. Do not output tool-call JSON."
     )
 
     result = await model.ainvoke(prompt)
