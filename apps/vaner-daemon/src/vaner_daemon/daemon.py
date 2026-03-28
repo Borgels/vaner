@@ -31,6 +31,7 @@ class VanerDaemon:
         self._event_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
         self._event_collector: EventCollector | None = None
         self._state_engine: StateEngine | None = None
+        self._preparation_engine = None
         self._running = False
         self._pid_file = repo_path / ".vaner" / "daemon.pid"
         self._log_file = repo_path / ".vaner" / "daemon.log"
@@ -56,6 +57,15 @@ class VanerDaemon:
         # Start unix socket listener for git hooks
         await self._start_socket_listener()
 
+        # Start preparation engine (background artifact generation)
+        from vaner_daemon.preparation_engine.engine import PreparationEngine
+        self._preparation_engine = PreparationEngine(
+            repo_root=self._config.repo_path,
+            state_engine=self._state_engine,
+            loop=loop,
+        )
+        self._preparation_engine.start()
+
         self._running = True
         logger.info("Vaner daemon started (pid=%d, repo=%s)", os.getpid(), self._config.repo_path)
 
@@ -74,6 +84,9 @@ class VanerDaemon:
                 pass
             if self._sock_file.exists():
                 self._sock_file.unlink(missing_ok=True)
+
+        if self._preparation_engine:
+            self._preparation_engine.stop()
 
         if self._event_collector:
             self._event_collector.stop()

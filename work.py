@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Supervised task runner for vaner-builder.
+"""Supervised task runner for vaner-builder (qwen2.5-coder:32b).
 
-Feeds one task at a time to the local qwen2.5-coder:32b builder agent,
-shows the output, and waits for approval before the next step.
+Feeds one task at a time to the local builder agent,
+shows output, and waits for approval before the next step.
 
 Usage:
-    python work.py "implement X"                    # single task
-    python work.py --plan tasks/prep_engine.md      # run tasks from a file, one at a time
-    python work.py --status                         # show current todos
+    python work.py "implement X"
+    python work.py --plan tasks/prep_engine.md
+    python work.py --plan tasks/prep_engine.md --yes
+    python work.py --status
 """
+from __future__ import annotations
+
 import asyncio
+import json
 import os
 import sys
 import warnings
@@ -40,26 +44,59 @@ _load_env(REPO_ROOT / "apps/vaner-builder/.env")
 _load_env(REPO_ROOT / "apps/supervisor/.env")
 
 
-async def run_task(task: str, thread_id: str = "work") -> str:
+async def run_all_tasks(tasks: list[str], thread_id: str, auto_yes: bool) -> None:
     from agent.graph import build_graph
+
+    # Build graph once; reuse across all tasks
     g = await build_graph()
-    result = await g.ainvoke(
-        {"user_input": task},
-        config={"configurable": {"thread_id": thread_id}},
-    )
-    return result.get("response", "")
+
+    print(f"\nvaner-builder (qwen2.5-coder:32b) — {len(tasks)} task(s) queued\n")
+
+    for i, task in enumerate(tasks, 1):
+        print(f"{'='*60}")
+        print(f"Task {i}/{len(tasks)}: {task[:120]}{'...' if len(task) > 120 else ''}")
+        print(f"{'='*60}\n")
+
+        result = await g.ainvoke(
+            {"user_input": task},
+            config={"configurable": {"thread_id": thread_id}},
+        )
+        response = result.get("response", "")
+
+        print("--- Builder response ---\n")
+        print(response)
+        print()
+
+        # Show todos if present
+        todos_path = REPO_ROOT / ".vaner" / "todos.json"
+        if todos_path.exists():
+            todos = json.loads(todos_path.read_text())
+            print("Task plan:")
+            for t in todos:
+                icon = {"done": "✓", "in_progress": "→", "pending": "○"}.get(t.get("status", "?"), "?")
+                print(f"  {icon} {t.get('task', '')}")
+            print()
+
+        if not auto_yes and i < len(tasks):
+            answer = input(f"Proceed to task {i+1}/{len(tasks)}? [y/N/q] ").strip().lower()
+            if answer == "q":
+                print("Stopped.")
+                break
+            elif answer != "y":
+                print("Paused.")
+                break
+
+    print("\nAll tasks complete.")
 
 
 def show_todos() -> None:
     todos_path = REPO_ROOT / ".vaner" / "todos.json"
     if todos_path.exists():
-        import json
         todos = json.loads(todos_path.read_text())
         print("\nCurrent task plan:")
         for t in todos:
-            status = t.get("status", "?")
-            icon = {"done": "✓", "in_progress": "→", "pending": "○"}.get(status, "?")
-            print(f"  {icon} [{status}] {t.get('task', '')}")
+            icon = {"done": "✓", "in_progress": "→", "pending": "○"}.get(t.get("status", "?"), "?")
+            print(f"  {icon} [{t.get('status')}] {t.get('task', '')}")
     else:
         print("No active task plan.")
 
@@ -67,11 +104,11 @@ def show_todos() -> None:
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Supervised vaner-builder task runner")
-    parser.add_argument("task", nargs="?", help="Task to execute")
-    parser.add_argument("--plan", help="Path to a task plan file (one task per line)")
+    parser.add_argument("task", nargs="?", help="Single task to execute")
+    parser.add_argument("--plan", help="Task plan file (one task per line, # = comment)")
     parser.add_argument("--status", action="store_true", help="Show current todos")
     parser.add_argument("--thread", default="work", help="Conversation thread ID")
-    parser.add_argument("--yes", "-y", action="store_true", help="Auto-approve (no prompts)")
+    parser.add_argument("--yes", "-y", action="store_true", help="Auto-approve all tasks")
     args = parser.parse_args()
 
     if args.status:
@@ -82,50 +119,24 @@ def main() -> None:
     if args.task:
         tasks = [args.task]
     elif args.plan:
-        plan_file = Path(args.plan)
-        if not plan_file.exists():
-            print(f"Plan file not found: {plan_file}")
+        plan = Path(args.plan)
+        if not plan.exists():
+            print(f"Plan file not found: {plan}")
             sys.exit(1)
-        tasks = [
-            line.strip()
-            for line in plan_file.read_text().splitlines()
-            if line.strip() and not line.startswith("#")
-        ]
+        tasks = [l.strip() for l in plan.read_text().splitlines()
+                 if l.strip() and not l.startswith("#")]
     else:
         parser.print_help()
         sys.exit(1)
 
-    print(f"\nvaner-builder (qwen2.5-coder:32b) — {len(tasks)} task(s) queued\n")
-
-    for i, task in enumerate(tasks, 1):
-        print(f"{'='*60}")
-        print(f"Task {i}/{len(tasks)}: {task}")
-        print(f"{'='*60}\n")
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            response = loop.run_until_complete(run_task(task, thread_id=args.thread))
-        finally:
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            loop.close()
-
-        print(f"\n--- Builder response ---\n")
-        print(response)
-        print()
-
-        show_todos()
-
-        if not args.yes and i < len(tasks):
-            answer = input(f"\nProceed to task {i+1}? [y/N/q] ").strip().lower()
-            if answer == "q":
-                print("Stopped.")
-                break
-            elif answer != "y":
-                print("Paused. Re-run to continue or provide a different task.")
-                break
-
-    print("\nDone.")
+    # Single event loop for the entire run
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(run_all_tasks(tasks, args.thread, args.yes))
+    finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
 
 
 if __name__ == "__main__":
