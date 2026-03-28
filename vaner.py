@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -23,8 +24,28 @@ sys.path.insert(0, str(REPO_ROOT / "apps/repo-analyzer/src"))
 sys.path.insert(0, str(REPO_ROOT / "libs/vaner-tools/src"))
 
 
+def _load_env(env_path) -> None:
+    """Minimal .env loader — no external deps."""
+    if not Path(env_path).exists():
+        return
+    for line in Path(env_path).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+
+_load_env(REPO_ROOT / "apps" / "supervisor" / ".env")
+
+
 async def run_supervisor(user_input: str, thread_id: str = "main") -> str:
-    from supervisor.graph import graph as supervisor_graph
+    from supervisor.graph import build_graph as build_supervisor_graph
+    supervisor_graph = await build_supervisor_graph()
     result = await supervisor_graph.ainvoke(
         {"user_input": user_input},
         config={"configurable": {"thread_id": thread_id}},
@@ -33,7 +54,8 @@ async def run_supervisor(user_input: str, thread_id: str = "main") -> str:
 
 
 async def run_broker_direct(user_input: str, thread_id: str = "main") -> str:
-    from agent.graph import graph as broker_graph
+    from agent.graph import build_graph as build_broker_graph
+    broker_graph = await build_broker_graph()
     result = await broker_graph.ainvoke(
         {"user_input": user_input},
         config={"configurable": {"thread_id": thread_id}},
