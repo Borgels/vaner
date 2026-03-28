@@ -12,9 +12,15 @@ Usage:
 
 import argparse
 import asyncio
+import logging
 import os
 import sys
+import warnings
 from pathlib import Path
+
+# Suppress aiosqlite thread-cleanup noise on loop close (cosmetic, not a real error)
+warnings.filterwarnings("ignore", message=".*Event loop is closed.*")
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 # Add all app src paths so we can import their graphs directly
 REPO_ROOT = Path(__file__).parent

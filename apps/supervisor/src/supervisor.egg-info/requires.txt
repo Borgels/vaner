@@ -1,2 +1,4 @@
 langchain-ollama
 langgraph
+aiosqlite>=0.20.0
+langgraph-checkpoint-sqlite>=2.0.0
