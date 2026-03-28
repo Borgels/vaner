@@ -73,15 +73,18 @@ Quality rules (non-negotiable):
 
 Tool calling — use {{"command": "tool_name", "arg": "value"}} format.
 
-Available tools:
-  - list_files(path: string = ".") -> list files in a directory
-  - read_file(path: string) -> read a text file (max 50KB)
-  - find_files(pattern: string, path: string = ".") -> glob-style file search
-  - grep_text(query: string, path: string = ".", file_pattern: string = "*", max_results: int = 50) -> text search
-  - write_file(path: string, content: string) -> write or overwrite a file inside the repo
-  - run_command(command: string, cwd: string = ".") -> run a safe shell command (python, pytest, ruff, git status/log/diff, ls, grep, find)
-  - write_todos(todos: list[{{"task": str, "status": "pending"|"in_progress"|"done"}}]) -> save task plan
-  - read_todos() -> read current task plan
+Available tools — call as raw JSON (no markdown, no explanation before the JSON):
+
+  list_files:   {{"command": "list_files", "path": "."}}
+  read_file:    {{"command": "read_file", "path": "src/foo.py"}}
+  find_files:   {{"command": "find_files", "pattern": "*.py", "path": "src/"}}
+  grep_text:    {{"command": "grep_text", "query": "class Foo", "path": "src/", "file_pattern": "*.py", "max_results": 20}}
+  write_file:   {{"command": "write_file", "path": "src/foo.py", "content": "# full file content here"}}
+  run_command:  {{"command": "run_command", "command": "python -m pytest tests/ -v", "cwd": "apps/vaner-daemon"}}
+  write_todos:  {{"command": "write_todos", "todos": [{{"task": "step 1", "status": "pending"}}]}}
+  read_todos:   {{"command": "read_todos"}}
+
+IMPORTANT: Output ONLY the JSON object for a tool call. Do NOT wrap in markdown fences. Do NOT narrate. After receiving tool results, you may write a plain text summary.
 """
 
 
@@ -102,6 +105,7 @@ class State:
     cached_context: str = ""
     cache_hit: bool = False
     messages: list[dict] = field(default_factory=list)
+    tool_round: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -422,14 +426,23 @@ async def run_tools(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
                     max_results=int(arguments.get("max_results", 50)),
                 )
         elif name == "write_file":
-            path = arguments.get("path")
-            content = arguments.get("content", "")
+            path = arguments.get("path") or arguments.get("file") or arguments.get("filename")
+            content = arguments.get("content") or arguments.get("text") or arguments.get("data") or ""
+            # Handle qwen packing both into "arg": "path, content"
+            if not path and "arg" in arguments and isinstance(arguments["arg"], str):
+                parts = arguments["arg"].split(",", 1)
+                path = parts[0].strip()
+                content = parts[1].strip() if len(parts) > 1 else ""
             if not path:
                 result = "Missing required argument: path"
             else:
                 result = await write_file_tool(path, content)
         elif name == "run_command":
-            command = arguments.get("command")
+            command = (
+                arguments.get("command")
+                or arguments.get("cmd")
+                or arguments.get("arg")
+            )
             if not command:
                 result = "Missing required argument: command"
             else:
@@ -468,34 +481,73 @@ async def run_tools(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def second_model_call(state: State, runtime: Runtime[Context]) -> dict[str, str]:
+MAX_TOOL_ROUNDS = 12  # safety limit — prevents infinite loops
+
+
+async def second_model_call(state: State, runtime: Runtime[Context]) -> dict:
+    """Runs after tool execution. May issue more tool calls (up to MAX_TOOL_ROUNDS)."""
     cache_section = ""
     if state.cache_hit and state.cached_context:
         cache_section = f"\n\n{state.cached_context}"
 
+    # Build tool history for context
+    tool_history = ""
+    if state.tool_requests or state.tool_results:
+        tool_history = (
+            f"\n\nTool calls so far:\n{json.dumps(state.tool_requests, indent=2)}\n\n"
+            f"Tool results so far:\n{json.dumps(state.tool_results, indent=2)}\n\n"
+        )
+
+    tool_round = getattr(state, "tool_round", 1)
+    at_limit = tool_round >= MAX_TOOL_ROUNDS
+
+    instruction = (
+        "You have reached the maximum tool rounds. Summarise what was done and answer the user."
+        if at_limit
+        else "If more tool calls are needed, output the next JSON tool call. Otherwise summarise and answer."
+    )
+
     prompt = (
         f"{SYSTEM_PROMPT}"
         f"{cache_section}\n\n"
-        f"Original user request:\n{state.user_input}\n\n"
-        f"Tool calls used:\n{json.dumps(state.tool_requests, indent=2)}\n\n"
-        f"Tool results:\n{json.dumps(state.tool_results, indent=2)}\n\n"
-        "Now answer the user. Do not output tool-call JSON."
+        f"Original user request:\n{state.user_input}"
+        f"{tool_history}"
+        f"{instruction}"
     )
 
     result = await model.ainvoke(prompt)
-
     content = result.content
     if isinstance(content, list):
         content = "\n".join(
             part.get("text", str(part)) if isinstance(part, dict) else str(part)
             for part in content
         )
+    content = str(content).strip()
+
+    if not at_limit:
+        tool_calls = try_parse_tool_calls(content)
+        if tool_calls:
+            return {
+                "tool_requests": tool_calls,
+                "tool_results": [],
+                "response": "",
+                "tool_round": tool_round + 1,
+            }
 
     new_messages = list(state.messages) + [
         {"role": "user", "content": state.user_input},
-        {"role": "assistant", "content": str(content).strip()},
+        {"role": "assistant", "content": content},
     ]
-    return {"response": str(content).strip(), "messages": new_messages}
+    return {
+        "response": content,
+        "messages": new_messages,
+        "tool_requests": [],
+        "tool_results": [],
+    }
+
+
+def route_after_second_call(state: State) -> str:
+    return "run_tools" if getattr(state, "tool_requests", []) else END
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +571,14 @@ _builder = (
         },
     )
     .add_edge("run_tools", "second_model_call")
-    .add_edge("second_model_call", END)
+    .add_conditional_edges(
+        "second_model_call",
+        route_after_second_call,
+        {
+            "run_tools": "run_tools",
+            END: END,
+        },
+    )
 )
 
 # graph without checkpointer — for import-time validation / test
