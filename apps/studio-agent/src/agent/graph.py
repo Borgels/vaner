@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain_ollama import ChatOllama
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.runtime import Runtime
 from typing_extensions import TypedDict
@@ -81,6 +82,9 @@ class Context(TypedDict, total=False):
     extra_context: str
 
 
+checkpointer = MemorySaver()
+
+
 @dataclass
 class State:
     user_input: str = ""
@@ -89,6 +93,7 @@ class State:
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     cached_context: str = ""
     cache_hit: bool = False
+    messages: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -273,12 +278,22 @@ async def first_model_call(state: State, runtime: Runtime[Context]) -> dict[str,
             f"{runtime.context['extra_context']}"
         )
 
+    history_section = ""
+    if state.messages:
+        history_lines = []
+        for msg in state.messages[-10:]:
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            history_lines.append(f"{role.upper()}: {content}")
+        history_section = "\n\n## Conversation history\n" + "\n\n".join(history_lines)
+
     cache_section = ""
     if state.cache_hit and state.cached_context:
         cache_section = f"\n\n{state.cached_context}"
 
     prompt = (
         f"{SYSTEM_PROMPT}"
+        f"{history_section}"
         f"{cache_section}\n\n"
         f"User request:\n{user_prompt}"
         f"{extra_context}"
@@ -298,7 +313,11 @@ async def first_model_call(state: State, runtime: Runtime[Context]) -> dict[str,
     if tool_calls:
         return {"tool_requests": tool_calls, "response": "", "tool_results": []}
 
-    return {"response": content, "tool_requests": [], "tool_results": []}
+    new_messages = list(state.messages) + [
+        {"role": "user", "content": user_prompt},
+        {"role": "assistant", "content": content},
+    ]
+    return {"response": content, "tool_requests": [], "tool_results": [], "messages": new_messages}
 
 
 def route_after_first_call(state: State) -> str:
@@ -394,7 +413,11 @@ async def second_model_call(state: State, runtime: Runtime[Context]) -> dict[str
             for part in content
         )
 
-    return {"response": str(content).strip()}
+    new_messages = list(state.messages) + [
+        {"role": "user", "content": state.user_input},
+        {"role": "assistant", "content": str(content).strip()},
+    ]
+    return {"response": str(content).strip(), "messages": new_messages}
 
 
 # ---------------------------------------------------------------------------
@@ -419,5 +442,5 @@ graph = (
     )
     .add_edge("run_tools", "second_model_call")
     .add_edge("second_model_call", END)
-    .compile(name="Vaner Coding Assistant")
+    .compile(name="Vaner Broker", checkpointer=checkpointer)
 )
