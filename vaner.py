@@ -25,7 +25,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 # Add all app src paths so we can import their graphs directly
 REPO_ROOT = Path(__file__).parent
 sys.path.insert(0, str(REPO_ROOT / "apps/supervisor/src"))
-sys.path.insert(0, str(REPO_ROOT / "apps/vaner-broker/src"))
+sys.path.insert(0, str(REPO_ROOT / "apps/vaner-builder/src"))
 sys.path.insert(0, str(REPO_ROOT / "apps/repo-analyzer/src"))
 sys.path.insert(0, str(REPO_ROOT / "libs/vaner-tools/src"))
 

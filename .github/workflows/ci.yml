@@ -30,8 +30,8 @@ jobs:
 
       - name: Import check — broker
         run: |
-          pip install -e apps/vaner-broker/ --no-deps -q 2>/dev/null || true
-          cd apps/vaner-broker
+          pip install -e apps/vaner-builder/ --no-deps -q 2>/dev/null || true
+          cd apps/vaner-builder
           pip install langgraph langchain-ollama langgraph-checkpoint-sqlite -q
           python -c "
           import sys; sys.path.insert(0, 'src')
