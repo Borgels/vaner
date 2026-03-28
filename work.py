@@ -44,6 +44,59 @@ _load_env(REPO_ROOT / "apps/vaner-builder/.env")
 _load_env(REPO_ROOT / "apps/supervisor/.env")
 
 
+def run_validator(affected_paths: list[str]) -> tuple[bool, str]:
+    """Run post-task checks. Returns (passed, report)."""
+    import subprocess
+    lines = []
+    ok = True
+
+    # 1. pytest
+    r = subprocess.run(
+        ["apps/vaner-daemon/.venv/bin/pytest", "apps/vaner-daemon/tests/", "-q", "--tb=short"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT)
+    )
+    if r.returncode != 0:
+        ok = False
+        lines.append(f"TESTS FAILED:\n{r.stdout[-2000:]}\n{r.stderr[-500:]}")
+    else:
+        summary = [l for l in r.stdout.splitlines() if "passed" in l or "failed" in l or "error" in l]
+        lines.append(f"Tests: {summary[-1] if summary else 'ok'}")
+
+    # 2. ruff lint on changed paths
+    check_paths = ["apps/vaner-daemon/src/", "libs/vaner-runtime/src/", "libs/vaner-tools/src/"]
+    r = subprocess.run(
+        ["apps/vaner-daemon/.venv/bin/python", "-m", "ruff", "check"] + check_paths + ["--ignore", "E501,D,T201,ANN"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT)
+    )
+    if r.returncode != 0:
+        ok = False
+        lines.append(f"LINT FAILED:\n{r.stdout[:1000]}")
+    else:
+        lines.append("Lint: clean")
+
+    # 3. Stub check
+    r = subprocess.run(
+        ["grep", "-rn", r"raise NotImplementedError\|# TODO\|# FIXME\|\.\.\.  # stub",
+         "apps/vaner-daemon/src/"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT)
+    )
+    if r.stdout.strip():
+        ok = False
+        lines.append(f"STUBS/TODOS FOUND:\n{r.stdout[:500]}")
+    else:
+        lines.append("Stubs: none")
+
+    # 4. git diff stat
+    r = subprocess.run(
+        ["git", "diff", "--stat", "HEAD"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT)
+    )
+    if r.stdout.strip():
+        lines.append(f"Changed:\n{r.stdout.strip()}")
+
+    return ok, "\n".join(lines)
+
+
 async def run_all_tasks(tasks: list[str], thread_id: str, auto_yes: bool) -> None:
     from agent.graph import build_graph
 
@@ -52,9 +105,11 @@ async def run_all_tasks(tasks: list[str], thread_id: str, auto_yes: bool) -> Non
 
     print(f"\nvaner-builder (qwen2.5-coder:32b) — {len(tasks)} task(s) queued\n")
 
-    for i, task in enumerate(tasks, 1):
+    i = 0
+    while i < len(tasks):
+        task = tasks[i]
         print(f"{'='*60}")
-        print(f"Task {i}/{len(tasks)}: {task[:120]}{'...' if len(task) > 120 else ''}")
+        print(f"Task {i+1}/{len(tasks)}: {task[:120]}{'...' if len(task) > 120 else ''}")
         print(f"{'='*60}\n")
 
         result = await g.ainvoke(
@@ -77,8 +132,28 @@ async def run_all_tasks(tasks: list[str], thread_id: str, auto_yes: bool) -> Non
                 print(f"  {icon} {t.get('task', '')}")
             print()
 
+        # Post-task validation
+        print("--- Validator ---")
+        passed, report = run_validator([])
+        print(report)
+        print()
+
+        if not passed:
+            print("⚠ Validation failed. Feeding errors back to builder for self-correction...")
+            fix_task = (
+                f"The previous task had validation failures. Fix them now.\n\n"
+                f"Failures:\n{report}\n\n"
+                f"Original task was: {task[:300]}\n\n"
+                f"Read the failing files, fix all issues, run tests and lint again to confirm clean."
+            )
+            # Inject fix as next task (don't advance i)
+            tasks.insert(i + 1, fix_task)
+            print(f"Fix task injected as task {i+2}.")
+
+        i += 1
+
         if not auto_yes and i < len(tasks):
-            answer = input(f"Proceed to task {i+1}/{len(tasks)}? [y/N/q] ").strip().lower()
+            answer = input(f"\nProceed to task {i+1}/{len(tasks)}? [y/N/q] ").strip().lower()
             if answer == "q":
                 print("Stopped.")
                 break
