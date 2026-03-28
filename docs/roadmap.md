@@ -99,3 +99,28 @@ A predictive context runtime that sits between a developer's active work surface
 3. How does contamination guard handle mid-refactor partial state?
 4. When is the first real external user test, and with whom?
 5. How does vaner handle monorepos / multi-repo setups?
+
+---
+
+## Model Strategy (updated 2026-03-28)
+
+**Principle: local-first, cloud as last resort.**
+
+### Hardware
+| Machine | Role | Models |
+|---|---|---|
+| RTX 5090 (32GB) | Current primary | devstral:14B, qwen2.5-coder:32b |
+| DGX Spark (128GB, ~1 week) | Heavy compute | qwen2.5:72b, qwen2.5-coder:72b @ 4-bit, vLLM |
+| Cloud | Last resort only | Claude (hard tasks only, budget-gated) |
+
+### Model assignments (target state with DGX)
+- File/diff summarization → devstral on RTX 5090
+- Code understanding, builder queries → qwen2.5-coder:72b on DGX
+- Multi-file architectural planning → qwen2.5:72b on DGX
+- Eval judge → qwen2.5:72b on DGX (was Claude Haiku)
+- OpenClaw subagents → switch default to ollama/qwen2.5:72b once DGX online
+
+### Cloud spend targets
+- Today (RTX 5090 only): Claude for subagent orchestration + eval judge
+- With DGX: Claude only for genuinely hard reasoning where local clearly insufficient
+- Config: \`cloud_enabled: false\` default in Model Router; explicit opt-in per task type
