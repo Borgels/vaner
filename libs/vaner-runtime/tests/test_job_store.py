@@ -6,9 +6,7 @@ import threading
 import time
 
 import pytest
-
 from vaner_runtime.job_store import JobStore
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

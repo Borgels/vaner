@@ -3,7 +3,9 @@ src/vaner_tools/__init__.py
 src/vaner_tools/artefact_store.py
 src/vaner_tools/paths.py
 src/vaner_tools/repo_tools.py
+src/vaner_tools/scoring.py
 src/vaner_tools.egg-info/PKG-INFO
 src/vaner_tools.egg-info/SOURCES.txt
 src/vaner_tools.egg-info/dependency_links.txt
 src/vaner_tools.egg-info/top_level.txt
+tests/test_scoring.py

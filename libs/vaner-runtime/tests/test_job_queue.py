@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from vaner_runtime.job_queue import JobQueue, Priority, QueuedJob
-
 
 # ---------------------------------------------------------------------------
 # Helpers
