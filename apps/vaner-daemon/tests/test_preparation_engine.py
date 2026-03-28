@@ -159,17 +159,7 @@ async def test_generator_file_summary_mocked(tmp_path):
         mock_instance = MagicMock()
         mock_instance.ainvoke = AsyncMock(return_value=fake_result)
         MockModel.return_value = mock_instance
-
-        from vaner_tools.artefact_store import Artefact
-        mock_write.return_value = Artefact(
-            key=str(src),
-            source_path=str(src),
-            kind="file_summary",
-            content="Defines hello() function.",
-            generated_at=time.time(),
-            source_mtime=time.time(),
-            model="qwen2.5-coder:32b",
-        )
+        mock_write.return_value = None  # write_artefact returns None
 
         result = await generate_file_summary(src, tmp_path)
 
@@ -191,17 +181,7 @@ async def test_generator_diff_summary_mocked(tmp_path):
         mock_instance = MagicMock()
         mock_instance.ainvoke = AsyncMock(return_value=fake_result)
         MockModel.return_value = mock_instance
-
-        from vaner_tools.artefact_store import Artefact
-        mock_write.return_value = Artefact(
-            key=str(tmp_path / "diff_summary_sentinel"),
-            source_path=str(tmp_path / "diff_summary_sentinel"),
-            kind="diff_summary",
-            content="Added retry logic to job_store.",
-            generated_at=time.time(),
-            source_mtime=time.time(),
-            model="qwen2.5-coder:32b",
-        )
+        mock_write.return_value = None  # write_artefact returns None
 
         result = await generate_diff_summary(tmp_path)
 

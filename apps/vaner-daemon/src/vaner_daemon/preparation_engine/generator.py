@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
+import urllib.parse
 from pathlib import Path
 
 from langchain_ollama import ChatOllama
@@ -29,6 +31,11 @@ Be concise.
 Summary:"""
 
 
+def _make_key(source_path: Path, repo_root: Path, kind: str) -> str:
+    rel = str(source_path.relative_to(repo_root))
+    return f"{kind}:{urllib.parse.quote(rel, safe='')}"
+
+
 async def generate_file_summary(
     source_path: Path,
     repo_root: Path,
@@ -41,13 +48,16 @@ async def generate_file_summary(
         prompt = FILE_SUMMARY_PROMPT.format(path=rel_path, content=content)
         result = await model.ainvoke(prompt)
         summary = result.content.strip()
-        artefact = write_artefact(
-            cache_root=repo_root / ".vaner" / "cache",
-            source_path=source_path,
-            repo_root=repo_root,
+        artefact = Artefact(
+            key=_make_key(source_path, repo_root, "file_summary"),
             kind="file_summary",
+            source_path=rel_path,
+            source_mtime=source_path.stat().st_mtime,
+            generated_at=time.time(),
+            model=model_name,
             content=summary,
         )
+        write_artefact(artefact)
         logger.info("Generated file_summary for %s", rel_path)
         return artefact
     except Exception as exc:
@@ -75,17 +85,16 @@ async def generate_diff_summary(
         prompt = DIFF_SUMMARY_PROMPT.format(diff=combined)
         result = await model.ainvoke(prompt)
         summary = result.content.strip()
-        # Use a sentinel path for the repo-level diff artefact
-        sentinel = repo_root / "diff_summary_sentinel"
-        sentinel.touch()
-        artefact = write_artefact(
-            cache_root=repo_root / ".vaner" / "cache",
-            source_path=sentinel,
-            repo_root=repo_root,
+        artefact = Artefact(
+            key="diff_summary:root",
             kind="diff_summary",
+            source_path=".",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model=model_name,
             content=summary,
         )
-        sentinel.unlink(missing_ok=True)
+        write_artefact(artefact)
         logger.info("Generated diff_summary for %s", repo_root)
         return artefact
     except Exception as exc:
