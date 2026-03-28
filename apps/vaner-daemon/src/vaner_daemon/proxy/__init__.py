@@ -1,1 +1,1 @@
-# This package contains the proxy components for Vaner Daemon
+# This package contains the proxy server for Vaner.

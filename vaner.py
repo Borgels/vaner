@@ -164,6 +164,106 @@ def cmd_init(repo_path: Path) -> None:
     print("  python vaner.py daemon stop     — stop the daemon")
 
 
+def _cmd_status() -> None:
+    import subprocess as sp
+    from vaner_daemon.daemon import daemon_status
+    from vaner_tools.artefact_store import count_artefacts
+
+    status = daemon_status(REPO_ROOT)
+    print("Vaner Status")
+    print("=" * 44)
+    if status["running"]:
+        uptime = f"{status['uptime_seconds']:.0f}s" if status["uptime_seconds"] else "?"
+        print(f"Daemon:    running (PID {status['pid']}, uptime {uptime})")
+        print(f"Branch:    {status['branch'] or '?'}")
+        files = status["active_files"]
+        print(f"Active:    {', '.join(files[:3]) or 'none'}{'...' if len(files) > 3 else ''}")
+        proxy_port = status.get("proxy_port", 11435)
+        proxy_on = status.get("proxy_running", False)
+        print(f"Proxy:     {'running on :' + str(proxy_port) if proxy_on else 'stopped'}")
+    else:
+        print("Daemon:    stopped")
+    try:
+        n = count_artefacts()
+        print(f"Artifacts: {n} in cache")
+    except Exception:
+        print("Artifacts: unavailable")
+    try:
+        r = sp.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode == 0:
+            print(f"GPU:       {r.stdout.strip()}")
+    except Exception:
+        pass
+    import os
+    if os.environ.get("LANGSMITH_TRACING") == "true":
+        print("LangSmith: https://eu.smith.langchain.com (tracing enabled)")
+    else:
+        print("LangSmith: disabled")
+
+
+def _cmd_inspect(path: str | None) -> None:
+    import time as _time
+    from vaner_tools.artefact_store import list_artefacts, read_artefact
+
+    if path:
+        a = read_artefact("file_summary", path) or read_artefact("diff_summary", path)
+        if not a:
+            print(f"No artifact found for: {path}")
+            return
+        import datetime
+        ts = datetime.datetime.fromtimestamp(a.generated_at).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{a.kind}: {a.source_path}")
+        print(f"Generated: {ts}  Model: {a.model}")
+        print("─" * 55)
+        print(a.content)
+    else:
+        arts = sorted(list_artefacts(), key=lambda x: x.generated_at, reverse=True)
+        print(f"Artifacts in cache ({len(arts)} total):\n")
+        for a in arts[:20]:
+            age_s = _time.time() - a.generated_at
+            age = f"{int(age_s//60)}m" if age_s > 60 else f"{int(age_s)}s"
+            chars = len(a.content)
+            print(f"  [{a.kind:<14}]  {a.source_path:<40} age: {age:<6} chars: {chars}")
+
+
+def _cmd_migrate() -> None:
+    from vaner_tools.artefact_store import migrate_from_json
+    print("Migrating artifact cache from JSON to SQLite...")
+    n = migrate_from_json(REPO_ROOT / ".vaner" / "cache")
+    print(f"Migrated {n} artifacts.")
+    print("Done. Run 'python vaner.py daemon start' to resume.")
+
+
+def _cmd_proxy_config() -> None:
+    from vaner_daemon.daemon import daemon_status
+    from vaner_tools.artefact_store import count_artefacts
+
+    status = daemon_status(REPO_ROOT)
+    proxy_port = status.get("proxy_port", 11435)
+    proxy_on = status.get("proxy_running", False) and status.get("running", False)
+    try:
+        n = count_artefacts()
+    except Exception:
+        n = 0
+
+    print("Vaner Proxy Configuration")
+    print("=" * 44)
+    print(f"Status:    {'running (port ' + str(proxy_port) + ')' if proxy_on else 'stopped'}")
+    print("Upstream:  http://localhost:11434")
+    print(f"Artifacts: {n} in cache")
+    print()
+    print("Editor setup:")
+    print(f"  Cursor:         Settings > API Base URL > http://localhost:{proxy_port}")
+    print(f"  VS Code (Continue): set apiBase to http://localhost:{proxy_port} in config.json")
+    print(f"  Any OpenAI client:  set base URL to http://localhost:{proxy_port}")
+    print()
+    print(f"Test with:  curl -s http://localhost:{proxy_port}/health")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Vaner orchestration CLI")
     subparsers = parser.add_subparsers(dest="command")
@@ -182,11 +282,41 @@ def main():
     # init subcommand
     subparsers.add_parser("init", help="Initialize vaner in this repo (config + git hooks)")
 
+    # status subcommand
+    subparsers.add_parser("status", help="Show full system health")
+
+    # inspect subcommand
+    inspect_parser = subparsers.add_parser("inspect", help="Inspect artifact cache")
+    inspect_parser.add_argument("path", nargs="?", help="Source path to inspect")
+
+    # migrate subcommand
+    subparsers.add_parser("migrate", help="Migrate artifact cache from JSON to SQLite")
+
+    # proxy subcommand
+    proxy_parser = subparsers.add_parser("proxy", help="Proxy configuration")
+    proxy_parser.add_argument("proxy_action", choices=["config"])
+
     args = parser.parse_args()
 
     if args.command == "init":
         print("Initializing vaner...")
         cmd_init(REPO_ROOT)
+        return
+
+    if args.command == "status":
+        _cmd_status()
+        return
+
+    if args.command == "inspect":
+        _cmd_inspect(getattr(args, "path", None))
+        return
+
+    if args.command == "migrate":
+        _cmd_migrate()
+        return
+
+    if args.command == "proxy":
+        _cmd_proxy_config()
         return
 
     if args.command == "daemon":
