@@ -37,6 +37,11 @@ class DaemonConfig:
     max_concurrent_jobs: int = 2
     max_queue_depth: int = 20
 
+    # Proxy settings
+    proxy_enabled: bool = True
+    proxy_port: int = 11435
+    proxy_upstream: str = "http://localhost:11434"
+
     @classmethod
     def load(cls, repo_path: Path) -> "DaemonConfig":
         """Load config from .vaner/config.json, falling back to defaults."""

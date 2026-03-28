@@ -32,6 +32,7 @@ class VanerDaemon:
         self._event_collector: EventCollector | None = None
         self._state_engine: StateEngine | None = None
         self._preparation_engine = None
+        self._proxy = None
         self._running = False
         self._pid_file = repo_path / ".vaner" / "daemon.pid"
         self._log_file = repo_path / ".vaner" / "daemon.log"
@@ -67,6 +68,15 @@ class VanerDaemon:
         self._preparation_engine.start()
         self._preparation_engine.recover_in_progress_runs()
 
+        if self._config.proxy_enabled:
+            from vaner_daemon.proxy.server import VanerProxy
+            self._proxy = VanerProxy(
+                port=self._config.proxy_port,
+                upstream=self._config.proxy_upstream,
+            )
+            asyncio.create_task(self._proxy.start())
+            logger.info("Proxy starting on port %d", self._config.proxy_port)
+
         self._running = True
         logger.info("Vaner daemon started (pid=%d, repo=%s)", os.getpid(), self._config.repo_path)
 
@@ -85,6 +95,9 @@ class VanerDaemon:
                 pass
             if self._sock_file.exists():
                 self._sock_file.unlink(missing_ok=True)
+
+        if self._proxy:
+            await self._proxy.stop()
 
         if self._preparation_engine:
             self._preparation_engine.stop()
@@ -237,12 +250,16 @@ def daemon_stop(repo_path: Path) -> None:
 def daemon_status(repo_path: Path) -> dict:
     """Return running status, pid, uptime, branch, and active files."""
     pid_file = repo_path / ".vaner" / "daemon.pid"
+    from vaner_daemon.config import DaemonConfig
+    cfg = DaemonConfig.load(repo_path)
     result: dict = {
         "running": False,
         "pid": None,
         "uptime_seconds": None,
         "branch": "",
         "active_files": [],
+        "proxy_running": False,
+        "proxy_port": cfg.proxy_port,
     }
 
     if not pid_file.exists():
@@ -265,6 +282,7 @@ def daemon_status(repo_path: Path) -> dict:
 
     result["running"] = True
     result["pid"] = pid
+    result["proxy_running"] = cfg.proxy_enabled
 
     # Uptime from PID file mtime
     try:
