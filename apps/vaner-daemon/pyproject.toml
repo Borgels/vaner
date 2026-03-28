@@ -6,7 +6,7 @@ dependencies = [
     "watchdog>=4.0",
     "langchain-ollama>=0.1",
     "langgraph>=0.2",
-    "langgraph-checkpoint-sqlite>=1.0",
+    "langgraph>=0.3",
 ]
 
 [build-system]

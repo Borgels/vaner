@@ -65,6 +65,7 @@ class VanerDaemon:
             loop=loop,
         )
         self._preparation_engine.start()
+        self._preparation_engine.recover_in_progress_runs()
 
         self._running = True
         logger.info("Vaner daemon started (pid=%d, repo=%s)", os.getpid(), self._config.repo_path)

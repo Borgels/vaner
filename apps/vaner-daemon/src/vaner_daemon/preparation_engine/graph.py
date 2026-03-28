@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from langgraph.graph import END, StateGraph
-from langgraph_checkpoint_sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from vaner_tools.artefact_store import list_artefacts
 
 from .generator import generate_diff_summary, generate_file_summary
