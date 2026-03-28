@@ -137,6 +137,33 @@ docs/
 
 ---
 
+## Agent Roadmap
+
+```
+Phase 1 (now)       broker only — current PoC, direct reads, no cache
+
+Phase 2 (next)      repo-analyzer → broker
+                    Analyzer pre-computes file/dir summaries into .vaner/cache/
+                    Broker checks cache before doing direct reads
+                    → see build-spec-two-agent.md
+
+Phase 3             indexer + synthesizer → broker
+                    Split analyzer in two:
+                    - indexer: fast, deterministic (symbol maps, dependency graph)
+                              runs on RTX 5090 / small models
+                    - synthesizer: slow, LLM-heavy (patch candidates, design sketches)
+                              runs on DGX Spark / 70B+ models
+                    Broker picks from both artefact pools
+
+Phase 4             + eval agent
+                    Scores artefact quality, feeds back into ranker
+                    Only worth building once artefact volume is real
+```
+
+The two-agent split is the hard conceptual move. Phases 3 and 4 are just clean subdivisions once the cache contract and broker routing are solid.
+
+---
+
 ## Design Principles
 
 From the strategic report:
