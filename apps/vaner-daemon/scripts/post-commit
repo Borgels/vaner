@@ -1,0 +1,6 @@
+#!/bin/bash
+# vaner git hook: notify daemon of commit
+VANER_SOCK="${VANER_SOCK:-$GIT_DIR/../.vaner/daemon.sock}"
+if [ -S "$VANER_SOCK" ]; then
+    echo '{"kind":"git_commit","branch":"'"$(git rev-parse --abbrev-ref HEAD)"'"}' | nc -U "$VANER_SOCK" -q1 2>/dev/null || true
+fi

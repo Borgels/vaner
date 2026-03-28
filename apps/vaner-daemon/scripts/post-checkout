@@ -1,0 +1,10 @@
+#!/bin/bash
+# vaner git hook: notify daemon of checkout/branch switch
+PREV_HEAD="$1"
+NEW_HEAD="$2"
+BRANCH_SWITCH="$3"
+VANER_SOCK="${VANER_SOCK:-$GIT_DIR/../.vaner/daemon.sock}"
+if [ -S "$VANER_SOCK" ] && [ "$BRANCH_SWITCH" = "1" ]; then
+    NEW_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+    echo '{"kind":"git_branch_switch","branch":"'"$NEW_BRANCH"'","from_branch":"'"$(git name-rev --name-only $PREV_HEAD 2>/dev/null || echo unknown)"'"}' | nc -U "$VANER_SOCK" -q1 2>/dev/null || true
+fi
