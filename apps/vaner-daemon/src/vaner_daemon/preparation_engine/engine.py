@@ -34,6 +34,8 @@ class PreparationEngine:
         self._last_prep_at: float | None = None
         self._jobs_queued: int = 0
         self._active_tasks: dict[str, asyncio.Task] = {}
+        from vaner_runtime.telemetry import TelemetryStore
+        self._telemetry = TelemetryStore(repo_root / ".vaner" / "telemetry.db")
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -210,6 +212,7 @@ class PreparationEngine:
         current = asyncio.current_task()
         if current:
             self._active_tasks[task_key] = current
+        t0 = time.time()
         try:
             state = {
                 "trigger": trigger,
@@ -224,11 +227,15 @@ class PreparationEngine:
                 state,
                 config={"configurable": {"thread_id": trigger.context_key}},
             )
+            elapsed_ms = (time.time() - t0) * 1000
             self._last_prep_at = time.time()
+            self._telemetry.record_prep_run(trigger.context_key, elapsed_ms, 0)
             logger.info("Preparation complete for context_key=%s", trigger.context_key)
         except asyncio.CancelledError:
             logger.info("Preparation cancelled for context_key=%s", trigger.context_key)
         except Exception as exc:
+            elapsed_ms = (time.time() - t0) * 1000
+            self._telemetry.record_prep_run(trigger.context_key, elapsed_ms, 0, error=str(exc))
             logger.error("Preparation failed for context_key=%s: %s", trigger.context_key, exc)
         finally:
             self._active_tasks.pop(task_key, None)
