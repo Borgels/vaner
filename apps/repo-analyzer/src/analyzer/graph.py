@@ -63,7 +63,11 @@ DIR_SUMMARY_SYSTEM = (
 )
 
 # Directories to skip during discovery
-SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".vaner"}
+SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".vaner", ".ruff_cache", ".mypy_cache", ".pytest_cache", "dist", "build"}
+
+# File suffixes and name patterns to skip (non-code noise)
+SKIP_SUFFIXES = {".pyc", ".pyo", ".pyd", ".so", ".egg", ".whl"}
+SKIP_NAMES = {"RECORD", "WHEEL", "METADATA", "top_level.txt", "dependency_links.txt", "entry_points.txt", "direct_url.json", "INSTALLER", "LICENSE.txt"}
 
 # Max file size to summarize (50 KB)
 MAX_FILE_SIZE = 50 * 1024
@@ -110,7 +114,13 @@ def _discover_sync(target_path: str) -> list[str]:
         parts = p.parts
         if any(part in SKIP_DIRS for part in parts):
             continue
+        # Skip .egg-info directories
+        if any(part.endswith(".egg-info") for part in parts):
+            continue
         if not p.is_file():
+            continue
+        # Skip non-code suffixes and known noise filenames
+        if p.suffix in SKIP_SUFFIXES or p.name in SKIP_NAMES:
             continue
         if p.stat().st_size > MAX_FILE_SIZE:
             continue

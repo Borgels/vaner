@@ -178,10 +178,11 @@ def try_parse_tool_calls(content: str) -> list[dict] | None:
 
     Handles multiple formats devstral uses:
     1. Standard: {"name": "tool_name", "arguments": {...}}
-    2. Devstral variant: {"tool_name": {"args": {...}}} — single key is the tool name
-    3. Devstral variant: {"tool_name": {"arg1": val1}} — single key, value IS the args
-    4. Array of any of the above
-    5. JSON embedded in markdown code fences
+    2. Devstral primary: {"type": "tool_name", "arg1": val1, ...} — "type" is tool name, rest are args
+    3. Devstral variant: {"tool_name": {"args": {...}}} — single key is the tool name
+    4. Devstral variant: {"tool_name": {"arg1": val1}} — single key, value IS the args
+    5. Array of any of the above
+    6. JSON embedded in markdown code fences
     """
     import re
 
@@ -197,11 +198,18 @@ def try_parse_tool_calls(content: str) -> list[dict] | None:
             text = fence_match.group(1).strip()
 
     def normalize_call(obj: dict) -> dict | None:
+        # Format 1: standard {"name": "tool_name", "arguments": {...}}
         if "name" in obj and isinstance(obj.get("name"), str):
             return {
                 "name": obj["name"],
                 "arguments": obj.get("arguments", obj.get("args", obj.get("parameters", {}))),
             }
+        # Format 2: devstral {"type": "tool_name", "arg1": val1, ...}
+        if "type" in obj and isinstance(obj.get("type"), str):
+            tool_name = obj["type"]
+            args = {k: v for k, v in obj.items() if k != "type"}
+            return {"name": tool_name, "arguments": args}
+        # Format 3: single-key {"tool_name": {"args": {...}}} or {"tool_name": {...}}
         keys = [k for k in obj if not k.startswith("_")]
         if len(keys) == 1:
             tool_name = keys[0]
