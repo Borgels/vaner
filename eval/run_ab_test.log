@@ -1,0 +1,157 @@
+  [info] Loaded ANTHROPIC_API_KEY from OpenClaw config
+
+[01/20] Where is the staleness check for artifacts implemented and what are th...
+  → WITH injection... 2577ms, cache_hit=True, tools=0
+  → WITHOUT injection... 762ms, tools=0
+  → Judging... winner=A (A=5, B=2)
+
+[02/20] What functions does repo_tools.py export?...
+  → WITH injection... 834ms, cache_hit=True, tools=0
+  → WITHOUT injection... 602ms, tools=0
+  → Judging... winner=A (A=5, B=1)
+
+[03/20] Where does the supervisor decide whether to refresh the cache?...
+  → WITH injection... 558ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1190ms, tools=0
+  → Judging... winner=A (A=5, B=1)
+
+[04/20] What is the directory structure of libs/vaner-tools?...
+  → WITH injection... 937ms, cache_hit=True, tools=0
+  → WITHOUT injection... 491ms, tools=0
+  → Judging... winner=A (A=4, B=2)
+
+[05/20] Where is try_parse_tool_calls defined and what formats does it handle?...
+  → WITH injection... 810ms, cache_hit=True, tools=0
+  → WITHOUT injection... 726ms, tools=0
+  → Judging... winner=A (A=4, B=2)
+
+[06/20] What does the Artefact dataclass look like and what fields does it hav...
+  → WITH injection... 973ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1385ms, tools=1
+  → Judging... winner=A (A=4, B=1)
+
+[07/20] How does load_context_from_cache work in the broker?...
+  → WITH injection... 893ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1131ms, tools=0
+  → Judging... winner=A (A=4, B=2)
+
+[08/20] What LangGraph nodes make up the analyzer graph and in what order do t...
+  → WITH injection... 1371ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1517ms, tools=1
+  → Judging... winner=A (A=5, B=1)
+
+[09/20] What is the SKIP_DIRS set used for in the analyzer?...
+  → WITH injection... 1647ms, cache_hit=True, tools=0
+  → WITHOUT injection... 2861ms, tools=1
+  → Judging... winner=A (A=5, B=4)
+
+[10/20] How does the broker's scoring decide which artifacts to inject?...
+  → WITH injection... 889ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1269ms, tools=0
+  → Judging... winner=A (A=4, B=1)
+
+[11/20] The analyzer is generating summaries for .egg-info files. How would I ...
+  → WITH injection... 1062ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1094ms, tools=0
+  → Judging... winner=A (A=4, B=2)
+
+[12/20] A broker response is returning raw JSON instead of an answer. What's w...
+  → WITH injection... 1008ms, cache_hit=True, tools=0
+  → WITHOUT injection... 8745ms, tools=0
+  → Judging... winner=A (A=4, B=2)
+
+[13/20] The repo_index is missing from the cache after running the analyzer. W...
+  → WITH injection... 1021ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1986ms, tools=1
+  → Judging... winner=A (A=4, B=2)
+
+[14/20] Why would cache_hit be False even though artifacts exist in the store?...
+  → WITH injection... 1945ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1113ms, tools=0
+  → Judging... winner=B (A=2, B=3)
+
+[15/20] The supervisor is always triggering a cache refresh. What controls the...
+  → WITH injection... 878ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1328ms, tools=0
+  → Judging... winner=A (A=4, B=2)
+
+[16/20] How would I add a new artifact type to the preparation pipeline?...
+  → WITH injection... 873ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1119ms, tools=0
+  → Judging... winner=B (A=2, B=3)
+
+[17/20] What changes would be needed to add a new tool to the broker?...
+  → WITH injection... 1033ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1373ms, tools=0
+  → Judging... winner=A (A=3, B=2)
+
+[18/20] How does the artefact_store write artifacts to disk?...
+  → WITH injection... 970ms, cache_hit=True, tools=0
+  → WITHOUT injection... 900ms, tools=0
+  → Judging... winner=A (A=4, B=2)
+
+[19/20] What does the scoring.py tokenize function do and why?...
+  → WITH injection... 2236ms, cache_hit=True, tools=0
+  → WITHOUT injection... 684ms, tools=0
+  → Judging... winner=A (A=5, B=1)
+
+[20/20] How would I check if a specific file has an up-to-date summary in the ...
+  → WITH injection... 1945ms, cache_hit=True, tools=0
+  → WITHOUT injection... 1002ms, tools=0
+  → Judging... winner=A (A=4, B=2)
+
+======================================================================
+VANER.AI A/B EVALUATION REPORT
+======================================================================
+
+Queries evaluated: 20
+
+--- Judge Verdicts ---
+WITH injection wins:    18 / 20  (90%)
+WITHOUT injection wins:  2 / 20  (10%)
+Ties:                    0 / 20  (0%)
+
+--- Quality Scores (1-5) ---
+Avg score WITH:         4.05
+Avg score WITHOUT:      1.90
+Score delta:            +2.15
+
+--- Key Metrics ---
+Cache hit rate:         20/20 (100%)
+Direct answers WITH:    16/20 (80%)
+Direct answers WITHOUT: 0/20 (0%)
+Avg tool calls WITH:    0.0
+Avg tool calls WITHOUT: 0.2
+Avg latency WITH:       1223ms
+Avg latency WITHOUT:    1564ms
+
+--- Per-Query Results ---
+[01] ✓ WITH | A=5 B=2 | tools 0→0 | Response A provides a direct, specific answer with the exact
+[02] ✓ WITH | A=5 B=1 | tools 0→0 | Response A directly answers the question with specific funct
+[03] ✓ WITH | A=5 B=1 | tools 0→0 | Response A provides a direct, specific answer naming the exa
+[04] ✓ WITH | A=4 B=2 | tools 0→0 | Response A provides an immediate, concrete answer to the dir
+[05] ✓ WITH | A=4 B=2 | tools 0→0 | Response A provides a direct, specific answer with the exact
+[06] ✓ WITH | A=4 B=1 | tools 0→1 | Response A demonstrates an attempt to locate and retrieve th
+[07] ✓ WITH | A=4 B=2 | tools 0→0 | Response A identifies the specific file and function locatio
+[08] ✓ WITH | A=5 B=1 | tools 0→1 | Response A directly answers the question with specific node 
+[09] ✓ WITH | A=5 B=4 | tools 0→1 | Response A provides specific line numbers (113 and 115) and 
+[10] ✓ WITH | A=4 B=1 | tools 0→0 | Response A provides a direct, specific answer identifying BM
+[11] ✓ WITH | A=4 B=2 | tools 0→0 | Response A directly identifies the specific function (filter
+[12] ✓ WITH | A=4 B=2 | tools 0→0 | Response A directly targets the likely culprit (agent graph 
+[13] ✓ WITH | A=4 B=2 | tools 0→1 | Response A directly identifies a specific file and function 
+[14] ✗ WITHOUT | A=2 B=3 | tools 0→0 | Response B uses a more targeted search strategy (grep for 'c
+[15] ✓ WITH | A=4 B=2 | tools 0→0 | Response A directly identifies the specific function (`check
+[16] ✗ WITHOUT | A=2 B=3 | tools 0→0 | Response B provides a structured 3-step approach to the prob
+[17] ✓ WITH | A=3 B=2 | tools 0→0 | Response A provides a direct, specific answer naming actual 
+[18] ✓ WITH | A=4 B=2 | tools 0→0 | Response A directly accessed the relevant file with a specif
+[19] ✓ WITH | A=5 B=1 | tools 0→0 | Response A provides a complete, direct answer with specific 
+[20] ✓ WITH | A=4 B=2 | tools 0→0 | Response A provides a direct, specific answer with actual fu
+
+--- Go/No-Go Assessment ---
+
+Verdict: GO ✅
+Reason:  Injection wins >40% of queries AND improves average quality
+
+Key signal: injection wins 90% of queries, direct answer lift = +80pp, tool call reduction = 100%
+
+Full results saved to: /home/abo/repos/Vaner/eval/ab_results.json
