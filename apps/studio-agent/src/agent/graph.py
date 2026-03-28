@@ -18,12 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
-
-import os
 
 import aiosqlite
 from langchain_ollama import ChatOllama
@@ -31,8 +29,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.runtime import Runtime
 from typing_extensions import TypedDict
-
-from vaner_tools.artefact_store import is_stale, list_artefacts, read_repo_index
+from vaner_tools.artefact_store import read_repo_index
 from vaner_tools.paths import REPO_ROOT, resolve_repo_path
 from vaner_tools.repo_tools import find_files, grep_text, list_files, read_file
 

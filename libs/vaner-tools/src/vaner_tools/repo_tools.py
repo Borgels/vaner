@@ -10,7 +10,6 @@ import fnmatch
 
 from .paths import REPO_ROOT, resolve_repo_path
 
-
 # ---------------------------------------------------------------------------
 # Internal sync implementations
 # ---------------------------------------------------------------------------

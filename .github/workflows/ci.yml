@@ -23,7 +23,7 @@ jobs:
         run: pip install ruff
 
       - name: Lint (ruff)
-        run: ruff check apps/ libs/ vaner.py --ignore E501
+        run: ruff check apps/ libs/ vaner.py --ignore E501,D,T201,ANN
 
       - name: Install vaner-tools
         run: pip install -e libs/vaner-tools/

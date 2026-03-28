@@ -21,10 +21,8 @@ from typing import Any
 
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
-
 from vaner_tools.artefact_store import (
     Artefact,
-    artefact_path,
     is_stale,
     list_artefacts,
     read_artefact,
@@ -93,7 +91,7 @@ def _discover_sync(target_path: str) -> list[str]:
     """Walk target_path and return repo-relative path strings for eligible files."""
     try:
         root = resolve_repo_path(target_path)
-    except ValueError as e:
+    except ValueError:
         return []
 
     if root.is_file():
@@ -304,17 +302,6 @@ async def update_repo_index(state: AnalyzerState) -> dict[str, Any]:
     index_content = json.dumps(
         {"generated_at": time.time(), "files": files_index},
         indent=2,
-    )
-
-    artefact = Artefact(
-        key="repo_index:root",
-        kind="repo_index",
-        source_path="root",
-        source_mtime=time.time(),
-        generated_at=time.time(),
-        model="devstral",
-        content=index_content,
-        metadata={},
     )
 
     # Write to the special path .vaner/cache/repo_index/root.json
