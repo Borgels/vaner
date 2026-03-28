@@ -71,7 +71,7 @@ Quality rules (non-negotiable):
 - Read existing code carefully — match patterns, imports, and conventions already in use.
 - When integrating with libs/vaner-runtime/ or libs/vaner-tools/, read those files first.
 
-Tool calling — use {"command": "tool_name", "arg": "value"} format.
+Tool calling — use {{"command": "tool_name", "arg": "value"}} format.
 
 Available tools:
   - list_files(path: string = ".") -> list files in a directory
@@ -178,60 +178,39 @@ async def run_command_tool(command: str, cwd: str = ".") -> str:
 # ---------------------------------------------------------------------------
 
 
-def try_parse_tool_calls(content: str) -> list[dict] | None:
-    """Parse tool calls from model output.
+def _normalize_tool_call(obj: dict) -> dict | None:
+    """Normalize a parsed JSON object into a standard {name, arguments} tool call dict."""
+    # Format 1: standard {"name": "tool_name", "arguments": {...}}
+    if "name" in obj and isinstance(obj.get("name"), str):
+        return {
+            "name": obj["name"],
+            "arguments": obj.get("arguments", obj.get("args", obj.get("parameters", {}))),
+        }
+    # Format 2a: devstral {"type": "tool_name", "arg1": val1, ...}
+    if "type" in obj and isinstance(obj.get("type"), str):
+        tool_name = obj["type"]
+        args = {k: v for k, v in obj.items() if k != "type"}
+        return {"name": tool_name, "arguments": args}
+    # Format 2b: devstral/qwen {"command": "tool_name", "arg1": val1, ...}
+    if "command" in obj and isinstance(obj.get("command"), str):
+        tool_name = obj["command"]
+        args = {k: v for k, v in obj.items() if k != "command"}
+        return {"name": tool_name, "arguments": args}
+    # Format 3: single-key {"tool_name": {"args": {...}}} or {"tool_name": {...}}
+    keys = [k for k in obj if not k.startswith("_")]
+    if len(keys) == 1:
+        tool_name = keys[0]
+        val = obj[tool_name]
+        if isinstance(val, dict):
+            args = val.get("args", val.get("arguments", val.get("parameters", val)))
+            return {"name": tool_name, "arguments": args if isinstance(args, dict) else val}
+    return None
 
-    Handles multiple formats devstral uses:
-    1. Standard: {"name": "tool_name", "arguments": {...}}
-    2. Devstral primary: {"type": "tool_name", "arg1": val1, ...} — "type" is tool name, rest are args
-    3. Devstral variant: {"tool_name": {"args": {...}}} — single key is the tool name
-    4. Devstral variant: {"tool_name": {"arg1": val1}} — single key, value IS the args
-    5. Array of any of the above
-    6. JSON embedded in markdown code fences
-    """
-    import re
 
-    if not content or not content.strip():
-        return None
-
-    text = content.strip()
-
-    # Strip markdown code fences
-    if "```" in text:
-        fence_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", text)
-        if fence_match:
-            text = fence_match.group(1).strip()
-
-    def normalize_call(obj: dict) -> dict | None:
-        # Format 1: standard {"name": "tool_name", "arguments": {...}}
-        if "name" in obj and isinstance(obj.get("name"), str):
-            return {
-                "name": obj["name"],
-                "arguments": obj.get("arguments", obj.get("args", obj.get("parameters", {}))),
-            }
-        # Format 2a: devstral {"type": "tool_name", "arg1": val1, ...}
-        if "type" in obj and isinstance(obj.get("type"), str):
-            tool_name = obj["type"]
-            args = {k: v for k, v in obj.items() if k != "type"}
-            return {"name": tool_name, "arguments": args}
-        # Format 2b: devstral {"command": "tool_name", "arg1": val1, ...}
-        if "command" in obj and isinstance(obj.get("command"), str):
-            tool_name = obj["command"]
-            args = {k: v for k, v in obj.items() if k != "command"}
-            return {"name": tool_name, "arguments": args}
-        # Format 3: single-key {"tool_name": {"args": {...}}} or {"tool_name": {...}}
-        keys = [k for k in obj if not k.startswith("_")]
-        if len(keys) == 1:
-            tool_name = keys[0]
-            val = obj[tool_name]
-            if isinstance(val, dict):
-                args = val.get("args", val.get("arguments", val.get("parameters", val)))
-                return {"name": tool_name, "arguments": args if isinstance(args, dict) else val}
-        return None
-
-    # Try to find and parse JSON from the text
+def _extract_calls_from_text(text: str) -> list[dict]:
+    """Try to extract tool calls from a raw text block (no fence stripping)."""
     candidates = [text]
-    # Also try extracting first JSON object/array via brace matching
+    # Extract all JSON objects/arrays via brace matching
     for start_char, end_char in [("{", "}"), ("[", "]")]:
         depth = 0
         start_idx = None
@@ -259,16 +238,55 @@ def try_parse_tool_calls(content: str) -> list[dict] | None:
         if isinstance(parsed, list):
             for item in parsed:
                 if isinstance(item, dict):
-                    n = normalize_call(item)
+                    n = _normalize_tool_call(item)
                     if n:
                         calls.append(n)
         elif isinstance(parsed, dict):
-            n = normalize_call(parsed)
+            n = _normalize_tool_call(parsed)
             if n:
                 calls.append(n)
-
         if calls:
             return calls
+    return []
+
+
+def try_parse_tool_calls(content: str) -> list[dict] | None:
+    """Parse tool calls from model output.
+
+    Handles multiple formats:
+    1. Standard: {"name": "tool_name", "arguments": {...}}
+    2. Devstral: {"type": "tool_name", ...} or {"command": "tool_name", ...}
+    3. Single-key: {"tool_name": {"args": {...}}}
+    4. Array of any of the above
+    5. JSON inside markdown code fences (qwen emits one block per call)
+    6. Multiple fence blocks → multiple tool calls collected in order
+    """
+    import re
+
+    if not content or not content.strip():
+        return None
+
+    text = content.strip()
+
+    # Extract all JSON blocks from markdown code fences
+    # qwen2.5-coder typically emits one ```json\n{...}\n``` block per tool call
+    fence_blocks: list[str] = []
+    if "```" in text:
+        fence_blocks = re.findall(r"```(?:json|python)?\s*\n?([\s\S]*?)\n?```", text)
+        fence_blocks = [b.strip() for b in fence_blocks if b.strip()]
+
+    if fence_blocks:
+        all_calls: list[dict] = []
+        for block in fence_blocks:
+            all_calls.extend(_extract_calls_from_text(block))
+        if all_calls:
+            return all_calls
+        # Fences found but no tool calls — fall through with first block as text
+        text = fence_blocks[0]
+
+    calls = _extract_calls_from_text(text)
+    if calls:
+        return calls
 
     return None
 
