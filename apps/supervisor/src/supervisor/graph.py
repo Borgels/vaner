@@ -11,20 +11,22 @@ Flow:
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, StateGraph
-
-from vaner_tools.artefact_store import read_repo_index
-from vaner_tools.paths import REPO_ROOT
+import aiosqlite
 
 # Import sub-graphs
 from analyzer.graph import graph as analyzer_graph
-from agent.graph import graph as broker_graph
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import END, StateGraph
+from vaner_tools.artefact_store import read_repo_index
+from vaner_tools.paths import REPO_ROOT
+
+from agent.graph import build_graph as build_broker_graph
 
 # ---------------------------------------------------------------------------
 # State
@@ -93,6 +95,7 @@ async def refresh_cache(state: SupervisorState) -> dict[str, Any]:
 
 async def route_to_broker(state: SupervisorState) -> dict[str, Any]:
     try:
+        broker_graph = await build_broker_graph()
         result = await broker_graph.ainvoke(
             {"user_input": state.user_input},
             config={"configurable": {"thread_id": "default"}},
@@ -131,9 +134,10 @@ async def log_task(state: SupervisorState) -> dict[str, Any]:
 # Graph assembly
 # ---------------------------------------------------------------------------
 
-checkpointer = MemorySaver()
+os.makedirs(str(REPO_ROOT / ".vaner"), exist_ok=True)
+_SUPERVISOR_DB = str(REPO_ROOT / ".vaner" / "supervisor.db")
 
-graph = (
+_builder = (
     StateGraph(SupervisorState)
     .add_node("check_cache_freshness", check_cache_freshness)
     .add_node("refresh_cache", refresh_cache)
@@ -151,5 +155,19 @@ graph = (
     .add_edge("refresh_cache", "route_to_broker")
     .add_edge("route_to_broker", "log_task")
     .add_edge("log_task", END)
-    .compile(name="Vaner Supervisor", checkpointer=checkpointer)
 )
+
+# graph without checkpointer — for import-time validation / test
+graph = _builder.compile(name="Vaner Supervisor")
+
+
+async def build_graph():
+    """Return a compiled supervisor graph with AsyncSqliteSaver checkpointer.
+
+    Must be called from within a running event loop (e.g. inside asyncio.run()).
+    Creates a fresh aiosqlite connection bound to the current event loop.
+    """
+    _conn_cm = aiosqlite.connect(_SUPERVISOR_DB)
+    conn = await _conn_cm.__aenter__()
+    checkpointer = AsyncSqliteSaver(conn)
+    return _builder.compile(name="Vaner Supervisor", checkpointer=checkpointer)

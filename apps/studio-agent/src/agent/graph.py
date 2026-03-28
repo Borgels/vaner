@@ -18,18 +18,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
+import aiosqlite
 from langchain_ollama import ChatOllama
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.runtime import Runtime
 from typing_extensions import TypedDict
-
-from vaner_tools.artefact_store import is_stale, list_artefacts, read_repo_index
+from vaner_tools.artefact_store import read_repo_index
 from vaner_tools.paths import REPO_ROOT, resolve_repo_path
 from vaner_tools.repo_tools import find_files, grep_text, list_files, read_file
 
@@ -75,6 +75,8 @@ Available tools:
   - grep_text(query: string, path: string = ".", file_pattern: string = "*", max_results: int = 50) -> text search
   - write_file(path: string, content: string) -> write or overwrite a file inside the repo
   - run_command(command: string, cwd: string = ".") -> run a safe shell command inside the repo (read-only: ls, cat, python, pytest, grep, find, git status, git log, git diff — no destructive commands)
+  - write_todos(todos: list[{{"task": str, "status": "pending"|"in_progress"|"done"}}]) -> save a task plan to disk
+  - read_todos() -> read the current task plan
 """
 
 
@@ -82,7 +84,8 @@ class Context(TypedDict, total=False):
     extra_context: str
 
 
-checkpointer = MemorySaver()
+os.makedirs(str(REPO_ROOT / ".vaner"), exist_ok=True)
+_BROKER_DB = str(REPO_ROOT / ".vaner" / "memory.db")
 
 
 @dataclass
@@ -170,43 +173,86 @@ async def run_command_tool(command: str, cwd: str = ".") -> str:
 # ---------------------------------------------------------------------------
 
 
-def try_parse_tool_calls(text: str) -> list[dict[str, Any]]:
-    text = text.strip()
-    if not text:
-        return []
+def try_parse_tool_calls(content: str) -> list[dict] | None:
+    """Parse tool calls from model output.
 
-    calls: list[dict[str, Any]] = []
+    Handles multiple formats devstral uses:
+    1. Standard: {"name": "tool_name", "arguments": {...}}
+    2. Devstral variant: {"tool_name": {"args": {...}}} — single key is the tool name
+    3. Devstral variant: {"tool_name": {"arg1": val1}} — single key, value IS the args
+    4. Array of any of the above
+    5. JSON embedded in markdown code fences
+    """
+    import re
 
-    try:
-        data = json.loads(text)
-        if (
-            isinstance(data, dict)
-            and "name" in data
-            and "arguments" in data
-            and isinstance(data["arguments"], dict)
-        ):
-            return [data]
-    except json.JSONDecodeError:
-        pass
+    if not content or not content.strip():
+        return None
 
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
+    text = content.strip()
+
+    # Strip markdown code fences
+    if "```" in text:
+        fence_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", text)
+        if fence_match:
+            text = fence_match.group(1).strip()
+
+    def normalize_call(obj: dict) -> dict | None:
+        if "name" in obj and isinstance(obj.get("name"), str):
+            return {
+                "name": obj["name"],
+                "arguments": obj.get("arguments", obj.get("args", obj.get("parameters", {}))),
+            }
+        keys = [k for k in obj if not k.startswith("_")]
+        if len(keys) == 1:
+            tool_name = keys[0]
+            val = obj[tool_name]
+            if isinstance(val, dict):
+                args = val.get("args", val.get("arguments", val.get("parameters", val)))
+                return {"name": tool_name, "arguments": args if isinstance(args, dict) else val}
+        return None
+
+    # Try to find and parse JSON from the text
+    candidates = [text]
+    # Also try extracting first JSON object/array via brace matching
+    for start_char, end_char in [("{", "}"), ("[", "]")]:
+        depth = 0
+        start_idx = None
+        for i, ch in enumerate(text):
+            if ch == start_char:
+                if depth == 0:
+                    start_idx = i
+                depth += 1
+            elif ch == end_char:
+                depth -= 1
+                if depth == 0 and start_idx is not None:
+                    candidates.append(text[start_idx:i + 1])
+                    start_idx = None
+
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate:
             continue
         try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            return []
-        if (
-            not isinstance(data, dict)
-            or "name" not in data
-            or "arguments" not in data
-            or not isinstance(data["arguments"], dict)
-        ):
-            return []
-        calls.append(data)
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
 
-    return calls
+        calls = []
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict):
+                    n = normalize_call(item)
+                    if n:
+                        calls.append(n)
+        elif isinstance(parsed, dict):
+            n = normalize_call(parsed)
+            if n:
+                calls.append(n)
+
+        if calls:
+            return calls
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +417,21 @@ async def run_tools(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
                 result = "Missing required argument: command"
             else:
                 result = await run_command_tool(command, arguments.get("cwd", "."))
+        elif name == "write_todos":
+            todos_arg = arguments.get("todos", arguments.get("items", []))
+            if not isinstance(todos_arg, list):
+                todos_arg = []
+            todos_path = REPO_ROOT / ".vaner" / "todos.json"
+            todos_path.parent.mkdir(parents=True, exist_ok=True)
+            todos_path.write_text(json.dumps(todos_arg, indent=2))
+            pending = [t for t in todos_arg if isinstance(t, dict) and t.get("status") != "done"]
+            result = f"Plan saved: {len(todos_arg)} tasks, {len(pending)} pending"
+        elif name == "read_todos":
+            todos_path = REPO_ROOT / ".vaner" / "todos.json"
+            if todos_path.exists():
+                result = todos_path.read_text()
+            else:
+                result = "No plan yet. Use write_todos to create one."
         else:
             result = f"Unknown tool: {name}"
 
@@ -424,7 +485,7 @@ async def second_model_call(state: State, runtime: Runtime[Context]) -> dict[str
 # Graph assembly
 # ---------------------------------------------------------------------------
 
-graph = (
+_builder = (
     StateGraph(State, context_schema=Context)
     .add_node("load_context_from_cache", load_context_from_cache)
     .add_node("first_model_call", first_model_call)
@@ -442,5 +503,19 @@ graph = (
     )
     .add_edge("run_tools", "second_model_call")
     .add_edge("second_model_call", END)
-    .compile(name="Vaner Broker", checkpointer=checkpointer)
 )
+
+# graph without checkpointer — for import-time validation / test
+graph = _builder.compile(name="Vaner Broker")
+
+
+async def build_graph():
+    """Return a compiled broker graph with AsyncSqliteSaver checkpointer.
+
+    Must be called from within a running event loop (e.g. inside asyncio.run()).
+    Creates a fresh aiosqlite connection bound to the current event loop.
+    """
+    _conn_cm = aiosqlite.connect(_BROKER_DB)
+    conn = await _conn_cm.__aenter__()
+    checkpointer = AsyncSqliteSaver(conn)
+    return _builder.compile(name="Vaner Broker", checkpointer=checkpointer)

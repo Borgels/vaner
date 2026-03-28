@@ -1,6 +1,7 @@
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
+
 @tool
 def list_files(path: str = ".") -> str:
     """List files and directories in the given path."""
