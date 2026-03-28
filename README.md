@@ -20,14 +20,14 @@ docs/
 
 ## Status
 
-Working proof of concept in `apps/studio-agent`. The agent can answer questions about the repo using read-only tools (list files, read file, find files, grep). Runs on Devstral via Ollama + LangGraph Studio.
+Working proof of concept in `apps/vaner-broker`. The agent can answer questions about the repo using read-only tools (list files, read file, find files, grep). Runs on Devstral via Ollama + LangGraph Studio.
 
 Next step: split into a `repo-analyzer` (background preparation) and a `broker` (prompt-time routing). See [`docs/agent-architecture.md`](docs/agent-architecture.md).
 
 ## Getting Started
 
 ```bash
-cd apps/studio-agent
+cd apps/vaner-broker
 cp .env.example .env
 pip install -e . "langgraph-cli[inmem]"
 langgraph dev

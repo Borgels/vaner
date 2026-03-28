@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,7 +28,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.runtime import Runtime
 from typing_extensions import TypedDict
-from vaner_tools.artefact_store import read_repo_index
+from vaner_tools.artefact_store import list_artefacts
 from vaner_tools.paths import REPO_ROOT, resolve_repo_path
 from vaner_tools.repo_tools import find_files, grep_text, list_files, read_file
 
@@ -52,7 +51,7 @@ context when available) and a set of tools to read and write files directly.
 Repository root: {REPO_ROOT}
 
 Architecture:
-- apps/studio-agent/   → broker agent (you)
+- apps/vaner-broker/   → broker agent (you)
 - apps/repo-analyzer/  → analyzer agent (pre-computes file/dir summaries)
 - libs/vaner-tools/    → shared tools and artefact store
 - .vaner/cache/        → artefact cache (file summaries, dir summaries, repo index)
@@ -204,10 +203,15 @@ def try_parse_tool_calls(content: str) -> list[dict] | None:
                 "name": obj["name"],
                 "arguments": obj.get("arguments", obj.get("args", obj.get("parameters", {}))),
             }
-        # Format 2: devstral {"type": "tool_name", "arg1": val1, ...}
+        # Format 2a: devstral {"type": "tool_name", "arg1": val1, ...}
         if "type" in obj and isinstance(obj.get("type"), str):
             tool_name = obj["type"]
             args = {k: v for k, v in obj.items() if k != "type"}
+            return {"name": tool_name, "arguments": args}
+        # Format 2b: devstral {"command": "tool_name", "arg1": val1, ...}
+        if "command" in obj and isinstance(obj.get("command"), str):
+            tool_name = obj["command"]
+            args = {k: v for k, v in obj.items() if k != "command"}
             return {"name": tool_name, "arguments": args}
         # Format 3: single-key {"tool_name": {"args": {...}}} or {"tool_name": {...}}
         keys = [k for k in obj if not k.startswith("_")]
@@ -271,44 +275,25 @@ def try_parse_tool_calls(content: str) -> list[dict] | None:
 async def load_context_from_cache(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
     """Load relevant file summaries from the repo index cache.
 
-    If the index is missing or stale, falls through silently (cache_hit=False).
-    Otherwise keyword-matches against user_input and injects the top 5 summaries.
+    If the cache is empty or no artifacts score above threshold, falls through
+    silently (cache_hit=False). Uses TF-IDF scoring with stopword filtering and
+    path boost to surface the most relevant cached summaries.
     """
-    index = read_repo_index()
-    if index is None:
+    all_artefacts = await asyncio.to_thread(list_artefacts, "file_summary")
+    if not all_artefacts:
         return {"cache_hit": False, "cached_context": ""}
 
-    # Check staleness of the index itself (treat generated_at as its own timestamp)
-    generated_at = index.get("generated_at", 0)
-    age = time.time() - generated_at
-    if age > 3600:
+    from vaner_tools.scoring import score_artifacts as _score_artifacts
+
+    scored = _score_artifacts(state.user_input, all_artefacts, max_results=5)
+    top_artefacts = [s.artifact for s in scored]
+
+    if not top_artefacts:
         return {"cache_hit": False, "cached_context": ""}
-
-    files: dict[str, dict] = index.get("files", {})
-    if not files:
-        return {"cache_hit": False, "cached_context": ""}
-
-    # Simple keyword match: count overlapping words between user_input and path+summary
-    user_words = set(state.user_input.lower().split())
-    scored: list[tuple[float, str, str]] = []
-
-    for path, info in files.items():
-        summary = info.get("summary", "")
-        candidate_text = (path + " " + summary).lower()
-        candidate_words = set(candidate_text.split())
-        overlap = len(user_words & candidate_words)
-        if overlap > 0:
-            scored.append((overlap, path, summary))
-
-    if not scored:
-        return {"cache_hit": False, "cached_context": ""}
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top5 = scored[:5]
 
     lines = ["## Pre-loaded context (from cache)\n"]
-    for _, path, summary in top5:
-        lines.append(f"### {path}\n{summary}\n")
+    for artefact in top_artefacts:
+        lines.append(f"### {artefact.source_path}\n{artefact.content}\n")
 
     cached_context = "\n".join(lines)
     return {"cache_hit": True, "cached_context": cached_context}

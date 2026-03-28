@@ -19,7 +19,7 @@ from pathlib import Path
 # Add all app src paths so we can import their graphs directly
 REPO_ROOT = Path(__file__).parent
 sys.path.insert(0, str(REPO_ROOT / "apps/supervisor/src"))
-sys.path.insert(0, str(REPO_ROOT / "apps/studio-agent/src"))
+sys.path.insert(0, str(REPO_ROOT / "apps/vaner-broker/src"))
 sys.path.insert(0, str(REPO_ROOT / "apps/repo-analyzer/src"))
 sys.path.insert(0, str(REPO_ROOT / "libs/vaner-tools/src"))
 
@@ -40,7 +40,10 @@ def _load_env(env_path) -> None:
                 os.environ[key] = val
 
 
+# Load all agent .env files so LangSmith tracing works regardless of which agent runs
 _load_env(REPO_ROOT / "apps" / "supervisor" / ".env")
+_load_env(REPO_ROOT / "apps" / "studio-agent" / ".env")
+_load_env(REPO_ROOT / "apps" / "repo-analyzer" / ".env")
 
 
 async def run_supervisor(user_input: str, thread_id: str = "main") -> str:
@@ -103,17 +106,29 @@ def main():
         return
 
     if args.analyze:
-        asyncio.run(run_analyzer())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(run_analyzer())
+        finally:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
         return
 
     if not args.input:
         parser.print_help()
         sys.exit(1)
 
-    if args.no_supervisor:
-        response = asyncio.run(run_broker_direct(args.input, args.thread))
-    else:
-        response = asyncio.run(run_supervisor(args.input, args.thread))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        if args.no_supervisor:
+            response = loop.run_until_complete(run_broker_direct(args.input, args.thread))
+        else:
+            response = loop.run_until_complete(run_supervisor(args.input, args.thread))
+    finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
 
     print(response)
 
