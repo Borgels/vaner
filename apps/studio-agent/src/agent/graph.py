@@ -1,9 +1,10 @@
-"""LangGraph coding/planning agent for the Vaner repo.
+"""LangGraph coding/planning agent for the Vaner repo (broker).
 
 Supports:
 - multiple JSON tool calls returned by the model
 - async-safe filesystem access via asyncio.to_thread
 - repo root pinned to ~/repos/Vaner
+- cache-backed context via vaner_tools.artefact_store
 - tools:
   - list_files
   - read_file
@@ -13,8 +14,6 @@ Supports:
 
 from __future__ import annotations
 
-import asyncio
-import fnmatch
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,8 +24,9 @@ from langgraph.graph import END, StateGraph
 from langgraph.runtime import Runtime
 from typing_extensions import TypedDict
 
-
-REPO_ROOT = Path("~/repos/Vaner").expanduser().resolve()
+from vaner_tools.artefact_store import is_stale, list_artefacts, read_repo_index
+from vaner_tools.paths import REPO_ROOT
+from vaner_tools.repo_tools import find_files, grep_text, list_files, read_file
 
 model = ChatOllama(
     model="devstral",
@@ -74,143 +74,8 @@ class State:
     response: str = ""
     tool_requests: list[dict[str, Any]] = field(default_factory=list)
     tool_results: list[dict[str, Any]] = field(default_factory=list)
-
-
-def resolve_repo_path(path: str) -> Path:
-    candidate = Path(path)
-    if not candidate.is_absolute():
-        candidate = REPO_ROOT / candidate
-    candidate = candidate.resolve()
-
-    if candidate != REPO_ROOT and REPO_ROOT not in candidate.parents:
-        raise ValueError(f"Path escapes repository root: {path}")
-
-    return candidate
-
-
-def _list_files_sync(path: str = ".") -> str:
-    target = resolve_repo_path(path)
-    if not target.exists():
-        return f"Path does not exist: {path}"
-    if not target.is_dir():
-        return f"Path is not a directory: {path}"
-
-    entries = sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir())
-    if not entries:
-        return f"No files found in: {path}"
-
-    return "\n".join(entries)
-
-
-async def list_files(path: str = ".") -> str:
-    try:
-        return await asyncio.to_thread(_list_files_sync, path)
-    except Exception as e:
-        return f"Error listing files in {path}: {e}"
-
-
-def _read_file_sync(path: str) -> str:
-    target = resolve_repo_path(path)
-    if not target.exists():
-        return f"File does not exist: {path}"
-    if not target.is_file():
-        return f"Path is not a file: {path}"
-
-    text = target.read_text(encoding="utf-8")
-    max_chars = 12000
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n\n[truncated]"
-    return text
-
-
-async def read_file(path: str) -> str:
-    try:
-        return await asyncio.to_thread(_read_file_sync, path)
-    except UnicodeDecodeError:
-        return f"File is not valid UTF-8 text: {path}"
-    except Exception as e:
-        return f"Error reading file {path}: {e}"
-
-
-def _find_files_sync(pattern: str, path: str = ".") -> str:
-    target = resolve_repo_path(path)
-    if not target.exists():
-        return f"Path does not exist: {path}"
-    if not target.is_dir():
-        return f"Path is not a directory: {path}"
-
-    matches: list[str] = []
-    for p in target.rglob("*"):
-        rel = str(p.relative_to(REPO_ROOT))
-        name = p.name + ("/" if p.is_dir() else "")
-        if fnmatch.fnmatch(p.name, pattern) or fnmatch.fnmatch(rel, pattern):
-            matches.append(rel + ("/" if p.is_dir() else ""))
-
-    matches = sorted(set(matches))
-    if not matches:
-        return f"No files matched pattern '{pattern}' under {path}"
-
-    return "\n".join(matches[:200])
-
-
-async def find_files(pattern: str, path: str = ".") -> str:
-    try:
-        return await asyncio.to_thread(_find_files_sync, pattern, path)
-    except Exception as e:
-        return f"Error finding files with pattern {pattern} in {path}: {e}"
-
-
-def _grep_text_sync(
-    query: str,
-    path: str = ".",
-    file_pattern: str = "*",
-    max_results: int = 50,
-) -> str:
-    target = resolve_repo_path(path)
-    if not target.exists():
-        return f"Path does not exist: {path}"
-    if not target.is_dir():
-        return f"Path is not a directory: {path}"
-
-    results: list[str] = []
-    scanned = 0
-
-    for p in target.rglob("*"):
-        if not p.is_file():
-            continue
-
-        rel = str(p.relative_to(REPO_ROOT))
-        if not (fnmatch.fnmatch(p.name, file_pattern) or fnmatch.fnmatch(rel, file_pattern)):
-            continue
-
-        scanned += 1
-        try:
-            text = p.read_text(encoding="utf-8")
-        except Exception:
-            continue
-
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            if query.lower() in line.lower():
-                results.append(f"{rel}:{lineno}: {line.strip()}")
-                if len(results) >= max_results:
-                    return "\n".join(results)
-
-    if not results:
-        return f"No matches for '{query}' under {path} with file pattern '{file_pattern}'"
-
-    return "\n".join(results)
-
-
-async def grep_text(
-    query: str,
-    path: str = ".",
-    file_pattern: str = "*",
-    max_results: int = 50,
-) -> str:
-    try:
-        return await asyncio.to_thread(_grep_text_sync, query, path, file_pattern, max_results)
-    except Exception as e:
-        return f"Error searching for '{query}' in {path}: {e}"
+    cached_context: str = ""
+    cache_hit: bool = False
 
 
 def try_parse_tool_calls(text: str) -> list[dict[str, Any]]:
@@ -252,6 +117,63 @@ def try_parse_tool_calls(text: str) -> list[dict[str, Any]]:
     return calls
 
 
+# ---------------------------------------------------------------------------
+# Node: load_context_from_cache
+# ---------------------------------------------------------------------------
+
+
+async def load_context_from_cache(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
+    """Load relevant file summaries from the repo index cache.
+
+    If the index is missing or stale, falls through silently (cache_hit=False).
+    Otherwise keyword-matches against user_input and injects the top 5 summaries.
+    """
+    index = read_repo_index()
+    if index is None:
+        return {"cache_hit": False, "cached_context": ""}
+
+    # Check staleness of the index itself (treat generated_at as its own timestamp)
+    generated_at = index.get("generated_at", 0)
+    import time
+    age = time.time() - generated_at
+    if age > 3600:
+        return {"cache_hit": False, "cached_context": ""}
+
+    files: dict[str, dict] = index.get("files", {})
+    if not files:
+        return {"cache_hit": False, "cached_context": ""}
+
+    # Simple keyword match: count overlapping words between user_input and path+summary
+    user_words = set(state.user_input.lower().split())
+    scored: list[tuple[float, str, str]] = []
+
+    for path, info in files.items():
+        summary = info.get("summary", "")
+        candidate_text = (path + " " + summary).lower()
+        candidate_words = set(candidate_text.split())
+        overlap = len(user_words & candidate_words)
+        if overlap > 0:
+            scored.append((overlap, path, summary))
+
+    if not scored:
+        return {"cache_hit": False, "cached_context": ""}
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top5 = scored[:5]
+
+    lines = ["## Pre-loaded context (from cache)\n"]
+    for _, path, summary in top5:
+        lines.append(f"### {path}\n{summary}\n")
+
+    cached_context = "\n".join(lines)
+    return {"cache_hit": True, "cached_context": cached_context}
+
+
+# ---------------------------------------------------------------------------
+# Node: first_model_call
+# ---------------------------------------------------------------------------
+
+
 async def first_model_call(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
     user_prompt = state.user_input.strip()
 
@@ -265,8 +187,13 @@ async def first_model_call(state: State, runtime: Runtime[Context]) -> dict[str,
             f"{runtime.context['my_configurable_param']}"
         )
 
+    cache_section = ""
+    if state.cache_hit and state.cached_context:
+        cache_section = f"\n\n{state.cached_context}"
+
     prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
+        f"{SYSTEM_PROMPT}"
+        f"{cache_section}\n\n"
         f"User request:\n{user_prompt}"
         f"{extra_context}"
     )
@@ -290,6 +217,11 @@ async def first_model_call(state: State, runtime: Runtime[Context]) -> dict[str,
 
 def route_after_first_call(state: State) -> str:
     return "run_tools" if state.tool_requests else "end"
+
+
+# ---------------------------------------------------------------------------
+# Node: run_tools
+# ---------------------------------------------------------------------------
 
 
 async def run_tools(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
@@ -335,6 +267,11 @@ async def run_tools(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
     return {"tool_results": results}
 
 
+# ---------------------------------------------------------------------------
+# Node: second_model_call
+# ---------------------------------------------------------------------------
+
+
 async def second_model_call(state: State, runtime: Runtime[Context]) -> dict[str, str]:
     prompt = (
         f"{SYSTEM_PROMPT}\n\n"
@@ -356,12 +293,18 @@ async def second_model_call(state: State, runtime: Runtime[Context]) -> dict[str
     return {"response": str(content).strip()}
 
 
+# ---------------------------------------------------------------------------
+# Graph assembly
+# ---------------------------------------------------------------------------
+
 graph = (
     StateGraph(State, context_schema=Context)
+    .add_node("load_context_from_cache", load_context_from_cache)
     .add_node("first_model_call", first_model_call)
     .add_node("run_tools", run_tools)
     .add_node("second_model_call", second_model_call)
-    .add_edge("__start__", "first_model_call")
+    .add_edge("__start__", "load_context_from_cache")
+    .add_edge("load_context_from_cache", "first_model_call")
     .add_conditional_edges(
         "first_model_call",
         route_after_first_call,
