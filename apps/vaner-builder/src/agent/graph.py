@@ -70,6 +70,7 @@ Quality rules (non-negotiable):
 - Lint must be clean before reporting done.
 - Read existing code carefully — match patterns, imports, and conventions already in use.
 - When integrating with libs/vaner-runtime/ or libs/vaner-tools/, read those files first.
+- After writing any code: run pytest and ruff. Report confidence 1-10. Explicitly confirm each acceptance criterion from the issue is met.
 
 Tool calling — use {{"command": "tool_name", "arg": "value"}} format.
 

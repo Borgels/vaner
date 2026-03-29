@@ -6,12 +6,14 @@ Flow:
         → (conditional) refresh_cache OR route_to_broker
         → route_to_broker
         → log_task
+        → self_check
         → END
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -131,6 +133,92 @@ async def log_task(state: SupervisorState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Node: self_check
+# ---------------------------------------------------------------------------
+
+
+async def self_check(state: SupervisorState) -> dict[str, Any]:
+    """Run post-task quality gates: ruff, pytest, stale-reference scan."""
+    issues: list[str] = []
+
+    # 1. Ruff lint check
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [
+                "python", "-m", "ruff", "check", ".",
+                "--ignore", "E501,D,T201,ANN",
+                "--statistics",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        if result.returncode != 0:
+            summary = (result.stdout + result.stderr).strip()[:500]
+            issues.append(f"[self_check] ruff: {summary}")
+            print(f"[supervisor] ⚠️  ruff issues found:\n{summary}")
+        else:
+            print("[supervisor] ✅ ruff: clean")
+    except Exception as e:
+        print(f"[supervisor] self_check: ruff unavailable — {e}")
+
+    # 2. Pytest
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [
+                "python", "-m", "pytest",
+                "apps/vaner-daemon/tests/",
+                "-q", "--tb=short",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        lines = result.stdout.splitlines()
+        summary = next(
+            (l for l in reversed(lines) if "passed" in l or "failed" in l or "error" in l),
+            result.stdout.strip()[:300],
+        )
+        if result.returncode != 0:
+            issues.append(f"[self_check] pytest: {summary}")
+            print(f"[supervisor] ⚠️  pytest failures: {summary}")
+        else:
+            print(f"[supervisor] ✅ pytest: {summary}")
+    except Exception as e:
+        print(f"[supervisor] self_check: pytest unavailable — {e}")
+
+    # 3. Stale import paths
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [
+                "grep", "-r", "--include=*.py", "-l",
+                "-e", "vaner-broker",
+                "-e", "studio-agent",
+                ".",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        stale = [f for f in result.stdout.splitlines() if f.strip() and ".venv" not in f]
+        if stale:
+            msg = f"[self_check] stale refs in: {', '.join(stale)}"
+            issues.append(msg)
+            print(f"[supervisor] ⚠️  {msg}")
+        else:
+            print("[supervisor] ✅ no stale import paths (vaner-broker / studio-agent)")
+    except Exception as e:
+        print(f"[supervisor] self_check: grep unavailable — {e}")
+
+    if issues:
+        return {"errors": list(state.errors) + issues}
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # Graph assembly
 # ---------------------------------------------------------------------------
 
@@ -143,6 +231,7 @@ _builder = (
     .add_node("refresh_cache", refresh_cache)
     .add_node("route_to_broker", route_to_broker)
     .add_node("log_task", log_task)
+    .add_node("self_check", self_check)
     .add_edge("__start__", "check_cache_freshness")
     .add_conditional_edges(
         "check_cache_freshness",
@@ -154,7 +243,8 @@ _builder = (
     )
     .add_edge("refresh_cache", "route_to_broker")
     .add_edge("route_to_broker", "log_task")
-    .add_edge("log_task", END)
+    .add_edge("log_task", "self_check")
+    .add_edge("self_check", END)
 )
 
 # graph without checkpointer — for import-time validation / test
