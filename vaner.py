@@ -61,21 +61,55 @@ _load_env(REPO_ROOT / "apps" / "repo-analyzer" / ".env")
 async def run_supervisor(user_input: str, thread_id: str = "main") -> str:
     from supervisor.graph import build_graph as build_supervisor_graph
     supervisor_graph = await build_supervisor_graph()
-    result = await supervisor_graph.ainvoke(
+    config = {"configurable": {"thread_id": thread_id}}
+    final_response = ""
+    last_node = None
+    async for chunk in supervisor_graph.astream(
         {"user_input": user_input},
-        config={"configurable": {"thread_id": thread_id}},
-    )
-    return result.get("response", "")
+        config=config,
+        stream_mode="updates",
+    ):
+        for node_name, state_update in chunk.items():
+            # Print node transition indicator
+            if node_name != last_node:
+                print(f"\n[{node_name}] ...", end="", flush=True)
+                last_node = node_name
+            # Stream any new response content
+            if isinstance(state_update, dict) and state_update.get("response"):
+                response = state_update["response"]
+                if response != final_response:
+                    new_content = response[len(final_response):]
+                    print(new_content, end="", flush=True)
+                    final_response = response
+    print()  # Final newline
+    return final_response
 
 
 async def run_broker_direct(user_input: str, thread_id: str = "main") -> str:
     from agent.graph import build_graph as build_broker_graph
     broker_graph = await build_broker_graph()
-    result = await broker_graph.ainvoke(
+    config = {"configurable": {"thread_id": thread_id}}
+    final_response = ""
+    last_node = None
+    async for chunk in broker_graph.astream(
         {"user_input": user_input},
-        config={"configurable": {"thread_id": thread_id}},
-    )
-    return result.get("response", "")
+        config=config,
+        stream_mode="updates",
+    ):
+        for node_name, state_update in chunk.items():
+            # Print node transition indicator
+            if node_name != last_node:
+                print(f"\n[{node_name}] ...", end="", flush=True)
+                last_node = node_name
+            # Stream any new response content
+            if isinstance(state_update, dict) and state_update.get("response"):
+                response = state_update["response"]
+                if response != final_response:
+                    new_content = response[len(final_response):]
+                    print(new_content, end="", flush=True)
+                    final_response = response
+    print()  # Final newline
+    return final_response
 
 
 async def run_analyzer() -> None:
@@ -342,6 +376,7 @@ def main():
     parser.add_argument("--thread", default="main", help="Thread ID for conversation memory")
     parser.add_argument("--no-supervisor", action="store_true", help="Bypass supervisor, direct to broker")
     parser.add_argument("--analyze", action="store_true", help="Run repo-analyzer only")
+    parser.add_argument("--watch", action="store_true", help="Start file watcher for auto-refresh of stale artefacts")
     parser.add_argument("--history", action="store_true", help="Show recent task log")
 
     # daemon subcommand
@@ -376,6 +411,16 @@ def main():
     metrics_parser.add_argument("--db", default=None, help="Path to eval DB (default: ~/.vaner/eval.db)")
 
     args = parser.parse_args()
+
+    # Start file watcher if --watch is set
+    _watcher = None
+    if getattr(args, "watch", False):
+        try:
+            from analyzer.watcher import start_watcher
+            _watcher = start_watcher()
+            print("File watcher started — watching for changes in", REPO_ROOT)
+        except ImportError as _e:
+            print(f"Warning: could not start file watcher: {_e}")
 
     if args.command == "init":
         print("Initializing vaner...")
