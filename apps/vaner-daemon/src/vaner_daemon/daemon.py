@@ -3,6 +3,7 @@ import time
 import subprocess
 from pathlib import Path
 from vaner_daemon.config import DaemonConfig
+from vaner_daemon.proxy.server import VanerProxy
 def daemon_status(repo_path: Path) -> dict:
     """Return running status, pid, uptime, branch, active files."""
     pid_file = repo_path / ".vaner" / "daemon.pid"
@@ -77,3 +78,20 @@ def daemon_status(repo_path: Path) -> dict:
         pass
 
     return result
+class VanerDaemon:
+    def __init__(self, repo_path: Path):
+        self._repo_path = repo_path
+        self._config = DaemonConfig.load(repo_path)
+        self._pid_file = repo_path / ".vaner" / "daemon.pid"
+        self._proxy: VanerProxy | None = None
+
+    def start(self) -> None:
+        # Preparation engine starts here...
+        print("Starting preparation engine...")
+
+        if self._config.proxy_enabled:
+            self._proxy = VanerProxy(port=self._config.proxy_port, upstream=self._config.proxy_upstream)
+            self._proxy.start()
+
+        # Other start logic...
+        print("Daemon started")
