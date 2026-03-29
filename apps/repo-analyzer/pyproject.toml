@@ -7,6 +7,7 @@ dependencies = [
     "langchain-ollama>=0.2.0",
     "langgraph>=1.0.0",
     "vaner-tools",
+    "watchdog>=4.0.0",
 ]
 
 [build-system]
