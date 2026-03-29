@@ -1,7 +1,20 @@
-"""Eval workflow — LangGraph batch scoring for EvalSignals."""
+"""Eval workflow — LangGraph aggregate metrics for EvalSignals.
+
+Metrics reported (all derived from stored EvalSignal fields — no LLM scoring):
+  - total_signals: total number of signals in the window.
+  - injected / non_injected: counts split by whether context was injected.
+  - reprompt_rate_injected: fraction of injected signals where the user re-prompted.
+  - reprompt_rate_non_injected: same for non-injected signals.
+  - model_referenced_pct: fraction of signals where the model name was referenced.
+
+Limitations:
+  - Helpfulness is not scored because only prompt_hash (not raw text) is stored.
+    Meaningful LLM-based scoring would require storing the full prompt/response,
+    which raises privacy concerns. The aggregate metrics above are privacy-safe
+    proxies derived purely from the flags already persisted in EvalSignal.
+"""
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -9,7 +22,6 @@ from typing import Any
 from langgraph.graph import END, StateGraph
 
 from vaner_runtime.eval import EvalSignal, load_signals
-from vaner_runtime.judge import judge_helpfulness
 
 logger = logging.getLogger("vaner.eval_workflow")
 
@@ -24,51 +36,24 @@ async def load_signals_node(state: dict) -> dict:
     db_path: Path = state.get("db_path", _DEFAULT_DB)
     since_days: int = state.get("since_days", 7)
     signals = load_signals(db_path, since_days=since_days)
-    # Only re-score signals that were injected but have no helpfulness score yet
-    pending = [s for s in signals if s.injected and s.helpfulness is None]
-    logger.info("load_signals: %d total, %d pending scoring", len(signals), len(pending))
-    return {"signals": signals, "pending": pending}
-
-
-async def score_signals_node(state: dict) -> dict:
-    pending: list[EvalSignal] = state.get("pending", [])
-    ollama_url: str = state.get("ollama_url", "http://localhost:11434")
-    model: str = state.get("model", "qwen2.5-coder:32b")
-    scored: list[EvalSignal] = []
-
-    async def _score_one(signal: EvalSignal) -> EvalSignal:
-        # We only have the prompt_hash stored; judge with what we have
-        score = await judge_helpfulness(
-            context="(stored hash only — no raw context available)",
-            prompt=signal.prompt_hash,
-            response="",
-            model=model,
-            ollama_url=ollama_url,
-        )
-        signal.helpfulness = score
-        return signal
-
-    # Batch in groups of 3
-    for i in range(0, len(pending), 3):
-        batch = pending[i: i + 3]
-        results = await asyncio.gather(*[_score_one(s) for s in batch], return_exceptions=True)
-        for r in results:
-            if isinstance(r, EvalSignal):
-                scored.append(r)
-            else:
-                logger.warning("score_signals: error in batch: %s", r)
-
-    logger.info("score_signals: scored %d signals", len(scored))
-    return {"scored": scored}
+    logger.info("load_signals: %d total", len(signals))
+    return {"signals": signals}
 
 
 async def aggregate_node(state: dict) -> dict:
-    signals: list[EvalSignal] = state.get("signals", [])
-    scored: list[EvalSignal] = state.get("scored", [])
+    """Compute aggregate metrics from stored EvalSignal fields.
 
-    all_with_score = [s for s in signals if s.helpfulness is not None] + [
-        s for s in scored if s.helpfulness is not None
-    ]
+    No LLM scoring is performed — raw prompt/response text is not stored
+    (only a hash), so helpfulness cannot be meaningfully estimated.
+
+    Metrics:
+      reprompt_rate_injected     — re-prompt fraction for context-injected turns.
+      reprompt_rate_non_injected — re-prompt fraction for non-injected turns.
+      model_referenced_pct       — fraction of all turns where the model was cited.
+      total_signals              — window size used for all rates above.
+    """
+    signals: list[EvalSignal] = state.get("signals", [])
+
     injected = [s for s in signals if s.injected]
     non_injected = [s for s in signals if not s.injected]
 
@@ -77,17 +62,10 @@ async def aggregate_node(state: dict) -> dict:
             return 0.0
         return sum(1 for s in subset if s.reprompted) / len(subset)
 
-    avg_helpfulness = (
-        sum(s.helpfulness for s in all_with_score) / len(all_with_score)
-        if all_with_score
-        else None
-    )
-
     summary: dict[str, Any] = {
         "total_signals": len(signals),
         "injected": len(injected),
         "non_injected": len(non_injected),
-        "avg_helpfulness": avg_helpfulness,
         "reprompt_rate_injected": _reprompt_rate(injected),
         "reprompt_rate_non_injected": _reprompt_rate(non_injected),
         "model_referenced_pct": (
@@ -100,10 +78,6 @@ async def aggregate_node(state: dict) -> dict:
     return {"summary": summary}
 
 
-def _route_after_load(state: dict) -> str:
-    return "score_signals" if state.get("pending") else "aggregate"
-
-
 # ---------------------------------------------------------------------------
 # Graph factory
 # ---------------------------------------------------------------------------
@@ -111,12 +85,10 @@ def _route_after_load(state: dict) -> str:
 def build_eval_graph() -> Any:
     workflow = StateGraph(dict)
     workflow.add_node("load_signals", load_signals_node)
-    workflow.add_node("score_signals", score_signals_node)
     workflow.add_node("aggregate", aggregate_node)
 
     workflow.set_entry_point("load_signals")
-    workflow.add_conditional_edges("load_signals", _route_after_load)
-    workflow.add_edge("score_signals", "aggregate")
+    workflow.add_edge("load_signals", "aggregate")
     workflow.add_edge("aggregate", END)
 
     return workflow.compile(name="Vaner Eval Workflow")
@@ -125,14 +97,10 @@ def build_eval_graph() -> Any:
 async def run_eval_workflow(
     db_path: Path = _DEFAULT_DB,
     since_days: int = 7,
-    ollama_url: str = "http://localhost:11434",
-    model: str = "qwen2.5-coder:32b",
 ) -> dict[str, Any]:
     graph = build_eval_graph()
     result = await graph.ainvoke({
         "db_path": db_path,
         "since_days": since_days,
-        "ollama_url": ollama_url,
-        "model": model,
     })
     return result.get("summary", {})
