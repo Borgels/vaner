@@ -54,7 +54,7 @@ def _load_env(env_path) -> None:
 
 # Load all agent .env files so LangSmith tracing works regardless of which agent runs
 _load_env(REPO_ROOT / "apps" / "supervisor" / ".env")
-_load_env(REPO_ROOT / "apps" / "studio-agent" / ".env")
+_load_env(REPO_ROOT / "apps" / "vaner-builder" / ".env")
 _load_env(REPO_ROOT / "apps" / "repo-analyzer" / ".env")
 
 
@@ -342,6 +342,7 @@ def main():
     parser.add_argument("--thread", default="main", help="Thread ID for conversation memory")
     parser.add_argument("--no-supervisor", action="store_true", help="Bypass supervisor, direct to broker")
     parser.add_argument("--analyze", action="store_true", help="Run repo-analyzer only")
+    parser.add_argument("--watch", action="store_true", help="Start file watcher for auto-refresh of stale artefacts")
     parser.add_argument("--history", action="store_true", help="Show recent task log")
 
     # daemon subcommand
@@ -376,6 +377,16 @@ def main():
     metrics_parser.add_argument("--db", default=None, help="Path to eval DB (default: ~/.vaner/eval.db)")
 
     args = parser.parse_args()
+
+    # Start file watcher if --watch is set
+    _watcher = None
+    if getattr(args, "watch", False):
+        try:
+            from analyzer.watcher import start_watcher
+            _watcher = start_watcher()
+            print("File watcher started — watching for changes in", REPO_ROOT)
+        except ImportError as _e:
+            print(f"Warning: could not start file watcher: {_e}")
 
     if args.command == "init":
         print("Initializing vaner...")
@@ -456,14 +467,12 @@ def main():
     asyncio.set_event_loop(loop)
     try:
         if args.no_supervisor:
-            response = loop.run_until_complete(run_broker_direct(args.input, args.thread))
+            loop.run_until_complete(run_broker_direct(args.input, args.thread))
         else:
-            response = loop.run_until_complete(run_supervisor(args.input, args.thread))
+            loop.run_until_complete(run_supervisor(args.input, args.thread))
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
-
-    print(response)
 
 
 if __name__ == "__main__":
