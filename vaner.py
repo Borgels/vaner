@@ -61,21 +61,55 @@ _load_env(REPO_ROOT / "apps" / "repo-analyzer" / ".env")
 async def run_supervisor(user_input: str, thread_id: str = "main") -> str:
     from supervisor.graph import build_graph as build_supervisor_graph
     supervisor_graph = await build_supervisor_graph()
-    result = await supervisor_graph.ainvoke(
+    config = {"configurable": {"thread_id": thread_id}}
+    final_response = ""
+    last_node = None
+    async for chunk in supervisor_graph.astream(
         {"user_input": user_input},
-        config={"configurable": {"thread_id": thread_id}},
-    )
-    return result.get("response", "")
+        config=config,
+        stream_mode="updates",
+    ):
+        for node_name, state_update in chunk.items():
+            # Print node transition indicator
+            if node_name != last_node:
+                print(f"\n[{node_name}] ...", end="", flush=True)
+                last_node = node_name
+            # Stream any new response content
+            if isinstance(state_update, dict) and state_update.get("response"):
+                response = state_update["response"]
+                if response != final_response:
+                    new_content = response[len(final_response):]
+                    print(new_content, end="", flush=True)
+                    final_response = response
+    print()  # Final newline
+    return final_response
 
 
 async def run_broker_direct(user_input: str, thread_id: str = "main") -> str:
     from agent.graph import build_graph as build_broker_graph
     broker_graph = await build_broker_graph()
-    result = await broker_graph.ainvoke(
+    config = {"configurable": {"thread_id": thread_id}}
+    final_response = ""
+    last_node = None
+    async for chunk in broker_graph.astream(
         {"user_input": user_input},
-        config={"configurable": {"thread_id": thread_id}},
-    )
-    return result.get("response", "")
+        config=config,
+        stream_mode="updates",
+    ):
+        for node_name, state_update in chunk.items():
+            # Print node transition indicator
+            if node_name != last_node:
+                print(f"\n[{node_name}] ...", end="", flush=True)
+                last_node = node_name
+            # Stream any new response content
+            if isinstance(state_update, dict) and state_update.get("response"):
+                response = state_update["response"]
+                if response != final_response:
+                    new_content = response[len(final_response):]
+                    print(new_content, end="", flush=True)
+                    final_response = response
+    print()  # Final newline
+    return final_response
 
 
 async def run_analyzer() -> None:
@@ -456,14 +490,12 @@ def main():
     asyncio.set_event_loop(loop)
     try:
         if args.no_supervisor:
-            response = loop.run_until_complete(run_broker_direct(args.input, args.thread))
+            loop.run_until_complete(run_broker_direct(args.input, args.thread))
         else:
-            response = loop.run_until_complete(run_supervisor(args.input, args.thread))
+            loop.run_until_complete(run_supervisor(args.input, args.thread))
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
-
-    print(response)
 
 
 if __name__ == "__main__":
