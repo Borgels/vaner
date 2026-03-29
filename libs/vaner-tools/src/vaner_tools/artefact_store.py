@@ -66,6 +66,11 @@ def _get_conn(cache_root: Path | None = None) -> sqlite3.Connection:
                 metadata TEXT NOT NULL DEFAULT '{}'
             )
         """)
+        # Migration: add metadata column to existing DBs that lack it
+        try:
+            _db_conn.execute("ALTER TABLE artefacts ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'")
+        except Exception:
+            pass  # already exists
         _db_conn.commit()
     return _db_conn
 
