@@ -264,6 +264,75 @@ def _cmd_proxy_config() -> None:
     print(f"Test with:  curl -s http://localhost:{proxy_port}/health")
 
 
+def _cmd_metrics_eval(days: int = 7, db_path: str | None = None) -> None:
+    """Print a weekly summary table of eval signals."""
+    from pathlib import Path as _Path
+    from vaner_runtime.eval import load_signals
+
+    _db = _Path(db_path) if db_path else _Path.home() / ".vaner" / "eval.db"
+    signals = load_signals(_db, since_days=days)
+
+    if not signals:
+        print(f"No eval signals found in {_db} for the last {days} day(s).")
+        return
+
+    injected = [s for s in signals if s.injected]
+    non_injected = [s for s in signals if not s.injected]
+    scored = [s for s in signals if s.helpfulness is not None]
+    avg_h = sum(s.helpfulness for s in scored) / len(scored) if scored else None
+    reprompt_inj = sum(1 for s in injected if s.reprompted) / len(injected) if injected else 0.0
+    reprompt_non = sum(1 for s in non_injected if s.reprompted) / len(non_injected) if non_injected else 0.0
+    model_ref_pct = sum(1 for s in signals if s.model_referenced) / len(signals)
+
+    print(f"\nEval Metrics — last {days} day(s)  (source: {_db})")
+    print("=" * 52)
+    print(f"  Total signals:              {len(signals)}")
+    print(f"  Injected:                   {len(injected)}")
+    print(f"  Non-injected:               {len(non_injected)}")
+    print(f"  Avg helpfulness:            {avg_h:.3f}" if avg_h is not None else "  Avg helpfulness:            n/a")
+    print(f"  Reprompt rate (injected):   {reprompt_inj:.1%}")
+    print(f"  Reprompt rate (baseline):   {reprompt_non:.1%}")
+    print(f"  Model-referenced:           {model_ref_pct:.1%}")
+    print()
+
+
+def _cmd_metrics_eval() -> None:
+    from vaner_runtime.eval import load_signals
+
+    db_path = REPO_ROOT / ".vaner" / "eval.db"
+    signals = load_signals(db_path, since_days=7)
+
+    total = len(signals)
+    with_ctx = sum(1 for s in signals if s.injected)
+    without_ctx = total - with_ctx
+
+    print("Vaner Eval Metrics (last 7 days)")
+    print("==================================")
+    print(f"Signals recorded:        {total}")
+    print(f"With context injected:   {with_ctx}")
+    print(f"Without injection:       {without_ctx}")
+
+    if total == 0:
+        print()
+        print("No data yet — run some sessions first.")
+        return
+
+    scores = [s.helpfulness for s in signals if s.helpfulness is not None]
+    avg_score = sum(scores) / len(scores) if scores else None
+
+    with_reprompts = sum(1 for s in signals if s.injected and s.reprompted)
+    without_reprompts = sum(1 for s in signals if not s.injected and s.reprompted)
+
+    rate_with = (with_reprompts / with_ctx * 100) if with_ctx else 0
+    rate_without = (without_reprompts / without_ctx * 100) if without_ctx else 0
+
+    print()
+    if avg_score is not None:
+        print(f"Avg helpfulness score:   {avg_score:.2f}")
+    print(f"Reprompt rate (with):    {rate_with:.0f}%")
+    print(f"Reprompt rate (without): {rate_without:.0f}%")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Vaner orchestration CLI")
     subparsers = parser.add_subparsers(dest="command")
@@ -296,6 +365,16 @@ def main():
     proxy_parser = subparsers.add_parser("proxy", help="Proxy configuration")
     proxy_parser.add_argument("proxy_action", choices=["config"])
 
+    # metrics subcommand
+    metrics_parser = subparsers.add_parser("metrics", help="Show eval and performance metrics")
+    metrics_parser.add_argument("--eval", action="store_true", help="Show eval loop metrics (last 7 days)")
+
+    # metrics subcommand
+    metrics_parser = subparsers.add_parser("metrics", help="Show evaluation metrics")
+    metrics_parser.add_argument("--eval", action="store_true", help="Show weekly eval signal summary")
+    metrics_parser.add_argument("--days", type=int, default=7, help="Look-back window in days (default: 7)")
+    metrics_parser.add_argument("--db", default=None, help="Path to eval DB (default: ~/.vaner/eval.db)")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -317,6 +396,23 @@ def main():
 
     if args.command == "proxy":
         _cmd_proxy_config()
+        return
+
+    if args.command == "metrics":
+        if getattr(args, "eval", False):
+            _cmd_metrics_eval()
+        else:
+            parser.parse_args(["metrics", "--help"])
+        return
+
+    if args.command == "metrics":
+        if getattr(args, "eval", False):
+            _cmd_metrics_eval(
+                days=getattr(args, "days", 7),
+                db_path=getattr(args, "db", None),
+            )
+        else:
+            parser.parse_args(["metrics", "--help"])
         return
 
     if args.command == "daemon":
