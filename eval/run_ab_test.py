@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT / "apps/supervisor/src"))
-sys.path.insert(0, str(REPO_ROOT / "apps/vaner-broker/src"))
+sys.path.insert(0, str(REPO_ROOT / "apps/vaner-builder/src"))
 sys.path.insert(0, str(REPO_ROOT / "apps/repo-analyzer/src"))
 sys.path.insert(0, str(REPO_ROOT / "libs/vaner-tools/src"))
 
@@ -28,7 +28,7 @@ def _load_env(p):
                 os.environ[k.strip()] = v.strip()
 
 _load_env(REPO_ROOT / "apps/supervisor/.env")
-_load_env(REPO_ROOT / "apps/vaner-broker/.env")
+_load_env(REPO_ROOT / "apps/vaner-builder/.env")
 
 # Load Anthropic API key from OpenClaw config if not set
 def _load_openclaw_anthropic_key():
