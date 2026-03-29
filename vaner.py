@@ -330,43 +330,6 @@ def _cmd_metrics_eval(days: int = 7, db_path: str | None = None) -> None:
     print()
 
 
-def _cmd_metrics_eval() -> None:
-    from vaner_runtime.eval import load_signals
-
-    db_path = REPO_ROOT / ".vaner" / "eval.db"
-    signals = load_signals(db_path, since_days=7)
-
-    total = len(signals)
-    with_ctx = sum(1 for s in signals if s.injected)
-    without_ctx = total - with_ctx
-
-    print("Vaner Eval Metrics (last 7 days)")
-    print("==================================")
-    print(f"Signals recorded:        {total}")
-    print(f"With context injected:   {with_ctx}")
-    print(f"Without injection:       {without_ctx}")
-
-    if total == 0:
-        print()
-        print("No data yet — run some sessions first.")
-        return
-
-    scores = [s.helpfulness for s in signals if s.helpfulness is not None]
-    avg_score = sum(scores) / len(scores) if scores else None
-
-    with_reprompts = sum(1 for s in signals if s.injected and s.reprompted)
-    without_reprompts = sum(1 for s in signals if not s.injected and s.reprompted)
-
-    rate_with = (with_reprompts / with_ctx * 100) if with_ctx else 0
-    rate_without = (without_reprompts / without_ctx * 100) if without_ctx else 0
-
-    print()
-    if avg_score is not None:
-        print(f"Avg helpfulness score:   {avg_score:.2f}")
-    print(f"Reprompt rate (with):    {rate_with:.0f}%")
-    print(f"Reprompt rate (without): {rate_without:.0f}%")
-
-
 def main():
     parser = argparse.ArgumentParser(description="Vaner orchestration CLI")
     subparsers = parser.add_subparsers(dest="command")
@@ -399,10 +362,6 @@ def main():
     # proxy subcommand
     proxy_parser = subparsers.add_parser("proxy", help="Proxy configuration")
     proxy_parser.add_argument("proxy_action", choices=["config"])
-
-    # metrics subcommand
-    metrics_parser = subparsers.add_parser("metrics", help="Show eval and performance metrics")
-    metrics_parser.add_argument("--eval", action="store_true", help="Show eval loop metrics (last 7 days)")
 
     # metrics subcommand
     metrics_parser = subparsers.add_parser("metrics", help="Show evaluation metrics")
@@ -441,13 +400,6 @@ def main():
 
     if args.command == "proxy":
         _cmd_proxy_config()
-        return
-
-    if args.command == "metrics":
-        if getattr(args, "eval", False):
-            _cmd_metrics_eval()
-        else:
-            parser.parse_args(["metrics", "--help"])
         return
 
     if args.command == "metrics":
