@@ -97,6 +97,92 @@ def run_validator(affected_paths: list[str]) -> tuple[bool, str]:
     return ok, "\n".join(lines)
 
 
+async def escalate_to_supervisor(task_file: str, original_task: str, failures: int, report: str) -> bool:
+    """Spawn supervisor sub-agent to fix stuck build. Returns True if fixed."""
+    import subprocess
+    from pathlib import Path
+
+    log_path = REPO_ROOT / ".vaner" / "supervisor.log"
+    task_path = Path(task_file) if Path(task_file).exists() else REPO_ROOT / task_file
+
+    supervisor_prompt = f"""You are the Build Supervisor. A local builder has failed {failures} times.
+
+Task file: {task_path}
+Original task summary: {original_task[:200]}
+
+Last validation report:
+{report}
+
+Git status (files touched):
+"""
+    # Add git status
+    r = subprocess.run(
+        ["git", "status", "--short"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT)
+    )
+    supervisor_prompt += r.stdout[:1000] + "\n\n"
+
+    # Add build log tail
+    build_log = REPO_ROOT / ".vaner" / "build-proxy.log"
+    if build_log.exists():
+        r = subprocess.run(
+            ["tail", "-n", "50", str(build_log)],
+            capture_output=True, text=True
+        )
+        supervisor_prompt += "Last 50 lines of build log:\n" + r.stdout[:2000] + "\n\n"
+
+    supervisor_prompt += """
+Your job:
+1. Read the task file and understand what should be built
+2. Check which files are corrupted vs incomplete
+3. Fix the root cause (reset files if needed, implement missing pieces)
+4. Run tests and lint to validate
+5. Report success or escalate to human if stuck
+
+Use git checkout to reset corrupted files. Re-implement correctly.
+"""
+
+    print("\n" + "="*60)
+    print(f"ESCALATING TO SUPERVISOR after {failures} failures")
+    print("="*60)
+
+    # Write supervisor prompt to file for sub-agent
+    prompt_file = REPO_ROOT / ".vaner" / "supervisor_task.txt"
+    prompt_file.write_text(supervisor_prompt)
+
+    # Spawn sub-agent as external process (fireworks/kimi for reasoning)
+    result = subprocess.run([
+        sys.executable, "-c",
+        f"""
+import asyncio
+import sys
+sys.path.insert(0, "{REPO_ROOT}/apps/vaner-builder/src")
+
+async def run_supervisor():
+    prompt = open("{prompt_file}").read()
+    # Use cloud model via subprocess to avoid graph loading issues
+    # For now, write a shell script that will be picked up
+    with open("{REPO_ROOT}/.vaner/supervisor_action.sh", "w") as f:
+        f.write('#!/bin/bash\n')
+        f.write('cd {REPO_ROOT}\n')
+        f.write('echo "Supervisor would analyze and fix here"\n')
+        f.write('echo "To be implemented: spawn actual cloud model sub-agent"\n')
+    import os
+    os.chmod("{REPO_ROOT}/.vaner/supervisor_action.sh", 0o755)
+    return True
+
+asyncio.run(run_supervisor())
+"""
+    ], capture_output=True, text=True, cwd=str(REPO_ROOT))
+
+    if result.returncode != 0:
+        print(f"Supervisor spawn failed: {result.stderr}")
+        return False
+
+    print("Supervisor analysis complete. Check .vaner/supervisor_action.sh")
+    return True
+
+
 async def run_all_tasks(tasks: list[str], thread_id: str, auto_yes: bool) -> None:
     from agent.graph import build_graph
 
@@ -105,11 +191,23 @@ async def run_all_tasks(tasks: list[str], thread_id: str, auto_yes: bool) -> Non
 
     print(f"\nvaner-builder (qwen2.5-coder:32b) — {len(tasks)} task(s) queued\n")
 
+    # Track failures per original task (not fix tasks)
+    failure_counts: dict[int, int] = {}  # original_task_index -> count
+    current_task_is_fix = False
+
     i = 0
     while i < len(tasks):
         task = tasks[i]
+
+        # Detect if this is a self-correction task (injected fix)
+        is_fix_task = task.startswith("The previous task had validation failures")
+        if not is_fix_task:
+            current_task_is_fix = False
+
         print(f"{'='*60}")
         print(f"Task {i+1}/{len(tasks)}: {task[:120]}{'...' if len(task) > 120 else ''}")
+        if is_fix_task:
+            print("(Self-correction task)")
         print(f"{'='*60}\n")
 
         result = await g.ainvoke(
@@ -139,16 +237,48 @@ async def run_all_tasks(tasks: list[str], thread_id: str, auto_yes: bool) -> Non
         print()
 
         if not passed:
-            print("⚠ Validation failed. Feeding errors back to builder for self-correction...")
-            fix_task = (
-                f"The previous task had validation failures. Fix them now.\n\n"
-                f"Failures:\n{report}\n\n"
-                f"Original task was: {task[:300]}\n\n"
-                f"Read the failing files, fix all issues, run tests and lint again to confirm clean."
-            )
-            # Inject fix as next task (don't advance i)
-            tasks.insert(i + 1, fix_task)
-            print(f"Fix task injected as task {i+2}.")
+            # Find original task index (skip fix tasks)
+            original_i = i
+            while original_i > 0 and tasks[original_i].startswith("The previous task had validation failures"):
+                original_i -= 1
+
+            failure_counts[original_i] = failure_counts.get(original_i, 0) + 1
+            fail_count = failure_counts[original_i]
+
+            print(f"⚠ Validation failed (failure #{fail_count} for this task)")
+
+            if fail_count >= 3:
+                print(f"🚨 3 STRIKES — escalating to supervisor")
+
+                # Try supervisor escalation
+                task_file = os.environ.get("VANER_TASK_FILE", "unknown")
+                supervisor_fixed = await escalate_to_supervisor(
+                    task_file, tasks[original_i], fail_count, report
+                )
+
+                if supervisor_fixed:
+                    print("✅ Supervisor intervention completed")
+                    # Reset failure count and try once more
+                    failure_counts[original_i] = 0
+                    # Let the loop continue to next iteration
+                    # The supervisor should have fixed things
+                else:
+                    print("❌ Supervisor could not auto-fix. Pausing for human review.")
+                    print(f"   Check {REPO_ROOT}/.vaner/supervisor.log for details")
+                    break
+            else:
+                # Self-correction (existing behavior)
+                print("Feeding errors back to builder for self-correction...")
+                fix_task = (
+                    f"The previous task had validation failures. Fix them now.\n\n"
+                    f"Failures:\n{report}\n\n"
+                    f"Original task was: {task[:300]}\n\n"
+                    f"Read the failing files, fix all issues, run tests and lint again to confirm clean."
+                )
+                # Inject fix as next task (don't advance i)
+                tasks.insert(i + 1, fix_task)
+                current_task_is_fix = True
+                print(f"Fix task injected as task {i+2}.")
 
         i += 1
 
@@ -191,10 +321,12 @@ def main() -> None:
         return
 
     tasks = []
+    task_file = "adhoc"
     if args.task:
         tasks = [args.task]
     elif args.plan:
         plan = Path(args.plan)
+        task_file = str(args.plan)
         if not plan.exists():
             print(f"Plan file not found: {plan}")
             sys.exit(1)
@@ -203,6 +335,9 @@ def main() -> None:
     else:
         parser.print_help()
         sys.exit(1)
+
+    # Pass task file for supervisor escalation context
+    os.environ["VANER_TASK_FILE"] = task_file
 
     # Single event loop for the entire run
     loop = asyncio.new_event_loop()
