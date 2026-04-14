@@ -7,10 +7,19 @@ from vaner.daemon.engine.generator import generate_artefact, generate_diff_summa
 
 def test_generate_artefact_for_normal_file(temp_repo):
     source = temp_repo / "normal.py"
-    source.write_text("def f():\n    return 1\n", encoding="utf-8")
+    source.write_text(
+        "MAX_ITEMS = 10\n\n"
+        "class Service:\n"
+        "    pass\n\n"
+        "def f(limit: int = 5):\n"
+        "    return list(range(limit))[:MAX_ITEMS]\n",
+        encoding="utf-8",
+    )
     artefact = generate_artefact(source, temp_repo)
     assert artefact.source_path == "normal.py"
-    assert artefact.content
+    assert "Functions:" in artefact.content
+    assert "Constants:" in artefact.content
+    assert "Limits:" in artefact.content
 
 
 def test_generate_artefact_for_empty_file(temp_repo):

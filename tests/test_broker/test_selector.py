@@ -62,3 +62,28 @@ def test_select_artefacts_prefers_git_and_working_set_matches():
         preferred_keys={"file_summary:b.py"},
     )
     assert selected[0].key == "file_summary:b.py"
+
+
+def test_select_artefacts_origin_rerank_prefers_definition_files():
+    artefacts = [
+        Artefact(
+            key="file_summary:a.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="a.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="Functions: evaluate() Snippet: generic processing",
+        ),
+        Artefact(
+            key="file_summary:b.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="b.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="Functions: _is_stale_cache() Snippet: stale checks and refresh decisions",
+        ),
+    ]
+    selected = select_artefacts("where is stale cache checked", artefacts, top_n=1)
+    assert selected[0].key == "file_summary:b.py"

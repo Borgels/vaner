@@ -19,6 +19,12 @@ class BackendConfig(BaseModel):
     base_url: str = "https://api.openai.com/v1"
     model: str = "gpt-4o-mini"
     api_key_env: str = "OPENAI_API_KEY"
+    prefer_local: bool = True
+    fallback_enabled: bool = False
+    fallback_base_url: str | None = None
+    fallback_model: str | None = None
+    fallback_api_key_env: str = "OPENAI_API_KEY"
+    remote_budget_per_hour: int = 60
 
 
 class VanerConfig(BaseModel):

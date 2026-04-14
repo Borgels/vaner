@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 
 from vaner.models.artefact import Artefact
@@ -23,6 +24,29 @@ def score_artefact(prompt: str, artefact: Artefact) -> float:
     return float(hits) + recency_bonus
 
 
+def _is_origin_question(prompt: str) -> bool:
+    q = prompt.lower().strip()
+    return (
+        (q.startswith("where ") or q.startswith("how "))
+        and any(term in q for term in ("checked", "implemented", "defined"))
+    ) or q.startswith("what conditions")
+
+
+def _origin_bonus(prompt: str, content: str) -> float:
+    prompt_tokens = {token for token in re.findall(r"[a-z0-9_]+", prompt.lower()) if len(token) > 2}
+    def_terms = set(re.findall(r"`([a-zA-Z_][a-zA-Z0-9_]*)`", content))
+    def_terms |= set(re.findall(r"\*\*([a-zA-Z_][a-zA-Z0-9_]*)\*\*", content))
+    def_terms |= set(re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\(", content))
+    lowered_terms = {term.lower() for term in def_terms}
+
+    bonus = 0.0
+    for token in prompt_tokens:
+        for term in lowered_terms:
+            if token == term or token in term or term in token:
+                bonus += 1.5
+    return bonus
+
+
 def select_artefacts(
     prompt: str,
     artefacts: list[Artefact],
@@ -32,9 +56,12 @@ def select_artefacts(
 ) -> list[Artefact]:
     preferred_paths = preferred_paths or set()
     preferred_keys = preferred_keys or set()
+    apply_origin_rerank = _is_origin_question(prompt)
 
     def _score(artefact: Artefact) -> float:
         score = score_artefact(prompt, artefact)
+        if apply_origin_rerank:
+            score += _origin_bonus(prompt, artefact.content)
         if artefact.source_path in preferred_paths:
             score += 0.8
         if artefact.key in preferred_keys:

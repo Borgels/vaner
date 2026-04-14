@@ -75,6 +75,12 @@ def query(prompt: str, path: str | None = typer.Option(None, help="Repository ro
     typer.echo(package.injected_context)
 
 
+@app.command("prepare")
+def prepare(path: str | None = typer.Option(None, help="Repository root")) -> None:
+    generated = api.prepare(_repo_root(path))
+    typer.echo(f"Prepared artefacts: {generated}")
+
+
 @app.command("forget")
 def forget(path: str | None = typer.Option(None, help="Repository root")) -> None:
     removed = api.forget(_repo_root(path))

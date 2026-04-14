@@ -9,6 +9,12 @@ name = "openai"
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
 api_key_env = "OPENAI_API_KEY"
+prefer_local = true
+fallback_enabled = false
+fallback_base_url = "https://api.openai.com/v1"
+fallback_model = "gpt-4o-mini"
+fallback_api_key_env = "OPENAI_API_KEY"
+remote_budget_per_hour = 60
 
 [privacy]
 allowed_paths = ["."]

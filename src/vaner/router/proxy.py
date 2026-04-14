@@ -53,8 +53,8 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         enriched = _inject_context(payload, context_package.injected_context)
         try:
             if payload.get("stream") is True:
-                return StreamingResponse(stream_chat_completion(config.backend, enriched), media_type="text/event-stream")
-            return await forward_chat_completion(config.backend, enriched)
+                return StreamingResponse(stream_chat_completion(config, enriched), media_type="text/event-stream")
+            return await forward_chat_completion(config, enriched)
         except Exception as exc:  # pragma: no cover - network errors
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
