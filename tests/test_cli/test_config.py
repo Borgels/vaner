@@ -27,6 +27,14 @@ use_llm = true
 generation_model = "gpt-test"
 max_file_chars = 5000
 summary_max_tokens = 256
+max_concurrent_generations = 2
+max_generations_per_cycle = 15
+
+[proxy]
+proxy_token = "token"
+max_requests_per_minute = 10
+ssl_certfile = "/tmp/test-cert.pem"
+ssl_keyfile = "/tmp/test-key.pem"
 
 [privacy]
 allowed_paths = ["src/**"]
@@ -48,6 +56,10 @@ max_context_tokens = 2048
     assert config.backend.remote_budget_per_hour == 12
     assert config.generation.use_llm is True
     assert config.generation.generation_model == "gpt-test"
+    assert config.generation.max_concurrent_generations == 2
+    assert config.generation.max_generations_per_cycle == 15
+    assert config.proxy.proxy_token == "token"
+    assert config.proxy.ssl_certfile == "/tmp/test-cert.pem"
     assert config.privacy.allowed_paths == ["src/**"]
     assert config.max_age_seconds == 120
     assert config.max_context_tokens == 2048

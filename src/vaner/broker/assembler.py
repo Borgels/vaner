@@ -31,12 +31,17 @@ def assemble_context_package(
     repo_root: Path | None = None,
     max_age_seconds: int = 3600,
 ) -> ContextPackage:
-    injected_context, token_map, used, kept_keys = compress_context(artefacts, max_tokens=max_tokens)
+    score_map = {artefact.key: score_artefact(prompt, artefact) for artefact in artefacts}
+    injected_context, token_map, used, kept_keys = compress_context(
+        artefacts,
+        max_tokens=max_tokens,
+        score_by_key=score_map,
+    )
     selections = [
         ContextSelection(
             artefact_key=artefact.key,
             source_path=artefact.source_path,
-            score=score_artefact(prompt, artefact),
+            score=score_map.get(artefact.key, 0.0),
             stale=_is_stale(artefact, repo_root, max_age_seconds),
             token_count=token_map.get(artefact.key, 0),
             rationale="keyword_overlap",

@@ -21,10 +21,14 @@ use_llm = false
 generation_model = "gpt-4o-mini"
 max_file_chars = 8000
 summary_max_tokens = 400
+max_concurrent_generations = 4
+max_generations_per_cycle = 200
 
 [proxy]
 proxy_token = ""
 max_requests_per_minute = 120
+ssl_certfile = ""
+ssl_keyfile = ""
 
 [privacy]
 allowed_paths = ["."]

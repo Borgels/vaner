@@ -22,10 +22,14 @@ use_llm = false
 generation_model = "gpt-4o-mini"
 max_file_chars = 8000
 summary_max_tokens = 400
+max_concurrent_generations = 4
+max_generations_per_cycle = 200
 
 [proxy]
 proxy_token = ""
 max_requests_per_minute = 120
+ssl_certfile = ""
+ssl_keyfile = ""
 
 [privacy]
 allowed_paths = ["src/**", "docs/**"]
@@ -54,8 +58,12 @@ max_context_tokens = 4096
 - `generation.generation_model` (`str | null`, default: `null`): model used for generation; falls back to `backend.model`.
 - `generation.max_file_chars` (`int`, default: `8000`): max source chars sent to the summarizer.
 - `generation.summary_max_tokens` (`int`, default: `400`): output token cap for generated summaries.
+- `generation.max_concurrent_generations` (`int`, default: `4`): max concurrent summary generation jobs per daemon cycle.
+- `generation.max_generations_per_cycle` (`int`, default: `200`): hard cap of file summaries generated in one `run_once` pass.
 - `proxy.proxy_token` (`str`, default: empty): if set, proxy requires `Authorization: Bearer <token>`.
 - `proxy.max_requests_per_minute` (`int`, default: `120`): in-memory per-process request cap for `/v1/chat/completions`.
+- `proxy.ssl_certfile` (`str | null`, default: `null`): optional TLS certificate path passed to `uvicorn.run`.
+- `proxy.ssl_keyfile` (`str | null`, default: `null`): optional TLS private key path passed to `uvicorn.run`.
 - `privacy.allowed_paths` (`list[str]`, default: `["."]`): include-globs for files considered by planner.
 - `privacy.excluded_patterns` (`list[str]`, default shown above): deny-globs applied after allowed paths.
 - `privacy.redact_patterns` (`list[str]`, default: `[]`): case-insensitive regex patterns replaced with `[REDACTED]`.
@@ -68,3 +76,4 @@ max_context_tokens = 4096
 - Missing config file falls back to defaults.
 - Invalid `redact_patterns` entries are skipped with a warning.
 - `allowed_paths = ["."]` means "allow all paths under the repo."
+- For production TLS, prefer terminating HTTPS at a reverse proxy and keeping Vaner bound to localhost.

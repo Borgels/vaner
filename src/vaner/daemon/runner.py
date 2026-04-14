@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from collections import defaultdict
@@ -23,6 +24,8 @@ from vaner.models.session import WorkingSet
 from vaner.models.signal import SignalEvent
 from vaner.store.artefacts import ArtefactStore
 from vaner.store.telemetry import TelemetryStore
+
+logger = logging.getLogger(__name__)
 
 
 class VanerDaemon:
@@ -72,18 +75,30 @@ class VanerDaemon:
         )
         prioritized_abs = {str((repo_root / rel_path).resolve()) for rel_path in git_paths}
         ranked_targets = [path for path, _ in score_paths(targets, prioritized_paths=prioritized_abs)]
+        max_per_cycle = max(1, self.config.generation.max_generations_per_cycle)
+        concurrent_limit = max(1, self.config.generation.max_concurrent_generations)
+        generation_semaphore = asyncio.Semaphore(concurrent_limit)
         written = 0
         generated_files = []
-        for target in ranked_targets:
-            artefact = await agenerate_file_summary(
-                target,
-                repo_root,
-                model_name=self.config.backend.model,
-                redact_patterns=self.config.privacy.redact_patterns,
-                config=self.config,
-            )
-            await self.store.upsert(artefact)
-            generated_files.append(artefact)
+
+        async def _generate_with_limit(target: Path):
+            async with generation_semaphore:
+                return await agenerate_file_summary(
+                    target,
+                    repo_root,
+                    model_name=self.config.backend.model,
+                    redact_patterns=self.config.privacy.redact_patterns,
+                    config=self.config,
+                )
+
+        generation_tasks = [_generate_with_limit(target) for target in ranked_targets[:max_per_cycle]]
+        generated_results = await asyncio.gather(*generation_tasks, return_exceptions=True)
+        for result in generated_results:
+            if isinstance(result, Exception):
+                logger.warning("Skipping failed file summary generation", exc_info=result)
+                continue
+            await self.store.upsert(result)
+            generated_files.append(result)
             written += 1
 
         by_parent: dict[Path, list] = defaultdict(list)

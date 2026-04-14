@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import traceback
 from pathlib import Path
 
+import aiosqlite
+import httpx
 import typer
 
 from vaner import api
@@ -17,10 +20,31 @@ from vaner.router.proxy import create_app
 app = typer.Typer(help="Vaner CLI")
 daemon_app = typer.Typer(help="Daemon controls")
 config_app = typer.Typer(help="Show config")
+_VERBOSE = False
 
 
 def _repo_root(path: str | None) -> Path:
     return Path(path).resolve() if path else Path.cwd()
+
+
+def _friendly_error_message(exc: Exception) -> str:
+    if isinstance(exc, FileNotFoundError):
+        return f"File not found: {exc}. Check your repo path or run `vaner init`."
+    if isinstance(exc, PermissionError):
+        return f"Permission denied: {exc}. Check file permissions for `.vaner/` and your repo."
+    if isinstance(exc, httpx.HTTPError):
+        return f"Backend request failed: {exc}. Check network access and API key configuration."
+    if isinstance(exc, aiosqlite.Error):
+        return f"Database error: {exc}. Remove `.vaner/store.db` if it is corrupted, then rerun."
+    return f"Vaner failed: {exc}"
+
+
+@app.callback()
+def app_callback(
+    verbose: bool = typer.Option(False, "--verbose", help="Show full traceback on errors"),
+) -> None:
+    global _VERBOSE
+    _VERBOSE = verbose
 
 
 @app.command("init")
@@ -126,7 +150,13 @@ def proxy(
     config = load_config(repo_root)
     daemon = VanerDaemon(config)
     app_instance = create_app(config, daemon.store)
-    uvicorn.run(app_instance, host=host, port=port)
+    uvicorn.run(
+        app_instance,
+        host=host,
+        port=port,
+        ssl_certfile=config.proxy.ssl_certfile or None,
+        ssl_keyfile=config.proxy.ssl_keyfile or None,
+    )
 
 
 app.add_typer(daemon_app, name="daemon")
@@ -134,7 +164,18 @@ app.add_typer(config_app, name="config")
 
 
 def run() -> None:
-    app()
+    try:
+        app()
+    except (FileNotFoundError, PermissionError, httpx.HTTPError, aiosqlite.Error) as exc:
+        typer.secho(_friendly_error_message(exc), fg=typer.colors.RED, err=True)
+        if _VERBOSE:
+            traceback.print_exc()
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:  # pragma: no cover - defensive CLI guard
+        typer.secho(_friendly_error_message(exc), fg=typer.colors.RED, err=True)
+        if _VERBOSE:
+            traceback.print_exc()
+        raise typer.Exit(code=1) from exc
 
 
 if __name__ == "__main__":

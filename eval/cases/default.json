@@ -15,6 +15,47 @@
     "question_type": "mechanism"
   },
   {
+    "case_id": "daemon_origin_runner",
+    "question": "Where is the daemon run loop implemented, and which method executes a single pass?",
+    "expected_paths": [
+      "src/vaner/daemon/runner.py"
+    ],
+    "expected_points": [
+      "VanerDaemon",
+      "run_forever",
+      "run_once"
+    ],
+    "question_type": "origin"
+  },
+  {
+    "case_id": "planner_structure",
+    "question": "Describe the planner pipeline that turns signals into candidate file targets.",
+    "expected_paths": [
+      "src/vaner/daemon/engine/planner.py",
+      "src/vaner/models/signal.py"
+    ],
+    "expected_points": [
+      "plan_targets",
+      "SignalEvent",
+      "allowed_paths"
+    ],
+    "question_type": "structure"
+  },
+  {
+    "case_id": "scorer_conditional",
+    "question": "When do git-prioritized files receive ranking preference in daemon target scoring?",
+    "expected_paths": [
+      "src/vaner/daemon/engine/scorer.py",
+      "src/vaner/daemon/runner.py"
+    ],
+    "expected_points": [
+      "score_paths",
+      "prioritized_paths",
+      "ranked_targets"
+    ],
+    "question_type": "conditional"
+  },
+  {
     "case_id": "broker_selection",
     "question": "How does Vaner select and compress context artefacts at query time?",
     "expected_paths": [
@@ -31,6 +72,47 @@
     "question_type": "understanding"
   },
   {
+    "case_id": "selector_origin_bonus",
+    "question": "How does selector reranking handle origin-style questions about where symbols are defined?",
+    "expected_paths": [
+      "src/vaner/broker/selector.py"
+    ],
+    "expected_points": [
+      "_is_origin_question",
+      "_origin_bonus",
+      "select_artefacts"
+    ],
+    "question_type": "mechanism"
+  },
+  {
+    "case_id": "compressor_budget_logic",
+    "question": "What logic determines which artefacts fit within the context token budget?",
+    "expected_paths": [
+      "src/vaner/broker/compressor.py",
+      "src/vaner/policy/budget.py"
+    ],
+    "expected_points": [
+      "compress_context",
+      "max_tokens",
+      "count_tokens"
+    ],
+    "question_type": "cross_file"
+  },
+  {
+    "case_id": "assembler_output_shape",
+    "question": "What structure does the broker assembler return for selected context and metadata?",
+    "expected_paths": [
+      "src/vaner/broker/assembler.py",
+      "src/vaner/models/context.py"
+    ],
+    "expected_points": [
+      "assemble_context",
+      "token_budget",
+      "ContextPackage"
+    ],
+    "question_type": "structure"
+  },
+  {
     "case_id": "proxy_enrichment",
     "question": "How does the OpenAI-compatible proxy enrich chat completions with repository context?",
     "expected_paths": [
@@ -43,6 +125,122 @@
       "injected_context",
       "forward_chat_completion",
       "stream_chat_completion"
+    ],
+    "question_type": "wiring"
+  },
+  {
+    "case_id": "proxy_auth_error_path",
+    "question": "How does the proxy reject unauthorized requests when a proxy token is configured?",
+    "expected_paths": [
+      "src/vaner/router/proxy.py",
+      "src/vaner/models/config.py"
+    ],
+    "expected_points": [
+      "Authorization",
+      "HTTPException",
+      "proxy_token"
+    ],
+    "question_type": "error_path"
+  },
+  {
+    "case_id": "backend_fallback_conditional",
+    "question": "Under what conditions does chat forwarding switch from local backend to fallback cloud backend?",
+    "expected_paths": [
+      "src/vaner/router/backends.py",
+      "src/vaner/models/config.py"
+    ],
+    "expected_points": [
+      "_should_use_fallback",
+      "fallback_enabled",
+      "remote_budget_per_hour"
+    ],
+    "question_type": "conditional"
+  },
+  {
+    "case_id": "api_prepare_wiring",
+    "question": "Trace the API path for prepare from public API call to daemon execution.",
+    "expected_paths": [
+      "src/vaner/api.py",
+      "src/vaner/daemon/runner.py"
+    ],
+    "expected_points": [
+      "prepare",
+      "VanerDaemon",
+      "run_once"
+    ],
+    "question_type": "wiring"
+  },
+  {
+    "case_id": "query_pipeline_cross_file",
+    "question": "How does a query flow from API entrypoint through selector and compressor into injected context?",
+    "expected_paths": [
+      "src/vaner/api.py",
+      "src/vaner/broker/selector.py",
+      "src/vaner/broker/compressor.py",
+      "src/vaner/broker/assembler.py"
+    ],
+    "expected_points": [
+      "query",
+      "select_artefacts",
+      "compress_context",
+      "injected_context"
+    ],
+    "question_type": "cross_file"
+  },
+  {
+    "case_id": "daemon_git_signal_origin",
+    "question": "Where are git diff and staged signals read before planning daemon targets?",
+    "expected_paths": [
+      "src/vaner/daemon/signals/git_reader.py",
+      "src/vaner/daemon/runner.py"
+    ],
+    "expected_points": [
+      "read_git_state",
+      "read_git_diff",
+      "git_changed"
+    ],
+    "question_type": "origin"
+  },
+  {
+    "case_id": "store_working_set_structure",
+    "question": "How is the working set stored and updated after daemon generation?",
+    "expected_paths": [
+      "src/vaner/store/artefacts.py",
+      "src/vaner/models/session.py",
+      "src/vaner/daemon/runner.py"
+    ],
+    "expected_points": [
+      "upsert_working_set",
+      "WorkingSet",
+      "artefact_keys"
+    ],
+    "question_type": "structure"
+  },
+  {
+    "case_id": "config_loading_mechanism",
+    "question": "Explain how Vaner loads backend, generation, and proxy settings from config.toml.",
+    "expected_paths": [
+      "src/vaner/cli/commands/config.py",
+      "src/vaner/models/config.py"
+    ],
+    "expected_points": [
+      "load_config",
+      "GenerationConfig",
+      "ProxyConfig"
+    ],
+    "question_type": "mechanism"
+  },
+  {
+    "case_id": "cli_proxy_wiring",
+    "question": "How does the CLI proxy command construct and run the FastAPI proxy server?",
+    "expected_paths": [
+      "src/vaner/cli/main.py",
+      "src/vaner/router/proxy.py"
+    ],
+    "expected_points": [
+      "@app.command(\"proxy\")",
+      "create_app",
+      "uvicorn.run"
     ],
     "question_type": "wiring"
   }

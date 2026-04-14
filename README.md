@@ -42,6 +42,12 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## Install
+
+```bash
+pip install .
+```
+
 ## Community
 
 - Contributing guide: `CONTRIBUTING.md`

@@ -32,11 +32,15 @@ class GenerationConfig(BaseModel):
     generation_model: str | None = None
     max_file_chars: int = 8000
     summary_max_tokens: int = 400
+    max_concurrent_generations: int = 4
+    max_generations_per_cycle: int = 200
 
 
 class ProxyConfig(BaseModel):
     proxy_token: str | None = None
     max_requests_per_minute: int = 120
+    ssl_certfile: str | None = None
+    ssl_keyfile: str | None = None
 
 
 class VanerConfig(BaseModel):
