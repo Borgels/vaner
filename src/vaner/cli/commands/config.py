@@ -5,7 +5,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from vaner.models.config import BackendConfig, PrivacyConfig, VanerConfig
+from vaner.models.config import BackendConfig, GenerationConfig, PrivacyConfig, ProxyConfig, VanerConfig
 
 
 def load_config(repo_root: Path) -> VanerConfig:
@@ -15,7 +15,9 @@ def load_config(repo_root: Path) -> VanerConfig:
         parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
 
     backend_section = parsed.get("backend", {})
+    generation_section = parsed.get("generation", {})
     privacy_section = parsed.get("privacy", {})
+    proxy_section = parsed.get("proxy", {})
     limits_section = parsed.get("limits", {})
 
     backend = (
@@ -27,6 +29,16 @@ def load_config(repo_root: Path) -> VanerConfig:
         PrivacyConfig(**privacy_section)
         if isinstance(privacy_section, dict)
         else PrivacyConfig()
+    )
+    generation = (
+        GenerationConfig(**generation_section)
+        if isinstance(generation_section, dict)
+        else GenerationConfig()
+    )
+    proxy = (
+        ProxyConfig(**proxy_section)
+        if isinstance(proxy_section, dict)
+        else ProxyConfig()
     )
 
     max_age_seconds = (
@@ -50,4 +62,6 @@ def load_config(repo_root: Path) -> VanerConfig:
         max_context_tokens=max_context_tokens,
         backend=backend,
         privacy=privacy,
+        generation=generation,
+        proxy=proxy,
     )

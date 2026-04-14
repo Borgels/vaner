@@ -17,6 +17,16 @@ fallback_model = "gpt-4o-mini"
 fallback_api_key_env = "OPENAI_API_KEY"
 remote_budget_per_hour = 60
 
+[generation]
+use_llm = false
+generation_model = "gpt-4o-mini"
+max_file_chars = 8000
+summary_max_tokens = 400
+
+[proxy]
+proxy_token = ""
+max_requests_per_minute = 120
+
 [privacy]
 allowed_paths = ["src/**", "docs/**"]
 excluded_patterns = ["*.env", "*.key", "*.pem", "credentials*", "secrets*"]
@@ -40,6 +50,12 @@ max_context_tokens = 4096
 - `backend.fallback_model` (`str | null`, default: `null`): fallback model name when switching providers.
 - `backend.fallback_api_key_env` (`str`, default: `OPENAI_API_KEY`): API key env var for fallback provider.
 - `backend.remote_budget_per_hour` (`int`, default: `60`): hard cap for hourly fallback requests.
+- `generation.use_llm` (`bool`, default: `false`): enable backend LLM summarization for file and diff artefacts.
+- `generation.generation_model` (`str | null`, default: `null`): model used for generation; falls back to `backend.model`.
+- `generation.max_file_chars` (`int`, default: `8000`): max source chars sent to the summarizer.
+- `generation.summary_max_tokens` (`int`, default: `400`): output token cap for generated summaries.
+- `proxy.proxy_token` (`str`, default: empty): if set, proxy requires `Authorization: Bearer <token>`.
+- `proxy.max_requests_per_minute` (`int`, default: `120`): in-memory per-process request cap for `/v1/chat/completions`.
 - `privacy.allowed_paths` (`list[str]`, default: `["."]`): include-globs for files considered by planner.
 - `privacy.excluded_patterns` (`list[str]`, default shown above): deny-globs applied after allowed paths.
 - `privacy.redact_patterns` (`list[str]`, default: `[]`): case-insensitive regex patterns replaced with `[REDACTED]`.

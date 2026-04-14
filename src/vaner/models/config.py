@@ -27,6 +27,18 @@ class BackendConfig(BaseModel):
     remote_budget_per_hour: int = 60
 
 
+class GenerationConfig(BaseModel):
+    use_llm: bool = False
+    generation_model: str | None = None
+    max_file_chars: int = 8000
+    summary_max_tokens: int = 400
+
+
+class ProxyConfig(BaseModel):
+    proxy_token: str | None = None
+    max_requests_per_minute: int = 120
+
+
 class VanerConfig(BaseModel):
     repo_root: Path
     store_path: Path
@@ -35,3 +47,5 @@ class VanerConfig(BaseModel):
     max_context_tokens: int = 4096
     backend: BackendConfig = Field(default_factory=BackendConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
+    generation: GenerationConfig = Field(default_factory=GenerationConfig)
+    proxy: ProxyConfig = Field(default_factory=ProxyConfig)

@@ -9,9 +9,9 @@ from collections import defaultdict
 from pathlib import Path
 
 from vaner.daemon.engine.generator import (
-    generate_diff_summary,
+    agenerate_diff_summary,
+    agenerate_file_summary,
     generate_dir_summary,
-    generate_file_summary,
     generate_repo_index,
 )
 from vaner.daemon.engine.planner import plan_targets
@@ -75,11 +75,12 @@ class VanerDaemon:
         written = 0
         generated_files = []
         for target in ranked_targets:
-            artefact = generate_file_summary(
+            artefact = await agenerate_file_summary(
                 target,
                 repo_root,
                 model_name=self.config.backend.model,
                 redact_patterns=self.config.privacy.redact_patterns,
+                config=self.config,
             )
             await self.store.upsert(artefact)
             generated_files.append(artefact)
@@ -104,12 +105,13 @@ class VanerDaemon:
             diff_text = read_git_diff(repo_root, rel_path)
             if not diff_text:
                 continue
-            diff_artefact = generate_diff_summary(
+            diff_artefact = await agenerate_diff_summary(
                 repo_root,
                 rel_path,
                 diff_text,
                 model_name=self.config.backend.model,
                 redact_patterns=self.config.privacy.redact_patterns,
+                config=self.config,
             )
             await self.store.upsert(diff_artefact)
             written += 1

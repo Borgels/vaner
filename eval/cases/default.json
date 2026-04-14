@@ -1,0 +1,49 @@
+[
+  {
+    "case_id": "daemon_flow",
+    "question": "Explain how the daemon prepares artefacts from repository changes.",
+    "expected_paths": [
+      "src/vaner/daemon/runner.py",
+      "src/vaner/daemon/engine/planner.py"
+    ],
+    "expected_points": [
+      "run_once",
+      "plan_targets",
+      "score_paths",
+      "upsert_working_set"
+    ],
+    "question_type": "mechanism"
+  },
+  {
+    "case_id": "broker_selection",
+    "question": "How does Vaner select and compress context artefacts at query time?",
+    "expected_paths": [
+      "src/vaner/broker/selector.py",
+      "src/vaner/broker/compressor.py",
+      "src/vaner/broker/assembler.py"
+    ],
+    "expected_points": [
+      "select_artefacts",
+      "compress_context",
+      "token_budget",
+      "keyword_overlap"
+    ],
+    "question_type": "understanding"
+  },
+  {
+    "case_id": "proxy_enrichment",
+    "question": "How does the OpenAI-compatible proxy enrich chat completions with repository context?",
+    "expected_paths": [
+      "src/vaner/router/proxy.py",
+      "src/vaner/api.py",
+      "src/vaner/router/backends.py"
+    ],
+    "expected_points": [
+      "chat/completions",
+      "injected_context",
+      "forward_chat_completion",
+      "stream_chat_completion"
+    ],
+    "question_type": "wiring"
+  }
+]

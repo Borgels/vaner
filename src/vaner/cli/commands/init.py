@@ -16,6 +16,16 @@ fallback_model = "gpt-4o-mini"
 fallback_api_key_env = "OPENAI_API_KEY"
 remote_budget_per_hour = 60
 
+[generation]
+use_llm = false
+generation_model = "gpt-4o-mini"
+max_file_chars = 8000
+summary_max_tokens = 400
+
+[proxy]
+proxy_token = ""
+max_requests_per_minute = 120
+
 [privacy]
 allowed_paths = ["."]
 excluded_patterns = ["*.env", "*.key", "*.pem", "credentials*", "secrets*"]

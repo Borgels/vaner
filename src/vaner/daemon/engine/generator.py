@@ -3,13 +3,54 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
+import logging
 import re
 import time
 from pathlib import Path
 
+import httpx
+
 from vaner.models.artefact import Artefact, ArtefactKind
+from vaner.models.config import VanerConfig
 from vaner.policy.privacy import redact_text
+
+logger = logging.getLogger(__name__)
+
+FILE_SUMMARY_PROMPT = """You are generating a precise implementation reference for a developer context system.
+A model will later use this summary to answer exact questions about this file.
+Your summary MUST enable correct answers — not just plausible ones.
+
+Include ALL of the following that are present in the file:
+
+1. CLASSES: name, base class, key attributes with types/defaults
+2. FUNCTIONS/METHODS: name, parameter names and types, return type, one-line behavior description
+3. KEY CONSTANTS: exact name and exact value
+4. IMPORTANT CONDITIONALS: exact conditions and what branches they control
+5. EXCEPTION TYPES: which exceptions are caught or raised and why
+6. FORMULAS/ALGORITHMS: exact expressions
+7. LIMITS/TRUNCATION/CACHING: exact caps, slices, TTLs, or bounded windows
+8. WHAT THIS FILE DOES NOT DO: avoid conflating it with files that call it
+
+Do NOT paraphrase implementation details. Use exact names from the code.
+Do NOT summarize in prose where specifics exist.
+Maximum {max_tokens} tokens.
+
+File: {path}
+---
+{content}
+---
+Implementation reference:"""
+
+DIFF_SUMMARY_PROMPT = """Summarize the following git diff for a developer context system.
+State clearly what changed, which modules/functions were affected, and likely intent.
+Call out exact limits/guards/conditionals when visible.
+Be concise.
+
+{diff}
+---
+Summary:"""
 
 
 def _extract_python_shapes(text: str) -> tuple[list[str], list[str]]:
@@ -105,16 +146,79 @@ def _build_artefact(
     )
 
 
-def generate_file_summary(
+def _extract_message_text(payload: dict) -> str:
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message", {})
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            return "\n".join(parts)
+    return ""
+
+
+async def _llm_summarize(text: str, prompt_template: str, config: VanerConfig, source_label: str) -> str | None:
+    model = config.generation.generation_model or config.backend.model
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt_template}],
+        "temperature": 0,
+        "max_tokens": config.generation.summary_max_tokens,
+    }
+    headers = {"Content-Type": "application/json"}
+    api_key = ""
+    if config.backend.api_key_env:
+        import os
+
+        api_key = os.getenv(config.backend.api_key_env, "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(f"{config.backend.base_url.rstrip('/')}/chat/completions", json=payload, headers=headers)
+            response.raise_for_status()
+        content = _extract_message_text(response.json()).strip()
+        return content or None
+    except Exception as exc:  # pragma: no cover - network errors
+        logger.warning("LLM summary failed for %s: %s", source_label, exc)
+        return None
+
+
+async def agenerate_file_summary(
     source_path: Path,
     repo_root: Path,
     model_name: str = "heuristic-local",
     redact_patterns: list[str] | None = None,
+    config: VanerConfig | None = None,
 ) -> Artefact:
     raw_text = source_path.read_text(encoding="utf-8", errors="ignore")
     sanitized_text = redact_text(raw_text, redact_patterns or [])
     rel_path = str(source_path.relative_to(repo_root))
-    content = _summarize_text(sanitized_text, source_path)
+    max_chars = config.generation.max_file_chars if config is not None else 8000
+    bounded_text = sanitized_text[:max_chars]
+    heuristic_content = _summarize_text(bounded_text, source_path)
+    content = heuristic_content
+    summary_mode = "heuristic"
+
+    if config is not None and config.generation.use_llm and model_name != "heuristic-local":
+        llm_prompt = FILE_SUMMARY_PROMPT.format(
+            path=rel_path,
+            content=bounded_text,
+            max_tokens=config.generation.summary_max_tokens,
+        )
+        llm_content = await _llm_summarize(bounded_text, llm_prompt, config, rel_path)
+        if llm_content:
+            content = llm_content
+            summary_mode = "llm"
+
     return _build_artefact(
         key=f"{ArtefactKind.FILE_SUMMARY.value}:{rel_path}",
         kind=ArtefactKind.FILE_SUMMARY,
@@ -122,7 +226,28 @@ def generate_file_summary(
         source_mtime=source_path.stat().st_mtime,
         model_name=model_name,
         content=content,
-        metadata={"hash": hashlib.sha256(sanitized_text.encode("utf-8")).hexdigest()[:16]},
+        metadata={
+            "hash": hashlib.sha256(sanitized_text.encode("utf-8")).hexdigest()[:16],
+            "summary_mode": summary_mode,
+        },
+    )
+
+
+def generate_file_summary(
+    source_path: Path,
+    repo_root: Path,
+    model_name: str = "heuristic-local",
+    redact_patterns: list[str] | None = None,
+    config: VanerConfig | None = None,
+) -> Artefact:
+    return asyncio.run(
+        agenerate_file_summary(
+            source_path,
+            repo_root,
+            model_name=model_name,
+            redact_patterns=redact_patterns,
+            config=config,
+        )
     )
 
 
@@ -168,15 +293,21 @@ def generate_repo_index(repo_root: Path, files: list[Path], model_name: str = "h
     )
 
 
-def generate_diff_summary(
+async def agenerate_diff_summary(
     repo_root: Path,
     relative_path: str,
     diff_text: str,
     model_name: str = "heuristic-local",
     redact_patterns: list[str] | None = None,
+    config: VanerConfig | None = None,
 ) -> Artefact:
     redacted_diff = redact_text(diff_text, redact_patterns or [])
     compact = _summarize_text(redacted_diff, repo_root / relative_path, max_lines=20)
+    if config is not None and config.generation.use_llm and model_name != "heuristic-local":
+        llm_prompt = DIFF_SUMMARY_PROMPT.format(diff=redacted_diff[: config.generation.max_file_chars])
+        llm_content = await _llm_summarize(redacted_diff, llm_prompt, config, relative_path)
+        if llm_content:
+            compact = llm_content
     abs_path = (repo_root / relative_path).resolve()
     mtime = abs_path.stat().st_mtime if abs_path.exists() else time.time()
     return _build_artefact(
@@ -187,6 +318,26 @@ def generate_diff_summary(
         model_name=model_name,
         content=compact,
         metadata={"lines": str(len(redacted_diff.splitlines()))},
+    )
+
+
+def generate_diff_summary(
+    repo_root: Path,
+    relative_path: str,
+    diff_text: str,
+    model_name: str = "heuristic-local",
+    redact_patterns: list[str] | None = None,
+    config: VanerConfig | None = None,
+) -> Artefact:
+    return asyncio.run(
+        agenerate_diff_summary(
+            repo_root,
+            relative_path,
+            diff_text,
+            model_name=model_name,
+            redact_patterns=redact_patterns,
+            config=config,
+        )
     )
 
 

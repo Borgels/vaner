@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from vaner.daemon.engine.generator import generate_artefact, generate_diff_summary
+import asyncio
+
+from vaner.daemon.engine import generator as generator_mod
+from vaner.daemon.engine.generator import agenerate_file_summary, generate_artefact, generate_diff_summary
+from vaner.models.config import GenerationConfig, VanerConfig
 
 
 def test_generate_artefact_for_normal_file(temp_repo):
@@ -45,3 +49,55 @@ def test_generate_diff_summary_redacts_patterns(temp_repo):
         redact_patterns=[r"secret\d+"],
     )
     assert "REDACTED" in artefact.content
+
+
+def test_agenerate_file_summary_uses_llm_when_enabled(temp_repo, monkeypatch):
+    source = temp_repo / "llm.py"
+    source.write_text("def x():\n    return 1\n", encoding="utf-8")
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+        generation=GenerationConfig(use_llm=True, generation_model="gpt-test"),
+    )
+
+    async def _fake_llm(text: str, prompt_template: str, config_obj: VanerConfig, source_label: str) -> str:
+        return "LLM precise summary"
+
+    monkeypatch.setattr(generator_mod, "_llm_summarize", _fake_llm)
+    artefact = asyncio.run(
+        agenerate_file_summary(
+            source,
+            temp_repo,
+            model_name="gpt-test",
+            config=config,
+        )
+    )
+    assert artefact.content == "LLM precise summary"
+    assert artefact.metadata["summary_mode"] == "llm"
+
+
+def test_agenerate_file_summary_falls_back_to_heuristic_when_llm_fails(temp_repo, monkeypatch):
+    source = temp_repo / "fallback.py"
+    source.write_text("MAX_A = 10\n\ndef x():\n    return MAX_A\n", encoding="utf-8")
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+        generation=GenerationConfig(use_llm=True, generation_model="gpt-test"),
+    )
+
+    async def _fake_llm_none(text: str, prompt_template: str, config_obj: VanerConfig, source_label: str) -> str | None:
+        return None
+
+    monkeypatch.setattr(generator_mod, "_llm_summarize", _fake_llm_none)
+    artefact = asyncio.run(
+        agenerate_file_summary(
+            source,
+            temp_repo,
+            model_name="gpt-test",
+            config=config,
+        )
+    )
+    assert "Functions:" in artefact.content
+    assert artefact.metadata["summary_mode"] == "heuristic"

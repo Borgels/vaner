@@ -11,7 +11,7 @@ from vaner.cli.commands.config import load_config
 from vaner.cli.commands.daemon import daemon_status, run_daemon_forever, start_daemon, stop_daemon
 from vaner.cli.commands.init import init_repo
 from vaner.daemon.runner import VanerDaemon
-from vaner.eval import evaluate_repo
+from vaner.eval import evaluate_repo, run_eval
 from vaner.router.proxy import create_app
 
 app = typer.Typer(help="Vaner CLI")
@@ -96,6 +96,21 @@ def config_show(path: str | None = typer.Option(None, help="Repository root")) -
 @app.command("eval")
 def eval_repo(path: str | None = typer.Option(None, help="Repository root")) -> None:
     result = evaluate_repo(_repo_root(path))
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("run-eval")
+def run_eval_command(
+    path: str | None = typer.Option(None, help="Repository root"),
+    cases_file: str | None = typer.Option(None, "--cases-file", help="Path to eval cases JSON"),
+    output_dir: str | None = typer.Option(None, "--output-dir", help="Directory for eval run JSON output"),
+) -> None:
+    repo_root = _repo_root(path)
+    result = run_eval(
+        repo_root,
+        cases_path=Path(cases_file).resolve() if cases_file else None,
+        output_dir=Path(output_dir).resolve() if output_dir else None,
+    )
     typer.echo(result.model_dump_json(indent=2))
 
 

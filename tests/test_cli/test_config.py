@@ -15,6 +15,18 @@ name = "openai"
 base_url = "https://example.com/v1"
 model = "example-model"
 api_key_env = "API_KEY"
+prefer_local = true
+fallback_enabled = true
+fallback_base_url = "https://fallback.example.com/v1"
+fallback_model = "fallback-model"
+fallback_api_key_env = "FALLBACK_KEY"
+remote_budget_per_hour = 12
+
+[generation]
+use_llm = true
+generation_model = "gpt-test"
+max_file_chars = 5000
+summary_max_tokens = 256
 
 [privacy]
 allowed_paths = ["src/**"]
@@ -32,6 +44,10 @@ max_context_tokens = 2048
     config = load_config(temp_repo)
 
     assert config.backend.base_url == "https://example.com/v1"
+    assert config.backend.fallback_enabled is True
+    assert config.backend.remote_budget_per_hour == 12
+    assert config.generation.use_llm is True
+    assert config.generation.generation_model == "gpt-test"
     assert config.privacy.allowed_paths == ["src/**"]
     assert config.max_age_seconds == 120
     assert config.max_context_tokens == 2048

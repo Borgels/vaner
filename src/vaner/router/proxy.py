@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from vaner.api import aquery
@@ -37,6 +39,22 @@ def _normalize_message_content(content: Any) -> str:
     return ""
 
 
+class _RateLimiter:
+    def __init__(self, max_requests_per_minute: int) -> None:
+        self.max_requests_per_minute = max(1, max_requests_per_minute)
+        self._timestamps = deque()
+
+    def allow(self) -> bool:
+        now = time.monotonic()
+        cutoff = now - 60.0
+        while self._timestamps and self._timestamps[0] < cutoff:
+            self._timestamps.popleft()
+        if len(self._timestamps) >= self.max_requests_per_minute:
+            return False
+        self._timestamps.append(now)
+        return True
+
+
 def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -44,9 +62,18 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         yield
 
     app = FastAPI(title="Vaner Proxy", version="0.1.0", lifespan=lifespan)
+    limiter = _RateLimiter(config.proxy.max_requests_per_minute)
+    required_token = (config.proxy.proxy_token or "").strip()
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(payload: dict[str, Any]) -> Any:
+    async def chat_completions(payload: dict[str, Any], request: Request) -> Any:
+        if required_token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header != f"Bearer {required_token}":
+                raise HTTPException(status_code=401, detail="Missing or invalid proxy token.")
+        if not limiter.allow():
+            raise HTTPException(status_code=429, detail="Rate limit exceeded.")
+
         user_messages = [msg for msg in payload.get("messages", []) if msg.get("role") == "user"]
         prompt = _normalize_message_content(user_messages[-1].get("content")) if user_messages else ""
         context_package = await aquery(prompt, config.repo_root, config=config, top_n=6)
