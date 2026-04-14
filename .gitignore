@@ -13,6 +13,5 @@ build/
 .coverage
 htmlcov/
 .DS_Store
-.vaner/store.db
-.vaner/telemetry.db
-.vaner/runtime/
+.vaner/
+eval/runs/
