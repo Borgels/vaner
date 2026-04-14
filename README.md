@@ -1,34 +1,55 @@
-# Vaner
+# Vaner.ai
 
-A predictive context platform. Local-first execution, platform-backed coordination.
+Vaner.ai is a predictive context middleware layer that prepares likely-useful context before you ask for it.
 
-The core idea: instead of only reacting at prompt time, the system works in the background to prepare likely-useful context ahead of time. At prompt time, a broker decides how much of the prepared material is still relevant and safe to use.
+At prompt time, Vaner selects, compresses, and injects the right context package so the model receives better input and returns better answers.
 
-See [`docs/vaner_report.docx`](docs/vaner_report.docx) for the full strategic report.
+## What Vaner is
 
-## Structure
+- A local-first predictive context engine
+- A background preparation runtime + fast prompt-time broker
+- A transparent layer between developer workflows and model backends
 
-```
-apps/
-  studio-agent/    LangGraph proof of concept — a single coding/planning agent
-                   that can read and navigate the Vaner repo
+## What Vaner is not
 
-docs/
-  vaner_report.docx        Strategic report (product, architecture, business model)
-  agent-architecture.md    Current agent design + proposed two-agent split
-```
+- Not a model
+- Not just memory
+- Not just static RAG
+- Not an agent framework
 
-## Status
+## v1 Product Loop
 
-Working proof of concept in `apps/studio-agent`. The agent can answer questions about the repo using read-only tools (list files, read file, find files, grep). Runs on Devstral via Ollama + LangGraph Studio.
+1. `vaner init` in a repo
+2. `vaner daemon start` to collect signals and generate artefacts
+3. `vaner query "..."` to ask a repo question
+4. `vaner inspect --last` to see selected artefacts, scores, freshness, and token budget
 
-Next step: split into a `repo-analyzer` (background preparation) and a `broker` (prompt-time routing). See [`docs/agent-architecture.md`](docs/agent-architecture.md).
+## Trust and Privacy
 
-## Getting Started
+- Local-first defaults
+- No content logging
+- Explicit scope boundaries
+- Inspectable context decisions
+
+See `docs/security.md` for details.
+
+## Development Setup
 
 ```bash
-cd apps/studio-agent
-cp .env.example .env
-pip install -e . "langgraph-cli[inmem]"
-langgraph dev
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
 ```
+
+## Community
+
+- Contributing guide: `CONTRIBUTING.md`
+- Security policy: `SECURITY.md`
+- Code of conduct: `CODE_OF_CONDUCT.md`
+- Architecture docs: `docs/architecture.md`
+- Configuration reference: `docs/configuration.md`
+
+## License
+
+Apache-2.0. Copyright 2026 Borgels Olsen Holding ApS (VAT DK39700425).

@@ -2,70 +2,27 @@ name: CI
 
 on:
   push:
-    branches: [develop, "feature/**", "fix/**"]
   pull_request:
-    branches: [main, develop]
 
 jobs:
-  lint-and-import:
-    name: Lint & Import Check
+  test:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install ruff
-        run: pip install ruff
-
-      - name: Lint (ruff)
-        run: ruff check apps/ libs/ vaner.py --ignore E501,D,T201,ANN
-
-      - name: Install vaner-tools
-        run: pip install -e libs/vaner-tools/
-
-      - name: Import check — broker
+      - name: Install
         run: |
-          pip install -e apps/studio-agent/ --no-deps -q 2>/dev/null || true
-          cd apps/studio-agent
-          pip install langgraph langchain-ollama langgraph-checkpoint-sqlite -q
-          python -c "
-          import sys; sys.path.insert(0, 'src')
-          # Patch ChatOllama to not connect at import time
-          from unittest.mock import MagicMock, patch
-          with patch('langchain_ollama.ChatOllama.__init__', return_value=None):
-              from agent.graph import graph
-              print('broker import ok')
-          "
-
-      - name: Import check — analyzer
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
         run: |
-          cd apps/repo-analyzer
-          pip install langgraph langchain-ollama -q
-          python -c "
-          import sys; sys.path.insert(0, 'src')
-          from unittest.mock import patch
-          with patch('langchain_ollama.ChatOllama.__init__', return_value=None):
-              from analyzer.graph import graph
-              print('analyzer import ok')
-          "
-
-      - name: Import check — supervisor
-        run: |
-          cd apps/supervisor
-          pip install langgraph langchain-ollama langgraph-checkpoint-sqlite -q
-          pip install -e ../studio-agent/ -e ../repo-analyzer/ -q 2>/dev/null || true
-          python -c "
-          import sys
-          sys.path.insert(0, 'src')
-          sys.path.insert(0, '../studio-agent/src')
-          sys.path.insert(0, '../repo-analyzer/src')
-          from unittest.mock import patch
-          with patch('langchain_ollama.ChatOllama.__init__', return_value=None):
-              from supervisor.graph import graph
-              print('supervisor import ok')
-          "
+          ruff check .
+          ruff format --check .
+      - name: Type check
+        run: mypy src
+      - name: Tests
+        run: pytest --cov=vaner --cov-fail-under=70
+      - name: Security audit
+        run: pip-audit

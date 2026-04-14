@@ -1,5 +1,0 @@
-Metadata-Version: 2.4
-Name: vaner-tools
-Version: 0.1.0
-Summary: Shared tools and artefact store for Vaner agents.
-Requires-Python: >=3.10
