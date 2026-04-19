@@ -342,9 +342,9 @@ def interactive_backend_choice() -> str | None:
         ("6", "openrouter", "OpenRouter — cloud, 100+ models via one key"),
         ("7", "skip", "Skip (read-only MCP tools still work)"),
     ]
-    print("\nPick a model backend (Vaner needs an LLM for scenario expansion):")
+    sys.stdout.write("\nPick a model backend (Vaner needs an LLM for scenario expansion):\n")
     for num, _slug, label in menu:
-        print(f"  {num}) {label}")
+        sys.stdout.write(f"  {num}) {label}\n")
     choice = _prompt("Choice", "1")
     mapping = {num: slug for num, slug, _ in menu}
     mapping.update({slug: slug for _num, slug, _ in menu})
@@ -354,9 +354,9 @@ def interactive_backend_choice() -> str | None:
 def interactive_compute_choice() -> str | None:
     if not _is_tty():
         return None
-    print("\nCompute budget:")
-    print("  1) background — cpu_fraction=0.2, gpu_memory_fraction=0.5, idle_only=true (default)")
-    print("  2) balanced   — cpu_fraction=0.5, gpu_memory_fraction=0.7")
-    print("  3) dedicated  — cpu_fraction=1.0, gpu_memory_fraction=1.0")
+    sys.stdout.write("\nCompute budget:\n")
+    sys.stdout.write("  1) background — cpu_fraction=0.2, gpu_memory_fraction=0.5, idle_only=true (default)\n")
+    sys.stdout.write("  2) balanced   — cpu_fraction=0.5, gpu_memory_fraction=0.7\n")
+    sys.stdout.write("  3) dedicated  — cpu_fraction=1.0, gpu_memory_fraction=1.0\n")
     choice = _prompt("Choice", "1")
     return {"1": "background", "2": "balanced", "3": "dedicated"}.get(choice, choice if choice in COMPUTE_PRESETS else "background")
