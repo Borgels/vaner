@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from vaner.eval import load_cases, run_eval
+
+pytest.importorskip("sentence_transformers")
+pytestmark = pytest.mark.integration
 
 
 def test_load_cases_reads_default_cases(temp_repo):

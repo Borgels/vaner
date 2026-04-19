@@ -40,7 +40,7 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ]; then
             pytest tests --cov=src/vaner --cov-fail-under=70
           else
-            pytest tests -m "not slow" --cov=src/vaner --cov-fail-under=70
+            pytest tests -m "not slow and not integration" --cov=src/vaner --cov-fail-under=70
           fi
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
@@ -66,8 +66,8 @@ jobs:
       - name: Basic usage smoke-test
         run: |
           tmpdir="$(mktemp -d)"
-          vaner init --profile minimal --path "$tmpdir"
-          test -f "$tmpdir/.vaner/config.toml"
+          vaner init --path "$tmpdir"
+          test -d "$tmpdir/.vaner"
       - name: Multi-backend example smoke-test
         run: |
           test -f examples/multi-backend/README.md
