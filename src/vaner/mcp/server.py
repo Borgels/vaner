@@ -67,6 +67,7 @@ from mcp.types import (
 
 from vaner.api import aprecompute, aquery
 from vaner.cli.commands.config import load_config
+from vaner.telemetry.metrics import MetricsStore
 
 
 def _make_text(content: str) -> list[TextContent]:
@@ -76,6 +77,7 @@ def _make_text(content: str) -> list[TextContent]:
 def build_server(repo_root: Path) -> Server:
     """Build and return the Vaner MCP Server instance."""
     config = load_config(repo_root)
+    metrics_store = MetricsStore(repo_root / ".vaner" / "metrics.db")
     server: Server = Server("vaner")
 
     @server.list_tools()
@@ -138,6 +140,11 @@ def build_server(repo_root: Path) -> Server:
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any] | None) -> CallToolResult:
         args = arguments or {}
+        try:
+            await metrics_store.initialize()
+            await metrics_store.increment_mode_usage("mcp")
+        except Exception:
+            pass
 
         if name == "get_context":
             prompt = str(args.get("prompt", ""))
@@ -177,8 +184,6 @@ def build_server(repo_root: Path) -> Server:
         if name == "get_metrics":
             last_n = int(args.get("last_n", 100))
             try:
-                from vaner.telemetry.metrics import MetricsStore
-
                 metrics_db = repo_root / ".vaner" / "metrics.db"
                 if not metrics_db.exists():
                     return CallToolResult(content=_make_text("No metrics yet. Run `vaner proxy` and make some requests first."))

@@ -73,6 +73,26 @@ class ProxyConfig(BaseModel):
     ssl_keyfile: str | None = None
 
 
+class GatewayConfig(BaseModel):
+    passthrough_enabled: bool = True
+    routes: dict[str, str] = Field(default_factory=dict)
+    annotate_response_trailer: bool = False
+    annotate_system_note: Literal["off", "min", "full"] = "off"
+    shadow_rate: float = 0.0
+
+
+class ComputeConfig(BaseModel):
+    device: str = "auto"
+    cpu_fraction: float = 0.2
+    gpu_memory_fraction: float = 0.5
+    idle_only: bool = False
+    idle_cpu_threshold: float = 0.6
+    idle_gpu_threshold: float = 0.7
+    embedding_device: str | None = None
+    exploration_concurrency: int = 4
+    max_parallel_precompute: int = 1
+
+
 class ExplorationConfig(BaseModel):
     """Controls how aggressively Vaner explores the scenario space.
 
@@ -215,4 +235,6 @@ class VanerConfig(BaseModel):
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
+    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    compute: ComputeConfig = Field(default_factory=ComputeConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)

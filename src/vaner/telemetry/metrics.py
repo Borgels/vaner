@@ -108,6 +108,31 @@ class MetricsStore:
                 )
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shadow_comparisons (
+                    shadow_pair_id TEXT PRIMARY KEY,
+                    request_id TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    with_context_total_ms REAL NOT NULL,
+                    without_context_total_ms REAL NOT NULL,
+                    with_context_tokens INTEGER NOT NULL,
+                    without_context_tokens INTEGER NOT NULL,
+                    latency_delta_ms REAL NOT NULL,
+                    token_delta INTEGER NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS integration_usage (
+                    mode TEXT PRIMARY KEY,
+                    count INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
             await db.commit()
 
     async def record(self, m: RequestMetrics) -> None:
@@ -178,3 +203,89 @@ class MetricsStore:
             "total_e2e_ms": {"avg": _avg("total_e2e_ms"), "p95": _p95("total_e2e_ms")},
             "avg_context_tokens": _avg("context_tokens"),
         }
+
+    async def record_shadow_pair(
+        self,
+        *,
+        request_id: str,
+        with_context_total_ms: float,
+        without_context_total_ms: float,
+        with_context_tokens: int,
+        without_context_tokens: int,
+    ) -> None:
+        latency_delta = without_context_total_ms - with_context_total_ms
+        token_delta = with_context_tokens - without_context_tokens
+        payload = {
+            "request_id": request_id,
+            "with_context_total_ms": with_context_total_ms,
+            "without_context_total_ms": without_context_total_ms,
+            "with_context_tokens": with_context_tokens,
+            "without_context_tokens": without_context_tokens,
+            "latency_delta_ms": latency_delta,
+            "token_delta": token_delta,
+        }
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO shadow_comparisons
+                    (shadow_pair_id, request_id, timestamp, with_context_total_ms,
+                     without_context_total_ms, with_context_tokens, without_context_tokens,
+                     latency_delta_ms, token_delta, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    request_id,
+                    time.time(),
+                    with_context_total_ms,
+                    without_context_total_ms,
+                    with_context_tokens,
+                    without_context_tokens,
+                    latency_delta,
+                    token_delta,
+                    json.dumps(payload),
+                ),
+            )
+            await db.commit()
+
+    async def shadow_summary(self, last_n: int = 500) -> dict:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM shadow_comparisons ORDER BY timestamp DESC LIMIT ?",
+                (last_n,),
+            )
+            rows = await cursor.fetchall()
+        if not rows:
+            return {"count": 0}
+        pairs = [dict(row) for row in rows]
+        wins = [row for row in pairs if row["latency_delta_ms"] > 0]
+        avg_latency_gain = round(sum(row["latency_delta_ms"] for row in pairs) / len(pairs), 2)
+        avg_token_delta = round(sum(row["token_delta"] for row in pairs) / len(pairs), 2)
+        return {
+            "count": len(pairs),
+            "win_rate": round(len(wins) / len(pairs), 3),
+            "avg_latency_gain_ms": avg_latency_gain,
+            "avg_token_delta": avg_token_delta,
+        }
+
+    async def increment_mode_usage(self, mode: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO integration_usage (mode, count, updated_at)
+                VALUES (?, 1, ?)
+                ON CONFLICT(mode) DO UPDATE SET
+                    count = count + 1,
+                    updated_at = excluded.updated_at
+                """,
+                (mode, time.time()),
+            )
+            await db.commit()
+
+    async def mode_usage_summary(self) -> dict[str, int]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT mode, count FROM integration_usage ORDER BY count DESC")
+            rows = await cursor.fetchall()
+        return {str(row["mode"]): int(row["count"]) for row in rows}

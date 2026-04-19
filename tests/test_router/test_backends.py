@@ -52,3 +52,24 @@ def test_forward_chat_completion_uses_fallback_when_primary_fails(temp_repo, mon
     result = asyncio.run(backends.forward_chat_completion(config, {"messages": []}))
     assert result["id"] == "ok"
     assert calls == [False, True]
+
+
+def test_resolve_target_uses_model_prefix_routes(temp_repo):
+    config = _config(
+        temp_repo,
+        base_url="http://localhost:11434/v1",
+        model="qwen2.5-coder:7b",
+    )
+    config.gateway.routes = {
+        "gpt-": "https://api.openai.com/v1",
+        "claude-": "https://api.anthropic.com/v1",
+    }
+    target = backends._resolve_target(config, {"model": "gpt-4.1-mini", "messages": []})
+    assert target.base_url == "https://api.openai.com/v1"
+    assert target.model == "gpt-4.1-mini"
+
+
+def test_headers_prefer_passthrough_authorization():
+    backend = BackendConfig(base_url="https://api.openai.com/v1", model="gpt-4o")
+    headers = backends._headers(backend, passthrough_authorization="Bearer passthrough-key")
+    assert headers["Authorization"] == "Bearer passthrough-key"

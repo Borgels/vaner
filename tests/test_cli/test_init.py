@@ -8,3 +8,7 @@ from vaner.cli.commands.init import init_repo
 def test_init_creates_config(temp_repo):
     config_path = init_repo(temp_repo)
     assert config_path.exists()
+    content = config_path.read_text(encoding="utf-8")
+    assert "[gateway.passthrough]" in content
+    assert "[compute]" in content
+    assert "idle_only = true" in content

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import random
 import signal
 import time
 from collections import deque
@@ -10,12 +12,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from vaner.api import aquery
+from vaner.cli.commands.config import load_config, set_compute_value
 from vaner.models.config import VanerConfig
-from vaner.router.backends import forward_chat_completion, stream_chat_completion, validate_backend_config
+from vaner.models.decision import DecisionRecord
+from vaner.router.backends import (
+    forward_chat_completion_with_request,
+    stream_chat_completion_with_request,
+    validate_backend_config,
+)
 from vaner.store.artefacts import ArtefactStore
 from vaner.telemetry.metrics import MetricsStore, RequestMetrics
 
@@ -147,6 +155,9 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
     app = FastAPI(title="Vaner Proxy", version="0.1.0", lifespan=lifespan)
     limiter = _RateLimiter(config.proxy.max_requests_per_minute)
     required_token = (config.proxy.proxy_token or "").strip()
+    shadow_rate = max(0.0, min(config.gateway.shadow_rate, 1.0))
+    decision_stream_subscribers: set[asyncio.Queue[dict[str, Any] | None]] = set()
+    gateway_enabled = True
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -169,6 +180,223 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         """Prometheus-compatible metrics endpoint."""
         return prom.render()
 
+    @app.get("/compute/devices")
+    async def compute_devices() -> JSONResponse:
+        devices: list[dict[str, Any]] = [{"id": "cpu", "label": "CPU", "kind": "cpu"}]
+        try:  # pragma: no cover - GPU visibility depends on environment
+            import torch
+
+            if torch.cuda.is_available():
+                for idx in range(torch.cuda.device_count()):
+                    props = torch.cuda.get_device_properties(idx)
+                    devices.append(
+                        {
+                            "id": f"cuda:{idx}",
+                            "label": props.name,
+                            "kind": "cuda",
+                            "total_memory_bytes": props.total_memory,
+                        }
+                    )
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                devices.append({"id": "mps", "label": "Apple Metal (MPS)", "kind": "mps"})
+        except Exception:
+            pass
+        return JSONResponse({"devices": devices, "selected": config.compute.device})
+
+    @app.get("/impact/summary")
+    async def impact_summary(last: int = 500) -> JSONResponse:
+        summary = await metrics_store.shadow_summary(last_n=max(1, min(last, 2000)))
+        idle_path = config.repo_root / ".vaner" / "runtime" / "idle_usage.json"
+        idle_seconds = 0.0
+        if idle_path.exists():
+            try:
+                parsed = json.loads(idle_path.read_text(encoding="utf-8"))
+                idle_seconds = float(parsed.get("idle_seconds_used", 0.0))
+            except Exception:
+                idle_seconds = 0.0
+        summary["idle_seconds_used"] = round(idle_seconds, 3)
+        return JSONResponse(summary)
+
+    @app.get("/status")
+    async def cockpit_status() -> JSONResponse:
+        return JSONResponse(
+            {
+                "health": "ok",
+                "gateway_enabled": gateway_enabled,
+                "compute": config.compute.model_dump(mode="json"),
+                "backend": {
+                    "base_url": config.backend.base_url,
+                    "model": config.backend.model,
+                },
+            }
+        )
+
+    @app.post("/compute")
+    async def update_compute(payload: dict[str, Any]) -> JSONResponse:
+        allowed_keys = {
+            "device",
+            "cpu_fraction",
+            "gpu_memory_fraction",
+            "idle_only",
+            "idle_cpu_threshold",
+            "idle_gpu_threshold",
+            "embedding_device",
+            "exploration_concurrency",
+            "max_parallel_precompute",
+        }
+        for key, value in payload.items():
+            if key not in allowed_keys:
+                raise HTTPException(status_code=400, detail=f"Unsupported compute key: {key}")
+            set_compute_value(config.repo_root, key, value)
+        refreshed = load_config(config.repo_root)
+        config.compute = refreshed.compute
+        return JSONResponse({"ok": True, "compute": config.compute.model_dump(mode="json")})
+
+    @app.post("/gateway/toggle")
+    async def toggle_gateway(payload: dict[str, Any]) -> JSONResponse:
+        nonlocal gateway_enabled
+        gateway_enabled = bool(payload.get("enabled", True))
+        return JSONResponse({"ok": True, "gateway_enabled": gateway_enabled})
+
+    @app.get("/ui", response_class=HTMLResponse)
+    async def cockpit_ui() -> str:
+        return """<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Vaner Cockpit</title>
+    <style>
+      body { font-family: sans-serif; margin: 20px; background: #0f1117; color: #e8e8e8; }
+      .card { background: #171a22; border: 1px solid #2a2f3b; border-radius: 8px; padding: 12px; margin: 12px 0; }
+      button { background: #3a7afe; color: white; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+      pre { background: #10131a; border-radius: 6px; padding: 10px; overflow-x: auto; }
+      input { padding: 6px 8px; border-radius: 6px; border: 1px solid #2a2f3b; background: #10131a; color: #e8e8e8; }
+    </style>
+  </head>
+  <body>
+    <h2>Vaner Cockpit</h2>
+    <div class="card"><strong>Status</strong><pre id="status">loading…</pre></div>
+    <div class="card"><strong>Impact</strong><pre id="impact">loading…</pre></div>
+    <div class="card"><strong>Last decision</strong><pre id="decision">waiting…</pre></div>
+    <div class="card">
+      <strong>Compute controls</strong><br/>
+      <label>CPU fraction <input id="cpu" value="0.2"/></label>
+      <button id="applyCompute">Apply</button>
+      <pre id="computeResult"></pre>
+    </div>
+    <div class="card">
+      <strong>Gateway toggle</strong><br/>
+      <button id="disable">Disable enrichment</button>
+      <button id="enable">Enable enrichment</button>
+    </div>
+    <script>
+      async function refresh() {
+        const status = await fetch('/status').then(r => r.json());
+        const impact = await fetch('/impact/summary').then(r => r.json());
+        document.getElementById('status').textContent = JSON.stringify(status, null, 2);
+        document.getElementById('impact').textContent = JSON.stringify(impact, null, 2);
+      }
+      const stream = new EventSource('/decisions/stream');
+      stream.onmessage = (event) => {
+        document.getElementById('decision').textContent = JSON.stringify(JSON.parse(event.data), null, 2);
+      };
+      document.getElementById('applyCompute').onclick = async () => {
+        const cpu = parseFloat(document.getElementById('cpu').value);
+        const result = await fetch('/compute', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({cpu_fraction: cpu}),
+        }).then(r => r.json());
+        document.getElementById('computeResult').textContent = JSON.stringify(result, null, 2);
+        refresh();
+      };
+      document.getElementById('disable').onclick = async () => {
+        await fetch('/gateway/toggle', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled: false}),
+        });
+        refresh();
+      };
+      document.getElementById('enable').onclick = async () => {
+        await fetch('/gateway/toggle', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled: true}),
+        });
+        refresh();
+      };
+      refresh();
+    </script>
+  </body>
+</html>"""
+
+    async def _publish_decision_event(event: dict[str, Any]) -> None:
+        if not decision_stream_subscribers:
+            return
+        stale_subscribers: list[asyncio.Queue[dict[str, Any] | None]] = []
+        for subscriber in decision_stream_subscribers:
+            try:
+                subscriber.put_nowait(event)
+            except asyncio.QueueFull:
+                stale_subscribers.append(subscriber)
+        for stale in stale_subscribers:
+            decision_stream_subscribers.discard(stale)
+
+    def _serialize_decision(record: DecisionRecord) -> dict[str, Any]:
+        payload = record.model_dump(mode="json")
+        payload["selection_count"] = len(record.selections)
+        return payload
+
+    def _load_recent_decisions(repo_root: Path, limit: int) -> list[dict[str, Any]]:
+        ids = DecisionRecord.list_recent_ids(repo_root, limit=limit)
+        items: list[dict[str, Any]] = []
+        for decision_id in ids:
+            record = DecisionRecord.read_by_id(repo_root, decision_id)
+            if record is None:
+                continue
+            items.append(_serialize_decision(record))
+        return items
+
+    @app.get("/decisions")
+    async def list_decisions(request: Request, limit: int = 200) -> JSONResponse:
+        repo_root = _resolve_repo_root(request)
+        bounded_limit = max(1, min(limit, 500))
+        return JSONResponse({"items": _load_recent_decisions(repo_root, bounded_limit)})
+
+    @app.get("/decisions/stream")
+    async def stream_decisions() -> StreamingResponse:
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=200)
+        decision_stream_subscribers.add(queue)
+
+        async def _event_stream():
+            try:
+                while True:
+                    event = await queue.get()
+                    if event is None:
+                        break
+                    yield f"data: {json.dumps(event)}\n\n"
+            finally:
+                decision_stream_subscribers.discard(queue)
+
+        return StreamingResponse(_event_stream(), media_type="text/event-stream")
+
+    @app.websocket("/decisions")
+    async def websocket_decisions(websocket: WebSocket) -> None:
+        await websocket.accept()
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=200)
+        decision_stream_subscribers.add(queue)
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                await websocket.send_json(event)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            decision_stream_subscribers.discard(queue)
+
     def _resolve_repo_root(request: Request) -> Path:
         """Determine which repo root to use for a request.
 
@@ -189,7 +417,8 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
             raise HTTPException(status_code=503, detail="Shutting down, please retry.")
         if required_token:
             auth_header = request.headers.get("Authorization", "")
-            if auth_header != f"Bearer {required_token}":
+            token_header = request.headers.get("X-Vaner-Proxy-Token", "")
+            if token_header != required_token and auth_header != f"Bearer {required_token}":
                 raise HTTPException(status_code=401, detail="Missing or invalid proxy token.")
         if not limiter.allow():
             raise HTTPException(status_code=429, detail="Rate limit exceeded.")
@@ -202,24 +431,67 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         user_messages = [msg for msg in payload.get("messages", []) if msg.get("role") == "user"]
         prompt = _normalize_message_content(user_messages[-1].get("content")) if user_messages else ""
         metrics.prompt_tokens = len(prompt.split())
-
-        context_package = await aquery(prompt, repo_root, config=config, top_n=6)
-
-        metrics.t1_context_ready = time.monotonic()
-        metrics.cache_tier = context_package.cache_tier
-        metrics.partial_similarity = context_package.partial_similarity
-        metrics.context_tokens = context_package.token_used
-
-        enriched = _inject_context(payload, context_package.injected_context)
+        if gateway_enabled:
+            context_package = await aquery(prompt, repo_root, config=config, top_n=6)
+            metrics.t1_context_ready = time.monotonic()
+            metrics.cache_tier = context_package.cache_tier
+            metrics.partial_similarity = context_package.partial_similarity
+            metrics.context_tokens = context_package.token_used
+            enriched = _inject_context(payload, context_package.injected_context)
+        else:
+            context_package = type("Package", (), {"cache_tier": "disabled", "partial_similarity": 0.0, "token_used": 0})()
+            metrics.t1_context_ready = time.monotonic()
+            metrics.cache_tier = "disabled"
+            metrics.partial_similarity = 0.0
+            metrics.context_tokens = 0
+            enriched = payload
         metrics.t2_forwarded = time.monotonic()
+        decision_record = DecisionRecord.read_latest(repo_root)
+        decision_id = decision_record.id if decision_record is not None else "unknown"
+        request_authorization = request.headers.get("Authorization")
 
         async def _finalize_metrics() -> None:
             metrics.finalize()
             prom.record(metrics)
             try:
                 await metrics_store.record(metrics)
+                await metrics_store.increment_mode_usage("proxy")
             except Exception:
                 pass
+
+        response_headers = {
+            "X-Vaner-Decision": decision_id,
+            "X-Vaner-Context-Tokens": str(context_package.token_used),
+            "X-Vaner-Hit-Tier": context_package.cache_tier,
+        }
+
+        if decision_record is not None:
+            await _publish_decision_event(_serialize_decision(decision_record))
+
+        async def _run_shadow_sample(with_context_ms: float) -> None:
+            if shadow_rate <= 0.0:
+                return
+            if metrics.is_stream:
+                return
+            if random.random() > shadow_rate:
+                return
+            started = time.monotonic()
+            try:
+                await forward_chat_completion_with_request(
+                    config,
+                    payload,
+                    authorization_header=request_authorization,
+                )
+            except Exception:
+                return
+            without_context_ms = (time.monotonic() - started) * 1000.0
+            await metrics_store.record_shadow_pair(
+                request_id=metrics.request_id,
+                with_context_total_ms=with_context_ms,
+                without_context_total_ms=without_context_ms,
+                with_context_tokens=context_package.token_used,
+                without_context_tokens=0,
+            )
 
         try:
             if metrics.is_stream:
@@ -227,7 +499,11 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                 async def _instrumented_stream():
                     first_token_set = False
                     try:
-                        async for chunk in stream_chat_completion(config, enriched):
+                        async for chunk in stream_chat_completion_with_request(
+                            config,
+                            enriched,
+                            authorization_header=request.headers.get("Authorization"),
+                        ):
                             if not first_token_set and chunk:
                                 metrics.t3_first_token = time.monotonic()
                                 first_token_set = True
@@ -236,12 +512,22 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                         metrics.t4_complete = time.monotonic()
                         await _finalize_metrics()
 
-                return StreamingResponse(_instrumented_stream(), media_type="text/event-stream")
+                return StreamingResponse(
+                    _instrumented_stream(),
+                    media_type="text/event-stream",
+                    headers=response_headers,
+                )
             else:
-                result = await forward_chat_completion(config, enriched)
+                result = await forward_chat_completion_with_request(
+                    config,
+                    enriched,
+                    authorization_header=request_authorization,
+                )
                 metrics.t4_complete = time.monotonic()
                 await _finalize_metrics()
-                return result
+                await _run_shadow_sample(metrics.total_e2e_ms)
+                response_headers["X-Vaner-Latency-Ms"] = f"{metrics.total_e2e_ms:.2f}"
+                return JSONResponse(result, headers=response_headers)
         except Exception as exc:  # pragma: no cover - network errors
             metrics.t4_complete = time.monotonic()
             await _finalize_metrics()

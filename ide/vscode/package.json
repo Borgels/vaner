@@ -1,0 +1,50 @@
+{
+  "name": "vaner-cockpit",
+  "displayName": "Vaner Cockpit",
+  "description": "Local Vaner cockpit for VS Code and Cursor.",
+  "version": "0.1.0",
+  "publisher": "borgels",
+  "engines": {
+    "vscode": "^1.92.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:vaner.openCockpit",
+    "onCommand:vaner.configureOpenAIBaseUrl"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "vaner.openCockpit",
+        "title": "Vaner: Open Cockpit"
+      },
+      {
+        "command": "vaner.configureOpenAIBaseUrl",
+        "title": "Vaner: Configure OPENAI_BASE_URL"
+      }
+    ],
+    "configuration": {
+      "title": "Vaner",
+      "properties": {
+        "vaner.proxyUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8471",
+          "description": "Local Vaner proxy base URL."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "@types/vscode": "^1.92.0",
+    "typescript": "^5.6.3"
+  }
+}
