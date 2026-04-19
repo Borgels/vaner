@@ -21,6 +21,12 @@ pytest
 pre-commit run --all-files
 ```
 
+If dependency ranges change, regenerate hash-locked workflow/runtime dependency files:
+
+```bash
+make lockfiles
+```
+
 ## Pull Requests
 
 - Keep PRs focused and reviewable.
