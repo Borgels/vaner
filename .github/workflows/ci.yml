@@ -68,3 +68,7 @@ jobs:
           tmpdir="$(mktemp -d)"
           vaner init --profile minimal --path "$tmpdir"
           test -f "$tmpdir/.vaner/config.toml"
+      - name: Multi-backend example smoke-test
+        run: |
+          test -f examples/multi-backend/README.md
+          rg -n "Ollama|OpenAI-compatible" examples/multi-backend/README.md
