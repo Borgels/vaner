@@ -19,5 +19,7 @@ htmlcov/
 
 # Training pipeline lives in Borgels/Vaner-train (private repo)
 eval/
+!src/vaner/eval/
+!src/vaner/eval/**
 scripts/
 infra/
