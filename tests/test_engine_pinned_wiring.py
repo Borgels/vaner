@@ -11,6 +11,9 @@ from vaner.engine import VanerEngine
 from vaner.intent.adapter import CodeRepoAdapter
 from vaner.models.artefact import Artefact, ArtefactKind
 
+pytest.importorskip("sentence_transformers")
+pytestmark = pytest.mark.integration
+
 
 def _artefact(path: str) -> Artefact:
     now = time.time()

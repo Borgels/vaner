@@ -10,8 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: rhysd/actionlint@v1
+      - uses: reviewdog/action-actionlint@5eaffa19a1991ecc52b11eddcdd57760d1ac7e3d
       - name: Zizmor
-        uses: zizmorcore/zizmor-action@v0
+        uses: zizmorcore/zizmor-action@814f9778aceea8641503a8cd8f0cffebc55d790c # v0.5.3
         with:
           path: .github/workflows

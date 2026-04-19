@@ -23,7 +23,6 @@ jobs:
         uses: github/codeql-action/init@865f5f5c36632f18690a3d569fa0a764f2da0c3e # v3
         with:
           languages: python
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@865f5f5c36632f18690a3d569fa0a764f2da0c3e # v3
+          build-mode: none
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@865f5f5c36632f18690a3d569fa0a764f2da0c3e # v3

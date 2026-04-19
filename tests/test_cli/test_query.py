@@ -5,9 +5,14 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from vaner.cli.commands.query import run_query
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.store.artefacts import ArtefactStore
+
+pytest.importorskip("sentence_transformers")
+pytestmark = pytest.mark.integration
 
 
 def test_run_query_returns_injected_context_and_writes_inspect(temp_repo):

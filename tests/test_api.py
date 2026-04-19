@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
+
 from vaner import api
 
 
+@pytest.mark.integration
 def test_api_prepare_and_query(temp_repo):
+    pytest.importorskip("sentence_transformers")
     written = api.prepare(temp_repo)
     assert written >= 1
 

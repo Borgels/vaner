@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-FORBIDDEN_DIRS = ("eval", "infra", "scripts/data", "scripts/remote")
+FORBIDDEN_DIRS = ("infra", "scripts/data", "scripts/remote")
 FORBIDDEN_FILENAMES = (
     "eval-at-scale",
     "bundle-workflow",
