@@ -51,6 +51,8 @@ This adds a `Signed-off-by:` trailer to the commit.
 - Keep core focused on predictive context middleware.
 - Avoid adding workflow engines, model-specific abstractions, or plugin systems to core.
 - Prefer simple, inspectable behavior over hidden automation.
+- Do not commit training data, internal eval methodology, or moat-sensitive assets.
+  Those belong in the private `vaner-train` repository and are blocked by CI moat guards.
 
 
 ## Documentation
