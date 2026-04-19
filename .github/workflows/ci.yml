@@ -3,6 +3,8 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "0 3 * * *"
 
 jobs:
   verify:
@@ -34,7 +36,12 @@ jobs:
       - name: Type check
         run: mypy src
       - name: Tests
-        run: pytest tests --cov=src/vaner --cov-fail-under=80
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            pytest tests --cov=src/vaner --cov-fail-under=80
+          else
+            pytest tests -m "not slow" --cov=src/vaner --cov-fail-under=80
+          fi
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
