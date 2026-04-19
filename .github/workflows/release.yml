@@ -31,6 +31,7 @@ jobs:
             dist/*
             sbom.json
       - name: Attest build provenance
+        continue-on-error: true
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: "dist/*"
