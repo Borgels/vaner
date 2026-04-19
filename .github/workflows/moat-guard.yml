@@ -1,0 +1,32 @@
+name: Moat Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  no-moat-paths:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Block forbidden directories
+        run: |
+          for p in eval infra scripts/data scripts/remote; do
+            if [ -e "$p" ]; then
+              echo "forbidden path present: $p"
+              exit 1
+            fi
+          done
+      - name: Block moat-sensitive filenames
+        run: |
+          set -euo pipefail
+          bad="$(rg -n --hidden --glob '!.git/**' '(eval-at-scale|bundle-workflow|vaner_report|production-roadmap|release-audit)' . || true)"
+          if [ -n "$bad" ]; then
+            echo "$bad"
+            exit 1
+          fi
+      - name: Block vaner-train imports
+        run: |
+          rg -n 'import\s+vaner_train|from\s+vaner_train' src/ && exit 1 || true
+
