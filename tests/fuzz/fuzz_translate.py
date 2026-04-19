@@ -23,8 +23,12 @@ from urllib.parse import urlparse
 
 import atheris
 
-with atheris.instrument_imports():
-    from vaner.router.translate import detect_format
+# NOTE: Do not call `atheris.instrument_imports()` around vaner imports.
+# Atheris instruments every transitively imported module; vaner pulls in
+# fastapi, pydantic, numpy, lightgbm, etc., which segfaults the instrumenter.
+# The target (`detect_format`) is small and pure, so Atheris's fuzzer driver
+# alone (mutation over bytes) is sufficient to hit every branch.
+from vaner.router.translate import detect_format
 
 _VALID = frozenset({"openai", "anthropic", "google"})
 
@@ -43,7 +47,9 @@ def TestOneInput(data: bytes) -> None:
     if result in ("anthropic", "google"):
         host = (urlparse(url).hostname or "").lower().rstrip(".")
         if result == "anthropic":
-            assert host == "api.anthropic.com" or host.endswith(".anthropic.com"), f"false-positive anthropic for host={host!r} url={url!r}"
+            assert host == "api.anthropic.com" or host.endswith(
+                ".anthropic.com"
+            ), f"false-positive anthropic for host={host!r} url={url!r}"
         else:
             assert host.endswith(".googleapis.com") or host in {
                 "generativelanguage.googleapis.com",
