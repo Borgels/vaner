@@ -536,6 +536,10 @@ package_spec() {
   fi
 }
 
+github_package_spec() {
+  printf 'git+https://github.com/Borgels/vaner.git'
+}
+
 check_existing_vaner() {
   if ! command -v vaner >/dev/null 2>&1; then
     return 1
@@ -548,13 +552,28 @@ check_existing_vaner() {
 install_vaner_with_uv() {
   local spec
   spec="$(package_spec)"
-  run_cmd uv tool install --upgrade "$spec"
+  if run_cmd uv tool install --upgrade "$spec"; then
+    return 0
+  fi
+  if [[ -z "$VANER_VERSION" ]]; then
+    ui_warn "PyPI package 'vaner' not found yet. Falling back to GitHub source install."
+    run_cmd uv tool install --upgrade "$(github_package_spec)"
+    return 0
+  fi
+  return 1
 }
 
 install_vaner_with_pipx() {
   local spec
   spec="$(package_spec)"
-  run_cmd pipx install --force "$spec"
+  if ! run_cmd pipx install --force "$spec"; then
+    if [[ -z "$VANER_VERSION" ]]; then
+      ui_warn "PyPI package 'vaner' not found yet. Falling back to GitHub source install."
+      run_cmd pipx install --force "$(github_package_spec)"
+    else
+      return 1
+    fi
+  fi
   if [[ "$VANER_NO_MODIFY_PATH" != "1" ]]; then
     run_cmd pipx ensurepath
   fi
@@ -600,7 +619,7 @@ print_install_plan() {
   if [[ -n "$VANER_VERSION" ]]; then
     printf '  package: vaner==%s\n' "$VANER_VERSION"
   else
-    printf '  package: vaner (latest)\n'
+    printf '  package: vaner (latest; fallback to GitHub source if PyPI unavailable)\n'
   fi
   printf '  dry-run: %s\n' "$VANER_DRY_RUN"
   printf '  verify: %s\n' "$VANER_VERIFY"
