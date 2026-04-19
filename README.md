@@ -74,6 +74,11 @@ Most documentation lives at [docs.vaner.ai](https://docs.vaner.ai):
 - Support channels: `SUPPORT.md`
 - Examples: `examples/`
 
+## OpenSSF Best Practices
+
+Vaner is preparing an OpenSSF Best Practices submission.
+Badge URL placeholder (to be replaced after registration): https://www.bestpractices.dev/projects/TODO
+
 ## License
 
 Apache-2.0. Copyright 2026 Borgels Olsen Holding ApS (VAT DK39700425).

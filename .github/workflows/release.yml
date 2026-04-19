@@ -12,6 +12,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      slsa_subjects: ${{ steps.slsa_subjects.outputs.value }}
     permissions:
       attestations: write
       id-token: write
@@ -25,7 +27,7 @@ jobs:
           python-version: "3.11"
       - name: Build
         run: |
-          python -m pip install --upgrade 'pip==26.0.1' 'build==1.2.2.post1' 'cyclonedx-bom==4.6.1'
+          python -m pip install --require-hashes -r requirements/release.txt
           python -m build
       - name: Generate SBOM
         run: cyclonedx-py environment --output-format json --output-file sbom.json
@@ -36,6 +38,15 @@ jobs:
           path: |
             dist/*
             sbom.json
+      - name: Generate SLSA subjects
+        id: slsa_subjects
+        run: |
+          set -euo pipefail
+          {
+            sha256sum dist/*
+            sha256sum sbom.json
+          } | base64 --wrap=0 > /tmp/slsa-subjects.b64
+          echo "value=$(cat /tmp/slsa-subjects.b64)" >> "$GITHUB_OUTPUT"
       - name: Attest build provenance
         continue-on-error: true
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
@@ -55,3 +66,14 @@ jobs:
             gh release create "$TAG" --generate-notes
           fi
           gh release upload "$TAG" dist/* sbom.json --clobber
+
+  slsa-provenance:
+    needs: publish
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a # v2.1.0
+    with:
+      base64-subjects: ${{ needs.publish.outputs.slsa_subjects }}
+      upload-assets: true
