@@ -33,12 +33,16 @@ def load_config(repo_root: Path) -> VanerConfig:
         shadow_section = gateway_section.get("shadow", {})
         routes_section = gateway_section.get("routes", {})
         gateway = GatewayConfig(
-            passthrough_enabled=bool(passthrough_section.get("enabled", True)) if isinstance(passthrough_section, dict) else True,
+            passthrough_enabled=bool(passthrough_section.get("enabled", True))
+            if isinstance(passthrough_section, dict)
+            else True,
             routes={str(key): str(value) for key, value in routes_section.items()} if isinstance(routes_section, dict) else {},
             annotate_response_trailer=bool(annotate_section.get("response_trailer", False))
             if isinstance(annotate_section, dict)
             else False,
-            annotate_system_note=str(annotate_section.get("system_note", "off")) if isinstance(annotate_section, dict) else "off",
+            annotate_system_note=str(annotate_section.get("system_note", "off"))
+            if isinstance(annotate_section, dict)
+            else "off",
             shadow_rate=float(shadow_section.get("rate", 0.0)) if isinstance(shadow_section, dict) else 0.0,
         )
     else:

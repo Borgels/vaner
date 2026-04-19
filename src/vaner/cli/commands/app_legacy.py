@@ -104,7 +104,9 @@ def init(path: str | None = typer.Option(None, help="Repository root")) -> None:
     else:
         typer.echo("No local runtime detected on localhost ports (11434/1234/8000).")
         typer.echo("Recommended: curl -fsSL https://vaner.ai/install.sh | bash -s -- --with-ollama")
-    typer.echo(f"Hardware profile: device={hardware['device']} gpu_count={hardware['gpu_count']} vram_gb={hardware['vram_gb']}")
+    typer.echo(
+        f"Hardware profile: device={hardware['device']} gpu_count={hardware['gpu_count']} vram_gb={hardware['vram_gb']}"
+    )
     has_vscode = (repo_root / ".vscode").exists() or os.environ.get("TERM_PROGRAM") == "vscode"
     has_cursor = os.environ.get("CURSOR_TRACE_ID") is not None or os.environ.get("CURSOR_AGENT") is not None
     if has_vscode or has_cursor:

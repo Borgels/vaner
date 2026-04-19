@@ -85,7 +85,7 @@ class ComputeConfig(BaseModel):
     device: str = "auto"
     cpu_fraction: float = 0.2
     gpu_memory_fraction: float = 0.5
-    idle_only: bool = False
+    idle_only: bool = True
     idle_cpu_threshold: float = 0.6
     idle_gpu_threshold: float = 0.7
     embedding_device: str | None = None
