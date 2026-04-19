@@ -1,0 +1,19 @@
+name: Lock Threads
+
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dessant/lock-threads@fce16d66c31f0f997db74f2a2fcb8f6f3fb6a74d # v5
+        with:
+          issue-inactive-days: 30
+          pr-inactive-days: 30
+          process-only: "issues,prs"
+          issue-lock-reason: "resolved"
+          pr-lock-reason: "resolved"
+
