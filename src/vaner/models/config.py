@@ -91,6 +91,23 @@ class ComputeConfig(BaseModel):
     embedding_device: str | None = None
     exploration_concurrency: int = 4
     max_parallel_precompute: int = 1
+    max_cycle_seconds: int = 300
+    """Hard wall-clock cap for a single precompute cycle.
+
+    Prevents the ponder loop from running away if a backend stalls or the
+    frontier grows pathologically. ``0`` disables the cap (unbounded); any
+    positive value bounds the cycle to that many seconds. Vaner resumes on
+    the next cycle, so bounding here is safe.
+    """
+
+    max_session_minutes: int | None = None
+    """Optional cumulative cap for a continuous ``vaner daemon`` session.
+
+    ``None`` (default) means unbounded — the daemon keeps running until
+    stopped. When set, the daemon exits cleanly once the wall-clock since
+    ``daemon start`` exceeds this many minutes. Users who want Vaner to
+    never ponder for more than, say, 30 minutes can set ``30`` here.
+    """
 
 
 class ExplorationConfig(BaseModel):

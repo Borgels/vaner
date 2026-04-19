@@ -146,8 +146,17 @@ class VanerDaemon:
         repo_root = self.config.repo_root
         watcher = RepoChangeWatcher(repo_root)
         watcher.start()
+        session_started = time.monotonic()
+        session_budget_minutes = self.config.compute.max_session_minutes
+        session_deadline: float | None = None
+        if session_budget_minutes is not None and session_budget_minutes > 0:
+            session_deadline = session_started + float(session_budget_minutes) * 60.0
+            logger.info("Daemon session budget: %s minute(s)", session_budget_minutes)
         try:
             while self._running:
+                if session_deadline is not None and time.monotonic() >= session_deadline:
+                    logger.info("Daemon session budget exhausted after %s minute(s); exiting cleanly.", session_budget_minutes)
+                    break
                 changed_files = watcher.drain_changes()
                 if changed_files:
                     await self.run_once(changed_files=changed_files)

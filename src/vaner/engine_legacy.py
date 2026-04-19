@@ -652,6 +652,9 @@ class VanerEngine:
             if cpu_load > compute.idle_cpu_threshold or gpu_load > compute.idle_gpu_threshold:
                 self._last_explored_scenarios = []
                 return 0
+        cycle_deadline: float | None = None
+        if compute.max_cycle_seconds and compute.max_cycle_seconds > 0:
+            cycle_deadline = cycle_started + float(compute.max_cycle_seconds)
         governor = governor or PredictionGovernor()
         governor.reset()
         self._precompute_cycles += 1
@@ -760,6 +763,8 @@ class VanerEngine:
 
         # ── Exploration loop ─────────────────────────────────────────────────
         while governor.should_continue() and not frontier.is_saturated():
+            if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
+                break
             scenario = frontier.pop()
             if scenario is None:
                 break
