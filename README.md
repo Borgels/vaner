@@ -31,6 +31,14 @@ Asciinema demo: coming soon.
 ## Install
 
 ```bash
+curl -fsSL https://vaner.ai/install.sh | bash
+```
+
+Installer source for review: [`scripts/install.sh`](scripts/install.sh).
+
+From source:
+
+```bash
 pip install .
 ```
 

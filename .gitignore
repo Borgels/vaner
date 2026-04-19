@@ -21,5 +21,6 @@ htmlcov/
 eval/
 !src/vaner/eval/
 !src/vaner/eval/**
-scripts/
+scripts/*
+!scripts/install.sh
 infra/
