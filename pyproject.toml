@@ -81,7 +81,11 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B", "T20"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "slow: long-running integration tests",
+  "integration: tests that hit external systems",
+]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
