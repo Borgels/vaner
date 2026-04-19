@@ -110,9 +110,7 @@ def init(
     ),
     backend_url: str | None = typer.Option(None, "--backend-url", help="Override backend base_url."),
     backend_model: str | None = typer.Option(None, "--backend-model", help="Override backend model name."),
-    backend_api_key_env: str | None = typer.Option(
-        None, "--backend-api-key-env", help="Env var holding the cloud provider API key."
-    ),
+    backend_api_key_env: str | None = typer.Option(None, "--backend-api-key-env", help="Env var holding the cloud provider API key."),
     compute_preset: str | None = typer.Option(
         None,
         "--compute-preset",
