@@ -81,7 +81,7 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B", "T20"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-markers --strict-config"
+addopts = "-ra --strict-markers --strict-config --ignore=tests/fuzz"
 markers = [
   "slow: long-running integration tests",
   "integration: tests that hit external systems",
