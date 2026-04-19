@@ -1,11 +1,12 @@
 # Vaner
 
 [![CI](https://github.com/Borgels/Vaner/actions/workflows/ci.yml/badge.svg)](https://github.com/Borgels/Vaner/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Borgels/Vaner/actions/workflows/codeql.yml/badge.svg)](https://github.com/Borgels/Vaner/actions/workflows/codeql.yml)
 [![PyPI](https://img.shields.io/pypi/v/vaner)](https://pypi.org/project/vaner/)
 [![Python](https://img.shields.io/pypi/pyversions/vaner)](https://pypi.org/project/vaner/)
 [![License](https://img.shields.io/github/license/Borgels/Vaner)](LICENSE)
 [![Codecov](https://codecov.io/gh/Borgels/Vaner/branch/main/graph/badge.svg)](https://codecov.io/gh/Borgels/Vaner)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Borgels/Vaner/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Borgels/Vaner)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Borgels/vaner/badge)](https://scorecard.dev/viewer/?uri=github.com/Borgels/vaner)
 
 > Status: alpha (pre-1.0). Interfaces may evolve quickly while we stabilize core behavior.
 
@@ -18,7 +19,7 @@ serve the best context package quickly when the real prompt arrives.
 CLI walkthrough:
 
 ```bash
-vaner init --profile minimal --path .
+vaner init --path .
 vaner daemon start --no-once --path .
 vaner query "where is auth enforced?" --path .
 vaner inspect --last --path .
@@ -35,7 +36,7 @@ pip install .
 ## Quickstart
 
 ```bash
-vaner init --profile minimal --path .
+vaner init --path .
 vaner daemon start --no-once --path .
 vaner query "where is auth enforced?" --path .
 vaner inspect --last --path .
