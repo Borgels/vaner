@@ -66,4 +66,4 @@ jobs:
       - name: Multi-backend example smoke-test
         run: |
           test -f examples/multi-backend/README.md
-          grep -En "Ollama|OpenAI-compatible" examples/multi-backend/README.md
+          grep -En "backends.openai|vaner proxy|X-Vaner-Backend" examples/multi-backend/README.md
