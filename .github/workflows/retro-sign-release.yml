@@ -1,0 +1,68 @@
+name: Retro-sign release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to sign (for example, v0.1.0)
+        required: true
+        type: string
+
+permissions: read-all
+
+jobs:
+  sign-assets:
+    name: Sign existing release assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      attestations: write
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p signed
+          gh release download "$TAG" --dir signed
+
+      - name: Attest downloaded assets
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: "signed/*"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
+
+      - name: Sign each asset blob
+        working-directory: signed
+        run: |
+          set -euo pipefail
+          for f in *; do
+            case "$f" in
+              *.sig|*.pem|*.intoto.jsonl)
+                continue
+                ;;
+            esac
+            cosign sign-blob --yes \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.pem" \
+              "$f"
+          done
+
+      - name: Upload generated signatures and certificates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" signed/*.sig signed/*.pem --clobber
