@@ -153,6 +153,7 @@ def test_init_writes_mcp_configs(temp_repo, monkeypatch):
     fake_home = temp_repo / "home"
     fake_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
 
     result = runner.invoke(app.app, ["init", "--path", str(temp_repo)])
     assert result.exit_code == 0
