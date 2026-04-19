@@ -45,6 +45,13 @@ jobs:
       - name: Security audit
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         run: pip-audit
+      - name: Installer lint and dry-run smoke
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck scripts/install.sh
+          bash scripts/install.sh --dry-run --yes --backend uv
 
   examples-smoke:
     runs-on: ubuntu-latest
