@@ -1,0 +1,49 @@
+{
+  "adapt_weights_calls": 551,
+  "cache_thresholds_after": {
+    "full_hit_path": 0.55,
+    "full_hit_similarity": 0.55
+  },
+  "cache_thresholds_before": {
+    "full_hit_path": 0.7,
+    "full_hit_similarity": 0.7
+  },
+  "feature_coverage_pct": 100.0,
+  "gbdt_skip_reason": null,
+  "gbdt_trained": true,
+  "records_total": 1101,
+  "records_with_features": 1101,
+  "score_weights_after": [
+    0.3380403740592239,
+    0.33561519552110675,
+    0.009999700906254051,
+    0.15817236475670768,
+    0.15817236475670768
+  ],
+  "score_weights_before": [
+    0.35,
+    0.2,
+    0.25,
+    0.1,
+    0.1
+  ],
+  "score_weights_delta": [
+    -0.01196,
+    0.135615,
+    -0.24,
+    0.058172,
+    0.058172
+  ],
+  "source_multipliers_after": {
+    "arc": 1.0,
+    "graph": 1.0,
+    "llm_branch": 0.9,
+    "pattern": 1.2
+  },
+  "source_multipliers_before": {
+    "arc": 1.0,
+    "graph": 1.0,
+    "llm_branch": 0.9,
+    "pattern": 1.2
+  }
+}

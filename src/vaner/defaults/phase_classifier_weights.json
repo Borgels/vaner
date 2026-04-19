@@ -1,0 +1,116 @@
+{
+  "_comment": "Data-driven phase affinity weights for ConversationArcModel phase classification. Replaces purely rule-based _infer_phase() with learned soft weights. Each phase maps to a probability distribution over next query categories.",
+  "schema_version": "1",
+  "phases": [
+    "exploring",
+    "discovery",
+    "planning",
+    "building",
+    "stabilizing",
+    "validation"
+  ],
+  "categories": [
+    "review",
+    "planning",
+    "testing",
+    "debugging",
+    "implementation",
+    "cleanup",
+    "understanding"
+  ],
+  "phase_affinity": {
+    "exploring": {
+      "review": 0.142857,
+      "planning": 0.142857,
+      "testing": 0.142857,
+      "debugging": 0.142857,
+      "implementation": 0.142857,
+      "cleanup": 0.142857,
+      "understanding": 0.142857
+    },
+    "discovery": {
+      "review": 0.043207,
+      "planning": 0.044074,
+      "testing": 0.081697,
+      "debugging": 0.048613,
+      "implementation": 0.067692,
+      "cleanup": 0.04,
+      "understanding": 0.674717
+    },
+    "planning": {
+      "review": 0.060041,
+      "planning": 0.248579,
+      "testing": 0.13092,
+      "debugging": 0.051661,
+      "implementation": 0.106707,
+      "cleanup": 0.041086,
+      "understanding": 0.361007
+    },
+    "building": {
+      "review": 0.050915,
+      "planning": 0.055222,
+      "testing": 0.10026,
+      "debugging": 0.054766,
+      "implementation": 0.362686,
+      "cleanup": 0.054144,
+      "understanding": 0.322006
+    },
+    "stabilizing": {
+      "review": 0.057028,
+      "planning": 0.058987,
+      "testing": 0.14128,
+      "debugging": 0.165025,
+      "implementation": 0.148018,
+      "cleanup": 0.04418,
+      "understanding": 0.385482
+    },
+    "validation": {
+      "review": 0.104811,
+      "planning": 0.06942,
+      "testing": 0.325158,
+      "debugging": 0.05577,
+      "implementation": 0.084863,
+      "cleanup": 0.040742,
+      "understanding": 0.319236
+    }
+  },
+  "depth_prior": {
+    "early": {
+      "review": 0.062437,
+      "planning": 0.070484,
+      "testing": 0.138643,
+      "debugging": 0.052022,
+      "implementation": 0.105372,
+      "cleanup": 0.040667,
+      "understanding": 0.530374
+    },
+    "mid": {
+      "review": 0.053783,
+      "planning": 0.06015,
+      "testing": 0.121038,
+      "debugging": 0.054001,
+      "implementation": 0.098736,
+      "cleanup": 0.041266,
+      "understanding": 0.571026
+    },
+    "late": {
+      "review": 0.05511,
+      "planning": 0.0613,
+      "testing": 0.121484,
+      "debugging": 0.054917,
+      "implementation": 0.101743,
+      "cleanup": 0.04127,
+      "understanding": 0.564177
+    },
+    "single": {
+      "review": 0.142857,
+      "planning": 0.142857,
+      "testing": 0.142857,
+      "debugging": 0.142857,
+      "implementation": 0.142857,
+      "cleanup": 0.142857,
+      "understanding": 0.142857
+    }
+  },
+  "turn_length_profile": {}
+}

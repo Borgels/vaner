@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  vaner:
+    build: .
+    ports:
+      - "8471:8471"
+    volumes:
+      # Mount your repository into the container.
+      # Vaner will store its state in .vaner/ inside this directory.
+      - "${REPO_ROOT:-.}:/repo"
+    environment:
+      # REQUIRED: Your LLM endpoint and model.
+      # Can also be set in /repo/.vaner/config.toml (created by `vaner init`).
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - VANER_REPO_ROOT=/repo
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8471/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Optional: Prometheus scraper target.
+  # Uncomment and point your prometheus.yml at vaner:8471/metrics.
+  #
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml
