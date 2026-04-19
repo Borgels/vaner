@@ -43,7 +43,7 @@ jobs:
       - name: Pre-commit
         run: pre-commit run --all-files
       - name: Type check
-        run: mypy src/vaner/__init__.py src/vaner/server src/vaner/cli/main.py
+        run: mypy src/vaner/__init__.py src/vaner/server.py src/vaner/cli/main.py
       - name: Tests
         run: pytest tests -m "not slow and not integration" --cov=src/vaner --cov-fail-under=70
       - name: Upload coverage

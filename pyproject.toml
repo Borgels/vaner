@@ -96,7 +96,7 @@ warn_unused_configs = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["vaner.__init__", "vaner.server.*", "vaner.cli.main"]
+module = ["vaner.__init__", "vaner.server", "vaner.cli.main"]
 strict = true
 
 [tool.coverage.run]
