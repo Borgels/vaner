@@ -39,8 +39,17 @@ def detect_format(base_url: str) -> str:
 
     Matches on the parsed hostname (never the path) to avoid confusable URLs
     like ``https://evil.example/anthropic.com`` being classified as Anthropic.
+    Malformed inputs are tolerated: any parsing error falls back to the
+    default ``"openai"`` label.
     """
-    host = (urlparse(base_url).hostname or "").lower().rstrip(".")
+    try:
+        parsed_host = urlparse(base_url).hostname
+    except ValueError:
+        # urlparse raises on a few pathological inputs (e.g. invalid IPv6
+        # brackets). We are not in a position to classify these; caller
+        # should treat unknown URLs as the OpenAI-compatible default.
+        return "openai"
+    host = (parsed_host or "").lower().rstrip(".")
     if not host:
         return "openai"
     if host in _ANTHROPIC_HOSTS or host.endswith(_ANTHROPIC_SUFFIXES):

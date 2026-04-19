@@ -69,6 +69,19 @@ def test_detect_format_resists_substring_confusion(url: str) -> None:
     assert detect_format(url) == "openai"
 
 
-@pytest.mark.parametrize("url", ["", "not a url", "://", "ftp://"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "",
+        "not a url",
+        "://",
+        "ftp://",
+        # Fuzz-discovered: urlparse raises ValueError on malformed IPv6 brackets
+        # like "//[//////...". detect_format must swallow it and default to "openai".
+        "//[/////////////////////////////////\n",
+        "http://[::1:bad",
+        "http://[gggg::1]/",
+    ],
+)
 def test_detect_format_handles_malformed_inputs(url: str) -> None:
     assert detect_format(url) == "openai"
