@@ -21,12 +21,12 @@ jobs:
       - name: Package extension
         run: npx @vscode/vsce package
       - name: Publish to VS Code Marketplace
-        if: ${{ secrets.VSCE_PAT != '' }}
-        run: npx @vscode/vsce publish --packagePath *.vsix
+        if: ${{ env.VSCE_PAT != '' }}
+        run: npx @vscode/vsce publish --packagePath ./*.vsix
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
       - name: Publish to Open VSX
-        if: ${{ secrets.OVSX_PAT != '' }}
-        run: npx ovsx publish *.vsix -p "$OVSX_PAT"
+        if: ${{ env.OVSX_PAT != '' }}
+        run: npx ovsx publish ./*.vsix -p "$OVSX_PAT"
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
