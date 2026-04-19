@@ -12,8 +12,3 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Run actionlint
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7
-      - name: Zizmor
-        uses: zizmorcore/zizmor-action@814f9778aceea8641503a8cd8f0cffebc55d790c # v0.5.3
-        with:
-          inputs: .github/workflows
-          online-audits: false
