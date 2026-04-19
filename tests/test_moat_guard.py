@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
+import ast
 import re
-import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -42,13 +42,20 @@ def test_no_moat_markers_under_src_vaner() -> None:
 
 
 def test_no_vaner_train_imports() -> None:
-    result = subprocess.run(
-        ["python", "scripts/check_no_vaner_train_imports.py"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    offenders: list[str] = []
+    src = REPO_ROOT / "src" / "vaner"
+    for entry in src.rglob("*.py"):
+        tree = ast.parse(entry.read_text(encoding="utf-8"), filename=str(entry))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if "vaner_train" in alias.name:
+                        offenders.append(f"{entry}:{node.lineno} import {alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if "vaner_train" in module:
+                    offenders.append(f"{entry}:{node.lineno} from {module}")
+    assert not offenders, f"Vaner-train imports detected: {offenders}"
 
 
 def test_no_forbidden_root_directories() -> None:
