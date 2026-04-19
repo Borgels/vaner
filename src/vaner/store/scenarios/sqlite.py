@@ -199,9 +199,7 @@ class ScenarioStore:
             counts["total"] += count
         return counts
 
-    async def _load_evidence_for_scenarios(
-        self, db: aiosqlite.Connection, scenario_ids: list[str]
-    ) -> dict[str, list[aiosqlite.Row]]:
+    async def _load_evidence_for_scenarios(self, db: aiosqlite.Connection, scenario_ids: list[str]) -> dict[str, list[aiosqlite.Row]]:
         if not scenario_ids:
             return {}
         placeholders = ", ".join("?" for _ in scenario_ids)

@@ -81,9 +81,7 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
         )
         assert "count" in legacy_metrics.root.content[0].text or "No metrics yet" in legacy_metrics.root.content[0].text
 
-        legacy_context = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "legacy_get_context", "arguments": {}})
-        )
+        legacy_context = await call_handler(CallToolRequest(method="tools/call", params={"name": "legacy_get_context", "arguments": {}}))
         assert legacy_context.root.isError is True
 
     asyncio.run(_run())
@@ -94,9 +92,7 @@ def test_mcp_unknown_tool_records_error_telemetry(temp_repo):
         await _seed_scenario(temp_repo)
         server = build_server(temp_repo)
         call_handler = server.request_handlers[CallToolRequest]
-        result = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "unknown_tool", "arguments": {}})
-        )
+        result = await call_handler(CallToolRequest(method="tools/call", params={"name": "unknown_tool", "arguments": {}}))
         assert result.root.isError is True
 
         async with aiosqlite.connect(temp_repo / ".vaner" / "metrics.db") as db:

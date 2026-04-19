@@ -650,10 +650,7 @@ def scenarios_list(
     typer.echo(f"Scenarios ({len(rows)})")
     typer.echo("=" * 40)
     for row in rows:
-        typer.echo(
-            f"{row['id']} [{row['kind']}] score={row['score']:.3f} "
-            f"freshness={row['freshness']} entities={len(row['entities'])}"
-        )
+        typer.echo(f"{row['id']} [{row['kind']}] score={row['score']:.3f} freshness={row['freshness']} entities={len(row['entities'])}")
 
 
 @scenarios_app.command("show")
@@ -889,12 +886,7 @@ def status(
     )
     typer.echo(f"decision: {payload['last_decision'] or 'none'}")
     typer.echo(f"scenarios:{payload['scenarios_ready']}")
-    typer.echo(
-        "freshness:"
-        f" fresh={scenario_counts['fresh']}"
-        f" recent={scenario_counts['recent']}"
-        f" stale={scenario_counts['stale']}"
-    )
+    typer.echo(f"freshness: fresh={scenario_counts['fresh']} recent={scenario_counts['recent']} stale={scenario_counts['stale']}")
 
 
 @app.command("doctor")

@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
+
 from vaner.daemon.engine.generator import (
     agenerate_diff_summary,
     agenerate_file_summary,
@@ -16,10 +17,10 @@ from vaner.daemon.engine.scenario_builder import build_scenarios
 from vaner.daemon.engine.scorer import score_paths
 from vaner.daemon.signals.fs_watcher import RepoChangeWatcher, scan_repo_files
 from vaner.daemon.signals.git_reader import read_git_diff, read_git_state
+from vaner.models.artefact import Artefact
 from vaner.models.config import VanerConfig
 from vaner.models.session import WorkingSet
 from vaner.models.signal import SignalEvent
-from vaner.models.artefact import Artefact
 from vaner.store.artefacts import ArtefactStore
 from vaner.store.scenarios import ScenarioStore
 from vaner.store.telemetry import TelemetryStore

@@ -183,9 +183,7 @@ def build_server(repo_root: Path) -> Server:
                 ),
                 Tool(
                     name="legacy_get_context",
-                    description=(
-                        "Deprecated compatibility tool. Retrieve repository context for a prompt."
-                    ),
+                    description=("Deprecated compatibility tool. Retrieve repository context for a prompt."),
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -204,9 +202,7 @@ def build_server(repo_root: Path) -> Server:
                 ),
                 Tool(
                     name="legacy_precompute",
-                    description=(
-                        "Deprecated compatibility tool. Trigger a background precompute cycle."
-                    ),
+                    description=("Deprecated compatibility tool. Trigger a background precompute cycle."),
                     inputSchema={
                         "type": "object",
                         "properties": {},

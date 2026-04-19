@@ -48,9 +48,7 @@ def load_config(repo_root: Path) -> VanerConfig:
         if annotate_value not in {"off", "min", "full"}:
             annotate_value = "off"
         gateway = GatewayConfig(
-            passthrough_enabled=bool(passthrough_section.get("enabled", False))
-            if isinstance(passthrough_section, dict)
-            else False,
+            passthrough_enabled=bool(passthrough_section.get("enabled", False)) if isinstance(passthrough_section, dict) else False,
             routes={str(key): str(value) for key, value in routes_section.items()} if isinstance(routes_section, dict) else {},
             annotate_response_trailer=bool(annotate_section.get("response_trailer", False))
             if isinstance(annotate_section, dict)

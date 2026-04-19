@@ -109,11 +109,13 @@ def extract_code_relationship_edges(repo_root: Path) -> list[RelationshipEdge]:
                 # Relative JS/TS imports.
                 resolved = (path.parent / target).with_suffix(path.suffix)
                 if resolved.exists():
-                    target_key = f"file:{str(resolved.relative_to(repo_root)).replace('\\', '/')}"
+                    normalized_resolved = str(resolved.relative_to(repo_root)).replace("\\", "/")
+                    target_key = f"file:{normalized_resolved}"
                 else:
                     continue
             elif (repo_root / target).exists():
-                target_key = f"file:{target.replace('\\', '/')}"
+                normalized_target = target.replace("\\", "/")
+                target_key = f"file:{normalized_target}"
             else:
                 continue
             edges.append(RelationshipEdge(source_key=f"file:{rel}", target_key=target_key, kind="imports"))
