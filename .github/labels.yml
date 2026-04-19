@@ -1,0 +1,34 @@
+- name: bug
+  color: d73a4a
+  description: Something is broken
+- name: feat
+  color: a2eeef
+  description: New user-facing capability
+- name: docs
+  color: 0075ca
+  description: Documentation updates
+- name: chore
+  color: cfd3d7
+  description: Repository maintenance work
+- name: ci
+  color: 5319e7
+  description: CI/CD and automation changes
+- name: refactor
+  color: fbca04
+  description: Internal code restructuring
+- name: test
+  color: 0e8a16
+  description: Test-only changes
+- name: good first issue
+  color: 7057ff
+  description: Good for first-time contributors
+- name: help wanted
+  color: 008672
+  description: Maintainers would like help
+- name: skip-changelog
+  color: e4e669
+  description: Exclude from generated changelog
+- name: breaking-change
+  color: b60205
+  description: Introduces a breaking change
+
