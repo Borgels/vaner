@@ -59,3 +59,19 @@ This adds a `Signed-off-by:` trailer to the commit.
 
 User-facing documentation is published at [docs.vaner.ai](https://docs.vaner.ai).
 Keep repository docs minimal and point broad usage guidance there.
+
+## PyPI Trusted Publishing Checklist
+
+Vaner uses PyPI Trusted Publishing for release tags.
+
+Before expecting a tagged release to publish to PyPI:
+
+1. Open `https://pypi.org/manage/project/vaner/settings/publishing/`.
+2. Add a trusted publisher for:
+   - Owner: `Borgels`
+   - Repository: `vaner`
+   - Workflow filename: `release.yml`
+   - Environment name: leave empty
+3. Verify the GitHub release workflow keeps `id-token: write`.
+
+If this is not configured yet, the `Publish to PyPI` step is non-fatal and can be retried after setup.
