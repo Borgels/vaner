@@ -45,7 +45,7 @@ jobs:
             ${{ env.IMAGE_NAME }}:latest
 
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        uses: aquasecurity/trivy-action@876cf04c63f65e9799bcf1043b584e72469c7143 # v0.35.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build_push.outputs.digest }}
           format: sarif
