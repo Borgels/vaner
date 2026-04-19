@@ -28,4 +28,6 @@ jobs:
           fi
       - name: Block vaner-train imports
         run: |
-          rg -n 'import\s+vaner_train|from\s+vaner_train' src/ && exit 1 || true
+          if rg -n 'import\s+vaner_train|from\s+vaner_train' src/; then
+            exit 1
+          fi
