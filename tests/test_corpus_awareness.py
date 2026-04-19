@@ -43,7 +43,14 @@ class NotesAdapter(CodeRepoAdapter):
         ]
 
     async def extract_relationships(self) -> list[RelationshipEdge]:
-        return [RelationshipEdge(source_key="note:review-checklist", target_key="file:sample.py", kind="references", corpus_id=self.corpus_id)]
+        return [
+            RelationshipEdge(
+                source_key="note:review-checklist",
+                target_key="file:sample.py",
+                kind="references",
+                corpus_id=self.corpus_id,
+            )
+        ]
 
 
 @pytest.mark.asyncio

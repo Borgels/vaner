@@ -24,14 +24,14 @@ def validate_backend_config(config: VanerConfig) -> None:
     if not backend.base_url.strip():
         raise ValueError(
             "Vaner proxy requires [backend] base_url to be set in .vaner/config.toml\n"
-            "  Example (OpenAI):    base_url = \"https://api.openai.com/v1\"\n"
-            "  Example (local):     base_url = \"http://127.0.0.1:11434/v1\"\n"
+            '  Example (OpenAI):    base_url = "https://api.openai.com/v1"\n'
+            '  Example (local):     base_url = "http://127.0.0.1:11434/v1"\n'
             "Run `vaner init` to regenerate a config template."
         )
     if not backend.model.strip():
         raise ValueError(
             "Vaner proxy requires [backend] model to be set in .vaner/config.toml\n"
-            "  Example:  model = \"gpt-4o\"\n"
+            '  Example:  model = "gpt-4o"\n'
             "Run `vaner init` to regenerate a config template."
         )
 

@@ -15,6 +15,13 @@ _GO_IMPORT = re.compile(r'^\s*"([^"]+)"', re.MULTILINE)
 _RUST_USE = re.compile(r"""^\s*(?:use|mod)\s+([a-zA-Z0-9_:]+)""", re.MULTILINE)
 
 
+def _compat_relpath(rel: str) -> str:
+    """Map legacy compatibility filenames back to stable public paths."""
+    if rel.endswith("_legacy.py"):
+        return rel.replace("_legacy.py", ".py")
+    return rel
+
+
 def _safe_read(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace")
@@ -95,7 +102,7 @@ def extract_code_relationship_edges(repo_root: Path) -> list[RelationshipEdge]:
     for path in repo_root.rglob("*"):
         if not path.is_file():
             continue
-        rel = str(path.relative_to(repo_root))
+        rel = _compat_relpath(str(path.relative_to(repo_root)))
         if any(part in {".git", ".venv", "__pycache__", ".vaner"} for part in path.relative_to(repo_root).parts):
             continue
 
@@ -113,7 +120,7 @@ def extract_code_relationship_edges(repo_root: Path) -> list[RelationshipEdge]:
                 else:
                     continue
             elif (repo_root / target).exists():
-                target_key = f"file:{target}"
+                target_key = f"file:{_compat_relpath(target)}"
             else:
                 continue
             edges.append(RelationshipEdge(source_key=f"file:{rel}", target_key=target_key, kind="imports"))

@@ -113,9 +113,7 @@ class CorpusReasoner:
                 question = str(item.get("question", "")).strip()
                 if not question:
                     continue
-                file_paths = [
-                    path for path in _as_str_list(item.get("file_paths", [])) if path in normalized_available
-                ]
+                file_paths = [path for path in _as_str_list(item.get("file_paths", [])) if path in normalized_available]
                 if not file_paths:
                     continue
                 scenarios.append(

@@ -125,23 +125,17 @@ class CorpusAdapter(Protocol):
 
     corpus_type: str
 
-    async def list_items(self) -> list[CorpusItem]:
-        ...
+    async def list_items(self) -> list[CorpusItem]: ...
 
-    async def get_item(self, key: str) -> CorpusItem:
-        ...
+    async def get_item(self, key: str) -> CorpusItem: ...
 
-    async def detect_mutations(self, since: float) -> list[MutationEvent]:
-        ...
+    async def detect_mutations(self, since: float) -> list[MutationEvent]: ...
 
-    async def extract_relationships(self) -> list[RelationshipEdge]:
-        ...
+    async def extract_relationships(self) -> list[RelationshipEdge]: ...
 
-    async def check_quality(self) -> list[QualityIssue]:
-        ...
+    async def check_quality(self) -> list[QualityIssue]: ...
 
-    async def get_context_for_reasoning(self) -> ReasonerContext:
-        ...
+    async def get_context_for_reasoning(self) -> ReasonerContext: ...
 
 
 class CodeRepoAdapter:
@@ -188,6 +182,10 @@ class CodeRepoAdapter:
             raise KeyError(f"Unsupported key: {key}")
         rel = key.split(":", 1)[1]
         path = (self.repo_root / rel).resolve()
+        try:
+            path.relative_to(self.repo_root)
+        except ValueError as exc:
+            raise ValueError(f"Path escapes repository root: {rel}") from exc
         text = ""
         if path.exists() and path.is_file():
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -248,9 +246,7 @@ class CodeRepoAdapter:
     async def get_context_for_reasoning(self) -> ReasonerContext:
         git_state = read_git_state(self.repo_root)
         summary = (
-            f"branch={git_state.get('branch', '')}\n"
-            f"recent_diff={git_state.get('recent_diff', '')}\n"
-            f"staged={git_state.get('staged', '')}\n"
+            f"branch={git_state.get('branch', '')}\nrecent_diff={git_state.get('recent_diff', '')}\nstaged={git_state.get('staged', '')}\n"
         )
         return ReasonerContext(
             corpus_type=self.corpus_type,

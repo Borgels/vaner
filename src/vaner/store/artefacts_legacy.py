@@ -166,9 +166,7 @@ class ArtefactStore:
                 )
                 """
             )
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_validated_patterns_category ON validated_patterns(trigger_category)"
-            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_validated_patterns_category ON validated_patterns(trigger_category)")
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_validated_patterns_confirmations ON validated_patterns(confirmation_count DESC)"
             )
@@ -213,9 +211,7 @@ class ArtefactStore:
                 )
                 """
             )
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_workflow_phase_updated_at ON workflow_phase_summaries(updated_at DESC)"
-            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_workflow_phase_updated_at ON workflow_phase_summaries(updated_at DESC)")
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS pinned_facts (
@@ -304,6 +300,16 @@ class ArtefactStore:
                 CREATE TABLE IF NOT EXISTS learning_state (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prior_divergence (
+                    category TEXT PRIMARY KEY,
+                    kl_divergence REAL NOT NULL,
+                    sample_count INTEGER NOT NULL,
                     updated_at REAL NOT NULL
                 )
                 """
@@ -623,9 +629,7 @@ class ArtefactStore:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
-        return [
-            SignalEvent(id=row[0], source=row[1], kind=row[2], timestamp=row[3], payload=json.loads(row[4])) for row in rows
-        ]
+        return [SignalEvent(id=row[0], source=row[1], kind=row[2], timestamp=row[3], payload=json.loads(row[4])) for row in rows]
 
     async def purge_old_signal_events(self, *, max_age_seconds: int) -> int:
         cutoff = time.time() - max_age_seconds
@@ -863,10 +867,7 @@ class ArtefactStore:
         if not entries:
             return 0
         now = time.time()
-        rows = [
-            (str(uuid.uuid4()), now, float(priority), json.dumps(payload))
-            for payload, priority in entries
-        ]
+        rows = [(str(uuid.uuid4()), now, float(priority), json.dumps(payload)) for payload, priority in entries]
         async with aiosqlite.connect(self.db_path) as db:
             await db.executemany(
                 """
@@ -926,10 +927,7 @@ class ArtefactStore:
                     INSERT INTO relationship_edges(source_key, target_key, kind, updated_at, corpus_id)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    [
-                        (source_key, target_key, kind, time.time(), corpus_id)
-                        for source_key, target_key, kind, corpus_id in unique_edges
-                    ],
+                    [(source_key, target_key, kind, time.time(), corpus_id) for source_key, target_key, kind, corpus_id in unique_edges],
                 )
             await db.commit()
 
@@ -1362,8 +1360,7 @@ class ArtefactStore:
         limit: int = 50,
     ) -> list[dict[str, object]]:
         query = (
-            "SELECT previous_category, category, previous_macro, prompt_macro, transition_count, last_seen "
-            "FROM habit_transitions WHERE 1=1"
+            "SELECT previous_category, category, previous_macro, prompt_macro, transition_count, last_seen FROM habit_transitions WHERE 1=1"
         )
         params: list[object] = []
         if previous_category is not None:
@@ -1464,9 +1461,7 @@ class ArtefactStore:
                 count_row = await count_cursor.fetchone()
                 count = int(count_row[0] or 0) if count_row is not None else 0
                 if count >= self._PINNED_FACTS_MAX:
-                    raise ValueError(
-                        f"Pinned facts overflow: maximum {self._PINNED_FACTS_MAX} entries allowed. Remove one before adding."
-                    )
+                    raise ValueError(f"Pinned facts overflow: maximum {self._PINNED_FACTS_MAX} entries allowed. Remove one before adding.")
             await db.execute(
                 """
                 INSERT INTO pinned_facts(scope, key, value, scoring_hint_json, created_at, updated_at)
@@ -1500,10 +1495,7 @@ class ArtefactStore:
             return cursor.rowcount > 0
 
     async def list_pinned_facts(self, *, scope: str | None = None) -> list[dict[str, object]]:
-        query = (
-            "SELECT scope, key, value, scoring_hint_json, created_at, updated_at "
-            "FROM pinned_facts"
-        )
+        query = "SELECT scope, key, value, scoring_hint_json, created_at, updated_at FROM pinned_facts"
         params: list[object] = []
         if scope is not None:
             scope_normalized = scope.strip().lower()
@@ -1548,15 +1540,13 @@ class ArtefactStore:
                 continue
             deduped[(scope, key)] = row
         if len(deduped) > self._PINNED_FACTS_MAX:
-            raise ValueError(
-                f"Pinned facts overflow: maximum {self._PINNED_FACTS_MAX} entries allowed, got {len(deduped)}."
-            )
+            raise ValueError(f"Pinned facts overflow: maximum {self._PINNED_FACTS_MAX} entries allowed, got {len(deduped)}.")
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN")
             try:
                 await db.execute("DELETE FROM pinned_facts")
                 now = time.time()
-                for (_scope_key, row) in deduped.items():
+                for _scope_key, row in deduped.items():
                     key = str(row.get("key", "")).strip()
                     value = str(row.get("value", ""))
                     scope = str(row.get("scope", "user")).strip().lower()
@@ -1637,8 +1627,7 @@ class ArtefactStore:
 
     async def get_workflow_phase_summary(self, *, session_id: str | None = None) -> dict[str, object] | None:
         query = (
-            "SELECT session_id, phase, dominant_category, recent_categories_json, recent_macro, updated_at "
-            "FROM workflow_phase_summaries"
+            "SELECT session_id, phase, dominant_category, recent_categories_json, recent_macro, updated_at FROM workflow_phase_summaries"
         )
         params: tuple[object, ...]
         if session_id is not None:
@@ -1674,3 +1663,32 @@ class ArtefactStore:
             cursor = await db.execute("DELETE FROM query_history WHERE timestamp < ?", (cutoff,))
             await db.commit()
             return cursor.rowcount
+
+    async def upsert_prior_divergence(self, category: str, kl_divergence: float, sample_count: int) -> None:
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO prior_divergence(category, kl_divergence, sample_count, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(category) DO UPDATE SET
+                    kl_divergence = excluded.kl_divergence,
+                    sample_count = excluded.sample_count,
+                    updated_at = excluded.updated_at
+                """,
+                (category, float(kl_divergence), int(sample_count), now),
+            )
+            await db.commit()
+
+    async def list_prior_divergence(self) -> list[dict[str, object]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT category, kl_divergence, sample_count, updated_at
+                FROM prior_divergence
+                ORDER BY kl_divergence DESC
+                """
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]

@@ -15,10 +15,10 @@ from vaner.intent.frontier import (
     freshness_decay,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _scenario(
     files: list[str],
@@ -42,6 +42,7 @@ def _scenario(
 # file_set_fingerprint
 # ---------------------------------------------------------------------------
 
+
 def test_fingerprint_order_independent() -> None:
     assert file_set_fingerprint(["a.py", "b.py"]) == file_set_fingerprint(["b.py", "a.py"])
 
@@ -53,6 +54,7 @@ def test_fingerprint_dedup() -> None:
 # ---------------------------------------------------------------------------
 # depth_discount
 # ---------------------------------------------------------------------------
+
 
 def test_depth_discount_zero_is_full() -> None:
     assert depth_discount(0) == 1.0
@@ -71,6 +73,7 @@ def test_depth_discount_floor() -> None:
 # freshness_decay
 # ---------------------------------------------------------------------------
 
+
 def test_freshness_recent_is_high() -> None:
     assert freshness_decay(time.time()) > 0.9
 
@@ -82,6 +85,7 @@ def test_freshness_old_is_low() -> None:
 # ---------------------------------------------------------------------------
 # ExplorationScenario.is_trivial
 # ---------------------------------------------------------------------------
+
 
 def test_is_trivial_graph_depth0() -> None:
     s = _scenario(["a.py"], source="graph", depth=0)
@@ -101,6 +105,7 @@ def test_is_trivial_graph_depth1_not_trivial() -> None:
 # ---------------------------------------------------------------------------
 # ExplorationFrontier — push / pop basics
 # ---------------------------------------------------------------------------
+
 
 def test_push_and_pop_order() -> None:
     f = ExplorationFrontier(max_size=10, min_priority=0.01)
@@ -177,6 +182,7 @@ def test_max_size_rejection() -> None:
 # Jaccard deduplication
 # ---------------------------------------------------------------------------
 
+
 def test_jaccard_dedup_blocks_similar() -> None:
     f = ExplorationFrontier(dedup_threshold=0.7, min_priority=0.01)
     s1 = _scenario(["a.py", "b.py", "c.py"])
@@ -205,6 +211,7 @@ def test_jaccard_allows_distinct() -> None:
 # ---------------------------------------------------------------------------
 # mark_explored / is_saturated
 # ---------------------------------------------------------------------------
+
 
 def test_mark_explored_prevents_readmission() -> None:
     f = ExplorationFrontier(min_priority=0.01)
@@ -275,6 +282,7 @@ def test_not_saturated_below_threshold() -> None:
 # Feedback / multipliers
 # ---------------------------------------------------------------------------
 
+
 def test_feedback_hit_boosts_multiplier() -> None:
     f = ExplorationFrontier()
     original = f.source_multipliers["graph"]
@@ -306,6 +314,7 @@ def test_feedback_cap_lower() -> None:
 # ---------------------------------------------------------------------------
 # source_multipliers affect effective priority in push
 # ---------------------------------------------------------------------------
+
 
 def test_multiplier_scales_effective_priority() -> None:
     f = ExplorationFrontier(min_priority=0.01)
@@ -352,6 +361,7 @@ def test_layer_bonus_applied_once_for_effective_priority() -> None:
 # seed_from_arc (cold-start path)
 # ---------------------------------------------------------------------------
 
+
 def test_seed_from_arc_cold_start() -> None:
     from vaner.intent.arcs import ConversationArcModel
 
@@ -393,6 +403,7 @@ def test_seed_from_workflow_phase_creates_strategic_scenarios() -> None:
 # ---------------------------------------------------------------------------
 # seed_from_patterns
 # ---------------------------------------------------------------------------
+
 
 def test_seed_from_patterns() -> None:
     f = ExplorationFrontier(min_priority=0.01)
@@ -439,8 +450,10 @@ def test_seed_from_prompt_macros() -> None:
 # ExplorationConfig validation
 # ---------------------------------------------------------------------------
 
+
 def test_exploration_config_llm_gate_valid() -> None:
     from vaner.models.config import ExplorationConfig
+
     cfg = ExplorationConfig(llm_gate="none")
     assert cfg.llm_gate == "none"
     cfg2 = ExplorationConfig(llm_gate="all")
@@ -449,13 +462,16 @@ def test_exploration_config_llm_gate_valid() -> None:
 
 def test_exploration_config_llm_gate_invalid() -> None:
     from pydantic import ValidationError
+
     from vaner.models.config import ExplorationConfig
+
     with pytest.raises(ValidationError):
         ExplorationConfig(llm_gate="non-trivial")  # hyphen instead of underscore
 
 
 def test_exploration_config_presets_have_correct_gates() -> None:
     from vaner.models.config import ExplorationConfig
+
     assert ExplorationConfig.conservative().llm_gate == "none"
     assert ExplorationConfig.normal().llm_gate == "non_trivial"
     assert ExplorationConfig.aggressive().llm_gate == "non_trivial"

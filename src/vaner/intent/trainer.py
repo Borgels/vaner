@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from pathlib import Path
-import random
 
-from vaner.learning.reward import RewardInput, compute_reward
 from vaner.intent.scorer import IntentScorer
+from vaner.learning.reward import RewardInput, compute_reward
 from vaner.store.artefacts import ArtefactStore
 
 FEATURE_SCHEMA_VERSION = "v2"
@@ -189,3 +189,65 @@ class IntentTrainer:
             return None
         self.last_train_metrics["trained"] = True
         return trained_path
+
+
+@dataclass(slots=True)
+class RetrainDecision:
+    should_retrain: bool
+    reason: str
+    bucket: str | None = None
+
+
+class RetrainSignal:
+    """Heuristic retrain trigger based on recent error and drift."""
+
+    def __init__(
+        self,
+        *,
+        baseline_mae: float,
+        min_new_samples: int = 50,
+        min_bucket_samples: int = 10,
+        retrain_cooldown_s: float = 900.0,
+    ) -> None:
+        self.baseline_mae = float(baseline_mae)
+        self.min_new_samples = int(min_new_samples)
+        self.min_bucket_samples = int(min_bucket_samples)
+        self.retrain_cooldown_s = float(retrain_cooldown_s)
+        self._bucket_errors: dict[str, list[float]] = {}
+        self._new_samples = 0
+        self._last_retrain_at = 0.0
+
+    def observe(self, bucket: str, *, pred: float, label: float) -> None:
+        err = abs(float(pred) - float(label))
+        self._bucket_errors.setdefault(bucket, []).append(err)
+        self._new_samples += 1
+
+    def should_retrain(self, *, idle_duration_s: float, dist_kl: dict[str, float]) -> RetrainDecision:
+        if idle_duration_s <= 0.0:
+            return RetrainDecision(False, "not_idle")
+        if self._new_samples < self.min_new_samples:
+            return RetrainDecision(False, "insufficient_new_samples")
+        if idle_duration_s < self.retrain_cooldown_s and self._last_retrain_at > 0.0:
+            return RetrainDecision(False, "cooldown")
+
+        candidate_bucket: str | None = None
+        candidate_score = 0.0
+        for bucket, errors in self._bucket_errors.items():
+            if len(errors) < self.min_bucket_samples:
+                continue
+            mae = sum(errors) / len(errors)
+            kl = float(dist_kl.get(bucket, 0.0))
+            score = max(0.0, mae - self.baseline_mae) + kl
+            if score > candidate_score:
+                candidate_bucket = bucket
+                candidate_score = score
+
+        if candidate_bucket is None:
+            return RetrainDecision(False, "no_eligible_bucket")
+        if candidate_score <= 0.0:
+            return RetrainDecision(False, "below_threshold")
+
+        self._last_retrain_at = idle_duration_s
+        self._new_samples = 0
+        self._bucket_errors.clear()
+        return RetrainDecision(True, "triggered", bucket=candidate_bucket)

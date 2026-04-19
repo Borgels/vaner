@@ -41,10 +41,10 @@ class RequestMetrics:
     t4_complete: float = 0.0
 
     # Context metadata
-    cache_tier: str = "unknown"       # "full_hit" | "partial_hit" | "miss"
-    partial_similarity: float = 0.0   # 0-1 similarity score for partial hits
-    context_tokens: int = 0           # tokens of context injected
-    prompt_tokens: int = 0            # tokens in user prompt
+    cache_tier: str = "unknown"  # "full_hit" | "partial_hit" | "miss"
+    partial_similarity: float = 0.0  # 0-1 similarity score for partial hits
+    context_tokens: int = 0  # tokens of context injected
+    prompt_tokens: int = 0  # tokens in user prompt
     is_stream: bool = False
 
     # Derived metrics (populated by finalize())

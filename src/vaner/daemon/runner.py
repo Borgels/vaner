@@ -40,9 +40,7 @@ class VanerDaemon:
         await self.initialize()
         repo_root = self.config.repo_root
         include = self.config.privacy.allowed_paths or None
-        files = changed_files if changed_files is not None else scan_repo_files(
-            repo_root, include_paths=include
-        )
+        files = changed_files if changed_files is not None else scan_repo_files(repo_root, include_paths=include)
         git_state = read_git_state(repo_root)
         recent_paths = {line.strip() for line in git_state.get("recent_diff", "").splitlines() if line.strip()}
         staged_paths = {line.strip() for line in git_state.get("staged", "").splitlines() if line.strip()}

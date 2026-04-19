@@ -217,10 +217,7 @@ class ConversationArcModel:
         if not scores:
             return []
         ranked = scores.most_common(top_k)
-        return [
-            ArcPrediction(category=label, confidence=score, reason=", ".join(reasons.get(label, [])))
-            for label, score in ranked
-        ]
+        return [ArcPrediction(category=label, confidence=score, reason=", ".join(reasons.get(label, []))) for label, score in ranked]
 
     def rebuild_from_history(self, queries: list[str]) -> None:
         self._transitions.clear()

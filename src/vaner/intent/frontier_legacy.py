@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from vaner.intent.scoring_policy import ScoringPolicy
@@ -42,6 +42,7 @@ _CATEGORY_KEYWORDS: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def file_set_fingerprint(file_paths: list[str]) -> str:
     """SHA1 of sorted, deduplicated file paths — the scenario identity key."""
@@ -90,19 +91,20 @@ def layer_bonus(layer: str) -> float:
 # Core data model
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ExplorationScenario:
     """A candidate context neighbourhood to explore."""
 
-    id: str                       # SHA1 of sorted file_paths
-    file_paths: list[str]         # the context neighbourhood
-    anchor: str                   # what seeded this scenario
-    source: str                   # "graph" | "arc" | "pattern" | "llm_branch"
-    priority: float               # composite score (higher = explore sooner)
-    depth: int = 0                # LLM hops from original seed
+    id: str  # SHA1 of sorted file_paths
+    file_paths: list[str]  # the context neighbourhood
+    anchor: str  # what seeded this scenario
+    source: str  # "graph" | "arc" | "pattern" | "llm_branch"
+    priority: float  # composite score (higher = explore sooner)
+    depth: int = 0  # LLM hops from original seed
     parent_id: str | None = None  # which scenario spawned this one
-    reason: str = ""              # why this scenario was proposed
-    layer: str = "operational"   # strategic | tactical | operational
+    reason: str = ""  # why this scenario was proposed
+    layer: str = "operational"  # strategic | tactical | operational
 
     def is_trivial(self) -> bool:
         """True for cheap, structural graph-walk scenarios that skip the LLM."""
@@ -112,6 +114,7 @@ class ExplorationScenario:
 # ---------------------------------------------------------------------------
 # Frontier
 # ---------------------------------------------------------------------------
+
 
 class ExplorationFrontier:
     """Priority-driven exploration frontier with admission control.
@@ -134,7 +137,7 @@ class ExplorationFrontier:
     _SOURCE_MULTIPLIERS_INIT: dict[str, float] = {
         "graph": 1.0,
         "arc": 1.0,
-        "pattern": 1.2,    # validated patterns get a slight head start
+        "pattern": 1.2,  # validated patterns get a slight head start
         "llm_branch": 0.9,
     }
 
@@ -166,9 +169,7 @@ class ExplorationFrontier:
         # Explored fingerprints (never re-enter)
         self._explored: set[str] = set()
         # Per-source priority multipliers
-        self._multipliers: dict[str, float] = dict(
-            self._scoring_policy.source_multipliers or self._SOURCE_MULTIPLIERS_INIT
-        )
+        self._multipliers: dict[str, float] = dict(self._scoring_policy.source_multipliers or self._SOURCE_MULTIPLIERS_INIT)
         # Total available paths (updated by seeding; used for saturation check)
         self._total_available: int = 0
         # Files covered by explored scenarios
@@ -206,9 +207,7 @@ class ExplorationFrontier:
             file_key = f"file:{path}"
             neighbors = graph.propagate(file_key, depth=2)
             neighbor_paths = [
-                key.split(":", 1)[1]
-                for key in neighbors
-                if key.startswith("file:") and key.split(":", 1)[1] in available_set
+                key.split(":", 1)[1] for key in neighbors if key.startswith("file:") and key.split(":", 1)[1] in available_set
             ]
             file_paths = [path] + [p for p in neighbor_paths[:7] if p != path]
             file_set = frozenset(file_paths)
@@ -343,10 +342,7 @@ class ExplorationFrontier:
             if not matched:
                 continue
             file_set = frozenset(matched)
-            if any(
-                _jaccard(file_set, prev) > 0.7
-                for prev in seen_file_sets
-            ):
+            if any(_jaccard(file_set, prev) > 0.7 for prev in seen_file_sets):
                 continue
             seen_file_sets.append(file_set)
             priority = self._score(
@@ -366,10 +362,7 @@ class ExplorationFrontier:
                 source="arc",
                 priority=priority,
                 depth=0,
-                reason=(
-                    f"arc model: {phase} → {category} (p={confidence:.2f})"
-                    + (f" [{prediction_reason}]" if prediction_reason else "")
-                ),
+                reason=(f"arc model: {phase} → {category} (p={confidence:.2f})" + (f" [{prediction_reason}]" if prediction_reason else "")),
                 layer="tactical",
             )
             if self.push(scenario):
@@ -387,10 +380,7 @@ class ExplorationFrontier:
             if use_count < 2 or not macro_key:
                 continue
             keywords = list(dict.fromkeys((macro_key.split() + _CATEGORY_KEYWORDS.get(category, []))[:10]))
-            matched = [
-                path for path in available_paths
-                if any(keyword in path.lower() for keyword in keywords)
-            ][:8]
+            matched = [path for path in available_paths if any(keyword in path.lower() for keyword in keywords)][:8]
             if not matched:
                 fallback_keywords = _CATEGORY_KEYWORDS.get(category, [])
                 matched = [path for path in available_paths if any(keyword in path.lower() for keyword in fallback_keywords)][:6]
@@ -432,11 +422,7 @@ class ExplorationFrontier:
             predicted_keys = pattern.get("predicted_keys", [])
             if not isinstance(predicted_keys, list):
                 continue
-            file_paths = [
-                k.split(":", 1)[1]
-                for k in predicted_keys
-                if isinstance(k, str) and k.startswith("file_summary:")
-            ]
+            file_paths = [k.split(":", 1)[1] for k in predicted_keys if isinstance(k, str) and k.startswith("file_summary:")]
             if not file_paths:
                 file_paths = [k for k in predicted_keys if isinstance(k, str)]
             if not file_paths:

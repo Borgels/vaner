@@ -29,4 +29,3 @@ jobs:
       - name: Block vaner-train imports
         run: |
           rg -n 'import\s+vaner_train|from\s+vaner_train' src/ && exit 1 || true
-

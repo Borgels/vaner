@@ -17,4 +17,3 @@ jobs:
           days-before-close: 14
           exempt-issue-labels: "pinned,security"
           exempt-pr-labels: "pinned,security"
-

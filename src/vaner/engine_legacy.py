@@ -11,8 +11,6 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from fnmatch import fnmatch
-
-from vaner.models.artefact import Artefact, ArtefactKind
 from pathlib import Path
 
 from vaner.broker.assembler import assemble_context_package
@@ -35,6 +33,7 @@ from vaner.intent.scoring_policy import ScoringPolicy
 from vaner.intent.trainer import IntentTrainer
 from vaner.intent.transfer import bootstrap_transfer_priors
 from vaner.learning.reward import RewardInput, compute_reward
+from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.models.config import ExplorationConfig, VanerConfig
 from vaner.models.context import ContextPackage
 from vaner.models.signal import SignalEvent
@@ -183,10 +182,7 @@ class VanerEngine:
         await self.store.replace_relationship_edges(await self._collect_relationship_edges())
         issues = await self.adapter.check_quality()
         await self.store.replace_quality_issues(
-            [
-                {"key": issue.key, "severity": issue.severity, "message": issue.message, "metadata": issue.metadata}
-                for issue in issues
-            ]
+            [{"key": issue.key, "severity": issue.severity, "message": issue.message, "metadata": issue.metadata} for issue in issues]
         )
         self._corpus_prepared = True
 
@@ -197,9 +193,7 @@ class VanerEngine:
         recent_queries = [str(entry["query_text"]) for entry in reversed(history)]
         phase_summary = self._arc_model.summarize_workflow_phase(recent_queries)
         current_category = classify_query_category(recent_queries[-1]) if recent_queries else phase_summary.dominant_category
-        predicted_categories = dict(
-            self._arc_model.predict_next(current_category, top_k=3, recent_queries=recent_queries)
-        )
+        predicted_categories = dict(self._arc_model.predict_next(current_category, top_k=3, recent_queries=recent_queries))
         recent_macro = derive_prompt_macro(recent_queries[-1]) if recent_queries else phase_summary.recent_macro
         behavior_profile = await self._behavioral_prediction_profile(
             current_category=current_category,
@@ -520,11 +514,7 @@ class VanerEngine:
             await self.store.update_query_feedback(query_id, quality_lift)
             source_key = selected[0].key if selected else None
             features = await extract_hybrid_features(self.store, prompt=prompt, source_key=source_key)
-            average_age = (
-                sum(max(0.0, time.time() - item.generated_at) for item in selected) / len(selected)
-                if selected
-                else 0.0
-            )
+            average_age = sum(max(0.0, time.time() - item.generated_at) for item in selected) / len(selected) if selected else 0.0
             freshness_hint = max(0.1, min(1.0, 1.0 - (average_age / max(1.0, self._scoring_policy.freshness_half_life * 4.0))))
             features = self._augment_feature_snapshot(
                 features,
@@ -736,9 +726,7 @@ class VanerEngine:
         # frontier to full depth so high-value LLM branches can be explored.
         _BREADTH_COVERAGE_THRESHOLD = 0.40
         _phase_breadth_done = frontier.coverage_ratio >= _BREADTH_COVERAGE_THRESHOLD
-        frontier.set_effective_max_depth(
-            ecfg.max_exploration_depth if _phase_breadth_done else min(1, ecfg.max_exploration_depth)
-        )
+        frontier.set_effective_max_depth(ecfg.max_exploration_depth if _phase_breadth_done else min(1, ecfg.max_exploration_depth))
 
         # ── Exploration loop ─────────────────────────────────────────────────
         while governor.should_continue() and not frontier.is_saturated():
@@ -751,14 +739,12 @@ class VanerEngine:
 
             llm_semantic_intent = ""
             if use_llm and callable(self.llm):
-                ranked_files, follow_on, llm_semantic_intent, llm_confidence = (
-                    await self._explore_scenario_with_llm(
-                        scenario=scenario,
-                        available_paths=available_paths,
-                        recent_queries=recent_query_text,
-                        covered_paths=covered_paths,
-                        artefacts_by_key=artefacts_by_key,
-                    )
+                ranked_files, follow_on, llm_semantic_intent, llm_confidence = await self._explore_scenario_with_llm(
+                    scenario=scenario,
+                    available_paths=available_paths,
+                    recent_queries=recent_query_text,
+                    covered_paths=covered_paths,
+                    artefacts_by_key=artefacts_by_key,
                 )
                 # Use the LLM-ranked file list if it narrowed the scenario
                 effective_paths = ranked_files if ranked_files else scenario.file_paths
@@ -775,11 +761,7 @@ class VanerEngine:
                     # follow-ons get full decay; low-confidence get extra penalty.
                     branch_conf = float(branch.get("confidence", llm_confidence or 0.5))
                     branch_conf = max(0.1, min(1.0, branch_conf))
-                    branch_priority = (
-                        scenario.priority
-                        * self._scoring_policy.branch_priority_decay
-                        * branch_conf
-                    )
+                    branch_priority = scenario.priority * self._scoring_policy.branch_priority_decay * branch_conf
                     branch_scenario = ExplorationScenario(
                         id=file_set_fingerprint(branch_files),
                         file_paths=branch_files,
@@ -802,9 +784,7 @@ class VanerEngine:
                 rationale=scenario.reason,
             )
             # Build semantic_intent for cache: combine scenario reason + LLM's intent
-            combined_intent = " ".join(
-                part for part in [scenario.reason, llm_semantic_intent] if part
-            )
+            combined_intent = " ".join(part for part in [scenario.reason, llm_semantic_intent] if part)
             cached = await self._cache_context_for_scenario(
                 pred_scenario,
                 exploration_source=scenario.source,
@@ -932,14 +912,14 @@ class VanerEngine:
             "   This is used for matching future queries to this cached context.\n"
             "4. Set confidence (0.0-1.0): how likely is this area to be needed next?\n\n"
             "Return JSON only (no markdown fences):\n"
-            '{\n'
+            "{\n"
             '  "ranked_files": ["path/a.py", "path/b.py"],\n'
             '  "semantic_intent": "...",\n'
             '  "confidence": 0.0,\n'
             '  "follow_on": [\n'
             '    {"files": ["path/x.py"], "reason": "...", "confidence": 0.0}\n'
-            '  ]\n'
-            '}'
+            "  ]\n"
+            "}"
         )
 
         try:
@@ -949,6 +929,7 @@ class VanerEngine:
 
         # Parse the JSON response
         import json as _json
+
         text = llm_output.strip()
         # Strip optional markdown fences
         if text.startswith("```"):
@@ -995,11 +976,13 @@ class VanerEngine:
                     item_conf = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
                 except (TypeError, ValueError):
                     pass
-                follow_on.append({
-                    "files": files,
-                    "reason": str(item.get("reason", "")),
-                    "confidence": item_conf,
-                })
+                follow_on.append(
+                    {
+                        "files": files,
+                        "reason": str(item.get("reason", "")),
+                        "confidence": item_conf,
+                    }
+                )
 
         return ranked_files, follow_on, semantic_intent, confidence
 
@@ -1025,9 +1008,7 @@ class VanerEngine:
     ) -> asyncio.Task[None]:
         if self._background_task is not None and not self._background_task.done():
             return self._background_task
-        self._background_task = asyncio.create_task(
-            self.run_background(interval_seconds=interval_seconds, governor=governor)
-        )
+        self._background_task = asyncio.create_task(self.run_background(interval_seconds=interval_seconds, governor=governor))
         return self._background_task
 
     def stop_background(self) -> None:
@@ -1085,9 +1066,7 @@ class VanerEngine:
         if self._graph is not None:
             return self._graph
         rows = await self.store.list_relationship_edges(limit=10000)
-        self._graph = RelationshipGraph(
-            [RelationshipEdge(source_key=row[0], target_key=row[1], kind=row[2]) for row in rows]
-        )
+        self._graph = RelationshipGraph([RelationshipEdge(source_key=row[0], target_key=row[1], kind=row[2]) for row in rows])
         return self._graph
 
     _CATEGORY_KEYWORDS: dict[str, list[str]] = {
@@ -1125,17 +1104,12 @@ class VanerEngine:
             file_key = f"file:{path}"
             neighbors = graph.propagate(file_key, depth=2)
             neighbor_paths = [
-                key.split(":", 1)[1]
-                for key in neighbors
-                if key.startswith("file:") and key.split(":", 1)[1] in available_set
+                key.split(":", 1)[1] for key in neighbors if key.startswith("file:") and key.split(":", 1)[1] in available_set
             ]
             # Include isolated anchors (no graph neighbors) as single-file scenarios
             file_set = frozenset([path] + neighbor_paths[:7])
             # Skip very similar file sets to avoid redundant cache entries
-            if any(
-                len(file_set & prev) / max(1, len(file_set | prev)) > 0.8
-                for prev in seen_file_sets
-            ):
+            if any(len(file_set & prev) / max(1, len(file_set | prev)) > 0.8 for prev in seen_file_sets):
                 continue
             seen_file_sets.append(file_set)
             scenarios.append(
@@ -1188,7 +1162,7 @@ class VanerEngine:
                 if count:
                     ranked.append((cat, count / max(1, len(available_paths))))
             ranked.sort(key=lambda x: x[1], reverse=True)
-            next_categories = ranked[:min(n, 3)]
+            next_categories = ranked[: min(n, 3)]
 
         scenarios: list[PredictionScenario] = []
         seen_file_sets: list[frozenset[str]] = []
@@ -1199,10 +1173,7 @@ class VanerEngine:
                 matched = available_paths[:3]
             file_set = frozenset(matched)
             # Deduplicate across categories
-            if any(
-                len(file_set & prev) / max(1, len(file_set | prev)) > 0.7
-                for prev in seen_file_sets
-            ):
+            if any(len(file_set & prev) / max(1, len(file_set | prev)) > 0.7 for prev in seen_file_sets):
                 continue
             seen_file_sets.append(file_set)
             scenarios.append(
@@ -1280,10 +1251,7 @@ class VanerEngine:
 
     async def _collect_relationship_edges(self) -> list[tuple[str, str, str, str]]:
         adapter_corpus_id = getattr(self.adapter, "corpus_id", "default")
-        edges = [
-            (edge.source_key, edge.target_key, edge.kind, adapter_corpus_id)
-            for edge in await self.adapter.extract_relationships()
-        ]
+        edges = [(edge.source_key, edge.target_key, edge.kind, adapter_corpus_id) for edge in await self.adapter.extract_relationships()]
         for src in self._extra_context_sources:
             try:
                 extra_edges = await src.extract_relationships()
@@ -1511,10 +1479,7 @@ class VanerEngine:
     ) -> tuple[ContextPackage | None, list[str]]:
         if not file_paths:
             return None, []
-        artefacts_by_key = {
-            artefact.key: artefact
-            for artefact in await self.store.list(limit=2000)
-        }
+        artefacts_by_key = {artefact.key: artefact for artefact in await self.store.list(limit=2000)}
         selected = []
         selected_keys: list[str] = []
         for path in file_paths:
@@ -1530,10 +1495,7 @@ class VanerEngine:
         # select. This promotes genuinely complementary LLM predictions
         # without penalising files that happen to overlap with heuristic picks.
         _heuristic = heuristic_paths or set()
-        score_map = {
-            artefact.key: (1.0 if artefact.source_path in _heuristic else 1.3)
-            for artefact in selected
-        }
+        score_map = {artefact.key: (1.0 if artefact.source_path in _heuristic else 1.3) for artefact in selected}
         package = assemble_context_package(
             question,
             selected[:8],
@@ -1579,6 +1541,7 @@ class VanerEngine:
         Returns True if the bundle was applied successfully, False on failure.
         """
         import json as _json
+
         await self.initialize()
         bundle_path = Path(bundle_dir)
         if not bundle_path.exists():
@@ -1705,9 +1668,7 @@ class VanerEngine:
         repo_root = self.config.repo_root
         git_state = read_git_state(repo_root)
         preferred_paths = {
-            line.strip()
-            for line in (git_state.get("recent_diff", "") + "\n" + git_state.get("staged", "")).splitlines()
-            if line.strip()
+            line.strip() for line in (git_state.get("recent_diff", "") + "\n" + git_state.get("staged", "")).splitlines() if line.strip()
         }
         merged_preferred_keys = set(preferred_keys or set())
         working_set = await self.store.get_latest_working_set()
@@ -1748,10 +1709,7 @@ class VanerEngine:
                 path_bonuses=self._pinned_focus_paths,
                 path_excludes=self._pinned_avoid_paths,
             )
-        score_map = {
-            artefact.key: self._intent_scorer.score(prompt, artefact, features=features)
-            for artefact in selected
-        }
+        score_map = {artefact.key: self._intent_scorer.score(prompt, artefact, features=features) for artefact in selected}
         package = assemble_context_package(
             prompt,
             selected,
@@ -1784,7 +1742,7 @@ class VanerEngine:
             # vllm:<model>  or  vllm:<model>@<host>:<port>
             from vaner.clients.openai import openai_llm
 
-            rest = llm[len("vllm:"):]
+            rest = llm[len("vllm:") :]
             if "@" in rest:
                 model, hostport = rest.rsplit("@", 1)
                 base_url = f"http://{hostport}/v1"
@@ -1809,9 +1767,7 @@ class VanerEngine:
             return
         context = await self.adapter.get_context_for_reasoning()
         recent_queries = await self.store.list_query_history(limit=5)
-        session_phase = self._arc_model.detect_session_phase(
-            [str(entry["query_text"]) for entry in reversed(recent_queries)]
-        )
+        session_phase = self._arc_model.detect_session_phase([str(entry["query_text"]) for entry in reversed(recent_queries)])
         llm_output: str | None = None
         if callable(self.llm):
             prompt = (
@@ -1897,11 +1853,7 @@ class VanerEngine:
         stop_tokens = {"test", "api", "code", "file", "repo"}
 
         def _macro_tokens(macro_key: str) -> list[str]:
-            return [
-                token
-                for token in str(macro_key).split()
-                if len(token) > 2 and token.lower() not in stop_tokens
-            ]
+            return [token for token in str(macro_key).split() if len(token) > 2 and token.lower() not in stop_tokens]
 
         boost = 0.0
         reasons: list[str] = []
@@ -2112,9 +2064,9 @@ class VanerEngine:
 
 def _probe_openai_endpoint(base_url: str, timeout: float = 2.0) -> tuple[bool, list[str]]:
     """Check if an OpenAI-compatible endpoint is reachable and return available model IDs."""
-    import urllib.request
-    import urllib.error
     import json as _json
+    import urllib.error
+    import urllib.request
 
     url = base_url.rstrip("/") + "/models"
     try:
@@ -2129,9 +2081,9 @@ def _probe_openai_endpoint(base_url: str, timeout: float = 2.0) -> tuple[bool, l
 
 def _probe_ollama_endpoint(base_url: str, timeout: float = 2.0) -> tuple[bool, list[str]]:
     """Check if an Ollama endpoint is reachable and return available model tags."""
-    import urllib.request
-    import urllib.error
     import json as _json
+    import urllib.error
+    import urllib.request
 
     url = base_url.rstrip("/") + "/api/tags"
     try:
@@ -2143,27 +2095,27 @@ def _probe_ollama_endpoint(base_url: str, timeout: float = 2.0) -> tuple[bool, l
         return False, []
 
 
-def _build_exploration_llm(ecfg: "ExplorationConfig") -> "LLMCallable | None":
+def _build_exploration_llm(ecfg: ExplorationConfig) -> LLMCallable | None:
     """Resolve the exploration LLM from ExplorationConfig, probing endpoints as needed."""
     import logging as _logging
+
     _log = _logging.getLogger(__name__)
 
     backend = ecfg.exploration_backend  # "auto", "ollama", "openai"
     endpoint = ecfg.exploration_endpoint.strip()
     model = ecfg.exploration_model.strip()
-    api_key = (
-        ecfg.exploration_api_key.strip()
-        or os.environ.get("VANER_EXPLORATION_API_KEY", "")
-    )
+    api_key = ecfg.exploration_api_key.strip() or os.environ.get("VANER_EXPLORATION_API_KEY", "")
 
-    def _make_openai(base_url: str, m: str) -> "LLMCallable":
+    def _make_openai(base_url: str, m: str) -> LLMCallable:
         from vaner.clients.openai import openai_llm
+
         key = api_key or "EMPTY"
         _log.info("Vaner exploration LLM: OpenAI-compatible at %s model=%s", base_url, m)
         return openai_llm(model=m, api_key=key, base_url=base_url)
 
-    def _make_ollama(base_url: str, m: str) -> "LLMCallable":
+    def _make_ollama(base_url: str, m: str) -> LLMCallable:
         from vaner.clients.ollama import ollama_llm
+
         _log.info("Vaner exploration LLM: Ollama at %s model=%s", base_url, m)
         return ollama_llm(model=m, base_url=base_url)
 
@@ -2191,8 +2143,7 @@ def _build_exploration_llm(ecfg: "ExplorationConfig") -> "LLMCallable | None":
                 if m:
                     return _make_openai(endpoint, m)
         _log.warning(
-            "Vaner: exploration_endpoint=%r is unreachable or has no models; "
-            "falling back to heuristic-only exploration.",
+            "Vaner: exploration_endpoint=%r is unreachable or has no models; falling back to heuristic-only exploration.",
             endpoint,
         )
         return None
@@ -2222,15 +2173,17 @@ def _build_exploration_llm(ecfg: "ExplorationConfig") -> "LLMCallable | None":
     return None
 
 
-def _build_embed_callable(ecfg: "ExplorationConfig") -> "EmbedCallable | None":
+def _build_embed_callable(ecfg: ExplorationConfig) -> EmbedCallable | None:
     """Build an embedding callable from ExplorationConfig. Returns None if disabled."""
     import logging as _logging
+
     _log = _logging.getLogger(__name__)
 
     if not ecfg.embedding_model:
         return None
     try:
         from vaner.clients.embeddings import sentence_transformer_embed
+
         _log.info(
             "Vaner embeddings: sentence-transformers model=%s device=%s",
             ecfg.embedding_model,
@@ -2242,8 +2195,7 @@ def _build_embed_callable(ecfg: "ExplorationConfig") -> "EmbedCallable | None":
         )
     except Exception as exc:
         _log.warning(
-            "Vaner: could not load embedding model %r (%s). "
-            "Semantic cache matching disabled; install sentence-transformers to enable.",
+            "Vaner: could not load embedding model %r (%s). Semantic cache matching disabled; install sentence-transformers to enable.",
             ecfg.embedding_model,
             exc,
         )

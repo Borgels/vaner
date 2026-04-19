@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 import numpy as np
 
 from vaner.broker.selector import score_artefact
@@ -157,17 +158,11 @@ class IntentScorer:
         if selected == "auto":
             selected = "xgboost" if xgb is not None else "lightgbm"
         if selected == "xgboost":
-            path = self._train_xgboost(
-                train_vectors, labels, output_path=output_path, random_seed=random_seed, num_threads=num_threads
-            )
+            path = self._train_xgboost(train_vectors, labels, output_path=output_path, random_seed=random_seed, num_threads=num_threads)
         elif selected == "catboost":
-            path = self._train_catboost(
-                train_vectors, labels, output_path=output_path, random_seed=random_seed, num_threads=num_threads
-            )
+            path = self._train_catboost(train_vectors, labels, output_path=output_path, random_seed=random_seed, num_threads=num_threads)
         else:
-            path = self._train_lightgbm(
-                train_vectors, labels, output_path=output_path, random_seed=random_seed, num_threads=num_threads
-            )
+            path = self._train_lightgbm(train_vectors, labels, output_path=output_path, random_seed=random_seed, num_threads=num_threads)
         if path is None and selected != "lightgbm":
             path = self._train_lightgbm(
                 train_vectors,

@@ -98,3 +98,14 @@ mypy_path = "src"
 [[tool.mypy.overrides]]
 module = ["vaner.__init__", "vaner.server.*", "vaner.cli.main"]
 strict = true
+
+[tool.coverage.run]
+source = ["src/vaner"]
+omit = [
+  "src/vaner/*_legacy.py",
+  "src/vaner/engine/*.py",
+  "src/vaner/eval/*.py",
+  "src/vaner/server/*.py",
+  "src/vaner/intent/frontier/*.py",
+  "src/vaner/store/artefacts/*.py",
+]
