@@ -1,3 +1,3 @@
-"""Backward-compatible API module shim."""
+"""Backward-compatible API module alias to ``vaner.server``."""
 
-from vaner.server_legacy import *  # noqa: F403
+from vaner.server import *  # noqa: F403

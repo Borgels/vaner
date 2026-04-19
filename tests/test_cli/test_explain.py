@@ -107,8 +107,8 @@ def test_query_explain_outputs_decision_block(monkeypatch, tmp_path: Path) -> No
             injected_context="Injected context",
         )
 
-    monkeypatch.setattr("vaner.cli.commands.app_legacy.api.query", _fake_query)
-    monkeypatch.setattr("vaner.cli.commands.app_legacy.api.inspect_last_decision", lambda _repo: record)
+    monkeypatch.setattr("vaner.cli.commands.app.api.query", _fake_query)
+    monkeypatch.setattr("vaner.cli.commands.app.api.inspect_last_decision", lambda _repo: record)
     result = runner.invoke(app, ["query", "where is auth enforced?", "--path", str(repo), "--explain"])
     assert result.exit_code == 0, result.output
     assert "Injected context" in result.output

@@ -101,11 +101,3 @@ strict = true
 
 [tool.coverage.run]
 source = ["src/vaner"]
-omit = [
-  "src/vaner/*_legacy.py",
-  "src/vaner/engine/*.py",
-  "src/vaner/eval/*.py",
-  "src/vaner/server/*.py",
-  "src/vaner/intent/frontier/*.py",
-  "src/vaner/store/artefacts/*.py",
-]

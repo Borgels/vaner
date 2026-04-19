@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 
 DEFAULT_CONFIG = """# Vaner configuration
 # Run `vaner init` to regenerate this file.
 #
-# REQUIRED: Set backend.base_url and backend.model to your LLM endpoint.
-# Vaner works with any OpenAI-compatible API: OpenAI, Anthropic (via proxy),
-# local Ollama, vLLM, LM Studio, etc.
+# Optional capability: [backend] is used by `vaner proxy`.
+# MCP-first mode does not require proxy/backend by default.
+# If you enable proxy, set backend.base_url and backend.model to your endpoint.
 #
 # Examples:
 #   OpenAI:       base_url = "https://api.openai.com/v1"   model = "gpt-4o"
@@ -19,8 +21,8 @@ DEFAULT_CONFIG = """# Vaner configuration
 
 [backend]
 name = "custom"
-base_url = ""        # REQUIRED -- your LLM endpoint URL
-model = ""           # REQUIRED -- model name to use
+base_url = ""        # Required only when using `vaner proxy`
+model = ""           # Required only when using `vaner proxy`
 api_key_env = "OPENAI_API_KEY"   # env var that holds your API key
 prefer_local = true
 fallback_enabled = false
@@ -54,7 +56,7 @@ ssl_certfile = ""
 ssl_keyfile = ""
 
 [gateway.passthrough]
-enabled = true
+enabled = false
 
 [gateway.routes]
 # Route model prefixes to providers while keeping IDE model picker intact.
@@ -68,6 +70,11 @@ system_note = "off"
 
 [gateway.shadow]
 rate = 0.0
+
+[mcp]
+transport = "stdio"
+http_host = "127.0.0.1"
+http_port = 8472
 
 [compute]
 device = "auto"
@@ -101,3 +108,38 @@ def init_repo(repo_root: Path) -> Path:
     if not config_path.exists():
         config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
     return config_path
+
+
+def write_mcp_configs(repo_root: Path) -> list[Path]:
+    written: list[Path] = []
+    cursor_dir = repo_root / ".cursor"
+    cursor_dir.mkdir(parents=True, exist_ok=True)
+    cursor_path = cursor_dir / "mcp.json"
+    cursor_payload: dict[str, object] = {"mcpServers": {}}
+    if cursor_path.exists():
+        try:
+            cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+        except Exception:
+            cursor_payload = {"mcpServers": {}}
+    servers = cursor_payload.setdefault("mcpServers", {})
+    if isinstance(servers, dict):
+        servers["vaner"] = {"command": "vaner", "args": ["mcp", "--path", "."]}
+    cursor_path.write_text(json.dumps(cursor_payload, indent=2) + "\n", encoding="utf-8")
+    written.append(cursor_path)
+
+    claude_path = Path.home() / ".claude" / "claude_desktop_config.json"
+    claude_path.parent.mkdir(parents=True, exist_ok=True)
+    claude_payload: dict[str, object] = {"mcpServers": {}}
+    if claude_path.exists():
+        try:
+            claude_payload = json.loads(claude_path.read_text(encoding="utf-8"))
+        except Exception:
+            claude_payload = {"mcpServers": {}}
+        backup_path = claude_path.with_suffix(f".backup-{int(time.time())}.json")
+        backup_path.write_text(json.dumps(claude_payload, indent=2) + "\n", encoding="utf-8")
+    claude_servers = claude_payload.setdefault("mcpServers", {})
+    if isinstance(claude_servers, dict):
+        claude_servers["vaner"] = {"command": "vaner", "args": ["mcp", "--path", str(repo_root)]}
+    claude_path.write_text(json.dumps(claude_payload, indent=2) + "\n", encoding="utf-8")
+    written.append(claude_path)
+    return written

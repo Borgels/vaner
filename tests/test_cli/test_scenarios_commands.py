@@ -8,7 +8,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from vaner.cli.commands import app_legacy
+from vaner.cli.commands import app
 from vaner.models.scenario import EvidenceRef, Scenario
 from vaner.store.scenarios import ScenarioStore
 
@@ -53,7 +53,7 @@ def _seed(temp_repo) -> None:
 
 def test_scenarios_list_json(temp_repo):
     _seed(temp_repo)
-    result = runner.invoke(app_legacy.app, ["scenarios", "list", "--path", str(temp_repo), "--json"])
+    result = runner.invoke(app.app, ["scenarios", "list", "--path", str(temp_repo), "--json"])
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["count"] >= 1
@@ -62,13 +62,13 @@ def test_scenarios_list_json(temp_repo):
 
 def test_scenarios_show_and_outcome(temp_repo):
     _seed(temp_repo)
-    shown = runner.invoke(app_legacy.app, ["scenarios", "show", "scn_test_1", "--path", str(temp_repo), "--json"])
+    shown = runner.invoke(app.app, ["scenarios", "show", "scn_test_1", "--path", str(temp_repo), "--json"])
     assert shown.exit_code == 0
     payload = json.loads(shown.stdout)
     assert payload["kind"] == "debug"
 
     outcome = runner.invoke(
-        app_legacy.app,
+        app.app,
         ["scenarios", "outcome", "scn_test_1", "--result", "useful", "--path", str(temp_repo)],
     )
     assert outcome.exit_code == 0
@@ -80,8 +80,8 @@ def test_scenarios_expand_and_compare(temp_repo, monkeypatch):
     async def _fake_aprecompute(*args, **kwargs):
         return 1
 
-    monkeypatch.setattr(app_legacy.api, "aprecompute", _fake_aprecompute)
-    expanded = runner.invoke(app_legacy.app, ["scenarios", "expand", "scn_test_1", "--path", str(temp_repo)])
+    monkeypatch.setattr(app.api, "aprecompute", _fake_aprecompute)
+    expanded = runner.invoke(app.app, ["scenarios", "expand", "scn_test_1", "--path", str(temp_repo)])
     assert expanded.exit_code == 0
     expanded_payload = json.loads(expanded.stdout)
     assert expanded_payload["ok"] is True
@@ -106,7 +106,7 @@ def test_scenarios_expand_and_compare(temp_repo, monkeypatch):
 
     asyncio.run(_seed_second())
     compared = runner.invoke(
-        app_legacy.app,
+        app.app,
         ["scenarios", "compare", "scn_test_1", "scn_test_2", "--path", str(temp_repo), "--json"],
     )
     assert compared.exit_code == 0
@@ -119,7 +119,7 @@ def test_init_writes_cursor_mcp_config(temp_repo, monkeypatch):
     fake_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-    result = runner.invoke(app_legacy.app, ["init", "--path", str(temp_repo)])
+    result = runner.invoke(app.app, ["init", "--path", str(temp_repo)])
     assert result.exit_code == 0
     cursor_mcp = temp_repo / ".cursor" / "mcp.json"
     assert cursor_mcp.exists()
@@ -133,14 +133,14 @@ def test_scenarios_expand_and_compare_json(temp_repo, monkeypatch):
     async def _fake_precompute(*args, **kwargs) -> int:
         return 1
 
-    monkeypatch.setattr(app_legacy.api, "aprecompute", _fake_precompute)
-    expanded = runner.invoke(app_legacy.app, ["scenarios", "expand", "scn_test_1", "--path", str(temp_repo)])
+    monkeypatch.setattr(app.api, "aprecompute", _fake_precompute)
+    expanded = runner.invoke(app.app, ["scenarios", "expand", "scn_test_1", "--path", str(temp_repo)])
     assert expanded.exit_code == 0
     expanded_payload = json.loads(expanded.stdout)
     assert expanded_payload["ok"] is True
 
     compared = runner.invoke(
-        app_legacy.app,
+        app.app,
         ["scenarios", "compare", "scn_test_1", "scn_test_2", "--path", str(temp_repo), "--json"],
     )
     assert compared.exit_code == 0
@@ -154,7 +154,7 @@ def test_init_writes_mcp_configs(temp_repo, monkeypatch):
     fake_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(fake_home))
 
-    result = runner.invoke(app_legacy.app, ["init", "--path", str(temp_repo)])
+    result = runner.invoke(app.app, ["init", "--path", str(temp_repo)])
     assert result.exit_code == 0
     assert (temp_repo / ".cursor" / "mcp.json").exists()
     assert (fake_home / ".claude" / "claude_desktop_config.json").exists()

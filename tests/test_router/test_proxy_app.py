@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from vaner.models.config import BackendConfig, ProxyConfig, VanerConfig
+from vaner.models.config import BackendConfig, GatewayConfig, ProxyConfig, VanerConfig
 from vaner.router import proxy as proxy_module
 from vaner.router.proxy import create_app
 from vaner.store.artefacts import ArtefactStore
@@ -101,7 +101,7 @@ def test_proxy_preserves_authorization_header_in_passthrough(temp_repo, monkeypa
 
     monkeypatch.setattr(proxy_module, "aquery", _fake_aquery)
     monkeypatch.setattr(proxy_module, "forward_chat_completion_with_request", _fake_forward_chat_completion)
-    config = _make_config(temp_repo)
+    config = _make_config(temp_repo, gateway=GatewayConfig(passthrough_enabled=True))
     app = create_app(config, ArtefactStore(config.store_path))
     client = TestClient(app)
 

@@ -12,7 +12,7 @@ import ipaddress
 
 import typer
 
-from vaner.cli.commands.app_legacy import app, run
+from vaner.cli.commands.app import app, run
 
 __all__ = ["app", "run"]
 
