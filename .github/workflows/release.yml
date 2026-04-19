@@ -25,7 +25,7 @@ jobs:
           python-version: "3.11"
       - name: Build
         run: |
-          python -m pip install --upgrade 'pip==24.3.1' 'build==1.2.2.post1' 'cyclonedx-bom==4.6.1'
+          python -m pip install --upgrade 'pip==26.0.1' 'build==1.2.2.post1' 'cyclonedx-bom==4.6.1'
           python -m build
       - name: Generate SBOM
         run: cyclonedx-py environment --output-format json --output-file sbom.json

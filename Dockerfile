@@ -6,7 +6,7 @@ COPY pyproject.toml ./
 COPY README.md ./
 COPY src/ ./src/
 
-RUN python -m pip install --no-cache-dir --upgrade 'pip==24.3.1' \
+RUN python -m pip install --no-cache-dir --upgrade 'pip==26.0.1' \
     && pip install --no-cache-dir -e ".[all]"
 
 RUN mkdir -p /repo
