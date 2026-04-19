@@ -75,3 +75,4 @@ Before expecting a tagged release to publish to PyPI:
 3. Verify the GitHub release workflow keeps `id-token: write`.
 
 If this is not configured yet, the `Publish to PyPI` step is non-fatal and can be retried after setup.
+For every release tag, confirm the GitHub Release assets, GHCR image visibility, and cosign verification before announcing.
