@@ -274,7 +274,6 @@ def apply_backend_config(
     preset = BACKEND_PRESETS.get(preset_id)
     resolved_base_url = base_url or (preset.base_url if preset else "")
     resolved_model = model or (preset.default_model if preset else "")
-    resolved_api_key_env = api_key_env or (preset.api_key_env if preset else "") or "OPENAI_API_KEY"
     name = preset.name if preset else preset_id
 
     text = config_path.read_text(encoding="utf-8")
@@ -299,7 +298,6 @@ def apply_backend_config(
             "name": name,
             "base_url": resolved_base_url,
             "model": resolved_model,
-            "api_key_env": resolved_api_key_env,
         },
     )
     if updated != text:
