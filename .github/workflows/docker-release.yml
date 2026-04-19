@@ -6,9 +6,13 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -19,6 +23,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -52,7 +58,7 @@ jobs:
           output: trivy-results.sarif
 
       - name: Upload Trivy scan results to Security tab
-        uses: github/codeql-action/upload-sarif@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a # v3
+        uses: github/codeql-action/upload-sarif@865f5f5c36632f18690a3d569fa0a764f2da0c3e # v3
         with:
           sarif_file: trivy-results.sarif
 
@@ -60,4 +66,6 @@ jobs:
         uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
 
       - name: Sign image with keyless OIDC
-        run: cosign sign --yes "${IMAGE_NAME}@${{ steps.build_push.outputs.digest }}"
+        env:
+          IMAGE_DIGEST: ${{ steps.build_push.outputs.digest }}
+        run: cosign sign --yes "${IMAGE_NAME}@${IMAGE_DIGEST}"

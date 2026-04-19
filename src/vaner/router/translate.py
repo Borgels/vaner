@@ -17,6 +17,18 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlparse
+
+_ANTHROPIC_HOSTS = ("api.anthropic.com",)
+_ANTHROPIC_SUFFIXES = (".anthropic.com",)
+_GOOGLE_HOSTS = (
+    "generativelanguage.googleapis.com",
+    "aiplatform.googleapis.com",
+)
+_GOOGLE_SUFFIXES = (
+    ".googleapis.com",
+    ".aiplatform.googleapis.com",
+)
 
 
 def detect_format(base_url: str) -> str:
@@ -24,11 +36,25 @@ def detect_format(base_url: str) -> str:
 
     Returns one of ``"openai"``, ``"anthropic"``, or ``"google"``.
     Defaults to ``"openai"`` for unknown URLs (covers vLLM, LM Studio, Ollama /v1, etc.).
+
+    Matches on the parsed hostname (never the path) to avoid confusable URLs
+    like ``https://evil.example/anthropic.com`` being classified as Anthropic.
+    Malformed inputs are tolerated: any parsing error falls back to the
+    default ``"openai"`` label.
     """
-    url = base_url.lower()
-    if "anthropic.com" in url:
+    try:
+        parsed_host = urlparse(base_url).hostname
+    except ValueError:
+        # urlparse raises on a few pathological inputs (e.g. invalid IPv6
+        # brackets). We are not in a position to classify these; caller
+        # should treat unknown URLs as the OpenAI-compatible default.
+        return "openai"
+    host = (parsed_host or "").lower().rstrip(".")
+    if not host:
+        return "openai"
+    if host in _ANTHROPIC_HOSTS or host.endswith(_ANTHROPIC_SUFFIXES):
         return "anthropic"
-    if "googleapis.com" in url or "generativelanguage" in url or "aiplatform.google" in url:
+    if host in _GOOGLE_HOSTS or host.endswith(_GOOGLE_SUFFIXES):
         return "google"
     return "openai"
 

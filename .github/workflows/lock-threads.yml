@@ -5,9 +5,17 @@ on:
     - cron: "30 5 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   lock:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
       - uses: dessant/lock-threads@fce16d66c31f0f997db74f2a2fcb8f6f3fb6a74d # v5
         with:

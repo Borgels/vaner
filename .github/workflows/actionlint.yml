@@ -5,14 +5,20 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       security-events: write
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4
+        with:
+          persist-credentials: false
       - name: Run actionlint
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7
       - name: Zizmor

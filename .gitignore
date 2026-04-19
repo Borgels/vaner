@@ -5,9 +5,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-.env
-.env.local
-.env.*
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -17,10 +14,19 @@ htmlcov/
 .vaner/
 .vaner_data/
 
-# Training pipeline lives in Borgels/Vaner-train (private repo)
+# Secrets: ignore every .env variant, globally and under subtrees.
+# Only sanitized *.env.sample templates are allowed to be committed.
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.sample
+
+# Private moat repos and infra (see Borgels/Vaner-train, Borgels/vaner-infra)
 eval/
 !src/vaner/eval/
 !src/vaner/eval/**
 scripts/*
 !scripts/install.sh
 infra/
+apps/vaner-daemon/

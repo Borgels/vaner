@@ -1,15 +1,14 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:233de06753d30d120b1a3ce359d8d3be8bda78524cd8f520c99883bfe33964cf
 
 WORKDIR /app
 
-# Install Vaner with all optional dependencies
 COPY pyproject.toml ./
 COPY README.md ./
 COPY src/ ./src/
 
-RUN pip install --no-cache-dir -e ".[all]"
+RUN python -m pip install --no-cache-dir --upgrade 'pip==26.0.1' \
+    && pip install --no-cache-dir -e ".[all]"
 
-# Default repo is mounted at /repo; users can override via X-Vaner-Repo header
 RUN mkdir -p /repo
 
 EXPOSE 8471
