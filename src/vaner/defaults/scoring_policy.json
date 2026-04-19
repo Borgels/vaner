@@ -1,0 +1,31 @@
+{
+  "score_weights": [
+    0.3380403740592239,
+    0.33561519552110675,
+    0.009999700906254051,
+    0.15817236475670768,
+    0.15817236475670768
+  ],
+  "depth_decay_rate": 0.35,
+  "freshness_half_life": 300.0,
+  "source_multipliers": {
+    "graph": 1.0,
+    "arc": 1.0,
+    "pattern": 1.2,
+    "llm_branch": 0.9
+  },
+  "layer_multipliers": {
+    "operational": 1.0,
+    "tactical": 1.05,
+    "strategic": 1.12
+  },
+  "feedback_hit_rate": 1.05,
+  "feedback_miss_rate": 0.95,
+  "branch_priority_decay": 0.7,
+  "cache_full_hit_path_threshold": 0.55,
+  "cache_partial_hit_path_threshold": 0.3,
+  "cache_full_hit_similarity_threshold": 0.55,
+  "cache_partial_hit_similarity_threshold": 0.3,
+  "cache_warm_similarity_threshold": 0.1,
+  "updated_at": 1776589271.07483
+}

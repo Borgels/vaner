@@ -1,0 +1,45 @@
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+version-template: "$MAJOR.$MINOR.$PATCH"
+change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  ## Contributors
+
+  $CONTRIBUTORS
+
+categories:
+  - title: "Features"
+    labels:
+      - "feat"
+      - "feature"
+  - title: "Fixes"
+    labels:
+      - "fix"
+      - "bug"
+  - title: "Documentation"
+    labels:
+      - "docs"
+  - title: "Maintenance"
+    labels:
+      - "chore"
+      - "ci"
+      - "refactor"
+
+exclude-labels:
+  - "skip-changelog"
+
+autolabeler:
+  - label: "docs"
+    files:
+      - "*.md"
+      - "docs/**"
+  - label: "ci"
+    files:
+      - ".github/**"
+  - label: "tests"
+    files:
+      - "tests/**"

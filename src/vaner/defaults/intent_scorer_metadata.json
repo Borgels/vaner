@@ -1,0 +1,14 @@
+{
+  "has_model": true,
+  "model_path": "intent_scorer.json",
+  "backend": "xgboost",
+  "backend_preference": "xgboost",
+  "model_influence": 0.05,
+  "model_influence_max": 0.35,
+  "train_metrics": {
+    "mae": 0.021828,
+    "baseline_mae": 0.099736,
+    "improvement": 0.077908,
+    "backend": "xgboost"
+  }
+}

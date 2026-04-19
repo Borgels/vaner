@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "baseline_mae": 0.0,
+  "candidate_mae": 0.0,
+  "improvement_pct": 0.0,
+  "min_improvement_pct": 1.0,
+  "test_record_count": 123
+}

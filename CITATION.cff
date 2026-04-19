@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+title: "Vaner"
+message: "If you use Vaner in research or publications, please cite it using the metadata below."
+type: software
+authors:
+  - family-names: "Olsen"
+    given-names: "Abo"
+repository-code: "https://github.com/Borgels/vaner"
+url: "https://vaner.ai"
+license: "Apache-2.0"
+version: "0.1.0"
+date-released: "2026-04-19"

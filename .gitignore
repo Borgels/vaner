@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.env
+.env.local
+.env.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.DS_Store
+.vaner/
+.vaner_data/
+
+# Training pipeline lives in Borgels/Vaner-train (private repo)
+eval/
+!src/vaner/eval/
+!src/vaner/eval/**
+scripts/
+infra/

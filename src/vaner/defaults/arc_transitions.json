@@ -1,0 +1,433 @@
+{
+  "_comment": "Pretrained arc transition priors. Trained on public and private multi-turn conversation corpora, Laplace-smoothed. ConversationArcModel blends these with online user observations.",
+  "schema_version": "1",
+  "categories": [
+    "review",
+    "planning",
+    "testing",
+    "debugging",
+    "implementation",
+    "cleanup",
+    "understanding"
+  ],
+  "transitions": {
+    "review": {
+      "review": 0.311536,
+      "planning": 0.074942,
+      "testing": 0.125465,
+      "debugging": 0.064704,
+      "implementation": 0.098372,
+      "cleanup": 0.041346,
+      "understanding": 0.283635
+    },
+    "planning": {
+      "review": 0.062747,
+      "planning": 0.328877,
+      "testing": 0.129572,
+      "debugging": 0.049547,
+      "implementation": 0.10281,
+      "cleanup": 0.040153,
+      "understanding": 0.286294
+    },
+    "testing": {
+      "review": 0.0544,
+      "planning": 0.062338,
+      "testing": 0.340493,
+      "debugging": 0.052872,
+      "implementation": 0.095497,
+      "cleanup": 0.040714,
+      "understanding": 0.353685
+    },
+    "debugging": {
+      "review": 0.058051,
+      "planning": 0.053384,
+      "testing": 0.110026,
+      "debugging": 0.245775,
+      "implementation": 0.097933,
+      "cleanup": 0.04238,
+      "understanding": 0.392452
+    },
+    "implementation": {
+      "review": 0.052666,
+      "planning": 0.057135,
+      "testing": 0.104342,
+      "debugging": 0.0561,
+      "implementation": 0.349383,
+      "cleanup": 0.042234,
+      "understanding": 0.338141
+    },
+    "cleanup": {
+      "review": 0.052818,
+      "planning": 0.053784,
+      "testing": 0.106866,
+      "debugging": 0.065864,
+      "implementation": 0.10194,
+      "cleanup": 0.217185,
+      "understanding": 0.401544
+    },
+    "understanding": {
+      "review": 0.044471,
+      "planning": 0.046994,
+      "testing": 0.08507,
+      "debugging": 0.048168,
+      "implementation": 0.071096,
+      "cleanup": 0.039857,
+      "understanding": 0.664344
+    }
+  },
+  "phase_affinity": {
+    "exploring": {
+      "review": 0.142857,
+      "planning": 0.142857,
+      "testing": 0.142857,
+      "debugging": 0.142857,
+      "implementation": 0.142857,
+      "cleanup": 0.142857,
+      "understanding": 0.142857
+    },
+    "discovery": {
+      "review": 0.043207,
+      "planning": 0.044074,
+      "testing": 0.081697,
+      "debugging": 0.048613,
+      "implementation": 0.067692,
+      "cleanup": 0.04,
+      "understanding": 0.674717
+    },
+    "planning": {
+      "review": 0.060041,
+      "planning": 0.248579,
+      "testing": 0.13092,
+      "debugging": 0.051661,
+      "implementation": 0.106707,
+      "cleanup": 0.041086,
+      "understanding": 0.361007
+    },
+    "building": {
+      "review": 0.050915,
+      "planning": 0.055222,
+      "testing": 0.10026,
+      "debugging": 0.054766,
+      "implementation": 0.362686,
+      "cleanup": 0.054144,
+      "understanding": 0.322006
+    },
+    "stabilizing": {
+      "review": 0.057028,
+      "planning": 0.058987,
+      "testing": 0.14128,
+      "debugging": 0.165025,
+      "implementation": 0.148018,
+      "cleanup": 0.04418,
+      "understanding": 0.385482
+    },
+    "validation": {
+      "review": 0.104811,
+      "planning": 0.06942,
+      "testing": 0.325158,
+      "debugging": 0.05577,
+      "implementation": 0.084863,
+      "cleanup": 0.040742,
+      "understanding": 0.319236
+    }
+  },
+  "depth_prior": {
+    "early": {
+      "review": 0.062437,
+      "planning": 0.070484,
+      "testing": 0.138643,
+      "debugging": 0.052022,
+      "implementation": 0.105372,
+      "cleanup": 0.040667,
+      "understanding": 0.530374
+    },
+    "mid": {
+      "review": 0.053783,
+      "planning": 0.06015,
+      "testing": 0.121038,
+      "debugging": 0.054001,
+      "implementation": 0.098736,
+      "cleanup": 0.041266,
+      "understanding": 0.571026
+    },
+    "late": {
+      "review": 0.05511,
+      "planning": 0.0613,
+      "testing": 0.121484,
+      "debugging": 0.054917,
+      "implementation": 0.101743,
+      "cleanup": 0.04127,
+      "understanding": 0.564177
+    },
+    "single": {
+      "review": 0.142857,
+      "planning": 0.142857,
+      "testing": 0.142857,
+      "debugging": 0.142857,
+      "implementation": 0.142857,
+      "cleanup": 0.142857,
+      "understanding": 0.142857
+    }
+  },
+  "pivot_rate": {
+    "review": 0.62945,
+    "planning": 0.60605,
+    "testing": 0.59035,
+    "debugging": 0.7182,
+    "implementation": 0.57835,
+    "cleanup": 0.7568,
+    "understanding": 0.15315
+  },
+  "top_bigrams": [
+    {
+      "from": "understanding",
+      "to": "understanding",
+      "count": 746231
+    },
+    {
+      "from": "testing",
+      "to": "understanding",
+      "count": 65943
+    },
+    {
+      "from": "testing",
+      "to": "testing",
+      "count": 62850
+    },
+    {
+      "from": "understanding",
+      "to": "testing",
+      "count": 56450
+    },
+    {
+      "from": "implementation",
+      "to": "implementation",
+      "count": 44608
+    },
+    {
+      "from": "implementation",
+      "to": "understanding",
+      "count": 43903
+    },
+    {
+      "from": "understanding",
+      "to": "implementation",
+      "count": 39773
+    },
+    {
+      "from": "planning",
+      "to": "planning",
+      "count": 17876
+    },
+    {
+      "from": "planning",
+      "to": "understanding",
+      "count": 15164
+    },
+    {
+      "from": "debugging",
+      "to": "understanding",
+      "count": 13453
+    },
+    {
+      "from": "understanding",
+      "to": "debugging",
+      "count": 13213
+    },
+    {
+      "from": "review",
+      "to": "review",
+      "count": 12393
+    },
+    {
+      "from": "testing",
+      "to": "implementation",
+      "count": 12047
+    },
+    {
+      "from": "understanding",
+      "to": "planning",
+      "count": 11776
+    },
+    {
+      "from": "review",
+      "to": "understanding",
+      "count": 11312
+    },
+    {
+      "from": "implementation",
+      "to": "testing",
+      "count": 9620
+    },
+    {
+      "from": "understanding",
+      "to": "review",
+      "count": 8842
+    },
+    {
+      "from": "debugging",
+      "to": "debugging",
+      "count": 8050
+    },
+    {
+      "from": "planning",
+      "to": "testing",
+      "count": 5691
+    },
+    {
+      "from": "testing",
+      "to": "planning",
+      "count": 5194
+    },
+    {
+      "from": "review",
+      "to": "testing",
+      "count": 4096
+    },
+    {
+      "from": "planning",
+      "to": "implementation",
+      "count": 4055
+    },
+    {
+      "from": "testing",
+      "to": "review",
+      "count": 3559
+    },
+    {
+      "from": "cleanup",
+      "to": "understanding",
+      "count": 3325
+    },
+    {
+      "from": "understanding",
+      "to": "cleanup",
+      "count": 3303
+    },
+    {
+      "from": "testing",
+      "to": "debugging",
+      "count": 3247
+    },
+    {
+      "from": "implementation",
+      "to": "planning",
+      "count": 2858
+    },
+    {
+      "from": "review",
+      "to": "implementation",
+      "count": 2850
+    },
+    {
+      "from": "debugging",
+      "to": "testing",
+      "count": 2789
+    },
+    {
+      "from": "implementation",
+      "to": "debugging",
+      "count": 2701
+    },
+    {
+      "from": "debugging",
+      "to": "implementation",
+      "count": 2306
+    },
+    {
+      "from": "implementation",
+      "to": "review",
+      "count": 2206
+    },
+    {
+      "from": "review",
+      "to": "planning",
+      "count": 1761
+    },
+    {
+      "from": "cleanup",
+      "to": "cleanup",
+      "count": 1727
+    },
+    {
+      "from": "planning",
+      "to": "review",
+      "count": 1578
+    },
+    {
+      "from": "review",
+      "to": "debugging",
+      "count": 1297
+    },
+    {
+      "from": "debugging",
+      "to": "review",
+      "count": 825
+    },
+    {
+      "from": "planning",
+      "to": "debugging",
+      "count": 774
+    },
+    {
+      "from": "testing",
+      "to": "cleanup",
+      "count": 767
+    },
+    {
+      "from": "implementation",
+      "to": "cleanup",
+      "count": 742
+    },
+    {
+      "from": "debugging",
+      "to": "planning",
+      "count": 627
+    },
+    {
+      "from": "cleanup",
+      "to": "testing",
+      "count": 625
+    },
+    {
+      "from": "cleanup",
+      "to": "implementation",
+      "count": 588
+    },
+    {
+      "from": "cleanup",
+      "to": "debugging",
+      "count": 243
+    },
+    {
+      "from": "debugging",
+      "to": "cleanup",
+      "count": 205
+    },
+    {
+      "from": "review",
+      "to": "cleanup",
+      "count": 193
+    },
+    {
+      "from": "planning",
+      "to": "cleanup",
+      "count": 189
+    },
+    {
+      "from": "cleanup",
+      "to": "planning",
+      "count": 156
+    },
+    {
+      "from": "cleanup",
+      "to": "review",
+      "count": 140
+    }
+  ],
+  "meta": {
+    "total_conversations": 400000,
+    "total_turns": 1654121,
+    "laplace_alpha": 0.1
+  }
+}
