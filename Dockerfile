@@ -4,6 +4,7 @@ WORKDIR /app
 
 # Install Vaner with all optional dependencies
 COPY pyproject.toml ./
+COPY README.md ./
 COPY src/ ./src/
 
 RUN pip install --no-cache-dir -e ".[all]"
