@@ -8,9 +8,9 @@ Security fixes are applied to the latest release line.
 
 Please report suspected vulnerabilities privately. Do not open public GitHub issues for security disclosures.
 
-Primary contact email: security@vaner.ai
+Primary contact email: [security@vaner.ai](mailto:security@vaner.ai)
 
-Security guidance URL: https://docs.vaner.ai/security
+Security guidance URL: [https://docs.vaner.ai/security](https://docs.vaner.ai/security)
 
 For encrypted disclosure channels and additional process details, also see [docs.vaner.ai/security](https://docs.vaner.ai/security).
 
@@ -20,11 +20,19 @@ For encrypted disclosure channels and additional process details, also see [docs
 - Triage and severity assessment within 7 days
 - Coordinated disclosure target within 90 days from initial report, unless a different disclosure window is agreed with the reporter
 
+## Code Review & Branch Protection
+
+The `main` branch is protected with linear history, admin enforcement, strict status checks, and pull-request review gates.
+Required status checks include `verify (ubuntu-latest, 3.12)`, `examples-smoke`, `no-moat-paths`, and `actionlint`.
+
+Vaner is currently maintained by a single maintainer. Self-merges run through CI, CodeQL, actionlint, and zizmor checks and may use GitHub admin override when review requirements cannot be satisfied by a second maintainer.
+
+The OpenSSF Scorecard `Code-Review` signal can remain low in this solo-maintainer period until additional reviewers are onboarded.
+
 ## Disclosure Process
 
 After a vulnerability report is received, Vaner maintainers validate impact, assign severity, and coordinate remediation before public disclosure.
 Coordinated vulnerability disclosure is used for all confirmed issues to reduce risk to users.
-
 
 ## Security Documentation
 
@@ -53,4 +61,3 @@ slsa-verifier verify-artifact \
 ## OpenSSF Best Practices
 
 Vaner is preparing an OpenSSF Best Practices submission.
-Project badge URL (to be added after registration): https://www.bestpractices.dev/projects/TODO

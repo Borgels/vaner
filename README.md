@@ -1,13 +1,10 @@
 # Vaner
 
-[![CI](https://github.com/Borgels/Vaner/actions/workflows/ci.yml/badge.svg)](https://github.com/Borgels/Vaner/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/Borgels/Vaner/actions/workflows/codeql.yml/badge.svg)](https://github.com/Borgels/Vaner/actions/workflows/codeql.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/Borgels/Vaner?label=GitHub%20Release)](https://github.com/Borgels/Vaner/releases)
-[![Downloads](https://img.shields.io/github/downloads/Borgels/Vaner/total?label=Downloads)](https://github.com/Borgels/Vaner/releases)
-[![PyPI](https://img.shields.io/pypi/v/vaner)](https://pypi.org/project/vaner/)
-[![Python](https://img.shields.io/pypi/pyversions/vaner)](https://pypi.org/project/vaner/)
-[![License](https://img.shields.io/github/license/Borgels/Vaner)](LICENSE)
-[![Codecov](https://codecov.io/gh/Borgels/Vaner/branch/main/graph/badge.svg)](https://codecov.io/gh/Borgels/Vaner)
+[![CI](https://github.com/Borgels/vaner/actions/workflows/ci.yml/badge.svg)](https://github.com/Borgels/vaner/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Borgels/vaner/actions/workflows/codeql.yml/badge.svg)](https://github.com/Borgels/vaner/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/Borgels/vaner)](https://github.com/Borgels/vaner/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Borgels/vaner/total?label=Downloads)](https://github.com/Borgels/vaner/releases)
+[![License](https://img.shields.io/github/license/Borgels/vaner)](LICENSE)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Borgels/vaner/badge)](https://scorecard.dev/viewer/?uri=github.com/Borgels/vaner)
 
 > Status: alpha (pre-1.0). Interfaces may evolve quickly while we stabilize core behavior.
@@ -32,17 +29,21 @@ Asciinema demo: coming soon.
 
 ## Install
 
+From source (current):
+
 ```bash
-curl -fsSL https://vaner.ai/install.sh | bash
+git clone https://github.com/Borgels/vaner.git
+cd vaner
+pip install .
+```
+
+One-liner (coming soon - requires v0.1.x on PyPI):
+
+```bash
+curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash
 ```
 
 Installer source for review: [`scripts/install.sh`](scripts/install.sh).
-
-From source:
-
-```bash
-pip install .
-```
 
 ## Quickstart
 
@@ -77,7 +78,6 @@ Most documentation lives at [docs.vaner.ai](https://docs.vaner.ai):
 ## OpenSSF Best Practices
 
 Vaner is preparing an OpenSSF Best Practices submission.
-Badge URL placeholder (to be replaced after registration): https://www.bestpractices.dev/projects/TODO
 
 ## License
 

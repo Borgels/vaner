@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Optional successful build-vscode-extension run ID
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -11,25 +17,59 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ide/vscode
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "20"
-      - run: npm ci
-      - run: npm run build
-      - name: Package extension
-        run: npx @vscode/vsce package
+      - name: Resolve build run ID
+        id: resolve_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RUN_ID: ${{ github.event.inputs.run_id }}
+          TAG_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_RUN_ID:-}" ]; then
+            echo "run_id=${INPUT_RUN_ID}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          run_id="$(
+            gh run list \
+              --workflow build-vscode-extension.yml \
+              --branch main \
+              --status success \
+              --limit 50 \
+              --json databaseId,headSha \
+              --jq '.[] | select(.headSha == "'"${TAG_SHA}"'") | .databaseId' \
+              | head -n 1
+          )"
+
+          if [ -z "${run_id}" ]; then
+            echo "No successful build-vscode-extension.yml run found for sha ${TAG_SHA}." >&2
+            echo "Re-run build-vscode-extension.yml on main or pass workflow_dispatch input run_id." >&2
+            exit 1
+          fi
+
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Download VSIX artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.resolve_run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p vsix
+          gh run download "$RUN_ID" --name vsce-vsix --dir vsix
+
       - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' }}
-        run: npx @vscode/vsce publish --packagePath ./*.vsix
+        run: npx @vscode/vsce publish --packagePath ./vsix/*.vsix
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
       - name: Publish to Open VSX
         if: ${{ env.OVSX_PAT != '' }}
-        run: npx ovsx publish ./*.vsix -p "$OVSX_PAT"
+        run: npx ovsx publish ./vsix/*.vsix -p "$OVSX_PAT"
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
