@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/Borgels/Vaner/actions/workflows/ci.yml/badge.svg)](https://github.com/Borgels/Vaner/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Borgels/Vaner/actions/workflows/codeql.yml/badge.svg)](https://github.com/Borgels/Vaner/actions/workflows/codeql.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/Borgels/Vaner?label=GitHub%20Release)](https://github.com/Borgels/Vaner/releases)
+[![Downloads](https://img.shields.io/github/downloads/Borgels/Vaner/total?label=Downloads)](https://github.com/Borgels/Vaner/releases)
 [![PyPI](https://img.shields.io/pypi/v/vaner)](https://pypi.org/project/vaner/)
 [![Python](https://img.shields.io/pypi/pyversions/vaner)](https://pypi.org/project/vaner/)
 [![License](https://img.shields.io/github/license/Borgels/Vaner)](LICENSE)
