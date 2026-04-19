@@ -17,9 +17,10 @@ _RUST_USE = re.compile(r"""^\s*(?:use|mod)\s+([a-zA-Z0-9_:]+)""", re.MULTILINE)
 
 def _compat_relpath(rel: str) -> str:
     """Map legacy compatibility filenames back to stable public paths."""
-    if rel.endswith("_legacy.py"):
-        return rel.replace("_legacy.py", ".py")
-    return rel
+    normalized = rel.replace("\\", "/")
+    if normalized.endswith("_legacy.py"):
+        return normalized.replace("_legacy.py", ".py")
+    return normalized
 
 
 def _safe_read(path: Path) -> str:
@@ -116,7 +117,7 @@ def extract_code_relationship_edges(repo_root: Path) -> list[RelationshipEdge]:
                 # Relative JS/TS imports.
                 resolved = (path.parent / target).with_suffix(path.suffix)
                 if resolved.exists():
-                    target_key = f"file:{resolved.relative_to(repo_root)}"
+                    target_key = f"file:{_compat_relpath(str(resolved.relative_to(repo_root)))}"
                 else:
                     continue
             elif (repo_root / target).exists():
