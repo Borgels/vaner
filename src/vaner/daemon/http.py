@@ -54,6 +54,7 @@ def create_daemon_http_app(config: VanerConfig) -> FastAPI:
     @app.get("/compute/devices")
     async def compute_devices() -> JSONResponse:
         devices: list[dict[str, Any]] = [{"id": "cpu", "label": "CPU", "kind": "cpu"}]
+        probe_warning: str | None = None
         try:  # pragma: no cover
             import torch
 
@@ -70,9 +71,12 @@ def create_daemon_http_app(config: VanerConfig) -> FastAPI:
                     )
             if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 devices.append({"id": "mps", "label": "Apple Metal (MPS)", "kind": "mps"})
-        except Exception:
-            pass
-        return JSONResponse({"devices": devices, "selected": config.compute.device})
+        except Exception as exc:
+            probe_warning = str(exc)
+        payload: dict[str, Any] = {"devices": devices, "selected": config.compute.device}
+        if probe_warning:
+            payload["warning"] = probe_warning
+        return JSONResponse(payload)
 
     @app.post("/compute")
     async def update_compute(payload: dict[str, Any]) -> JSONResponse:

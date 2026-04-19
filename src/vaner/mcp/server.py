@@ -244,7 +244,8 @@ def build_server(repo_root: Path) -> Server:
                     scenario_id=scenario_id,
                 )
             except Exception:
-                pass
+                # Metrics are best-effort; tool execution must remain non-fatal.
+                return
 
         async def _error(message: str, *, tool_name: str | None = None, scenario_id: str | None = None) -> CallToolResult:
             await _record("error", tool_name=tool_name, scenario_id=scenario_id)
@@ -329,6 +330,7 @@ def build_server(repo_root: Path) -> Server:
             try:
                 await metrics_store.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note)
             except Exception:
+                # Outcome telemetry should not fail the tool response.
                 pass
             await _record("ok", scenario_id=scenario_id)
             return CallToolResult(content=_make_text(json.dumps({"ok": True, "scenario_id": scenario_id, "result": result})))
