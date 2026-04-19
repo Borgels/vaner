@@ -488,7 +488,7 @@ ensure_ollama() {
   fi
 
   if ! command -v ollama >/dev/null 2>&1; then
-    ui_error "Ollama installation did not provide `ollama` on PATH."
+    ui_error "Ollama installation did not provide 'ollama' on PATH."
     return 1
   fi
   ui_success "Ollama installed"
