@@ -15,4 +15,5 @@ jobs:
       - name: Zizmor
         uses: zizmorcore/zizmor-action@814f9778aceea8641503a8cd8f0cffebc55d790c # v0.5.3
         with:
-          path: .github/workflows
+          inputs: .github/workflows
+          online-audits: false
