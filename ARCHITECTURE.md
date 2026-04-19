@@ -25,6 +25,15 @@ Vaner is a local-first predictive context engine for coding assistants.
 - Safety and privacy policy modules gate what leaves local storage.
 - Training and moat-sensitive workflows are intentionally isolated to private repos.
 
+## Decision transparency
+
+- Every `query` writes a structured decision record to `.vaner/runtime/decisions/`.
+- The record captures package-level metadata (`cache_tier`, `partial_similarity`, token usage), per-selection scoring factors, and prediction links when the package came from precompute/frontier exploration.
+- CLI surfaces share this record:
+  - `vaner inspect --last [--verbose|--json]`
+  - `vaner why [decision-id] [--list|--verbose|--json]`
+  - `vaner query --explain [--verbose|--json]`
+
 ## More details
 
 Detailed architecture docs live at `https://docs.vaner.ai/architecture`.

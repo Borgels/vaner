@@ -9,6 +9,7 @@ from collections.abc import Callable
 from fnmatch import fnmatch
 
 from vaner.models.artefact import Artefact
+from vaner.models.decision import ScoreFactor
 
 
 def _recency_bonus(artefact: Artefact, decay_half_life_seconds: int = 1800) -> float:
@@ -28,13 +29,13 @@ _COMMON_WORDS = frozenset(
 )
 
 
-def score_artefact(prompt: str, artefact: Artefact) -> float:
+def score_artefact(prompt: str, artefact: Artefact, *, factor_sink: list[ScoreFactor] | None = None) -> float:
     # Extract identifiers: split on non-alphanumeric boundaries so
     # "col_insert()" → "col_insert", "Matrix.foo" → ["matrix", "foo"]
     raw_terms = re.findall(r"[a-z][a-z0-9_]{2,}", prompt.lower())
     text = f"{artefact.source_path} {artefact.content}".lower()
 
-    score = 0.0
+    keyword_overlap = 0.0
     for term in raw_terms:
         if term in _COMMON_WORDS:
             continue
@@ -42,10 +43,26 @@ def score_artefact(prompt: str, artefact: Artefact) -> float:
             continue
         # Code identifiers (containing underscore) are stronger signals
         weight = 3.0 if "_" in term else 1.0
-        score += weight
+        keyword_overlap += weight
 
     recency_bonus = _recency_bonus(artefact)
-    return score + recency_bonus
+    if factor_sink is not None:
+        if keyword_overlap > 0:
+            factor_sink.append(
+                ScoreFactor(
+                    name="keyword_overlap",
+                    contribution=keyword_overlap,
+                    detail="prompt terms matched source path/content",
+                )
+            )
+        factor_sink.append(
+            ScoreFactor(
+                name="recency",
+                contribution=recency_bonus,
+                detail="recently generated or accessed artefacts are boosted",
+            )
+        )
+    return keyword_overlap + recency_bonus
 
 
 def _is_origin_question(prompt: str) -> bool:
@@ -87,6 +104,8 @@ async def select_artefacts_fts(
     exclude_private: bool = False,
     path_bonuses: list[str] | None = None,
     path_excludes: list[str] | None = None,
+    capture_factors: dict[str, list[ScoreFactor]] | None = None,
+    capture_drop_reasons: dict[str, str] | None = None,
 ) -> list[Artefact]:
     """Two-phase selection: FTS candidate retrieval, then scorer re-rank.
 
@@ -134,6 +153,8 @@ async def select_artefacts_fts(
         exclude_private=exclude_private,
         path_bonuses=path_bonuses,
         path_excludes=path_excludes,
+        capture_factors=capture_factors,
+        capture_drop_reasons=capture_drop_reasons,
     )
 
 
@@ -147,6 +168,8 @@ def select_artefacts(
     exclude_private: bool = False,
     path_bonuses: list[str] | None = None,
     path_excludes: list[str] | None = None,
+    capture_factors: dict[str, list[ScoreFactor]] | None = None,
+    capture_drop_reasons: dict[str, str] | None = None,
 ) -> list[Artefact]:
     preferred_paths = preferred_paths or set()
     preferred_keys = preferred_keys or set()
@@ -157,18 +180,68 @@ def select_artefacts(
     scored_rows: list[tuple[float, Artefact]] = []
     for artefact in artefacts:
         if exclude_private and str(artefact.metadata.get("privacy_zone", "")).lower() == "private_local":
+            if capture_drop_reasons is not None:
+                capture_drop_reasons[artefact.key] = "privacy_excluded"
             continue
         if any(fnmatch(artefact.source_path, pattern) for pattern in path_excludes):
+            if capture_drop_reasons is not None:
+                capture_drop_reasons[artefact.key] = "path_excluded"
             continue
-        score = scorer(prompt, artefact) if scorer is not None else score_artefact(prompt, artefact)
+        factors: list[ScoreFactor] = []
+        if scorer is not None:
+            score = scorer(prompt, artefact)
+            factors.append(
+                ScoreFactor(
+                    name="intent_score",
+                    contribution=score,
+                    detail="intent scorer baseline for prompt and artefact",
+                )
+            )
+        else:
+            score = score_artefact(prompt, artefact, factor_sink=factors)
         if apply_origin_rerank:
-            score += _origin_bonus(prompt, artefact.content)
+            origin_bonus = _origin_bonus(prompt, artefact.content)
+            if origin_bonus:
+                factors.append(
+                    ScoreFactor(
+                        name="origin_bonus",
+                        contribution=origin_bonus,
+                        detail="question asks for definition/implementation origin",
+                    )
+                )
+                score += origin_bonus
         if artefact.source_path in preferred_paths:
-            score += 0.8
+            preferred_path_bonus = 0.8
+            factors.append(
+                ScoreFactor(
+                    name="preferred_path",
+                    contribution=preferred_path_bonus,
+                    detail="path appears in recent git activity",
+                )
+            )
+            score += preferred_path_bonus
         if artefact.key in preferred_keys:
-            score += 0.8
+            preferred_key_bonus = 0.8
+            factors.append(
+                ScoreFactor(
+                    name="working_set",
+                    contribution=preferred_key_bonus,
+                    detail="artefact already in working set or warm-start keys",
+                )
+            )
+            score += preferred_key_bonus
         if any(fnmatch(artefact.source_path, pattern) for pattern in path_bonuses):
-            score += 0.3
+            pinned_path_bonus = 0.3
+            factors.append(
+                ScoreFactor(
+                    name="pinned_path_bonus",
+                    contribution=pinned_path_bonus,
+                    detail="path matched user-pinned focus glob",
+                )
+            )
+            score += pinned_path_bonus
+        if capture_factors is not None:
+            capture_factors[artefact.key] = factors
         scored_rows.append((score, artefact))
 
     ranked = sorted(scored_rows, key=lambda item: item[0], reverse=True)
@@ -177,6 +250,8 @@ def select_artefacts(
     min_competitive_score = ranked[0][0] * 0.45 if ranked else 0.0
     for score, artefact in ranked:
         if score < min_competitive_score:
+            if capture_drop_reasons is not None:
+                capture_drop_reasons[artefact.key] = "below_competitive_threshold"
             continue
         corpus_id = str(artefact.metadata.get("corpus_id", "default"))
         if selected and corpus_id not in seen_corpora:
@@ -187,4 +262,10 @@ def select_artefacts(
             seen_corpora.add(corpus_id)
         if len(selected) >= top_n:
             break
+    if capture_drop_reasons is not None:
+        selected_keys = {artefact.key for artefact in selected}
+        for _, artefact in ranked:
+            if artefact.key in selected_keys:
+                continue
+            capture_drop_reasons.setdefault(artefact.key, "ranked_below_top_n")
     return selected[:top_n]

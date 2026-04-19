@@ -21,8 +21,9 @@ CLI walkthrough:
 ```bash
 vaner init --path .
 vaner daemon start --no-once --path .
-vaner query "where is auth enforced?" --path .
+vaner query "where is auth enforced?" --explain --path .
 vaner inspect --last --path .
+vaner why --list --path .
 ```
 
 Asciinema demo: coming soon.
@@ -38,8 +39,9 @@ pip install .
 ```bash
 vaner init --path .
 vaner daemon start --no-once --path .
-vaner query "where is auth enforced?" --path .
+vaner query "where is auth enforced?" --explain --path .
 vaner inspect --last --path .
+vaner why --list --path .
 ```
 
 ## Documentation

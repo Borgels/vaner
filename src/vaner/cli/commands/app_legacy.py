@@ -13,7 +13,11 @@ import typer
 from vaner import api
 from vaner.cli.commands.config import load_config
 from vaner.cli.commands.daemon import daemon_status, run_daemon_forever, start_daemon, stop_daemon
+from vaner.cli.commands.explain import render_human, render_json
 from vaner.cli.commands.init import init_repo
+from vaner.cli.commands.inspect import inspect_decision as inspect_decision_output
+from vaner.cli.commands.inspect import inspect_last as inspect_last_output
+from vaner.cli.commands.inspect import list_decisions as list_decisions_output
 from vaner.cli.commands.profile import export_pins, import_pins, pin_fact, profile_show, unpin_fact
 from vaner.daemon.runner import VanerDaemon
 from vaner.eval import evaluate_repo, run_eval
@@ -89,17 +93,49 @@ def daemon_run_forever(
 def inspect(
     path: str | None = typer.Option(None, help="Repository root"),
     last: bool = typer.Option(False, "--last", help="Show last context decision"),
+    verbose: bool = typer.Option(False, "--verbose", help="Show detailed scoring factors"),
+    as_json: bool = typer.Option(False, "--json", help="Show decision record as JSON"),
 ) -> None:
     if last:
-        typer.echo(api.inspect_last(_repo_root(path)))
+        typer.echo(inspect_last_output(_repo_root(path), verbose=verbose, as_json=as_json))
         return
     typer.echo(api.inspect(_repo_root(path)))
 
 
 @app.command("query")
-def query(prompt: str, path: str | None = typer.Option(None, help="Repository root")) -> None:
+def query(
+    prompt: str,
+    path: str | None = typer.Option(None, help="Repository root"),
+    explain: bool = typer.Option(False, "--explain", help="Show why this context package was chosen"),
+    verbose: bool = typer.Option(False, "--verbose", help="Include detailed score factors with --explain"),
+    as_json: bool = typer.Option(False, "--json", help="Show explanation as JSON with --explain"),
+) -> None:
     package = api.query(prompt, _repo_root(path))
     typer.echo(package.injected_context)
+    if not explain:
+        return
+    decision_record = api.inspect_last_decision(_repo_root(path))
+    if decision_record is None:
+        typer.echo("\nNo context decisions recorded yet.")
+        return
+    typer.echo("")
+    typer.echo(render_json(decision_record) if as_json else render_human(decision_record, verbose=verbose))
+
+
+@app.command("why")
+def why(
+    decision_id: str | None = typer.Argument(None, help="Decision id, defaults to latest"),
+    path: str | None = typer.Option(None, help="Repository root"),
+    list_ids: bool = typer.Option(False, "--list", help="List recent decision ids"),
+    limit: int = typer.Option(20, "--limit", min=1, max=200, help="Number of ids to list"),
+    verbose: bool = typer.Option(False, "--verbose", help="Show detailed scoring factors"),
+    as_json: bool = typer.Option(False, "--json", help="Show decision record as JSON"),
+) -> None:
+    repo_root = _repo_root(path)
+    if list_ids:
+        typer.echo(list_decisions_output(repo_root, limit=limit))
+        return
+    typer.echo(inspect_decision_output(repo_root, decision_id, verbose=verbose, as_json=as_json))
 
 
 @app.command("prepare")

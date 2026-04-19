@@ -9,6 +9,7 @@ from vaner.cli.commands.config import load_config
 from vaner.engine import build_default_engine
 from vaner.models.config import VanerConfig
 from vaner.models.context import ContextPackage
+from vaner.models.decision import DecisionRecord
 
 
 def _resolve_repo_root(repo: Path | str | None) -> Path:
@@ -23,19 +24,10 @@ def _resolve_config(repo_root: Path, config: VanerConfig | None) -> VanerConfig:
     return config if config is not None else load_config(repo_root)
 
 
-def _write_last_context(repo_root: Path, prompt: str, package: ContextPackage) -> None:
+def _write_last_context(repo_root: Path, record: DecisionRecord) -> None:
+    record.write(repo_root)
     inspect_path = repo_root / ".vaner" / "runtime" / "last_context.md"
-    inspect_path.parent.mkdir(parents=True, exist_ok=True)
-    inspect_lines = [
-        f"prompt: {prompt}",
-        f"token_used: {package.token_used}/{package.token_budget}",
-        "",
-    ]
-    for item in package.selections:
-        inspect_lines.append(
-            f"- {item.artefact_key} score={item.score:.2f} stale={item.stale} tokens={item.token_count} rationale={item.rationale}"
-        )
-    inspect_path.write_text("\n".join(inspect_lines), encoding="utf-8")
+    inspect_path.write_text(record.to_legacy_markdown(), encoding="utf-8")
 
 
 async def aprepare(repo: Path | str | None = None, config: VanerConfig | None = None) -> int:
@@ -55,7 +47,9 @@ async def aquery(
     repo_root = _resolve_repo_root(repo)
     engine = build_default_engine(repo_root, _resolve_config(repo_root, config))
     package = await engine.query(prompt, max_tokens=max_tokens, top_n=top_n)
-    _write_last_context(repo_root, prompt, package)
+    decision_record = engine.get_last_decision_record()
+    if decision_record is not None:
+        _write_last_context(repo_root, decision_record)
     return package
 
 
@@ -135,6 +129,23 @@ def inspect_last(repo: Path | str | None = None) -> str:
     if not path.exists():
         return "No context decisions recorded yet."
     return path.read_text(encoding="utf-8")
+
+
+def inspect_last_decision(repo: Path | str | None = None) -> DecisionRecord | None:
+    repo_root = _resolve_repo_root(repo)
+    return DecisionRecord.read_latest(repo_root)
+
+
+def inspect_decision(repo: Path | str | None = None, decision_id: str | None = None) -> DecisionRecord | None:
+    repo_root = _resolve_repo_root(repo)
+    if decision_id is None:
+        return DecisionRecord.read_latest(repo_root)
+    return DecisionRecord.read_by_id(repo_root, decision_id)
+
+
+def list_decisions(repo: Path | str | None = None, limit: int = 20) -> list[str]:
+    repo_root = _resolve_repo_root(repo)
+    return DecisionRecord.list_recent_ids(repo_root, limit=limit)
 
 
 def forget(repo: Path | str | None = None) -> int:

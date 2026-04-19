@@ -36,6 +36,7 @@ from vaner.learning.reward import RewardInput, compute_reward
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.models.config import ExplorationConfig, VanerConfig
 from vaner.models.context import ContextPackage
+from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor
 from vaner.models.signal import SignalEvent
 from vaner.store.artefacts import ArtefactStore
 
@@ -135,6 +136,7 @@ class VanerEngine:
         self._last_policy_persist_at = 0.0
         self._policy_persist_interval_seconds = 2.0
         self._learning_state_loaded = False
+        self._last_decision_record: DecisionRecord | None = None
 
     async def initialize(self) -> None:
         await self.store.initialize()
@@ -370,6 +372,13 @@ class VanerEngine:
                 await self._persist_learning_state()
                 cache_result.package.cache_tier = "full_hit"
                 cache_result.package.partial_similarity = cache_result.similarity
+                self._last_decision_record = self._build_decision_record_from_package(
+                    prompt,
+                    cache_result.package,
+                    cache_tier="full_hit",
+                    partial_similarity=cache_result.similarity,
+                    enrichment=cache_result.enrichment,
+                )
                 return cache_result.package
 
             if cache_result.tier == "partial_hit" and cache_result.package is not None:
@@ -381,6 +390,8 @@ class VanerEngine:
                 all_artefacts = await self.store.list(limit=2000)
                 artefacts_by_key = {a.key: a for a in all_artefacts}
                 selected = [artefacts_by_key[k] for k in cache_keys if k in artefacts_by_key]
+                factor_map: dict[str, list[ScoreFactor]] = {}
+                drop_reasons: dict[str, str] = {}
                 if len(selected) < top_n:
                     heuristic_picks = select_artefacts(
                         prompt,
@@ -389,6 +400,8 @@ class VanerEngine:
                         exclude_private=self.config.privacy.exclude_private,
                         path_bonuses=self._pinned_focus_paths,
                         path_excludes=self._pinned_avoid_paths,
+                        capture_factors=factor_map,
+                        capture_drop_reasons=drop_reasons,
                     )
                     seen = {a.key for a in selected}
                     for pick in heuristic_picks:
@@ -406,13 +419,16 @@ class VanerEngine:
                     cache_tier=cache_result.tier,
                 )
                 score_map = {a.key: self._intent_scorer.score(prompt, a, features=features) for a in selected}
-                package = assemble_context_package(
+                package, decision_record = assemble_context_package(
                     prompt,
                     selected,
                     max_tokens if max_tokens is not None else self.config.max_context_tokens,
                     repo_root=self.config.repo_root,
                     max_age_seconds=self.config.max_age_seconds,
                     score_map=score_map,
+                    factor_map=factor_map,
+                    drop_reasons=drop_reasons,
+                    return_decision=True,
                 )
             else:
                 if cache_result.tier == "cold_miss":
@@ -436,7 +452,7 @@ class VanerEngine:
                     preferred_keys |= set(working_set.artefact_keys)
                 if cache_result.tier == "warm_start":
                     preferred_keys |= set(str(key) for key in cache_result.enrichment.get("relevant_keys", []))
-                package, selected = await self._build_package_for_prompt(
+                package, selected, decision_record = await self._build_package_for_prompt(
                     prompt,
                     max_tokens=max_tokens,
                     top_n=top_n,
@@ -567,6 +583,10 @@ class VanerEngine:
             await self._persist_learning_state()
             package.cache_tier = cache_result.tier if cache_result.tier != "full_hit" else "miss"
             package.partial_similarity = cache_result.similarity if cache_result.tier == "partial_hit" else 0.0
+            decision_record.cache_tier = package.cache_tier
+            decision_record.partial_similarity = package.partial_similarity
+            self._attach_prediction_links(decision_record, cache_result.enrichment)
+            self._last_decision_record = decision_record
             return package
         finally:
             self._notify_user_request_end()
@@ -829,6 +849,9 @@ class VanerEngine:
     def get_explored_scenarios(self) -> list[ExploredScenario]:
         """Return scenarios explored in the most recent precompute cycle."""
         return list(self._last_explored_scenarios)
+
+    def get_last_decision_record(self) -> DecisionRecord | None:
+        return self._last_decision_record
 
     @staticmethod
     def _should_use_llm(scenario: ExplorationScenario, ecfg: ExplorationConfig) -> bool:
@@ -1455,6 +1478,7 @@ class VanerEngine:
             # Both keys used by TieredPredictionCache._path_overlap_score
             "source_paths": scenario.file_paths,
             "anchor_files": scenario.file_paths,
+            "scenario_question": scenario.question,
             "confidence": scenario.confidence,
             "rationale": scenario.rationale,
             "exploration_source": exploration_source,
@@ -1496,13 +1520,14 @@ class VanerEngine:
         # without penalising files that happen to overlap with heuristic picks.
         _heuristic = heuristic_paths or set()
         score_map = {artefact.key: (1.0 if artefact.source_path in _heuristic else 1.3) for artefact in selected}
-        package = assemble_context_package(
+        package, _decision_record = assemble_context_package(
             question,
             selected[:8],
             self.config.max_context_tokens,
             repo_root=self.config.repo_root,
             max_age_seconds=self.config.max_age_seconds,
             score_map=score_map,
+            return_decision=True,
         )
         return package, selected_keys
 
@@ -1659,7 +1684,7 @@ class VanerEngine:
         top_n: int = 8,
         source_key: str | None = None,
         preferred_keys: set[str] | None = None,
-    ) -> tuple[ContextPackage, list]:
+    ) -> tuple[ContextPackage, list, DecisionRecord]:
         artefacts = await self.store.list(limit=2000)
         if not artefacts:
             await self.prepare()
@@ -1680,6 +1705,8 @@ class VanerEngine:
         def _score_with_model(question: str, artefact) -> float:
             return self._intent_scorer.score(question, artefact, features=features)
 
+        factor_map: dict[str, list[ScoreFactor]] = {}
+        drop_reasons: dict[str, str] = {}
         selected = await select_artefacts_fts(
             prompt,
             self.store,
@@ -1690,6 +1717,8 @@ class VanerEngine:
             exclude_private=self.config.privacy.exclude_private,
             path_bonuses=self._pinned_focus_paths,
             path_excludes=self._pinned_avoid_paths,
+            capture_factors=factor_map,
+            capture_drop_reasons=drop_reasons,
         )
         if source_key is None and selected:
             source_key = selected[0].key
@@ -1708,17 +1737,78 @@ class VanerEngine:
                 exclude_private=self.config.privacy.exclude_private,
                 path_bonuses=self._pinned_focus_paths,
                 path_excludes=self._pinned_avoid_paths,
+                capture_factors=factor_map,
+                capture_drop_reasons=drop_reasons,
             )
         score_map = {artefact.key: self._intent_scorer.score(prompt, artefact, features=features) for artefact in selected}
-        package = assemble_context_package(
+        package, decision_record = assemble_context_package(
             prompt,
             selected,
             max_tokens if max_tokens is not None else self.config.max_context_tokens,
             repo_root=self.config.repo_root,
             max_age_seconds=self.config.max_age_seconds,
             score_map=score_map,
+            factor_map=factor_map,
+            drop_reasons=drop_reasons,
+            return_decision=True,
         )
-        return package, selected
+        return package, selected, decision_record
+
+    def _build_decision_record_from_package(
+        self,
+        prompt: str,
+        package: ContextPackage,
+        *,
+        cache_tier: str,
+        partial_similarity: float,
+        enrichment: dict[str, object] | None,
+    ) -> DecisionRecord:
+        decision_record = DecisionRecord(
+            id=package.id,
+            prompt=prompt,
+            prompt_hash=package.prompt_hash,
+            assembled_at=package.assembled_at,
+            cache_tier=cache_tier,
+            partial_similarity=partial_similarity,
+            token_budget=package.token_budget,
+            token_used=package.token_used,
+            selections=[
+                {
+                    "artefact_key": selection.artefact_key,
+                    "source_path": selection.source_path,
+                    "final_score": selection.score,
+                    "token_count": selection.token_count,
+                    "stale": selection.stale,
+                    "kept": True,
+                    "drop_reason": None,
+                    "rationale": selection.rationale,
+                    "factors": [],
+                }
+                for selection in package.selections
+            ],
+        )
+        self._attach_prediction_links(decision_record, enrichment)
+        return decision_record
+
+    def _attach_prediction_links(self, decision_record: DecisionRecord, enrichment: dict[str, object] | None) -> None:
+        if not enrichment:
+            return
+        source = str(enrichment.get("exploration_source", "")).strip()
+        if not source:
+            return
+        scenario_question_raw = enrichment.get("scenario_question") or enrichment.get("prompt_hint")
+        scenario_question = str(scenario_question_raw) if scenario_question_raw else None
+        rationale_raw = enrichment.get("rationale")
+        scenario_rationale = str(rationale_raw) if rationale_raw else None
+        confidence_value = enrichment.get("confidence")
+        confidence = float(confidence_value) if isinstance(confidence_value, (int, float)) else None
+        for selection in decision_record.selections:
+            decision_record.prediction_links[selection.artefact_key] = PredictionLink(
+                source=source,
+                scenario_question=scenario_question,
+                scenario_rationale=scenario_rationale,
+                confidence=confidence,
+            )
 
     def _resolve_llm(self, llm: LLMCallable | str | None) -> LLMCallable | None:
         if llm is None or callable(llm):
