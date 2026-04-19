@@ -4,6 +4,9 @@ import asyncio
 import json
 
 import aiosqlite
+import pytest
+
+pytest.importorskip("mcp")
 from mcp.types import CallToolRequest, ListToolsRequest
 
 from vaner.mcp.server import build_server
