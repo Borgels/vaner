@@ -8,7 +8,6 @@ from pathlib import Path
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-
 _SKIPPED_PARTS = {
     ".git",
     ".venv",

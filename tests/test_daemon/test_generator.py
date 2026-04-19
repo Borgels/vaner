@@ -12,11 +12,7 @@ from vaner.models.config import GenerationConfig, VanerConfig
 def test_generate_artefact_for_normal_file(temp_repo):
     source = temp_repo / "normal.py"
     source.write_text(
-        "MAX_ITEMS = 10\n\n"
-        "class Service:\n"
-        "    pass\n\n"
-        "def f(limit: int = 5):\n"
-        "    return list(range(limit))[:MAX_ITEMS]\n",
+        "MAX_ITEMS = 10\n\nclass Service:\n    pass\n\ndef f(limit: int = 5):\n    return list(range(limit))[:MAX_ITEMS]\n",
         encoding="utf-8",
     )
     artefact = generate_artefact(source, temp_repo)

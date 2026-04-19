@@ -52,7 +52,6 @@ Cursor MCP config (.cursor/mcp.json in your project):
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -162,10 +161,7 @@ def build_server(repo_root: Path) -> Server:
                 "selections": len(package.selections),
                 "paths": [s.source_path for s in package.selections],
             }
-            output = (
-                f"<!-- vaner:metadata {json.dumps(metadata)} -->\n\n"
-                + package.injected_context
-            )
+            output = f"<!-- vaner:metadata {json.dumps(metadata)} -->\n\n" + package.injected_context
             return CallToolResult(content=_make_text(output))
 
         if name == "precompute":
@@ -176,19 +172,16 @@ def build_server(repo_root: Path) -> Server:
                     content=_make_text(f"ERROR: {exc}"),
                     isError=True,
                 )
-            return CallToolResult(
-                content=_make_text(f"Precompute cycle complete. Artefacts written: {written}")
-            )
+            return CallToolResult(content=_make_text(f"Precompute cycle complete. Artefacts written: {written}"))
 
         if name == "get_metrics":
             last_n = int(args.get("last_n", 100))
             try:
                 from vaner.telemetry.metrics import MetricsStore
+
                 metrics_db = repo_root / ".vaner" / "metrics.db"
                 if not metrics_db.exists():
-                    return CallToolResult(
-                        content=_make_text("No metrics yet. Run `vaner proxy` and make some requests first.")
-                    )
+                    return CallToolResult(content=_make_text("No metrics yet. Run `vaner proxy` and make some requests first."))
                 store = MetricsStore(metrics_db)
                 await store.initialize()
                 summary = await store.summary(last_n=last_n)
@@ -229,19 +222,16 @@ async def run_stdio(repo_root: Path) -> None:
 
 async def run_sse(repo_root: Path, host: str, port: int) -> None:
     """Run the MCP server over HTTP+SSE (for remote/network access)."""
+    import uvicorn
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
     from starlette.routing import Mount, Route
-
-    import uvicorn
 
     server = build_server(repo_root)
     sse_transport = SseServerTransport("/messages/")
 
     async def handle_sse(request):
-        async with sse_transport.connect_sse(
-            request.scope, request.receive, request._send
-        ) as streams:
+        async with sse_transport.connect_sse(request.scope, request.receive, request._send) as streams:
             await server.run(
                 streams[0],
                 streams[1],

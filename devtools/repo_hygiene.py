@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import subprocess
+import sys
 from dataclasses import dataclass
 
 FORBIDDEN_PREFIXES = (
@@ -76,14 +77,13 @@ def main() -> int:
     tracked, violations = collect_violations(repo_root)
 
     if violations:
-        print("Repository hygiene check failed.")
+        sys.stdout.write("Repository hygiene check failed.\n")
         for violation in violations:
-            print(f" - {violation.path}: {violation.reason}")
+            sys.stdout.write(f" - {violation.path}: {violation.reason}\n")
         return 1 if args.strict else 0
 
-    print(
-        "Repository hygiene check passed "
-        f"({len(tracked)} tracked files; max tracked file size <= {MAX_TRACKED_FILE_BYTES} bytes)."
+    sys.stdout.write(
+        f"Repository hygiene check passed ({len(tracked)} tracked files; max tracked file size <= {MAX_TRACKED_FILE_BYTES} bytes).\n"
     )
     return 0
 

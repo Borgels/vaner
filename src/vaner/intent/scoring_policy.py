@@ -47,15 +47,16 @@ _DEFAULT_LAYER_MULTIPLIERS: dict[str, float] = {
 # Adaptation step sizes per MaturityPhase
 _ADAPT_STEPS: dict[str, float] = {
     "cold_start": 0.04,
-    "warming":    0.02,
-    "learning":   0.01,
-    "mature":     0.003,
+    "warming": 0.02,
+    "learning": 0.01,
+    "mature": 0.003,
 }
 
 
 # ---------------------------------------------------------------------------
 # Policy
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ScoringPolicy:
@@ -83,17 +84,11 @@ class ScoringPolicy:
     updated_at          Timestamp of the last parameter update (for logging).
     """
 
-    score_weights: list[float] = field(
-        default_factory=lambda: list(_DEFAULT_SCORE_WEIGHTS)
-    )
+    score_weights: list[float] = field(default_factory=lambda: list(_DEFAULT_SCORE_WEIGHTS))
     depth_decay_rate: float = 0.35
     freshness_half_life: float = 300.0
-    source_multipliers: dict[str, float] = field(
-        default_factory=lambda: dict(_DEFAULT_SOURCE_MULTIPLIERS)
-    )
-    layer_multipliers: dict[str, float] = field(
-        default_factory=lambda: dict(_DEFAULT_LAYER_MULTIPLIERS)
-    )
+    source_multipliers: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_SOURCE_MULTIPLIERS))
+    layer_multipliers: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_LAYER_MULTIPLIERS))
     feedback_hit_rate: float = 1.05
     feedback_miss_rate: float = 0.95
     branch_priority_decay: float = 0.70
@@ -121,13 +116,7 @@ class ScoringPolicy:
     ) -> float:
         """Composite priority score applying policy weights and depth discount."""
         w = self.score_weights
-        raw = (
-            w[0] * graph_proximity
-            + w[1] * arc_probability
-            + w[2] * coverage_gap
-            + w[3] * pattern_strength
-            + w[4] * freshness_factor
-        )
+        raw = w[0] * graph_proximity + w[1] * arc_probability + w[2] * coverage_gap + w[3] * pattern_strength + w[4] * freshness_factor
         layer_multiplier = self.layer_multipliers.get(layer, self.layer_multipliers.get("operational", 1.0))
         return raw * self.depth_discount(depth) * layer_multiplier
 
@@ -246,25 +235,27 @@ class ScoringPolicy:
     # -----------------------------------------------------------------------
 
     def serialize(self) -> str:
-        return json.dumps({
-            "score_weights": self.score_weights,
-            "depth_decay_rate": self.depth_decay_rate,
-            "freshness_half_life": self.freshness_half_life,
-            "source_multipliers": self.source_multipliers,
-            "layer_multipliers": self.layer_multipliers,
-            "feedback_hit_rate": self.feedback_hit_rate,
-            "feedback_miss_rate": self.feedback_miss_rate,
-            "branch_priority_decay": self.branch_priority_decay,
-            "cache_full_hit_path_threshold": self.cache_full_hit_path_threshold,
-            "cache_partial_hit_path_threshold": self.cache_partial_hit_path_threshold,
-            "cache_full_hit_similarity_threshold": self.cache_full_hit_similarity_threshold,
-            "cache_partial_hit_similarity_threshold": self.cache_partial_hit_similarity_threshold,
-            "cache_warm_similarity_threshold": self.cache_warm_similarity_threshold,
-            "updated_at": self.updated_at,
-        })
+        return json.dumps(
+            {
+                "score_weights": self.score_weights,
+                "depth_decay_rate": self.depth_decay_rate,
+                "freshness_half_life": self.freshness_half_life,
+                "source_multipliers": self.source_multipliers,
+                "layer_multipliers": self.layer_multipliers,
+                "feedback_hit_rate": self.feedback_hit_rate,
+                "feedback_miss_rate": self.feedback_miss_rate,
+                "branch_priority_decay": self.branch_priority_decay,
+                "cache_full_hit_path_threshold": self.cache_full_hit_path_threshold,
+                "cache_partial_hit_path_threshold": self.cache_partial_hit_path_threshold,
+                "cache_full_hit_similarity_threshold": self.cache_full_hit_similarity_threshold,
+                "cache_partial_hit_similarity_threshold": self.cache_partial_hit_similarity_threshold,
+                "cache_warm_similarity_threshold": self.cache_warm_similarity_threshold,
+                "updated_at": self.updated_at,
+            }
+        )
 
     @classmethod
-    def deserialize(cls, data: str) -> "ScoringPolicy":
+    def deserialize(cls, data: str) -> ScoringPolicy:
         try:
             obj = json.loads(data)
         except (json.JSONDecodeError, ValueError):
@@ -348,6 +339,7 @@ class ScoringPolicy:
 # ---------------------------------------------------------------------------
 # Module-level helpers (preserve backward-compat call sites in frontier.py)
 # ---------------------------------------------------------------------------
+
 
 def depth_discount_from_policy(depth: int, policy: ScoringPolicy) -> float:
     return policy.depth_discount(depth)

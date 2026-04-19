@@ -28,4 +28,3 @@ Vaner is a local-first predictive context engine for coding assistants.
 ## More details
 
 Detailed architecture docs live at `https://docs.vaner.ai/architecture`.
-

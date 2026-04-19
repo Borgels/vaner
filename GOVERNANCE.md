@@ -17,4 +17,3 @@ This repository follows a stewarded open-source model.
 ## Future evolution
 
 As the maintainer group grows, this file can evolve into a formal voting and RFC process.
-

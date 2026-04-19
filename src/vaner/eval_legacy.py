@@ -165,9 +165,7 @@ async def _run_eval_async(
         package = await engine.query(case.question)
         elapsed_seconds = time.monotonic() - case_started_at
         selected_paths = [selection.source_path for selection in package.selections]
-        matched_paths, hit_at_1, hit_at_3, path_coverage, point_coverage = _score_case(
-            case, selected_paths, package.injected_context
-        )
+        matched_paths, hit_at_1, hit_at_3, path_coverage, point_coverage = _score_case(case, selected_paths, package.injected_context)
         predict_overlap: float | None = None
         if case.expected_predict_keys:
             predictions = await engine.predict(top_k=5)
@@ -229,10 +227,7 @@ async def _run_eval_async(
     overall_category_accuracy = sum(category_hits) / max(1, len(category_hits))
     overall_second_query_speedup = sum(speedups) / max(1, len(speedups))
     total_tier_events = sum(tier_counts.values())
-    cache_tier_distribution = {
-        tier: count / max(1, total_tier_events)
-        for tier, count in sorted(tier_counts.items())
-    }
+    cache_tier_distribution = {tier: count / max(1, total_tier_events) for tier, count in sorted(tier_counts.items())}
     total_elapsed_seconds = time.monotonic() - eval_started_at
 
     resolved_output_dir.mkdir(parents=True, exist_ok=True)

@@ -124,10 +124,12 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         def _handle_sigterm():
             nonlocal _shutting_down
             _shutting_down = True
+
             # Wait for in-flight requests to drain, then stop
             async def _drain():
                 if _inflight:
                     await asyncio.gather(*_inflight, return_exceptions=True)
+
             asyncio.ensure_future(_drain())
 
         try:
@@ -221,6 +223,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
 
         try:
             if metrics.is_stream:
+
                 async def _instrumented_stream():
                     first_token_set = False
                     try:

@@ -15,4 +15,3 @@ jobs:
         uses: zizmorcore/zizmor-action@9f4f88700bc2e48889913a89956a0f04fd5f6f37 # v0.2.0
         with:
           path: .github/workflows
-

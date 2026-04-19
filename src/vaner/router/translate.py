@@ -37,6 +37,7 @@ def detect_format(base_url: str) -> str:
 # Anthropic translation
 # ---------------------------------------------------------------------------
 
+
 def _openai_to_anthropic(payload: dict[str, Any], model: str) -> tuple[str, dict[str, Any]]:
     """Convert an OpenAI chat payload to Anthropic Messages API format.
 
@@ -124,6 +125,7 @@ def _anthropic_sse_to_openai_sse(chunk: bytes) -> bytes:
 # Google Gemini translation
 # ---------------------------------------------------------------------------
 
+
 def _openai_to_google(payload: dict[str, Any], model: str) -> tuple[str, dict[str, Any]]:
     """Convert an OpenAI chat payload to Google Gemini generateContent format."""
     messages = payload.get("messages", [])
@@ -192,6 +194,7 @@ def _google_to_openai(response: dict[str, Any], model: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def translate_request(
     payload: dict[str, Any],

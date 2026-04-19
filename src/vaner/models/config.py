@@ -174,17 +174,17 @@ class ExplorationConfig(BaseModel):
     """Torch device for the embedding model (``"cpu"`` or ``"cuda"``)."""
 
     @classmethod
-    def conservative(cls) -> "ExplorationConfig":
+    def conservative(cls) -> ExplorationConfig:
         """Graph-walk only, no LLM, shallow depth."""
         return cls(max_exploration_depth=1, llm_gate="none", min_priority=0.20)
 
     @classmethod
-    def normal(cls) -> "ExplorationConfig":
+    def normal(cls) -> ExplorationConfig:
         """LLM for non-trivial scenarios, moderate depth."""
         return cls(max_exploration_depth=2, llm_gate="non_trivial")
 
     @classmethod
-    def aggressive(cls) -> "ExplorationConfig":
+    def aggressive(cls) -> ExplorationConfig:
         """Deep exploration, LLM for all non-trivial, large frontier."""
         return cls(
             max_exploration_depth=4,
@@ -194,7 +194,7 @@ class ExplorationConfig(BaseModel):
         )
 
     @classmethod
-    def maximum(cls) -> "ExplorationConfig":
+    def maximum(cls) -> ExplorationConfig:
         """Unrestricted exploration — use when compute is truly unlimited."""
         return cls(
             max_exploration_depth=10,

@@ -16,4 +16,3 @@ jobs:
           process-only: "issues,prs"
           issue-lock-reason: "resolved"
           pr-lock-reason: "resolved"
-

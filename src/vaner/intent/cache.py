@@ -9,8 +9,8 @@ from dataclasses import dataclass
 
 from pydantic import ValidationError
 
-from vaner.models.context import ContextPackage
 from vaner.intent.scoring_policy import ScoringPolicy
+from vaner.models.context import ContextPackage
 from vaner.store.artefacts import ArtefactStore
 
 
@@ -129,9 +129,7 @@ class TieredPredictionCache:
                 # Fall back to token-Jaccard.  Also check the richer
                 # semantic_intent field if present (set during LLM exploration).
                 hint = str(record.get("prompt_hint", ""))
-                semantic_intent = (
-                    enrichment.get("semantic_intent", "") if isinstance(enrichment, dict) else ""
-                )
+                semantic_intent = enrichment.get("semantic_intent", "") if isinstance(enrichment, dict) else ""
                 combined_hint = f"{hint} {semantic_intent}".strip() if semantic_intent else hint
                 embedding_sim = _token_similarity(prompt, combined_hint)
 
@@ -185,27 +183,17 @@ class TieredPredictionCache:
             semantic_sim_for_tier = _cosine_similarity(prompt_vector, [float(v) for v in prompt_emb_for_tier])
         else:
             hint_for_tier = str(best_record.get("prompt_hint", ""))
-            semantic_intent_for_tier = (
-                enrichment_dict.get("semantic_intent", "") if isinstance(enrichment_dict, dict) else ""
-            )
+            semantic_intent_for_tier = enrichment_dict.get("semantic_intent", "") if isinstance(enrichment_dict, dict) else ""
             combined = f"{hint_for_tier} {semantic_intent_for_tier}".strip() if semantic_intent_for_tier else hint_for_tier
             semantic_sim_for_tier = _token_similarity(prompt, combined)
 
-        full_path_threshold = (
-            self.scoring_policy.cache_full_hit_path_threshold if self.scoring_policy is not None else 0.70
-        )
-        partial_path_threshold = (
-            self.scoring_policy.cache_partial_hit_path_threshold if self.scoring_policy is not None else 0.30
-        )
-        full_similarity_threshold = (
-            self.scoring_policy.cache_full_hit_similarity_threshold if self.scoring_policy is not None else 0.70
-        )
+        full_path_threshold = self.scoring_policy.cache_full_hit_path_threshold if self.scoring_policy is not None else 0.70
+        partial_path_threshold = self.scoring_policy.cache_partial_hit_path_threshold if self.scoring_policy is not None else 0.30
+        full_similarity_threshold = self.scoring_policy.cache_full_hit_similarity_threshold if self.scoring_policy is not None else 0.70
         partial_similarity_threshold = (
             self.scoring_policy.cache_partial_hit_similarity_threshold if self.scoring_policy is not None else 0.30
         )
-        warm_similarity_threshold = (
-            self.scoring_policy.cache_warm_similarity_threshold if self.scoring_policy is not None else 0.10
-        )
+        warm_similarity_threshold = self.scoring_policy.cache_warm_similarity_threshold if self.scoring_policy is not None else 0.10
         if path_score_for_tier >= full_path_threshold and package is not None:
             tier = "full_hit"
         elif path_score_for_tier >= partial_path_threshold:
@@ -242,12 +230,12 @@ class TieredPredictionCache:
         source_units: list[str] = []
         _seen: set[str] = set()
         raw_anchor = payload.get("anchor_units", payload.get("anchor_files", []))
-        for p in (raw_anchor if isinstance(raw_anchor, list) else []):
+        for p in raw_anchor if isinstance(raw_anchor, list) else []:
             if isinstance(p, str) and p and p not in _seen:
                 anchor_units.append(p)
                 _seen.add(p)
         raw_source = payload.get("source_units", payload.get("source_paths", []))
-        for p in (raw_source if isinstance(raw_source, list) else []):
+        for p in raw_source if isinstance(raw_source, list) else []:
             if isinstance(p, str) and p:
                 source_units.append(p)
         if package is not None:

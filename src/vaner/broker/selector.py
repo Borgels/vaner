@@ -24,8 +24,7 @@ _COMMON_WORDS = frozenset(
     " all any get has had its may not new one out per set via was yet you"
     # short common programming words that dilute scoring
     " work works working longer seems look looks correct correctly already just"
-    " which would could should need needs using between only still over under"
-    .split()
+    " which would could should need needs using between only still over under".split()
 )
 
 
@@ -52,8 +51,7 @@ def score_artefact(prompt: str, artefact: Artefact) -> float:
 def _is_origin_question(prompt: str) -> bool:
     q = prompt.lower().strip()
     return (
-        (q.startswith("where ") or q.startswith("how "))
-        and any(term in q for term in ("checked", "implemented", "defined"))
+        (q.startswith("where ") or q.startswith("how ")) and any(term in q for term in ("checked", "implemented", "defined"))
     ) or q.startswith("what conditions")
 
 
