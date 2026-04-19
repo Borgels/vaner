@@ -78,7 +78,7 @@ target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "T20"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
