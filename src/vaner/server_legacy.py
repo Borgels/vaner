@@ -10,6 +10,7 @@ from vaner.engine import build_default_engine
 from vaner.models.config import VanerConfig
 from vaner.models.context import ContextPackage
 from vaner.models.decision import DecisionRecord
+from vaner.telemetry.metrics import MetricsStore
 
 
 def _resolve_repo_root(repo: Path | str | None) -> Path:
@@ -45,6 +46,12 @@ async def aquery(
     top_n: int = 8,
 ) -> ContextPackage:
     repo_root = _resolve_repo_root(repo)
+    try:
+        store = MetricsStore(repo_root / ".vaner" / "metrics.db")
+        await store.initialize()
+        await store.increment_mode_usage("sdk")
+    except Exception:
+        pass
     engine = build_default_engine(repo_root, _resolve_config(repo_root, config))
     package = await engine.query(prompt, max_tokens=max_tokens, top_n=top_n)
     decision_record = engine.get_last_decision_record()
@@ -71,6 +78,12 @@ async def aprecompute(
     config: VanerConfig | None = None,
 ) -> int:
     repo_root = _resolve_repo_root(repo)
+    try:
+        store = MetricsStore(repo_root / ".vaner" / "metrics.db")
+        await store.initialize()
+        await store.increment_mode_usage("precompute")
+    except Exception:
+        pass
     engine = build_default_engine(repo_root, _resolve_config(repo_root, config))
     return await engine.precompute_cycle()
 

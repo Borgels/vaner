@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Any
 
-from vaner.models.config import BackendConfig, GenerationConfig, PrivacyConfig, ProxyConfig, VanerConfig
+from vaner.models.config import BackendConfig, ComputeConfig, GatewayConfig, GenerationConfig, PrivacyConfig, ProxyConfig, VanerConfig
 
 
 def load_config(repo_root: Path) -> VanerConfig:
@@ -18,12 +19,35 @@ def load_config(repo_root: Path) -> VanerConfig:
     generation_section = parsed.get("generation", {})
     privacy_section = parsed.get("privacy", {})
     proxy_section = parsed.get("proxy", {})
+    gateway_section = parsed.get("gateway", {})
+    compute_section = parsed.get("compute", {})
     limits_section = parsed.get("limits", {})
 
     backend = BackendConfig(**backend_section) if isinstance(backend_section, dict) else BackendConfig()
     privacy = PrivacyConfig(**privacy_section) if isinstance(privacy_section, dict) else PrivacyConfig()
     generation = GenerationConfig(**generation_section) if isinstance(generation_section, dict) else GenerationConfig()
     proxy = ProxyConfig(**proxy_section) if isinstance(proxy_section, dict) else ProxyConfig()
+    if isinstance(gateway_section, dict):
+        passthrough_section = gateway_section.get("passthrough", {})
+        annotate_section = gateway_section.get("annotate", {})
+        shadow_section = gateway_section.get("shadow", {})
+        routes_section = gateway_section.get("routes", {})
+        gateway = GatewayConfig(
+            passthrough_enabled=bool(passthrough_section.get("enabled", True))
+            if isinstance(passthrough_section, dict)
+            else True,
+            routes={str(key): str(value) for key, value in routes_section.items()} if isinstance(routes_section, dict) else {},
+            annotate_response_trailer=bool(annotate_section.get("response_trailer", False))
+            if isinstance(annotate_section, dict)
+            else False,
+            annotate_system_note=str(annotate_section.get("system_note", "off"))
+            if isinstance(annotate_section, dict)
+            else "off",
+            shadow_rate=float(shadow_section.get("rate", 0.0)) if isinstance(shadow_section, dict) else 0.0,
+        )
+    else:
+        gateway = GatewayConfig()
+    compute = ComputeConfig(**compute_section) if isinstance(compute_section, dict) else ComputeConfig()
 
     max_age_seconds = int(limits_section.get("max_age_seconds", 3600)) if isinstance(limits_section, dict) else 3600
     max_context_tokens = int(limits_section.get("max_context_tokens", 4096)) if isinstance(limits_section, dict) else 4096
@@ -40,4 +64,55 @@ def load_config(repo_root: Path) -> VanerConfig:
         privacy=privacy,
         generation=generation,
         proxy=proxy,
+        gateway=gateway,
+        compute=compute,
     )
+
+
+def _toml_literal(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    escaped = str(value).replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def set_compute_value(repo_root: Path, key: str, value: Any) -> Path:
+    config_path = repo_root / ".vaner" / "config.toml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    lines = config_path.read_text(encoding="utf-8").splitlines()
+    section_start = None
+    section_end = len(lines)
+    for idx, line in enumerate(lines):
+        if line.strip() == "[compute]":
+            section_start = idx
+            break
+
+    if section_start is not None:
+        for idx in range(section_start + 1, len(lines)):
+            stripped = lines[idx].strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                section_end = idx
+                break
+        key_written = False
+        for idx in range(section_start + 1, section_end):
+            stripped = lines[idx].strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.split("=", 1)[0].strip() == key:
+                lines[idx] = f"{key} = {_toml_literal(value)}"
+                key_written = True
+                break
+        if not key_written:
+            lines.insert(section_end, f"{key} = {_toml_literal(value)}")
+    else:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append("[compute]")
+        lines.append(f"{key} = {_toml_literal(value)}")
+
+    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return config_path

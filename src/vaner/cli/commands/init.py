@@ -53,6 +53,33 @@ max_requests_per_minute = 120
 ssl_certfile = ""
 ssl_keyfile = ""
 
+[gateway.passthrough]
+enabled = true
+
+[gateway.routes]
+# Route model prefixes to providers while keeping IDE model picker intact.
+# gpt- = "https://api.openai.com/v1"
+# claude- = "https://api.anthropic.com/v1"
+# gemini- = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+[gateway.annotate]
+response_trailer = false
+system_note = "off"
+
+[gateway.shadow]
+rate = 0.0
+
+[compute]
+device = "auto"
+cpu_fraction = 0.2
+gpu_memory_fraction = 0.5
+idle_only = true
+idle_cpu_threshold = 0.6
+idle_gpu_threshold = 0.7
+embedding_device = "cpu"
+exploration_concurrency = 4
+max_parallel_precompute = 1
+
 [privacy]
 allowed_paths = ["."]
 excluded_patterns = ["*.env", "*.key", "*.pem", "credentials*", "secrets*"]

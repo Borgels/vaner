@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,13 @@ from vaner.models.config import BackendConfig, VanerConfig
 from vaner.router.translate import detect_format, translate_request, translate_response, translate_sse_chunk
 
 
+@dataclass(frozen=True)
+class RoutingTarget:
+    base_url: str
+    model: str
+    api_key_env: str
+
+
 def validate_backend_config(config: VanerConfig) -> None:
     """Raise a clear ``ValueError`` if the backend is not configured.
 
@@ -21,6 +29,8 @@ def validate_backend_config(config: VanerConfig) -> None:
     confusing network failure when they forget to fill in ``vaner.toml``.
     """
     backend = config.backend
+    if config.gateway.passthrough_enabled and config.gateway.routes:
+        return
     if not backend.base_url.strip():
         raise ValueError(
             "Vaner proxy requires [backend] base_url to be set in .vaner/config.toml\n"
@@ -36,7 +46,18 @@ def validate_backend_config(config: VanerConfig) -> None:
         )
 
 
-def _headers(backend: BackendConfig, *, use_fallback: bool = False, backend_format: str = "openai") -> dict[str, str]:
+def _headers(
+    backend: BackendConfig,
+    *,
+    use_fallback: bool = False,
+    backend_format: str = "openai",
+    passthrough_authorization: str | None = None,
+) -> dict[str, str]:
+    if passthrough_authorization:
+        return {
+            "Content-Type": "application/json",
+            "Authorization": passthrough_authorization,
+        }
     key_env = backend.fallback_api_key_env if use_fallback else backend.api_key_env
     api_key = os.getenv(key_env, "")
     headers = {"Content-Type": "application/json"}
@@ -112,6 +133,66 @@ async def _post_chat(backend: BackendConfig, payload: dict[str, Any], *, use_fal
         return translate_response(raw, backend_format=backend_format, model=model_name)
 
 
+def _resolve_route_base_url(config: VanerConfig, model_name: str | None) -> str | None:
+    if not model_name:
+        return None
+    match_prefix = ""
+    match_url: str | None = None
+    for prefix, base_url in config.gateway.routes.items():
+        if model_name.startswith(prefix) and len(prefix) > len(match_prefix):
+            match_prefix = prefix
+            match_url = base_url
+    if match_url:
+        return match_url.rstrip("/")
+    return None
+
+
+def _resolve_target(config: VanerConfig, payload: dict[str, Any]) -> RoutingTarget:
+    model_name = payload.get("model")
+    if isinstance(model_name, str):
+        routed = _resolve_route_base_url(config, model_name)
+        if routed:
+            return RoutingTarget(base_url=routed, model=model_name, api_key_env=config.backend.api_key_env)
+    return RoutingTarget(
+        base_url=config.backend.base_url.rstrip("/"),
+        model=model_name if isinstance(model_name, str) and model_name.strip() else config.backend.model,
+        api_key_env=config.backend.api_key_env,
+    )
+
+
+async def _post_chat_passthrough(
+    config: VanerConfig,
+    payload: dict[str, Any],
+    *,
+    authorization_header: str | None = None,
+) -> dict[str, Any]:
+    target = _resolve_target(config, payload)
+    backend_format = detect_format(target.base_url)
+    endpoint, translated = translate_request(payload, backend_format=backend_format, model=target.model)
+    temp_backend = config.backend.model_copy(
+        update={
+            "base_url": target.base_url,
+            "model": target.model,
+            "api_key_env": target.api_key_env,
+        }
+    )
+    headers = _headers(
+        temp_backend,
+        use_fallback=False,
+        backend_format=backend_format,
+        passthrough_authorization=authorization_header,
+    )
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(
+            f"{target.base_url}{endpoint}",
+            json=translated,
+            headers=headers,
+        )
+        response.raise_for_status()
+        raw = response.json()
+        return translate_response(raw, backend_format=backend_format, model=target.model)
+
+
 def _should_use_fallback(config: VanerConfig, primary_failed: bool) -> bool:
     backend = config.backend
     has_fallback = bool(backend.fallback_base_url)
@@ -124,6 +205,17 @@ def _should_use_fallback(config: VanerConfig, primary_failed: bool) -> bool:
 
 
 async def forward_chat_completion(config: VanerConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    return await forward_chat_completion_with_request(config, payload, authorization_header=None)
+
+
+async def forward_chat_completion_with_request(
+    config: VanerConfig,
+    payload: dict[str, Any],
+    *,
+    authorization_header: str | None,
+) -> dict[str, Any]:
+    if config.gateway.passthrough_enabled and authorization_header:
+        return await _post_chat_passthrough(config, payload, authorization_header=authorization_header)
     backend = config.backend
     primary_error: Exception | None = None
 
@@ -165,7 +257,56 @@ async def _stream_chat(backend: BackendConfig, payload: dict[str, Any], *, use_f
                     yield translate_sse_chunk(chunk, backend_format=backend_format)
 
 
+async def _stream_chat_passthrough(
+    config: VanerConfig,
+    payload: dict[str, Any],
+    *,
+    authorization_header: str | None = None,
+):
+    target = _resolve_target(config, payload)
+    backend_format = detect_format(target.base_url)
+    endpoint, translated = translate_request(payload, backend_format=backend_format, model=target.model)
+    temp_backend = config.backend.model_copy(
+        update={
+            "base_url": target.base_url,
+            "model": target.model,
+            "api_key_env": target.api_key_env,
+        }
+    )
+    headers = _headers(
+        temp_backend,
+        use_fallback=False,
+        backend_format=backend_format,
+        passthrough_authorization=authorization_header,
+    )
+    async with httpx.AsyncClient(timeout=60) as client:
+        async with client.stream(
+            "POST",
+            f"{target.base_url}{endpoint}",
+            json=translated,
+            headers=headers,
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                if chunk:
+                    yield translate_sse_chunk(chunk, backend_format=backend_format)
+
+
 async def stream_chat_completion(config: VanerConfig, payload: dict[str, Any]):
+    async for chunk in stream_chat_completion_with_request(config, payload, authorization_header=None):
+        yield chunk
+
+
+async def stream_chat_completion_with_request(
+    config: VanerConfig,
+    payload: dict[str, Any],
+    *,
+    authorization_header: str | None,
+):
+    if config.gateway.passthrough_enabled and authorization_header:
+        async for chunk in _stream_chat_passthrough(config, payload, authorization_header=authorization_header):
+            yield chunk
+        return
     backend = config.backend
     api_key = os.getenv(backend.api_key_env, "")
     try:

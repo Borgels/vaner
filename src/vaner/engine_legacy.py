@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import math
 import os
+import subprocess
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -34,7 +36,7 @@ from vaner.intent.trainer import IntentTrainer
 from vaner.intent.transfer import bootstrap_transfer_priors
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.models.artefact import Artefact, ArtefactKind
-from vaner.models.config import ExplorationConfig, VanerConfig
+from vaner.models.config import ComputeConfig, ExplorationConfig, VanerConfig
 from vaner.models.context import ContextPackage
 from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor
 from vaner.models.signal import SignalEvent
@@ -641,7 +643,15 @@ class VanerEngine:
         (everything reachable has been explored or coverage exceeds the configured
         threshold).
         """
+        cycle_started = time.monotonic()
         await self.initialize()
+        compute = self.config.compute
+        if compute.idle_only:
+            cpu_load = _cpu_load_fraction()
+            gpu_load = _gpu_load_fraction()
+            if cpu_load > compute.idle_cpu_threshold or gpu_load > compute.idle_gpu_threshold:
+                self._last_explored_scenarios = []
+                return 0
         governor = governor or PredictionGovernor()
         governor.reset()
         self._precompute_cycles += 1
@@ -844,6 +854,7 @@ class VanerEngine:
         await self.store.purge_expired_prediction_cache()
         await self.store.purge_stale_patterns(max_age_seconds=retention_seconds)
         await self._persist_learning_state()
+        _record_idle_usage_seconds(self.config, time.monotonic() - cycle_started)
         return full_packages
 
     def get_explored_scenarios(self) -> list[ExploredScenario]:
@@ -2292,6 +2303,88 @@ def _build_embed_callable(ecfg: ExplorationConfig) -> EmbedCallable | None:
         return None
 
 
+def _apply_compute_settings(compute: ComputeConfig) -> None:
+    cpu_fraction = max(0.01, min(compute.cpu_fraction, 1.0))
+    cpu_count = os.cpu_count() or 1
+    capped_threads = max(1, int(round(cpu_count * cpu_fraction)))
+    os.environ["OMP_NUM_THREADS"] = str(capped_threads)
+    os.environ["MKL_NUM_THREADS"] = str(capped_threads)
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+    if not compute.device.startswith("cuda"):
+        return
+
+    try:  # pragma: no cover - torch/cuda may be unavailable in test env
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        fraction = max(0.05, min(compute.gpu_memory_fraction, 1.0))
+        if ":" in compute.device:
+            device_index = int(compute.device.split(":", 1)[1])
+        else:
+            device_index = torch.cuda.current_device()
+        torch.cuda.set_per_process_memory_fraction(fraction, device=device_index)
+    except Exception:
+        return
+
+
+def _embedding_device_from_compute(config: VanerConfig) -> str:
+    compute_device = (config.compute.embedding_device or config.compute.device).strip().lower()
+    if not compute_device or compute_device == "auto":
+        return config.exploration.embedding_device
+    if compute_device.startswith("cuda"):
+        return "cuda"
+    if compute_device in {"cpu", "mps"}:
+        return compute_device
+    return config.exploration.embedding_device
+
+
+def _cpu_load_fraction() -> float:
+    try:
+        cpu_count = os.cpu_count() or 1
+        one_min, _, _ = os.getloadavg()
+        return max(0.0, one_min / cpu_count)
+    except Exception:
+        return 0.0
+
+
+def _gpu_load_fraction() -> float:
+    try:
+        output = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1.0,
+        ).strip()
+        if not output:
+            return 0.0
+        values = [float(item.strip()) / 100.0 for item in output.splitlines() if item.strip()]
+        return max(values) if values else 0.0
+    except Exception:
+        return 0.0
+
+
+def _record_idle_usage_seconds(config: VanerConfig, seconds: float) -> None:
+    runtime_dir = config.repo_root / ".vaner" / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    path = runtime_dir / "idle_usage.json"
+    payload = {"idle_seconds_used": 0.0}
+    if path.exists():
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                payload["idle_seconds_used"] = float(parsed.get("idle_seconds_used", 0.0))
+        except Exception:
+            pass
+    payload["idle_seconds_used"] = round(payload["idle_seconds_used"] + max(0.0, seconds), 3)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def build_default_engine(repo: Path | str | None = None, config: VanerConfig | None = None) -> VanerEngine:
     """Build a VanerEngine with auto-detected exploration LLM and embeddings.
 
@@ -2306,6 +2399,9 @@ def build_default_engine(repo: Path | str | None = None, config: VanerConfig | N
     root = Path(repo).resolve() if repo is not None else Path.cwd().resolve()
     adapter = CodeRepoAdapter(root)
     resolved = config if config is not None else load_config(root)
+    _apply_compute_settings(resolved.compute)
+
+    resolved.exploration.embedding_device = _embedding_device_from_compute(resolved)
 
     exploration_llm = _build_exploration_llm(resolved.exploration)
     embed = _build_embed_callable(resolved.exploration)

@@ -24,6 +24,7 @@ VANER_BACKEND="${VANER_BACKEND:-}"
 VANER_VERSION="${VANER_VERSION:-}"
 VANER_NO_MODIFY_PATH="${VANER_NO_MODIFY_PATH:-0}"
 VANER_VERBOSE="${VANER_VERBOSE:-0}"
+VANER_WITH_OLLAMA="${VANER_WITH_OLLAMA:-0}"
 HELP=0
 
 INSTALL_STAGE_TOTAL=3
@@ -88,6 +89,7 @@ Options:
   --version VERSION        Install a specific PyPI version (e.g. 0.1.0)
   --no-modify-path         Do not run ensurepath/path integration steps
   --verbose                Print executed commands
+  --with-ollama            Install/start Ollama and pull qwen2.5-coder:7b
   --help, -h               Show help
 
 Environment variable mirrors:
@@ -98,6 +100,7 @@ Environment variable mirrors:
   VANER_VERSION=<version>
   VANER_NO_MODIFY_PATH=0|1
   VANER_VERBOSE=0|1
+  VANER_WITH_OLLAMA=0|1
 
 Examples:
   curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash
@@ -135,6 +138,10 @@ parse_args() {
         ;;
       --verbose)
         VANER_VERBOSE=1
+        shift
+        ;;
+      --with-ollama)
+        VANER_WITH_OLLAMA=1
         shift
         ;;
       --help|-h)
@@ -445,6 +452,57 @@ ensure_uv() {
   ui_success "uv installed"
 }
 
+ensure_ollama() {
+  if command -v ollama >/dev/null 2>&1; then
+    ui_success "Ollama already available"
+    return 0
+  fi
+
+  confirm "Ollama is missing. Install Ollama now?" || return 1
+  case "$OS" in
+    macos)
+      if [[ "$PKG_MGR" == "brew" ]]; then
+        run_cmd brew install ollama
+      else
+        local tmp
+        tmp="$(mktempfile)"
+        download_file "https://ollama.com/install.sh" "$tmp"
+        run_cmd sh "$tmp"
+      fi
+      ;;
+    linux)
+      local tmp
+      tmp="$(mktempfile)"
+      download_file "https://ollama.com/install.sh" "$tmp"
+      run_cmd sh "$tmp"
+      ;;
+    *)
+      ui_warn "Automatic Ollama install is unsupported on this OS."
+      return 1
+      ;;
+  esac
+
+  if [[ "$VANER_DRY_RUN" == "1" ]]; then
+    ui_success "Dry-run: assumed Ollama installed"
+    return 0
+  fi
+
+  if ! command -v ollama >/dev/null 2>&1; then
+    ui_error "Ollama installation did not provide `ollama` on PATH."
+    return 1
+  fi
+  ui_success "Ollama installed"
+}
+
+ensure_ollama_model() {
+  if [[ "$VANER_WITH_OLLAMA" != "1" ]]; then
+    return 0
+  fi
+  ensure_ollama || return 1
+  ui_stage "Preparing local model"
+  run_cmd ollama pull qwen2.5-coder:7b
+}
+
 pick_backend() {
   if [[ -n "$VANER_BACKEND" ]]; then
     case "$VANER_BACKEND" in
@@ -546,6 +604,7 @@ print_install_plan() {
   fi
   printf '  dry-run: %s\n' "$VANER_DRY_RUN"
   printf '  verify: %s\n' "$VANER_VERIFY"
+  printf '  with-ollama: %s\n' "$VANER_WITH_OLLAMA"
 }
 
 print_footer() {
@@ -571,6 +630,9 @@ main() {
   fi
 
   ui_section "Vaner Installer"
+  if [[ "$VANER_WITH_OLLAMA" == "1" ]]; then
+    INSTALL_STAGE_TOTAL=4
+  fi
   detect_os_or_die
   detect_pkg_mgr
   check_existing_vaner || true
@@ -619,6 +681,10 @@ main() {
 
   if [[ "$VANER_VERIFY" == "1" ]]; then
     verify_installation
+  fi
+
+  if [[ "$VANER_WITH_OLLAMA" == "1" ]]; then
+    ensure_ollama_model
   fi
 
   print_footer
