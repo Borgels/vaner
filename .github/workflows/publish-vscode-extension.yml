@@ -39,6 +39,7 @@ jobs:
 
           run_id="$(
             gh run list \
+              --repo "$GITHUB_REPOSITORY" \
               --workflow build-vscode-extension.yml \
               --status success \
               --limit 50 \
@@ -64,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p vsix
-          gh run download "$RUN_ID" --name vsce-vsix --dir vsix
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name vsce-vsix --dir vsix
 
       - name: Attest VSIX provenance
         if: ${{ steps.resolve_run.outputs.skip_publish != '1' }}
@@ -91,10 +92,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --generate-notes
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes
           fi
-          gh release upload "$TAG" vsix/*.sigstore.json --clobber
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" vsix/*.sigstore.json --clobber
 
       - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' && steps.resolve_run.outputs.skip_publish != '1' }}
