@@ -52,7 +52,6 @@ jobs:
           path: |
             dist/*
             sbom.json
-            dist/*.sigstore.json
             sbom.json.sigstore.json
       - name: Generate SLSA subjects
         id: slsa_subjects
@@ -61,7 +60,6 @@ jobs:
           {
             sha256sum dist/*
             sha256sum sbom.json
-            sha256sum dist/*.sigstore.json
             sha256sum sbom.json.sigstore.json
           } | base64 --wrap=0 > /tmp/slsa-subjects.b64
           echo "value=$(cat /tmp/slsa-subjects.b64)" >> "$GITHUB_OUTPUT"
