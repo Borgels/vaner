@@ -26,6 +26,7 @@ VANER_NO_MODIFY_PATH="${VANER_NO_MODIFY_PATH:-0}"
 VANER_VERBOSE="${VANER_VERBOSE:-0}"
 VANER_WITH_OLLAMA="${VANER_WITH_OLLAMA:-0}"
 VANER_NO_MCP="${VANER_NO_MCP:-0}"
+VANER_MINIMAL="${VANER_MINIMAL:-0}"
 VANER_BACKEND_PRESET="${VANER_BACKEND_PRESET:-}"
 VANER_BACKEND_URL="${VANER_BACKEND_URL:-}"
 VANER_BACKEND_MODEL="${VANER_BACKEND_MODEL:-}"
@@ -98,6 +99,8 @@ Options:
   --verbose                       Print executed commands
   --with-ollama                   Install/start Ollama and configure a local model
                                   (alias for --backend-preset ollama)
+  --minimal                       Install the old minimal package extras only
+                                  (mcp or empty when --no-mcp is used)
   --no-mcp                        Install without the [mcp] extra (read-only tools
                                   will be disabled)
   --backend-preset PRESET         Configure LLM backend non-interactively.
@@ -121,6 +124,7 @@ Environment variable mirrors:
   VANER_NO_MODIFY_PATH=0|1
   VANER_VERBOSE=0|1
   VANER_WITH_OLLAMA=0|1
+  VANER_MINIMAL=0|1
   VANER_NO_MCP=0|1
   VANER_BACKEND_PRESET=<preset>
   VANER_BACKEND_URL=<url>
@@ -173,6 +177,10 @@ parse_args() {
       --with-ollama)
         VANER_WITH_OLLAMA=1
         VANER_BACKEND_PRESET="${VANER_BACKEND_PRESET:-ollama}"
+        shift
+        ;;
+      --minimal)
+        VANER_MINIMAL=1
         shift
         ;;
       --no-mcp)
@@ -659,10 +667,30 @@ pick_backend() {
 }
 
 package_extras() {
+  if [[ "$VANER_MINIMAL" == "1" ]]; then
+    if [[ "$VANER_NO_MCP" == "1" ]]; then
+      printf ''
+    else
+      printf '[mcp]'
+    fi
+    return
+  fi
   if [[ "$VANER_NO_MCP" == "1" ]]; then
-    printf ''
+    printf '[embeddings]'
   else
-    printf '[mcp]'
+    printf '[all]'
+  fi
+}
+
+print_extra_hint() {
+  if [[ "$VANER_MINIMAL" == "1" ]]; then
+    ui_warn "Minimal mode selected. Some capabilities may require manual dependency installs."
+    return
+  fi
+  if [[ "$VANER_NO_MCP" == "1" ]]; then
+    ui_info "Installing runtime deps without MCP extras ([embeddings])."
+  else
+    ui_info "Installing full runtime extras ([all]) for a ready-to-use setup."
   fi
 }
 
@@ -1054,6 +1082,7 @@ main() {
   fi
 
   print_install_plan
+  print_extra_hint
 
   ui_stage "Installing Vaner"
   case "$BACKEND" in
