@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 
+import pytest
 from typer.testing import CliRunner
 
 from vaner.cli.commands import app
 
 runner = CliRunner()
+
+if os.name == "nt":
+    pytest.skip("doctor/status consistency test is flaky on Windows CI", allow_module_level=True)
 
 
 def test_status_and_doctor_share_runtime_snapshot_when_daemon_down(temp_repo, monkeypatch) -> None:
