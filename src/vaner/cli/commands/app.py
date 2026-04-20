@@ -898,9 +898,15 @@ def mcp_server(
 
     if transport == "sse":
         typer.echo(f"Starting Vaner MCP server (SSE) on {host}:{port}  repo={repo_root}")
-        _asyncio.run(run_sse(repo_root, host=host, port=port))
+        try:
+            _asyncio.run(run_sse(repo_root, host=host, port=port))
+        except RuntimeError as exc:
+            _fail(str(exc), hint="Install optional extras: pip install 'vaner[mcp]'.")
     else:
-        _asyncio.run(run_stdio(repo_root))
+        try:
+            _asyncio.run(run_stdio(repo_root))
+        except RuntimeError as exc:
+            _fail(str(exc), hint="Install optional extras: pip install 'vaner[mcp]'.")
 
 
 @app.command("proxy", help="Start optional OpenAI-compatible proxy gateway.", rich_help_panel="Configure")

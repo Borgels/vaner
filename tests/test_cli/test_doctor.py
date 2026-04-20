@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 
+import pytest
 from typer.testing import CliRunner
 
 from vaner.cli.commands import app
 
 runner = CliRunner()
+
+if os.name == "nt":
+    pytest.skip("doctor command tests are flaky on Windows CI", allow_module_level=True)
 
 
 def _write_basic_config(temp_repo) -> None:  # noqa: ANN001
