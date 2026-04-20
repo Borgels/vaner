@@ -54,6 +54,15 @@ transport = "sse"
 http_host = "0.0.0.0"
 http_port = 8999
 
+[intent]
+enabled = true
+include_global_skills = true
+skill_roots = [".cursor/skills"]
+
+[intent.skills_loop]
+enabled = false
+max_feedback_events_per_cycle = 77
+
 [exploration]
 endpoint = "http://127.0.0.1:11434"
 model = "qwen2.5-coder:14b"
@@ -99,8 +108,12 @@ max_parallel_precompute = 2
     assert config.gateway.shadow_rate == 0.15
     assert config.mcp.transport == "sse"
     assert config.mcp.http_port == 8999
-    assert config.exploration.exploration_endpoint == "http://127.0.0.1:11434"
-    assert config.exploration.exploration_model == "qwen2.5-coder:14b"
+    assert config.intent.include_global_skills is True
+    assert config.intent.skill_roots == [".cursor/skills"]
+    assert config.intent.skills_loop_enabled is False
+    assert config.intent.max_feedback_events_per_cycle == 77
+    assert config.exploration.endpoint == "http://127.0.0.1:11434"
+    assert config.exploration.model == "qwen2.5-coder:14b"
     assert config.privacy.allowed_paths == ["src/**"]
     assert config.max_age_seconds == 120
     assert config.max_context_tokens == 2048

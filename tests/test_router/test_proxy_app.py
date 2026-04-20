@@ -151,9 +151,13 @@ model = "test-model"
     assert status.status_code == 200
     assert status.json()["health"] == "ok"
 
-    html = client.get("/ui")
+    html = client.get("/")
     assert html.status_code == 200
     assert "Vaner Cockpit" in html.text
+    assert 'data-mode="proxy"' in html.text
+    redirect = client.get("/ui", follow_redirects=False)
+    assert redirect.status_code == 307
+    assert redirect.headers["location"] == "/"
 
     updated = client.post("/compute", json={"cpu_fraction": 0.3})
     assert updated.status_code == 200

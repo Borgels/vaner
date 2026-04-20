@@ -13,10 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
+from vaner import __version__ as _vaner_version
 from vaner.api import aquery
 from vaner.cli.commands.config import load_config, set_compute_value
+from vaner.daemon.cockpit_html import build_cockpit_html
 from vaner.models.config import VanerConfig
 from vaner.models.decision import DecisionRecord
 from vaner.router.backends import (
@@ -152,7 +154,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         except (NotImplementedError, RuntimeError):
             pass
 
-    app = FastAPI(title="Vaner Proxy", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="Vaner Proxy", version=_vaner_version, lifespan=lifespan)
     limiter = _RateLimiter(config.proxy.max_requests_per_minute)
     required_token = (config.proxy.proxy_token or "").strip()
     shadow_rate = max(0.0, min(config.gateway.shadow_rate, 1.0))
@@ -224,10 +226,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                 "health": "ok",
                 "gateway_enabled": gateway_enabled,
                 "compute": config.compute.model_dump(mode="json"),
-                "backend": {
-                    "base_url": config.backend.base_url,
-                    "model": config.backend.model,
-                },
+                "backend": config.backend.model_dump(mode="json"),
             }
         )
 
@@ -258,78 +257,13 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         gateway_enabled = bool(payload.get("enabled", True))
         return JSONResponse({"ok": True, "gateway_enabled": gateway_enabled})
 
-    @app.get("/ui", response_class=HTMLResponse)
-    async def cockpit_ui() -> str:
-        return """<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <title>Vaner Cockpit</title>
-    <style>
-      body { font-family: sans-serif; margin: 20px; background: #0f1117; color: #e8e8e8; }
-      .card { background: #171a22; border: 1px solid #2a2f3b; border-radius: 8px; padding: 12px; margin: 12px 0; }
-      button { background: #3a7afe; color: white; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-      pre { background: #10131a; border-radius: 6px; padding: 10px; overflow-x: auto; }
-      input { padding: 6px 8px; border-radius: 6px; border: 1px solid #2a2f3b; background: #10131a; color: #e8e8e8; }
-    </style>
-  </head>
-  <body>
-    <h2>Vaner Cockpit</h2>
-    <div class="card"><strong>Status</strong><pre id="status">loading…</pre></div>
-    <div class="card"><strong>Impact</strong><pre id="impact">loading…</pre></div>
-    <div class="card"><strong>Last decision</strong><pre id="decision">waiting…</pre></div>
-    <div class="card">
-      <strong>Compute controls</strong><br/>
-      <label>CPU fraction <input id="cpu" value="0.2"/></label>
-      <button id="applyCompute">Apply</button>
-      <pre id="computeResult"></pre>
-    </div>
-    <div class="card">
-      <strong>Gateway toggle</strong><br/>
-      <button id="disable">Disable enrichment</button>
-      <button id="enable">Enable enrichment</button>
-    </div>
-    <script>
-      async function refresh() {
-        const status = await fetch('/status').then(r => r.json());
-        const impact = await fetch('/impact/summary').then(r => r.json());
-        document.getElementById('status').textContent = JSON.stringify(status, null, 2);
-        document.getElementById('impact').textContent = JSON.stringify(impact, null, 2);
-      }
-      const stream = new EventSource('/decisions/stream');
-      stream.onmessage = (event) => {
-        document.getElementById('decision').textContent = JSON.stringify(JSON.parse(event.data), null, 2);
-      };
-      document.getElementById('applyCompute').onclick = async () => {
-        const cpu = parseFloat(document.getElementById('cpu').value);
-        const result = await fetch('/compute', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({cpu_fraction: cpu}),
-        }).then(r => r.json());
-        document.getElementById('computeResult').textContent = JSON.stringify(result, null, 2);
-        refresh();
-      };
-      document.getElementById('disable').onclick = async () => {
-        await fetch('/gateway/toggle', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({enabled: false}),
-        });
-        refresh();
-      };
-      document.getElementById('enable').onclick = async () => {
-        await fetch('/gateway/toggle', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({enabled: true}),
-        });
-        refresh();
-      };
-      refresh();
-    </script>
-  </body>
-</html>"""
+    @app.get("/", response_class=HTMLResponse)
+    async def cockpit() -> str:
+        return build_cockpit_html("proxy")
+
+    @app.get("/ui")
+    async def cockpit_ui() -> RedirectResponse:
+        return RedirectResponse(url="/", status_code=307)
 
     async def _publish_decision_event(event: dict[str, Any]) -> None:
         if not decision_stream_subscribers:

@@ -5,35 +5,66 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import re
+import os
 import shutil
+import socket
 import subprocess
 import sys
+import tomllib
 import traceback
 from datetime import UTC, datetime
+from errno import EADDRINUSE
 from pathlib import Path
 from time import perf_counter
+from typing import Any, get_origin
 
 import aiosqlite
 import httpx
 import typer
+from pydantic import TypeAdapter
+from pydantic_core import to_jsonable_python
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
-from vaner import VERSION, api
+from vaner import __version__, api
 from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
-from vaner.cli.commands.daemon import daemon_status, run_daemon_forever, start_daemon, stop_daemon
+from vaner.cli.commands.daemon import (
+    COCKPIT_PROCESS,
+    DAEMON_PROCESS,
+    clear_pid,
+    daemon_status,
+    log_path,
+    process_status,
+    run_daemon_forever,
+    start_daemon,
+    stop_daemon,
+    write_pid,
+)
+from vaner.cli.commands.distill import distill_skill_file
 from vaner.cli.commands.explain import render_human, render_json
 from vaner.cli.commands.init import (
     BACKEND_PRESETS,
     COMPUTE_PRESETS,
-    run_wizard,
+    apply_backend_config,
+    apply_compute_preset,
+    init_repo,
+    interactive_backend_choice,
+    interactive_compute_choice,
+    write_mcp_configs,
 )
 from vaner.cli.commands.inspect import inspect_decision as inspect_decision_output
 from vaner.cli.commands.inspect import inspect_last as inspect_last_output
 from vaner.cli.commands.inspect import list_decisions as list_decisions_output
 from vaner.cli.commands.profile import export_pins, import_pins, pin_fact, profile_show, unpin_fact
+from vaner.cli.commands.runtime_snapshot import runtime_snapshot
+from vaner.cli.commands.supervisor import run_down, run_up
 from vaner.daemon.http import create_daemon_http_app
+from vaner.daemon.preflight import check_repo_root
 from vaner.daemon.runner import VanerDaemon
 from vaner.eval import evaluate_repo, run_eval
+from vaner.models.config import VanerConfig
 from vaner.router.backends import forward_chat_completion_with_request
 from vaner.router.proxy import create_app
 from vaner.store.scenarios import ScenarioStore
@@ -45,10 +76,62 @@ config_app = typer.Typer(help="Show config")
 profile_app = typer.Typer(help="Profile memory controls")
 scenarios_app = typer.Typer(help="Scenario cockpit commands")
 _VERBOSE = False
+_console = Console()
 
 
 def _repo_root(path: str | None) -> Path:
-    return Path(path).resolve() if path else Path.cwd()
+    if path:
+        return Path(path).resolve()
+    env_path = os.environ.get("VANER_PATH", "").strip()
+    return Path(env_path).resolve() if env_path else Path.cwd()
+
+
+def _fail(message: str, *, hint: str | None = None, code: int = 1) -> None:
+    typer.secho(message, fg=typer.colors.RED, err=True)
+    if hint:
+        typer.secho(f"hint: {hint}", fg=typer.colors.YELLOW, err=True)
+    raise typer.Exit(code=code)
+
+
+def _annotation_name(annotation: Any) -> str:
+    origin = get_origin(annotation)
+    if origin is None:
+        return getattr(annotation, "__name__", str(annotation))
+    if origin is list:
+        args = getattr(annotation, "__args__", ())
+        inner = _annotation_name(args[0]) if args else "Any"
+        return f"list[{inner}]"
+    if origin is dict:
+        args = getattr(annotation, "__args__", ())
+        if len(args) == 2:
+            return f"dict[{_annotation_name(args[0])}, {_annotation_name(args[1])}]"
+        return "dict[Any, Any]"
+    if origin is tuple:
+        args = getattr(annotation, "__args__", ())
+        return f"tuple[{', '.join(_annotation_name(arg) for arg in args)}]"
+    if origin is type(None):
+        return "None"
+    if str(origin).endswith("Literal"):
+        args = getattr(annotation, "__args__", ())
+        return f"Literal[{', '.join(repr(arg) for arg in args)}]"
+    return str(annotation).replace("typing.", "")
+
+
+def _display_value(value: Any) -> str:
+    jsonable = to_jsonable_python(value)
+    if isinstance(jsonable, bool):
+        return "true" if jsonable else "false"
+    if isinstance(jsonable, str):
+        return jsonable
+    return json.dumps(jsonable, ensure_ascii=True)
+
+
+def _format_fix_hint(fix: str) -> str:
+    if not _console.is_terminal:
+        return fix
+    if "mcp" in fix.lower():
+        return f"{fix} [link=https://docs.vaner.ai/mcp]docs.vaner.ai/mcp[/link]"
+    return fix
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -73,6 +156,19 @@ def _friendly_error_message(exc: Exception) -> str:
     if isinstance(exc, aiosqlite.Error):
         return f"Database error: {exc}. Remove `.vaner/store.db` if it is corrupted, then rerun."
     return f"Vaner failed: {exc}"
+
+
+def _is_port_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        return sock.connect_ex((host, port)) != 0
+
+
+def _next_free_port(host: str, start_port: int, max_offset: int = 10) -> int | None:
+    for candidate in range(start_port, start_port + max_offset + 1):
+        if _is_port_free(host, candidate):
+            return candidate
+    return None
 
 
 def _detect_local_runtime() -> dict[str, object]:
@@ -105,50 +201,17 @@ def _detect_hardware_profile() -> dict[str, object]:
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             profile["device"] = "mps"
     except Exception:
-        pass
-    # Some Linux installs can have working NVIDIA drivers but missing/partial
-    # torch CUDA metadata; in that case prefer nvidia-smi as a fallback.
-    if profile["device"] == "cpu" or profile["vram_gb"] == 0:
-        smi_profile = _detect_nvidia_smi_profile()
-        if smi_profile is not None:
-            profile.update(smi_profile)
-    return profile
-
-
-def _detect_nvidia_smi_profile() -> dict[str, object] | None:
-    nvidia_smi = shutil.which("nvidia-smi")
-    if not nvidia_smi:
-        return None
-    try:
-        output = subprocess.check_output(
-            [
-                nvidia_smi,
-                "--query-gpu=name,memory.total",
-                "--format=csv,noheader,nounits",
-            ],
-            text=True,
-            timeout=1.5,
-        )
-    except Exception:
-        return None
-    rows = [line.strip() for line in output.splitlines() if line.strip()]
-    if not rows:
-        return None
-    gpu_count = 0
-    first_vram_gb = 0.0
-    for row in rows:
-        parts = [part.strip() for part in row.split(",")]
-        if len(parts) < 2:
-            continue
-        gpu_count += 1
-        if first_vram_gb <= 0:
+        nvidia_smi = shutil.which("nvidia-smi")
+        if nvidia_smi:
             try:
-                first_vram_gb = round(int(parts[-1]) / 1024, 1)
-            except ValueError:
-                first_vram_gb = 0.0
-    if gpu_count == 0:
-        return None
-    return {"device": "cuda", "gpu_count": gpu_count, "vram_gb": first_vram_gb}
+                output = subprocess.check_output([nvidia_smi, "--list-gpus"], text=True, timeout=1.5)
+                lines = [line for line in output.splitlines() if line.strip()]
+                if lines:
+                    profile["device"] = "cuda"
+                    profile["gpu_count"] = len(lines)
+            except Exception:
+                pass
+    return profile
 
 
 async def _scenario_store(repo_root: Path) -> ScenarioStore:
@@ -157,31 +220,169 @@ async def _scenario_store(repo_root: Path) -> ScenarioStore:
     return store
 
 
+def _canon_key(key: str) -> str:
+    normalized = key.strip()
+    if normalized in {"max_age_seconds", "max_context_tokens"}:
+        return f"limits.{normalized}"
+    return normalized
+
+
+def _config_attr_path_for_key(key: str) -> str:
+    if key == "intent.skills_loop.enabled":
+        return "intent.skills_loop_enabled"
+    if key == "intent.skills_loop.max_feedback_events_per_cycle":
+        return "intent.max_feedback_events_per_cycle"
+    if key.startswith("limits."):
+        return key.removeprefix("limits.")
+    return key
+
+
+def _config_write_target_for_key(key: str) -> tuple[str, str]:
+    if key.startswith("limits."):
+        return "limits", key.removeprefix("limits.")
+    parts = key.split(".")
+    if len(parts) < 2:
+        raise ValueError("Key must include a section prefix.")
+    return ".".join(parts[:-1]), parts[-1]
+
+
+def _annotation_for_path(root_model: type[Any], parts: list[str]) -> tuple[Any, str]:
+    if parts and parts[0] == "limits":
+        if len(parts) != 2 or parts[1] not in {"max_age_seconds", "max_context_tokens"}:
+            raise ValueError(f"Unsupported setting: {'.'.join(parts)}")
+        field = VanerConfig.model_fields[parts[1]]
+        return field.annotation, field.description or ""
+    model = root_model
+    breadcrumb: list[str] = []
+    for idx, part in enumerate(parts):
+        fields = getattr(model, "model_fields", {})
+        field = fields.get(part)
+        breadcrumb.append(part)
+        if field is None:
+            if part == "skills_loop" and ".".join(breadcrumb[:-1]) == "intent":
+                continue
+            if len(breadcrumb) >= 3 and ".".join(breadcrumb[:2]) == "gateway.routes":
+                return str, "Dynamic gateway route target URL."
+            raise ValueError(f"Unsupported setting: {'.'.join(parts)}")
+        annotation = field.annotation
+        description = field.description or ""
+        origin = get_origin(annotation)
+        if idx == len(parts) - 1:
+            return annotation, description
+        if origin is dict and len(breadcrumb) >= 2 and ".".join(breadcrumb) == "gateway.routes":
+            return str, "Dynamic gateway route target URL."
+        if isinstance(annotation, type) and hasattr(annotation, "model_fields"):
+            model = annotation
+            continue
+        raise ValueError(f"Unsupported setting: {'.'.join(parts)}")
+    raise ValueError(f"Unsupported setting: {'.'.join(parts)}")
+
+
+def _coerce_value(raw: str, annotation: Any) -> Any:
+    candidate: Any = raw
+    if annotation is bool:
+        lowered = raw.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError(raw)
+    if get_origin(annotation) in {list, dict}:
+        try:
+            candidate = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(raw) from exc
+    adapter = TypeAdapter(annotation)
+    return adapter.validate_python(candidate)
+
+
+def _value_at_path(config: VanerConfig, dotted_path: str) -> Any:
+    current: Any = config
+    for part in dotted_path.split("."):
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            current = getattr(current, part)
+    return current
+
+
+def _iter_config_keys(config: VanerConfig) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for section in ("backend", "generation", "privacy", "proxy", "gateway", "mcp", "intent", "compute", "exploration"):
+        section_model = getattr(config, section)
+        section_fields = section_model.__class__.model_fields
+        for field_name, field in section_fields.items():
+            if section == "intent" and field_name in {"skills_loop_enabled", "max_feedback_events_per_cycle"}:
+                continue
+            key = f"{section}.{field_name}"
+            value = getattr(section_model, field_name)
+            rows.append({"key": key, "value": value, "annotation": field.annotation, "description": field.description or ""})
+            if section == "gateway" and field_name == "routes" and isinstance(value, dict):
+                for route_key, route_value in value.items():
+                    rows.append(
+                        {
+                            "key": f"gateway.routes.{route_key}",
+                            "value": route_value,
+                            "annotation": str,
+                            "description": "Dynamic gateway route target URL.",
+                        }
+                    )
+    rows.append(
+        {
+            "key": "intent.skills_loop.enabled",
+            "value": config.intent.skills_loop_enabled,
+            "annotation": bool,
+            "description": "Enable closed-loop skill attribution feedback.",
+        }
+    )
+    rows.append(
+        {
+            "key": "intent.skills_loop.max_feedback_events_per_cycle",
+            "value": config.intent.max_feedback_events_per_cycle,
+            "annotation": int,
+            "description": "Max feedback events consumed each cycle.",
+        }
+    )
+    rows.append(
+        {
+            "key": "limits.max_age_seconds",
+            "value": config.max_age_seconds,
+            "annotation": int,
+            "description": VanerConfig.model_fields["max_age_seconds"].description or "",
+        }
+    )
+    rows.append(
+        {
+            "key": "limits.max_context_tokens",
+            "value": config.max_context_tokens,
+            "annotation": int,
+            "description": VanerConfig.model_fields["max_context_tokens"].description or "",
+        }
+    )
+    rows.append(
+        {
+            "key": "gateway.routes.<prefix>",
+            "value": "<url>",
+            "annotation": str,
+            "description": "Set prefix route: vaner config set gateway.routes.gpt- https://api.openai.com/v1",
+        }
+    )
+    return sorted(rows, key=lambda row: row["key"])
+
+
 @app.callback()
 def app_callback(
     verbose: bool = typer.Option(False, "--verbose", help="Show full traceback on errors"),
     version: bool = typer.Option(False, "--version", help="Show installed Vaner version and exit.", is_eager=True),
 ) -> None:
     if version:
-        typer.echo(f"vaner {VERSION}")
+        typer.echo(f"vaner {__version__}")
         raise typer.Exit()
     global _VERBOSE
     _VERBOSE = verbose
 
 
-@app.command("version")
-def version_command() -> None:
-    """Show installed Vaner version."""
-    typer.echo(f"vaner {VERSION}")
-
-
-@app.command("help")
-def help_command(ctx: typer.Context) -> None:
-    """Show CLI help."""
-    typer.echo(ctx.find_root().get_help())
-
-
-@app.command("init")
+@app.command("init", help="Initialize Vaner config and MCP client wiring.", rich_help_panel="Get started")
 def init(
     path: str | None = typer.Option(None, help="Repository root"),
     backend_preset: str | None = typer.Option(
@@ -189,6 +390,7 @@ def init(
         "--backend-preset",
         help=f"Configure [backend] using a preset: {', '.join(sorted(BACKEND_PRESETS))} or 'skip'.",
     ),
+    backend_url: str | None = typer.Option(None, "--backend-url", help="Override backend base_url."),
     backend_model: str | None = typer.Option(None, "--backend-model", help="Override backend model name."),
     backend_api_key_env: str | None = typer.Option(None, "--backend-api-key-env", help="Env var holding the cloud provider API key."),
     compute_preset: str | None = typer.Option(
@@ -209,38 +411,122 @@ def init(
     force: bool = typer.Option(
         False,
         "--force",
-        help="Overwrite malformed or existing MCP/backend config entries.",
+        help="Overwrite existing backend config even if already populated.",
     ),
-    clients: str | None = typer.Option(
-        None,
-        "--clients",
-        help="auto|all|none|other|csv (e.g. cursor,claude-code)",
-    ),
-    accept_cloud_costs: bool = typer.Option(
-        False,
-        "--accept-cloud-costs",
-        help="Acknowledge potential API charges for cloud backends (OpenAI/Anthropic/OpenRouter).",
-    ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing files."),
+    no_mcp: bool = typer.Option(False, "--no-mcp", help="Skip writing MCP client config files"),
 ) -> None:
-    """Initialize Vaner with guided backend, compute, and MCP client setup."""
+    """Initialize Vaner in the current repo and (optionally) pick a model backend.
+
+    Running ``vaner init`` a second time with no flags is idempotent: existing
+    ``[backend]`` values are preserved unless ``--force`` is passed.
+    """
     repo_root = _repo_root(path)
-    resolved_interactive = interactive if interactive is not None else sys.stdin.isatty()
-    exit_code = run_wizard(
-        repo_root,
-        interactive=resolved_interactive,
-        backend_preset=backend_preset,
-        backend_model=backend_model,
-        backend_api_key_env=backend_api_key_env,
-        compute_preset=compute_preset,
-        max_session_minutes=max_session_minutes,
-        clients_arg=clients,
-        accept_cloud_costs=accept_cloud_costs,
-        dry_run=dry_run,
-        force=force,
-    )
-    if exit_code != 0:
-        raise typer.Exit(code=exit_code)
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+        task = progress.add_task("Initializing repository config...", total=None)
+        config_path = init_repo(repo_root)
+        progress.update(task, description="Initialization complete")
+    typer.echo(f"Initialized Vaner at {config_path}")
+
+    if not no_mcp:
+        try:
+            with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+                task = progress.add_task("Writing MCP client configuration...", total=None)
+                written, launcher_command = write_mcp_configs(repo_root)
+                progress.update(task, description="MCP configuration written")
+            typer.echo("Configured MCP clients:")
+            for item in written:
+                typer.echo(f"  - {item}")
+            typer.echo(f"Scaffolded MCP client configs using `{launcher_command}`")
+        except Exception as exc:
+            typer.echo(f"Warning: could not write MCP client configs: {exc}")
+
+    import sys as _sys
+
+    resolved_interactive = interactive if interactive is not None else _sys.stdin.isatty()
+
+    if backend_preset is None and (backend_url or backend_model) is None and resolved_interactive:
+        choice = interactive_backend_choice()
+        if choice and choice != "skip":
+            backend_preset = choice
+
+    if backend_preset or backend_url or backend_model:
+        preset_id = backend_preset or "custom"
+        changed = apply_backend_config(
+            config_path,
+            preset_id,
+            base_url=backend_url,
+            model=backend_model,
+            api_key_env=backend_api_key_env,
+            force=force,
+        )
+        if changed:
+            typer.echo(f"Applied backend preset '{preset_id}' to {config_path.name}")
+        else:
+            typer.echo("Backend config already populated; pass --force to overwrite.")
+
+    if compute_preset is None and resolved_interactive and backend_preset != "skip":
+        compute_preset = interactive_compute_choice()
+
+    if compute_preset or max_session_minutes:
+        if apply_compute_preset(config_path, compute_preset or "background", max_session_minutes=max_session_minutes):
+            typer.echo(
+                f"Applied compute preset '{compute_preset or 'background'}'"
+                + (f" (max_session_minutes={max_session_minutes})" if max_session_minutes else "")
+            )
+
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+        task = progress.add_task("Running local runtime and hardware checks...", total=None)
+        runtime = _detect_local_runtime()
+        hardware = _detect_hardware_profile()
+        progress.update(task, description="Local checks complete")
+    detected_device = "cpu"
+    detected_embedding_device = "cpu"
+    if hardware.get("device") == "cuda":
+        detected_device = "cuda:0"
+        detected_embedding_device = "cuda"
+    elif hardware.get("device") == "mps":
+        detected_device = "mps"
+        detected_embedding_device = "mps"
+    set_compute_value(repo_root, "device", detected_device)
+    set_compute_value(repo_root, "embedding_device", detected_embedding_device)
+    typer.echo(f"Detected compute defaults: device={detected_device}, embedding_device={detected_embedding_device}")
+    if runtime.get("detected"):
+        typer.echo(f"Detected local runtime: {runtime['name']} ({runtime['url']})")
+    else:
+        typer.echo("No local runtime detected on localhost ports (11434/1234/8000).")
+        typer.echo("Recommended: curl -fsSL https://vaner.ai/install.sh | bash -s -- --with-ollama")
+    typer.echo(f"Hardware profile: device={hardware['device']} gpu_count={hardware['gpu_count']} vram_gb={hardware['vram_gb']}")
+    typer.echo("Next: connect your AI client → https://docs.vaner.ai/mcp")
+    checklist_lines = [
+        "1. Start the background worker: `vaner daemon start` (or `vaner daemon run-forever`).",
+        "2. Ensure local runtime is ready: `ollama serve`, then `ollama pull <model>`.",
+        "3. Open the cockpit: `vaner show` (http://127.0.0.1:8473/).",
+        "4. Enable the `vaner` MCP tool in your client and reload the window.",
+        "5. Ask the agent to use Vaner MCP tools for non-trivial tasks.",
+        "",
+        "Vaner is local-first. No background process runs unless you start the daemon",
+        "or your MCP client invokes it. `vaner doctor` will tell you what's missing.",
+    ]
+    _console.print(Panel("\n".join(checklist_lines), title="What happens next", border_style="cyan"))
+    has_vscode = (repo_root / ".vscode").exists() or os.environ.get("TERM_PROGRAM") == "vscode"
+    has_cursor = os.environ.get("CURSOR_TRACE_ID") is not None or os.environ.get("CURSOR_AGENT") is not None
+    if has_vscode or has_cursor:
+        typer.echo("Detected VS Code/Cursor environment.")
+        typer.echo("Install extension: cd ide/vscode && npm install && npm run build")
+        typer.echo("Then load the extension and run `Vaner: Open Cockpit`.")
+    if resolved_interactive and typer.confirm("Install shell completion for current shell?", default=True):
+        vaner_bin = shutil.which("vaner")
+        if vaner_bin:
+            completion_cmd = [vaner_bin, "--install-completion"]
+        else:
+            completion_cmd = [sys.executable, "-m", "vaner.cli.commands.app", "--install-completion"]
+        completed = subprocess.run(completion_cmd, check=False)
+        if completed.returncode == 0:
+            typer.echo("Shell completion installed.")
+        else:
+            typer.echo("Could not install completion automatically. Run `vaner --install-completion` manually.")
+    else:
+        typer.echo("Tip: enable command completion with `vaner --install-completion`.")
 
 
 @daemon_app.command("start")
@@ -248,8 +534,13 @@ def daemon_start(
     path: str | None = typer.Option(None, help="Repository root"),
     once: bool = typer.Option(True, help="Run one cycle only"),
     interval_seconds: int = typer.Option(15, "--interval-seconds", help="Loop interval for background mode"),
+    force: bool = typer.Option(False, "--force", help="Allow broad/non-repo root paths."),
 ) -> None:
-    written = start_daemon(_repo_root(path), once=once, interval_seconds=interval_seconds)
+    repo_root = _repo_root(path)
+    root_check = check_repo_root(repo_root, force=force)
+    if not root_check.get("ok"):
+        _fail(str(root_check.get("detail")), hint=str(root_check.get("fix")))
+    written = start_daemon(repo_root, once=once, interval_seconds=interval_seconds)
     typer.echo(f"Daemon started. Artefacts written: {written}")
 
 
@@ -283,10 +574,33 @@ def daemon_serve_http(
     repo_root = _repo_root(path)
     config = load_config(repo_root)
     app_instance = create_daemon_http_app(config)
-    uvicorn.run(app_instance, host=host, port=port)
+    write_pid(repo_root, COCKPIT_PROCESS, os.getpid())
+    try:
+        uvicorn.run(app_instance, host=host, port=port)
+    except OSError as exc:
+        if exc.errno not in {EADDRINUSE, 98}:
+            raise
+        current = process_status(repo_root, COCKPIT_PROCESS)
+        next_port = _next_free_port(host, port)
+        if current.get("running") and current.get("pid") != os.getpid():
+            _fail(
+                f"Cockpit port {host}:{port} is already in use by an existing Vaner cockpit process.",
+                hint="Run `vaner down --path .` or use a different port with `vaner daemon serve-http --port <port>`.",
+            )
+        if next_port is not None:
+            _fail(
+                f"Cockpit port {host}:{port} is busy.",
+                hint=f"Try `vaner daemon serve-http --path . --host {host} --port {next_port}`.",
+            )
+        _fail(
+            f"Cockpit port {host}:{port} is busy and no fallback port was found.",
+            hint="Free the port or stop conflicting process, then rerun `vaner daemon serve-http`.",
+        )
+    finally:
+        clear_pid(repo_root, COCKPIT_PROCESS)
 
 
-@app.command("inspect")
+@app.command("inspect", help="Inspect context decision records.", rich_help_panel="Inspect and debug")
 def inspect(
     path: str | None = typer.Option(None, help="Repository root"),
     last: bool = typer.Option(False, "--last", help="Show last context decision"),
@@ -299,7 +613,7 @@ def inspect(
     typer.echo(api.inspect(_repo_root(path)))
 
 
-@app.command("query")
+@app.command("query", help="Assemble and print context for a prompt.", rich_help_panel="Inspect and debug")
 def query(
     prompt: str,
     path: str | None = typer.Option(None, help="Repository root"),
@@ -319,7 +633,7 @@ def query(
     typer.echo(render_json(decision_record) if as_json else render_human(decision_record, verbose=verbose))
 
 
-@app.command("why")
+@app.command("why", help="Explain why a decision was selected.", rich_help_panel="Inspect and debug")
 def why(
     decision_id: str | None = typer.Argument(None, help="Decision id, defaults to latest"),
     path: str | None = typer.Option(None, help="Repository root"),
@@ -335,13 +649,35 @@ def why(
     typer.echo(inspect_decision_output(repo_root, decision_id, verbose=verbose, as_json=as_json))
 
 
-@app.command("prepare")
+@app.command("distill-skill", help="Convert a decision record into SKILL.md.", rich_help_panel="Use with an agent")
+def distill_skill(
+    decision_id: str = typer.Argument(..., help="Decision id to distill"),
+    name: str | None = typer.Option(None, "--name", help="Optional skill name override"),
+    out_dir: str | None = typer.Option(None, "--out-dir", help="Output directory"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing SKILL.md"),
+    path: str | None = typer.Option(None, help="Repository root"),
+) -> None:
+    repo_root = _repo_root(path)
+    destination = distill_skill_file(
+        repo_root,
+        decision_id,
+        out_dir=Path(out_dir).resolve() if out_dir else None,
+        skill_name=name,
+        force=force,
+    )
+    typer.echo(f"Wrote distilled skill: {destination}")
+
+
+@app.command("prepare", help="Prepare repository artefacts for retrieval.", rich_help_panel="Background and local")
 def prepare(path: str | None = typer.Option(None, help="Repository root")) -> None:
-    generated = api.prepare(_repo_root(path))
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+        task = progress.add_task("Preparing artefacts...", total=None)
+        generated = api.prepare(_repo_root(path))
+        progress.update(task, description="Preparation complete")
     typer.echo(f"Prepared artefacts: {generated}")
 
 
-@app.command("predict")
+@app.command("predict", help="Show top predicted next intents.", rich_help_panel="Benchmark")
 def predict(
     path: str | None = typer.Option(None, help="Repository root"),
     top_k: int = typer.Option(5, "--top-k", help="Number of predictions to return"),
@@ -350,69 +686,119 @@ def predict(
     typer.echo(json.dumps(predictions, indent=2))
 
 
-@app.command("precompute")
+@app.command("precompute", help="Run one precompute cycle.", rich_help_panel="Background and local")
 def precompute(path: str | None = typer.Option(None, help="Repository root")) -> None:
-    produced = api.precompute(_repo_root(path))
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
+        task = progress.add_task("Running precompute cycle...", total=None)
+        produced = api.precompute(_repo_root(path))
+        progress.update(task, description="Precompute complete")
     typer.echo(f"Precompute cycle completed. Full packages cached: {produced}")
 
 
-@app.command("forget")
+@app.command("forget", help="Delete local Vaner state files.", rich_help_panel="Background and local")
 def forget(path: str | None = typer.Option(None, help="Repository root")) -> None:
     removed = api.forget(_repo_root(path))
     typer.echo(f"Removed {removed} local state files.")
 
 
 @config_app.command("show")
-def config_show(path: str | None = typer.Option(None, help="Repository root")) -> None:
+def config_show(
+    path: str | None = typer.Option(None, help="Repository root"),
+    as_json: bool = typer.Option(False, "--json", help="Print raw JSON payload."),
+) -> None:
     config = load_config(_repo_root(path))
-    typer.echo(config.model_dump_json(indent=2))
+    if as_json:
+        typer.echo(json.dumps(to_jsonable_python(config.model_dump(mode="python")), indent=2))
+        return
+    defaults = VanerConfig(
+        repo_root=config.repo_root,
+        store_path=config.store_path,
+        telemetry_path=config.telemetry_path,
+    )
+    table = Table(title="Vaner configuration", show_lines=False)
+    table.add_column("Key", style="cyan")
+    table.add_column("Value")
+    table.add_column("Status", style="magenta")
+    for row in _iter_config_keys(config):
+        if "<prefix>" in row["key"]:
+            status = "template"
+        else:
+            try:
+                default_value = _value_at_path(defaults, _config_attr_path_for_key(row["key"]))
+            except Exception:
+                default_value = None
+            status = "overridden" if row["value"] != default_value else "default"
+        table.add_row(row["key"], _display_value(row["value"]), status)
+    _console.print(table)
+
+
+@config_app.command("get")
+def config_get(
+    key: str = typer.Argument(..., help="Setting path (for example: backend.model)."),
+    path: str | None = typer.Option(None, help="Repository root"),
+) -> None:
+    canonical = _canon_key(key)
+    config = load_config(_repo_root(path))
+    try:
+        value = _value_at_path(config, _config_attr_path_for_key(canonical))
+    except Exception:
+        _fail(
+            f"Unsupported setting: {canonical}",
+            hint="Run `vaner config keys` to list valid keys.",
+        )
+    typer.echo(json.dumps(value) if not isinstance(value, str) else value)
+
+
+@config_app.command("keys")
+def config_keys(path: str | None = typer.Option(None, help="Repository root")) -> None:
+    rows = _iter_config_keys(load_config(_repo_root(path)))
+    table = Table(title="Settable configuration keys")
+    table.add_column("Key", style="cyan", no_wrap=True)
+    table.add_column("Type", style="green")
+    table.add_column("Current")
+    table.add_column("Description")
+    for row in rows:
+        annotation = row["annotation"]
+        annotation_name = _annotation_name(annotation)
+        current = _display_value(row["value"])
+        table.add_row(row["key"], annotation_name, str(current), row["description"])
+    _console.print(table)
+
+
+@config_app.command("edit")
+def config_edit(path: str | None = typer.Option(None, help="Repository root")) -> None:
+    repo_root = _repo_root(path)
+    config_path = repo_root / ".vaner" / "config.toml"
+    if not config_path.exists():
+        _fail(f"Config file not found: {config_path}", hint="Run `vaner init` first.")
+    editor = os.environ.get("EDITOR", "nano")
+    subprocess.run([editor, str(config_path)], check=False)
 
 
 @config_app.command("set")
 def config_set(
-    key: str = typer.Argument(..., help="Setting path, supports compute.* and exploration.*"),
+    key: str = typer.Argument(..., help="Setting path (for example: backend.model)."),
     value: str = typer.Argument(..., help="Setting value"),
     path: str | None = typer.Option(None, help="Repository root"),
 ) -> None:
-    if "." not in key:
-        typer.secho("Key must include section prefix, e.g. compute.cpu_fraction", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
-    section, field = key.split(".", 1)
-    converters_by_section = {
-        "compute": {
-            "device": str,
-            "embedding_device": str,
-            "cpu_fraction": float,
-            "gpu_memory_fraction": float,
-            "idle_only": lambda raw: str(raw).lower() in {"1", "true", "yes", "on"},
-            "idle_cpu_threshold": float,
-            "idle_gpu_threshold": float,
-            "exploration_concurrency": int,
-            "max_parallel_precompute": int,
-        },
-        "exploration": {
-            "endpoint": str,
-            "model": str,
-            "backend": str,
-            "enabled": lambda raw: str(raw).lower() in {"1", "true", "yes", "on"},
-        },
-    }
-    parser = converters_by_section.get(section, {}).get(field)
-    if parser is None:
-        typer.secho(f"Unsupported setting: {key}", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
-
+    canonical = _canon_key(key)
+    parts = canonical.split(".")
+    if len(parts) < 2:
+        _fail("Key must include section prefix, e.g. compute.cpu_fraction")
     try:
-        parsed_value = parser(value)
-    except ValueError as exc:
-        typer.secho(f"Invalid value for {key}: {value}", fg=typer.colors.RED)
-        raise typer.Exit(code=1) from exc
-
-    if section == "compute":
-        config_path = set_compute_value(_repo_root(path), field, parsed_value)
-    else:
-        config_path = set_config_value(_repo_root(path), section, field, parsed_value)
-    typer.echo(f"Updated {key} in {config_path}")
+        annotation, _ = _annotation_for_path(VanerConfig, parts)
+    except ValueError:
+        _fail(f"Unsupported setting: {canonical}", hint="Run `vaner config keys` to list valid keys.")
+    try:
+        parsed_value = _coerce_value(value, annotation)
+    except Exception:
+        hint = f"Expected type: {_annotation_name(annotation)}"
+        if get_origin(annotation) in {list, dict}:
+            hint = f'{hint}; for list/dict values pass JSON, e.g. \'["a","b"]\''
+        _fail(f"Invalid value for {canonical}: {value}", hint=hint, code=1)
+    section, field = _config_write_target_for_key(canonical)
+    config_path = set_config_value(_repo_root(path), section, field, parsed_value)
+    typer.echo(f"Updated {canonical} in {config_path}")
 
 
 @profile_app.command("show")
@@ -458,13 +844,13 @@ def profile_import_command(
     typer.echo(f"Imported {imported} pins.")
 
 
-@app.command("eval")
+@app.command("eval", help="Evaluate Vaner quality in current repository.", rich_help_panel="Benchmark")
 def eval_repo(path: str | None = typer.Option(None, help="Repository root")) -> None:
     result = evaluate_repo(_repo_root(path))
     typer.echo(result.model_dump_json(indent=2))
 
 
-@app.command("run-eval")
+@app.command("run-eval", help="Run eval suite from custom case file.", rich_help_panel="Benchmark")
 def run_eval_command(
     path: str | None = typer.Option(None, help="Repository root"),
     cases_file: str | None = typer.Option(None, "--cases-file", help="Path to eval cases JSON"),
@@ -479,7 +865,7 @@ def run_eval_command(
     typer.echo(result.model_dump_json(indent=2))
 
 
-@app.command("mcp")
+@app.command("mcp", help="Start Vaner MCP server for IDE clients.", rich_help_panel="Use with an agent")
 def mcp_server(
     path: str | None = typer.Option(None, help="Repository root"),
     transport: str = typer.Option("stdio", "--transport", "-t", help="Transport: stdio | sse"),
@@ -500,23 +886,30 @@ def mcp_server(
     """
     import asyncio as _asyncio
 
+    if transport == "sse":
+        _require_safe_mcp_sse_exposure(host)
+
     try:
         from vaner.mcp.server import run_sse, run_stdio
     except ImportError as exc:  # pragma: no cover
-        typer.secho(f"MCP not available: {exc}. Install: pip install 'mcp[cli]>=1.0'", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
+        _fail(f"MCP not available: {exc}", hint="Install optional extras: pip install 'vaner[mcp]'.")
 
     repo_root = _repo_root(path)
 
     if transport == "sse":
-        _require_safe_mcp_sse_exposure(host)
         typer.echo(f"Starting Vaner MCP server (SSE) on {host}:{port}  repo={repo_root}")
-        _asyncio.run(run_sse(repo_root, host=host, port=port))
+        try:
+            _asyncio.run(run_sse(repo_root, host=host, port=port))
+        except RuntimeError as exc:
+            _fail(str(exc), hint="Install optional extras: pip install 'vaner[mcp]'.")
     else:
-        _asyncio.run(run_stdio(repo_root))
+        try:
+            _asyncio.run(run_stdio(repo_root))
+        except RuntimeError as exc:
+            _fail(str(exc), hint="Install optional extras: pip install 'vaner[mcp]'.")
 
 
-@app.command("proxy")
+@app.command("proxy", help="Start optional OpenAI-compatible proxy gateway.", rich_help_panel="Configure")
 def proxy(
     path: str | None = typer.Option(None, help="Repository root"),
     host: str = "127.0.0.1",
@@ -538,7 +931,7 @@ def proxy(
     )
 
 
-@app.command("metrics")
+@app.command("metrics", rich_help_panel="Inspect and debug")
 def metrics_cmd(
     path: str | None = typer.Option(None, help="Repository root"),
     last: int = typer.Option(100, "--last", "-n", help="Number of recent requests to include"),
@@ -619,7 +1012,7 @@ def metrics_cmd(
     typer.echo("")
 
 
-@app.command("impact")
+@app.command("impact", rich_help_panel="Inspect and debug")
 def impact(
     path: str | None = typer.Option(None, help="Repository root"),
     last: int = typer.Option(500, "--last", "-n", help="Number of shadow pairs to aggregate"),
@@ -667,7 +1060,7 @@ def impact(
     typer.echo(f"idle seconds used:{summary['idle_seconds_used']:.2f}")
 
 
-@app.command("compare")
+@app.command("compare", rich_help_panel="Inspect and debug")
 def compare(
     prompt: str = typer.Argument(..., help="Prompt to compare with and without Vaner context"),
     path: str | None = typer.Option(None, help="Repository root"),
@@ -760,6 +1153,16 @@ def scenarios_list(
     typer.echo("=" * 40)
     for row in rows:
         typer.echo(f"{row['id']} [{row['kind']}] score={row['score']:.3f} freshness={row['freshness']} entities={len(row['entities'])}")
+
+
+@app.command("ls", help="Alias for `vaner scenarios list`.", rich_help_panel="Use with an agent")
+def ls_alias(
+    path: str | None = typer.Option(None, help="Repository root"),
+    kind: str | None = typer.Option(None, "--kind", help="Filter by kind"),
+    limit: int = typer.Option(10, "--limit", min=1, max=100, help="Maximum scenarios"),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON"),
+) -> None:
+    scenarios_list(path=path, kind=kind, limit=limit, as_json=as_json)
 
 
 @scenarios_app.command("show")
@@ -856,6 +1259,7 @@ def scenarios_outcome(
     scenario_id: str,
     result: str = typer.Option(..., "--result", help="useful|irrelevant|partial"),
     note: str = typer.Option("", "--note", help="Optional note"),
+    skill: str = typer.Option("", "--skill", help="Optional skill attribution"),
     path: str | None = typer.Option(None, help="Repository root"),
 ) -> None:
     import asyncio
@@ -868,16 +1272,17 @@ def scenarios_outcome(
 
     async def _run() -> None:
         store = await _scenario_store(repo_root)
-        await store.record_outcome(scenario_id, result)
+        skill_name = skill.strip() or None
+        await store.record_outcome(scenario_id, result, skill=skill_name, source="skill" if skill_name else None)
         metrics = MetricsStore(repo_root / ".vaner" / "metrics.db")
         await metrics.initialize()
-        await metrics.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note)
+        await metrics.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note, skill=skill_name)
 
     asyncio.run(_run())
     typer.echo(f"Recorded outcome for {scenario_id}: {result}")
 
 
-@app.command("watch")
+@app.command("watch", rich_help_panel="Use with an agent")
 def watch(
     cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
     as_json: bool = typer.Option(False, "--json", help="Emit raw decision events as JSON"),
@@ -911,14 +1316,14 @@ def watch(
                     return
 
 
-@app.command("show")
+@app.command("show", rich_help_panel="Use with an agent")
 def show(
     cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
 ) -> None:
     """Open the local web cockpit in the default browser."""
     import webbrowser
 
-    target_url = f"{cockpit_url.rstrip('/')}/ui"
+    target_url = f"{cockpit_url.rstrip('/')}/"
     opened = webbrowser.open(target_url)
     if opened:
         typer.echo(f"Opened {target_url}")
@@ -926,7 +1331,146 @@ def show(
         typer.echo(f"Open this URL manually: {target_url}")
 
 
-@app.command("status")
+@app.command("up", help="Start daemon and cockpit together.", rich_help_panel="Get started")
+def up(
+    path: str | None = typer.Option(None, help="Repository root"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Cockpit host"),
+    port: int = typer.Option(8473, "--port", help="Cockpit port"),
+    interval_seconds: int = typer.Option(15, "--interval-seconds", help="Daemon loop interval"),
+    open_browser: bool | None = typer.Option(
+        None,
+        "--open/--no-open",
+        help="Open cockpit in browser. Defaults to true on TTY sessions.",
+    ),
+    detach: bool = typer.Option(False, "--detach", help="Start processes and return immediately."),
+    force: bool = typer.Option(False, "--force", help="Allow broad/non-repo root paths."),
+) -> None:
+    """Start a supervised local Vaner session."""
+    should_open = _console.is_terminal if open_browser is None else open_browser
+    payload = run_up(
+        _repo_root(path),
+        host=host,
+        port=port,
+        mcp_sse_port=8472,
+        interval_seconds=interval_seconds,
+        open_browser=should_open,
+        force=force,
+    )
+    if payload.get("reattached"):
+        typer.echo(f"Vaner already running (daemon pid={payload['daemon_pid']}, cockpit pid={payload['cockpit_pid']}).")
+        return
+    cockpit_url = str(payload.get("cockpit_url", f"http://{host}:{port}"))
+    ready = bool(payload.get("ready"))
+    checklist_lines = [
+        f"Daemon PID: {payload.get('daemon_pid')}",
+        f"Cockpit PID: {payload.get('cockpit_pid')}",
+        f"Cockpit URL: {cockpit_url}",
+        "Health: ready" if ready else "Health: still starting (check `vaner logs`).",
+        "Next: run `vaner status` to verify full readiness.",
+    ]
+    ports = payload.get("ports", {})
+    if isinstance(ports, dict) and ports.get("cockpit_changed"):
+        checklist_lines.append(f"Cockpit port auto-shifted to {cockpit_url} because {host}:{port} was busy.")
+    inotify = payload.get("inotify", {})
+    if isinstance(inotify, dict) and not inotify.get("ok", True):
+        checklist_lines.append(
+            f"Inotify warning: {inotify.get('detail')}. Consider `{inotify.get('fix', 'sudo sysctl fs.inotify.max_user_watches=524288')}`."
+        )
+    _console.print(Panel("\n".join(checklist_lines), title="Vaner up", border_style="green" if ready else "yellow"))
+    if detach:
+        return
+    typer.echo("Press Ctrl+C to stop daemon and cockpit.")
+    try:
+        while True:
+            import time as _time
+
+            _time.sleep(1)
+    except KeyboardInterrupt:
+        down_payload = run_down(_repo_root(path))
+        daemon_state = down_payload["daemon"]
+        cockpit_state = down_payload["cockpit"]
+        typer.echo(
+            "Stopped: "
+            f"daemon(pid={daemon_state['pid']}, ok={daemon_state['stopped']}), "
+            f"cockpit(pid={cockpit_state['pid']}, ok={cockpit_state['stopped']})"
+        )
+
+
+@app.command("down", help="Stop daemon and cockpit from `vaner up`.", rich_help_panel="Get started")
+def down(path: str | None = typer.Option(None, help="Repository root")) -> None:
+    payload = run_down(_repo_root(path))
+    daemon_state = payload["daemon"]
+    cockpit_state = payload["cockpit"]
+    typer.echo(
+        "Stopped: "
+        f"daemon(pid={daemon_state['pid']}, ok={daemon_state['stopped']}), "
+        f"cockpit(pid={cockpit_state['pid']}, ok={cockpit_state['stopped']})"
+    )
+
+
+@app.command("logs", help="Alias for `vaner watch`.", rich_help_panel="Use with an agent")
+def logs_alias(
+    path: str | None = typer.Option(None, help="Repository root"),
+    follow: bool = typer.Option(True, "--follow/--no-follow", help="Tail runtime logs continuously."),
+    events: bool = typer.Option(False, "--events", help="Show decision stream events instead of runtime logs."),
+    cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL for --events mode."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw decision events as JSON (--events mode)."),
+    contains: str | None = typer.Option(None, "--filter", help="Substring filter for --events mode."),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Stop after N matching lines/events."),
+) -> None:
+    if events:
+        watch(cockpit_url=cockpit_url, as_json=as_json, contains=contains, limit=limit)
+        return
+    repo_root = _repo_root(path)
+    daemon_log = log_path(repo_root, DAEMON_PROCESS)
+    cockpit_log = log_path(repo_root, COCKPIT_PROCESS)
+    paths = [("daemon", daemon_log), ("cockpit", cockpit_log)]
+    for label, file_path in paths:
+        if not file_path.exists():
+            typer.echo(f"[{label}] no log file yet at {file_path}")
+            continue
+        lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        tail = lines[-20:]
+        for line in tail:
+            typer.echo(f"[{label}] {line}")
+    if not follow:
+        return
+    typer.echo("Following runtime logs... (Ctrl+C to stop)")
+    offsets = {label: (path.stat().st_size if path.exists() else 0) for label, path in paths}
+    emitted = 0
+    try:
+        while True:
+            import time as _time
+
+            for label, file_path in paths:
+                if not file_path.exists():
+                    continue
+                with file_path.open("r", encoding="utf-8", errors="replace") as handle:
+                    handle.seek(offsets[label])
+                    chunk = handle.read()
+                    offsets[label] = handle.tell()
+                if not chunk:
+                    continue
+                for line in chunk.splitlines():
+                    typer.echo(f"[{label}] {line}")
+                    emitted += 1
+                    if limit is not None and emitted >= limit:
+                        return
+            _time.sleep(0.5)
+    except KeyboardInterrupt:
+        return
+
+
+@app.command("ps", help="Alias for `vaner status`.", rich_help_panel="Get started")
+def ps_alias(
+    path: str | None = typer.Option(None, help="Repository root"),
+    cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    status(path=path, cockpit_url=cockpit_url, as_json=as_json)
+
+
+@app.command("status", rich_help_panel="Get started")
 def status(
     path: str | None = typer.Option(None, help="Repository root"),
     cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
@@ -934,36 +1478,18 @@ def status(
 ) -> None:
     """Show one-screen Vaner health and compute status."""
     repo_root = _repo_root(path)
-    config = load_config(repo_root)
-    daemon = daemon_status(repo_root)
+    snapshot = runtime_snapshot(repo_root, cockpit_url)
+    config = snapshot["config"]
     latest = api.inspect_last_decision(repo_root)
-
-    cockpit_health = {"reachable": False, "detail": ""}
-    try:
-        response = httpx.get(f"{cockpit_url.rstrip('/')}/health", timeout=2.0)
-        cockpit_health["reachable"] = response.status_code == 200
-        cockpit_health["detail"] = response.text
-    except Exception as exc:
-        cockpit_health["detail"] = str(exc)
-
-    scenario_counts: dict[str, int] = {"fresh": 0, "recent": 0, "stale": 0, "total": 0}
-    try:
-        store = ScenarioStore(repo_root / ".vaner" / "scenarios.db")
-        import asyncio
-
-        async def _counts() -> dict[str, int]:
-            await store.initialize()
-            return await store.freshness_counts()
-
-        scenario_counts = asyncio.run(_counts())
-    except Exception:
-        scenario_counts = {"fresh": 0, "recent": 0, "stale": 0, "total": 0}
+    scenario_counts = dict(snapshot["scenario_counts"])
+    daemon_text = str(snapshot["daemon"]["status"])
+    cockpit_ok = bool(snapshot["cockpit_reachable"])
 
     payload = {
         "repo_root": str(repo_root),
-        "daemon": daemon,
+        "daemon": daemon_text,
         "cockpit_url": cockpit_url,
-        "cockpit": cockpit_health,
+        "cockpit": {"reachable": cockpit_ok, "detail": snapshot["cockpit_detail"]},
         "mcp": config.mcp.model_dump(mode="json"),
         "compute": config.compute.model_dump(mode="json"),
         "backend": {
@@ -974,6 +1500,14 @@ def status(
         "scenarios_ready": scenario_counts["total"],
         "scenario_counts": scenario_counts,
         "last_decision": latest.id if latest else None,
+        "runtime_snapshot": {
+            "daemon_pid_alive": snapshot["daemon_pid_alive"],
+            "cockpit_pid_alive": snapshot["cockpit_pid_alive"],
+            "backend_reachable": snapshot["backend_reachable"],
+            "repo_root_sensible": snapshot["repo_root_sensible"],
+            "inotify_headroom_pct": snapshot["inotify_headroom_pct"],
+            "cli_up_to_date": snapshot["cli_up_to_date"],
+        },
         "timestamp": datetime.now(UTC).isoformat(),
     }
     if as_json:
@@ -984,7 +1518,7 @@ def status(
     typer.echo("=" * 40)
     typer.echo(f"repo:     {payload['repo_root']}")
     typer.echo(f"daemon:   {payload['daemon']}")
-    typer.echo(f"cockpit:  {'ok' if cockpit_health['reachable'] else 'down'} ({cockpit_url})")
+    typer.echo(f"cockpit:  {'ok' if cockpit_ok else 'down'} ({cockpit_url})")
     typer.echo(f"mcp:      transport={config.mcp.transport} sse={config.mcp.http_host}:{config.mcp.http_port}")
     typer.echo(f"backend:  {config.backend.base_url or '(unset)'} [{config.backend.model or '(unset)'}]")
     typer.echo(
@@ -996,9 +1530,33 @@ def status(
     typer.echo(f"decision: {payload['last_decision'] or 'none'}")
     typer.echo(f"scenarios:{payload['scenarios_ready']}")
     typer.echo(f"freshness: fresh={scenario_counts['fresh']} recent={scenario_counts['recent']} stale={scenario_counts['stale']}")
+    if not bool(snapshot["repo_root_sensible"]):
+        _console.print(
+            Panel(
+                str(snapshot["repo_root_fix"] or "Use a project repository path instead of your home directory."),
+                title="Next best step",
+                border_style="yellow",
+            )
+        )
+    elif not bool(snapshot["daemon_pid_alive"]):
+        _console.print(
+            Panel(
+                "Start everything with `vaner up --path .` (or run `vaner daemon start --path . --no-once`).",
+                title="Next best step",
+                border_style="yellow",
+            )
+        )
+    elif not cockpit_ok:
+        _console.print(
+            Panel(
+                "Cockpit is down. Run `vaner up --path .` or restart HTTP with `vaner daemon serve-http --path .`.",
+                title="Next best step",
+                border_style="yellow",
+            )
+        )
 
 
-@app.command("doctor")
+@app.command("doctor", rich_help_panel="Get started")
 def doctor(
     path: str | None = typer.Option(None, help="Repository root"),
     cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
@@ -1006,6 +1564,7 @@ def doctor(
 ) -> None:
     """Run local diagnostics and print actionable fixes."""
     repo_root = _repo_root(path)
+    snapshot = runtime_snapshot(repo_root, cockpit_url)
     checks: list[dict[str, object]] = []
     config_path = repo_root / ".vaner" / "config.toml"
     checks.append(
@@ -1017,7 +1576,8 @@ def doctor(
         }
     )
 
-    config = load_config(repo_root) if config_path.exists() else None
+    config = snapshot["config"] if config_path.exists() else None
+    runtime: dict[str, object] = {"detected": False}
     if config is not None:
         has_backend = bool(config.backend.base_url.strip() and config.backend.model.strip())
         has_routes = bool(config.gateway.routes)
@@ -1027,6 +1587,34 @@ def doctor(
                 "ok": has_backend or has_routes,
                 "detail": "backend/base_url+model or gateway/routes must be set",
                 "fix": "Set [backend] base_url/model or add [gateway.routes] entries in .vaner/config.toml.",
+            }
+        )
+        checks.append(
+            {
+                "name": "repo_root_sensible",
+                "ok": bool(snapshot["repo_root_sensible"]),
+                "level": "warn" if not snapshot["repo_root_sensible"] else "pass",
+                "detail": snapshot["repo_root_detail"],
+                "fix": snapshot["repo_root_fix"],
+            }
+        )
+        inotify_payload = snapshot["inotify"]
+        checks.append(
+            {
+                "name": "inotify_headroom",
+                "ok": bool(inotify_payload.get("ok", True)),
+                "level": "warn" if not inotify_payload.get("ok", True) else "pass",
+                "detail": inotify_payload.get("detail", ""),
+                "fix": inotify_payload.get("fix", ""),
+            }
+        )
+        checks.append(
+            {
+                "name": "cli_up_to_date",
+                "ok": bool(snapshot["cli_up_to_date"]),
+                "level": "warn" if not snapshot["cli_up_to_date"] else "pass",
+                "detail": snapshot["cli_update_detail"],
+                "fix": "Run `pipx upgrade vaner` (or `vaner upgrade`).",
             }
         )
         checks.append(
@@ -1054,6 +1642,35 @@ def doctor(
                 "fix": "Start Ollama/LM Studio/vLLM so Vaner can precompute scenarios with local hardware.",
             }
         )
+        if runtime.get("name") == "ollama" and config.backend.model.strip():
+            backend_model = config.backend.model.strip()
+            ollama_ok = False
+            ollama_detail = "model not found"
+            try:
+                tags_response = httpx.get("http://127.0.0.1:11434/api/tags", timeout=1.5)
+                tags_response.raise_for_status()
+                payload = tags_response.json()
+                models_payload = payload.get("models", []) if isinstance(payload, dict) else []
+                model_names = {
+                    str(item.get("name", "")).strip()
+                    for item in models_payload
+                    if isinstance(item, dict) and str(item.get("name", "")).strip()
+                }
+                ollama_ok = backend_model in model_names
+                if model_names:
+                    ollama_detail = f"backend_model={backend_model} installed={', '.join(sorted(model_names)[:5])}"
+                else:
+                    ollama_detail = "no models returned by /api/tags"
+            except Exception as exc:
+                ollama_detail = str(exc)
+            checks.append(
+                {
+                    "name": "ollama_model_pulled",
+                    "ok": ollama_ok,
+                    "detail": ollama_detail,
+                    "fix": f"Run `ollama pull {backend_model}` to install the configured model.",
+                }
+            )
         is_cloud_backend = config.backend.base_url.startswith("https://")
         if is_cloud_backend and not runtime.get("detected"):
             checks.append(
@@ -1065,25 +1682,22 @@ def doctor(
                 }
             )
 
-    try:
-        health = httpx.get(f"{cockpit_url.rstrip('/')}/health", timeout=2.0)
-        checks.append(
-            {
-                "name": "cockpit_reachable",
-                "ok": health.status_code == 200,
-                "detail": f"status={health.status_code}",
-                "fix": "Start the cockpit server with `vaner daemon serve-http`.",
-            }
-        )
-    except Exception as exc:
-        checks.append(
-            {
-                "name": "cockpit_reachable",
-                "ok": False,
-                "detail": str(exc),
-                "fix": "Start the cockpit server with `vaner daemon serve-http`.",
-            }
-        )
+    checks.append(
+        {
+            "name": "cockpit_reachable",
+            "ok": bool(snapshot["cockpit_reachable"]),
+            "detail": str(snapshot["cockpit_detail"]),
+            "fix": "Start everything with `vaner up --path .` (or run `vaner daemon serve-http --path .`).",
+        }
+    )
+    checks.append(
+        {
+            "name": "daemon_running",
+            "ok": bool(snapshot["daemon_pid_alive"]),
+            "detail": str(snapshot["daemon"]["status"]),
+            "fix": "Run `vaner up --path .` (or `vaner daemon start --path . --no-once`).",
+        }
+    )
 
     cursor_mcp_path = repo_root / ".cursor" / "mcp.json"
     claude_mcp_path = Path.home() / ".claude" / "claude_desktop_config.json"
@@ -1095,6 +1709,95 @@ def doctor(
             "fix": "Run `vaner init` to scaffold MCP client configuration files.",
         }
     )
+    if cursor_mcp_path.exists():
+        checks.append(
+            {
+                "name": "mcp_client_instructions",
+                "ok": False,
+                "level": "warn",
+                "detail": "Cursor MCP config found.",
+                "fix": "Reload Cursor after `vaner init` so the MCP server is picked up.",
+            }
+        )
+    mcp_commands: list[str] = []
+    for path_candidate in (cursor_mcp_path, claude_mcp_path):
+        if not path_candidate.exists():
+            continue
+        try:
+            payload = json.loads(path_candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        servers = payload.get("mcpServers", {})
+        if isinstance(servers, dict):
+            for server_payload in servers.values():
+                if isinstance(server_payload, dict):
+                    command = str(server_payload.get("command", "")).strip()
+                    if command:
+                        mcp_commands.append(command)
+    all_commands_exist = bool(mcp_commands) and all(shutil.which(command) for command in mcp_commands)
+    checks.append(
+        {
+            "name": "mcp_command_exists",
+            "ok": all_commands_exist,
+            "detail": ", ".join(mcp_commands) if mcp_commands else "No MCP commands found in client config",
+            "fix": "Use `vaner init` to rewrite MCP configs with a valid command path.",
+        }
+    )
+    if config is not None:
+        config_text = config_path.read_text(encoding="utf-8")
+        stale_keys = [key for key in ("exploration_model", "exploration_endpoint", "exploration_backend") if key in config_text]
+        try:
+            parsed = tomllib.loads(config_text)
+            exploration_section = parsed.get("exploration", {})
+            if isinstance(exploration_section, dict) and "embedding_device" in exploration_section:
+                stale_keys.append("exploration.embedding_device")
+        except Exception:
+            pass
+        checks.append(
+            {
+                "name": "config_drift",
+                "ok": not stale_keys,
+                "detail": "none" if not stale_keys else f"legacy keys present: {', '.join(stale_keys)}",
+                "fix": "Update .vaner/config.toml to use exploration.model/endpoint/backend and compute.embedding_device.",
+            }
+        )
+        if os.environ.get("VANER_SKIP_MCP_BOOT_PROBE", "").strip() == "1":
+            checks.append(
+                {
+                    "name": "mcp_server_boots",
+                    "ok": True,
+                    "detail": "skipped (VANER_SKIP_MCP_BOOT_PROBE=1)",
+                    "fix": "",
+                }
+            )
+        else:
+            try:
+                boot_cmd = [shutil.which("vaner") or "vaner", "mcp", "--path", str(repo_root)]
+                proc = subprocess.Popen(boot_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    proc.wait(timeout=1.5)
+                    boot_ok = proc.returncode == 0
+                except subprocess.TimeoutExpired:
+                    boot_ok = True
+                    proc.terminate()
+                    proc.wait(timeout=1.0)
+                checks.append(
+                    {
+                        "name": "mcp_server_boots",
+                        "ok": boot_ok,
+                        "detail": "startup probe completed",
+                        "fix": "Run `vaner mcp --path .` manually to inspect startup errors.",
+                    }
+                )
+            except Exception as exc:
+                checks.append(
+                    {
+                        "name": "mcp_server_boots",
+                        "ok": False,
+                        "detail": str(exc),
+                        "fix": "Run `vaner mcp --path .` manually to inspect startup errors.",
+                    }
+                )
     try:
         import asyncio
 
@@ -1123,87 +1826,44 @@ def doctor(
             }
         )
 
-    overall_ok = all(bool(item["ok"]) for item in checks)
+    overall_ok = all(bool(item["ok"]) or item.get("level") == "warn" for item in checks)
     payload = {"ok": overall_ok, "checks": checks}
     if as_json:
         typer.echo(json.dumps(payload, indent=2))
         raise typer.Exit(code=0 if overall_ok else 1)
 
-    typer.echo("Vaner doctor")
-    typer.echo("=" * 40)
+    _console.print("[bold]Vaner doctor[/bold]")
+    _console.print("=" * 40)
     for check in checks:
-        mark = "PASS" if check["ok"] else "FAIL"
-        typer.echo(f"[{mark}] {check['name']}: {check['detail']}")
-        if not check["ok"] and check["fix"]:
-            typer.echo(f"       fix: {check['fix']}")
+        if check.get("level") == "warn":
+            mark = "[yellow]WARN[/yellow]"
+        else:
+            mark = "[green]PASS[/green]" if check["ok"] else "[red]FAIL[/red]"
+        _console.print(f"{mark} {check['name']}: {check['detail']}")
+        if (not check["ok"] or check.get("level") == "warn") and check["fix"]:
+            _console.print(f"       fix: {_format_fix_hint(str(check['fix']))}")
     raise typer.Exit(code=0 if overall_ok else 1)
 
 
-def _parse_version_parts(raw: str) -> tuple[tuple[int, int | str], ...]:
-    pieces = [piece for piece in re.split(r"[\\.-]", raw.strip()) if piece]
-    parsed: list[tuple[int, int | str]] = []
-    for piece in pieces:
-        if piece.isdigit():
-            parsed.append((0, int(piece)))
-        else:
-            parsed.append((1, piece.lower()))
-    return tuple(parsed)
-
-
-def _is_newer_version(candidate: str, installed: str) -> bool:
-    return _parse_version_parts(candidate) > _parse_version_parts(installed)
-
-
-@app.command("upgrade")
-def upgrade(allow_downgrade: bool = typer.Option(False, "--allow-downgrade", help="Allow installing an older version.")) -> None:
-    """Upgrade Vaner using pipx or pip, guarded against accidental downgrades."""
-    installed = VERSION
-    latest: str | None = None
-    try:
-        response = httpx.get("https://pypi.org/pypi/vaner/json", timeout=1.5)
-        if response.status_code == 200:
-            latest = str(response.json().get("info", {}).get("version", "")).strip() or None
-    except Exception:
-        latest = None
-
-    if latest and _is_newer_version(installed, latest) and not allow_downgrade:
-        typer.secho(
-            f"Refusing downgrade: installed={installed} latest_on_pypi={latest}",
-            fg=typer.colors.YELLOW,
-        )
-        typer.secho(
-            "hint: publish a newer release first, or rerun with `vaner upgrade --allow-downgrade`.",
-            fg=typer.colors.YELLOW,
-        )
-        raise typer.Exit(code=1)
-    if latest and not _is_newer_version(latest, installed):
-        typer.echo(f"Already up to date (installed={installed}).")
-        return
-
+@app.command("upgrade", help="Upgrade Vaner using pipx or pip.", rich_help_panel="Configure")
+def upgrade() -> None:
     pipx_bin = shutil.which("pipx")
     if pipx_bin:
-        if latest:
-            cmd = [pipx_bin, "install", "--force", f"vaner=={latest}"]
-        else:
-            cmd = [pipx_bin, "upgrade", "vaner"]
+        cmd = [pipx_bin, "upgrade", "vaner"]
         typer.echo("Upgrading via pipx...")
     else:
-        if latest:
-            cmd = [sys.executable, "-m", "pip", "install", "-U", f"vaner=={latest}"]
-        else:
-            cmd = [sys.executable, "-m", "pip", "install", "-U", "vaner"]
+        cmd = [sys.executable, "-m", "pip", "install", "-U", "vaner"]
         typer.echo("Upgrading via pip...")
-
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
-        raise typer.Exit(code=result.returncode)
+        _fail("Upgrade failed.", hint="Run with --verbose and inspect command output.")
     typer.echo("Upgrade complete.")
 
 
-app.add_typer(daemon_app, name="daemon")
-app.add_typer(config_app, name="config")
-app.add_typer(profile_app, name="profile")
-app.add_typer(scenarios_app, name="scenarios")
+app.add_typer(daemon_app, name="daemon", rich_help_panel="Background and local")
+app.add_typer(config_app, name="config", rich_help_panel="Configure")
+app.add_typer(profile_app, name="profile", rich_help_panel="Background and local")
+app.add_typer(scenarios_app, name="scenarios", rich_help_panel="Use with an agent")
 
 
 def run() -> None:

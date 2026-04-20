@@ -10,7 +10,7 @@ from vaner.intent.scorer import IntentScorer
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.store.artefacts import ArtefactStore
 
-FEATURE_SCHEMA_VERSION = "v2"
+FEATURE_SCHEMA_VERSION = "v3"
 FEATURE_KEYS: tuple[str, ...] = (
     "signal_count_recent_15m",
     "query_count_total",
@@ -36,6 +36,8 @@ FEATURE_KEYS: tuple[str, ...] = (
     "policy_signal_coverage_gap",
     "policy_signal_pattern",
     "policy_signal_freshness",
+    "skill_presence",
+    "skill_kind_match",
     "access_count",
     "artefact_age_seconds",
 )

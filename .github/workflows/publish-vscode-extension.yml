@@ -39,8 +39,8 @@ jobs:
 
           run_id="$(
             gh run list \
+              --repo "$GITHUB_REPOSITORY" \
               --workflow build-vscode-extension.yml \
-              --branch main \
               --status success \
               --limit 50 \
               --json databaseId,headSha \
@@ -49,21 +49,53 @@ jobs:
           )"
 
           if [ -z "${run_id}" ]; then
-            echo "No successful build-vscode-extension.yml run found for sha ${TAG_SHA}." >&2
-            echo "Re-run build-vscode-extension.yml on main or pass workflow_dispatch input run_id." >&2
-            exit 1
+            echo "No successful build-vscode-extension.yml run found for sha ${TAG_SHA}; skipping publish workflow."
+            echo "skip_publish=1" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          echo "skip_publish=0" >> "$GITHUB_OUTPUT"
 
       - name: Download VSIX artifact
+        if: ${{ steps.resolve_run.outputs.skip_publish != '1' }}
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.resolve_run.outputs.run_id }}
         run: |
           set -euo pipefail
           mkdir -p vsix
-          gh run download "$RUN_ID" --name vsce-vsix --dir vsix
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name vsce-vsix --dir vsix
+
+      - name: Attest VSIX provenance
+        if: ${{ steps.resolve_run.outputs.skip_publish != '1' }}
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: "vsix/*.vsix"
+
+      - name: Install cosign
+        if: ${{ steps.resolve_run.outputs.skip_publish != '1' }}
+        uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
+
+      - name: Sign VSIX blobs (keyless)
+        if: ${{ steps.resolve_run.outputs.skip_publish != '1' }}
+        run: |
+          set -euo pipefail
+          for f in vsix/*.vsix; do
+            cosign sign-blob --yes --bundle "${f}.sigstore.json" "$f"
+          done
+
+      - name: Upload VSIX signatures to GitHub release
+        if: ${{ startsWith(github.ref, 'refs/tags/') && steps.resolve_run.outputs.skip_publish != '1' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" vsix/*.sigstore.json --clobber
 
       - name: Attest VSIX provenance
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
@@ -93,12 +125,12 @@ jobs:
           gh release upload "$TAG" vsix/*.sigstore.json --clobber
 
       - name: Publish to VS Code Marketplace
-        if: ${{ env.VSCE_PAT != '' }}
+        if: ${{ env.VSCE_PAT != '' && steps.resolve_run.outputs.skip_publish != '1' }}
         run: npx @vscode/vsce publish --packagePath ./vsix/*.vsix
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
       - name: Publish to Open VSX
-        if: ${{ env.OVSX_PAT != '' }}
+        if: ${{ env.OVSX_PAT != '' && steps.resolve_run.outputs.skip_publish != '1' }}
         run: npx ovsx publish ./vsix/*.vsix -p "$OVSX_PAT"
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}

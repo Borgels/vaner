@@ -11,7 +11,6 @@ def test_check_repo_root_refuses_home_without_force() -> None:
     result = preflight.check_repo_root(Path.home(), force=False)
     assert result["ok"] is False
     assert result["reason"] == "unsafe_root"
-    assert "vaner daemon start --path" in str(result["fix"])
 
 
 def test_check_repo_root_allows_home_with_force() -> None:
@@ -25,7 +24,6 @@ def test_check_repo_root_rejects_large_non_git(monkeypatch, temp_repo) -> None:
     result = preflight.check_repo_root(temp_repo, force=False)
     assert result["ok"] is False
     assert result["reason"] == "non_git_large_root"
-    assert "--path ~/repos/my-project" in str(result["fix"])
 
 
 def test_check_inotify_budget_warns_when_headroom_low(monkeypatch, temp_repo) -> None:

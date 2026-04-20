@@ -6,7 +6,9 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   publish:
@@ -28,10 +30,11 @@ jobs:
       - name: Build
         run: |
           python -m pip install --require-hashes -r requirements/release.txt
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           python -m build
       - name: Generate SBOM
-        run: cyclonedx-py requirements requirements/release.txt --output-format json --output-file sbom.json
+        run: cyclonedx-py requirements requirements/release.txt --output-format json -o sbom.json
       - name: Install cosign
         uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
       - name: Sign release artifacts with keyless Sigstore
@@ -41,7 +44,7 @@ jobs:
             cosign sign-blob --yes --bundle "${f}.sigstore.json" "$f"
           done
       - name: Attest SBOM
-        uses: actions/attest-sbom@v2
+        uses: actions/attest-sbom@10926c72720ffc3f7b666661c8e55b1344e2a365 # v2
         with:
           subject-path: "dist/*"
           sbom-path: "sbom.json"
@@ -52,7 +55,6 @@ jobs:
           path: |
             dist/*
             sbom.json
-            dist/*.sigstore.json
             sbom.json.sigstore.json
       - name: Generate SLSA subjects
         id: slsa_subjects
@@ -61,7 +63,6 @@ jobs:
           {
             sha256sum dist/*
             sha256sum sbom.json
-            sha256sum dist/*.sigstore.json
             sha256sum sbom.json.sigstore.json
           } | base64 --wrap=0 > /tmp/slsa-subjects.b64
           echo "value=$(cat /tmp/slsa-subjects.b64)" >> "$GITHUB_OUTPUT"
@@ -82,7 +83,7 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --generate-notes
           fi
-          gh release upload "$TAG" dist/* sbom.json dist/*.sigstore.json sbom.json.sigstore.json --clobber
+          gh release upload "$TAG" dist/* sbom.json sbom.json.sigstore.json --clobber
 
   slsa-provenance:
     needs: publish
@@ -94,6 +95,7 @@ jobs:
     with:
       base64-subjects: ${{ needs.publish.outputs.slsa_subjects }}
       upload-assets: true
+      continue-on-error: true
 
   verify:
     needs:
@@ -126,19 +128,31 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p provenance
-          gh release download "$TAG" --pattern "*.intoto.jsonl" --dir provenance || true
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.intoto.jsonl" --dir provenance || true
       - name: Verify artifact signatures and attestations
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh attestation verify dist-assets/dist/* --repo "$GITHUB_REPOSITORY"
-          for artifact in dist-assets/dist/*; do
+          shopt -s nullglob
+          provenance_files=(provenance/*.intoto.jsonl)
+          artifacts=(dist-assets/dist/*.whl dist-assets/dist/*.tar.gz)
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo "No distribution artifacts found to verify."
+            exit 1
+          fi
+          cert_identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+          for artifact in "${artifacts[@]}"; do
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
             bundle="${artifact}.sigstore.json"
-            cosign verify-blob --bundle "$bundle" "$artifact"
-            if ls provenance/*.intoto.jsonl >/dev/null 2>&1; then
+            cosign verify-blob \
+              --bundle "$bundle" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "^${cert_identity}$" \
+              "$artifact"
+            if [ "${#provenance_files[@]}" -gt 0 ] && [ -e "${provenance_files[0]}" ]; then
               slsa-verifier verify-artifact "$artifact" \
-                --provenance-path "$(ls provenance/*.intoto.jsonl | head -n 1)" \
+                --provenance-path "${provenance_files[0]}" \
                 --source-uri "github.com/${GITHUB_REPOSITORY}" \
                 --source-tag "${GITHUB_REF_NAME}"
             fi

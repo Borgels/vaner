@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from vaner.cli.commands.app import app
 
+pytest.importorskip("mcp")
+pytestmark = pytest.mark.integration
+
 
 def test_mcp_stdio_command_wires_repo_root(temp_repo: Path, monkeypatch) -> None:
+    pytest.importorskip("mcp")
     runner = CliRunner()
     captured: dict[str, object] = {}
 
@@ -35,6 +40,7 @@ def test_mcp_sse_non_loopback_host_rejected(temp_repo: Path) -> None:
 
 
 def test_mcp_sse_command_wires_host_and_port(temp_repo: Path, monkeypatch) -> None:
+    pytest.importorskip("mcp")
     runner = CliRunner()
     captured: dict[str, object] = {}
 

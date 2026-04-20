@@ -1,0 +1,22 @@
+---
+description: GitHub branch protection and CI guardrails for all contributors and agents
+alwaysApply: true
+---
+
+# GitHub Workflow Guardrails
+
+- Never push directly to `main`. It is branch-protected and requires pull requests.
+- Create a feature branch for all work, then open/update a PR early.
+- Assume required checks must pass before merge; do not treat local success as enough.
+- Before declaring work done, run project checks that match changed areas (at minimum `ruff` + relevant `pytest` suites).
+- If workflow files change, run `actionlint` locally when available, and always verify the Actionlint CI check.
+- For release tags, verify generated artifacts and signatures (`gh attestation verify`, `cosign verify-blob`) before finalizing.
+- Use `gh run list` / `gh run view` to confirm CI status instead of assuming green.
+
+## Quick Commands
+
+```bash
+git status -sb
+gh pr view --json url,state,headRefName,baseRefName
+gh run list --limit 10
+```
