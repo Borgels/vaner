@@ -67,10 +67,32 @@ vaner init --path .                 # initialize this repo + pick backend intera
 vaner mcp --path .                  # smoke-test the MCP server in stdio mode
 ```
 
-### 3. Run it
+### 3. Start Vaner
+
+```bash
+# in your project repo
+vaner up --path .
+```
+
+`vaner up` starts both the background daemon and cockpit, opens `http://127.0.0.1:8473/`,
+and keeps them supervised in one command. Press `Ctrl+C` (or run `vaner down`) to stop.
+
+If nothing seems to happen, run:
+
+```bash
+vaner doctor --path .
+```
+
+Advanced (manual mode):
 
 ```bash
 vaner daemon start --no-once --path .
+vaner daemon serve-http --path .
+```
+
+Optional local debugging:
+
+```bash
 vaner query "where is auth enforced?" --explain --path .
 vaner inspect --last --path .
 ```

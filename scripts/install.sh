@@ -894,11 +894,13 @@ print_footer() {
     ui_success "Vaner installed successfully"
   fi
   printf '\nNext steps:\n'
-  printf '  vaner init --path .            # initialize this repo\n'
-  printf '  vaner daemon start --no-once --path .\n'
-  printf '  vaner query "where is auth enforced?" --path .\n'
+  printf '  cd /path/to/your/repo\n'
+  printf '  vaner up --path .              # starts daemon + cockpit together\n'
+  printf '  vaner doctor --path .          # if anything looks off\n'
   printf '\nConnect your AI client over MCP:\n'
   printf '  https://docs.vaner.ai/mcp      # Claude Code, Cursor, VS Code, Codex, ...\n'
+  printf '\nTroubleshooting:\n'
+  printf '  https://docs.vaner.ai/troubleshooting\n'
   if [[ "$VANER_NO_MCP" == "1" ]]; then
     printf '\n  Note: installed without the [mcp] extra. Re-run without --no-mcp to enable\n'
     printf "        'vaner mcp' for client integration.\n"

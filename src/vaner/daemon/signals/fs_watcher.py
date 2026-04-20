@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import errno
+import logging
 import threading
 from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
+
+logger = logging.getLogger(__name__)
 
 _SKIPPED_PARTS = {
     ".git",
@@ -106,7 +111,19 @@ class RepoChangeWatcher:
         if self._started:
             return
         self._observer.schedule(self._handler, str(self.repo_root), recursive=True)
-        self._observer.start()
+        try:
+            self._observer.start()
+        except OSError as exc:
+            if exc.errno != errno.ENOSPC:
+                raise
+            logger.warning(
+                "inotify watch limit reached for %s. Falling back to polling observer. "
+                "To raise limit: sudo sysctl fs.inotify.max_user_watches=524288",
+                self.repo_root,
+            )
+            self._observer = PollingObserver()
+            self._observer.schedule(self._handler, str(self.repo_root), recursive=True)
+            self._observer.start()
         self._started = True
 
     def stop(self) -> None:
