@@ -49,6 +49,7 @@ _DEFAULT_WEIGHTS: dict[str, float] = {
     "judge_score": 0.07,
     "latency": 0.05,
     "rating": 0.15,
+    "correction_strength": 0.08,
     "contradiction": 0.08,
 }
 
@@ -76,6 +77,9 @@ def compute_reward(inputs: RewardInput) -> RewardOutcome:
     if inputs.rating is not None:
         rating_map = {"useful": 1.0, "partial": 0.3, "irrelevant": -0.3, "wrong": -1.0}
         raw_components["rating"] = rating_map.get(inputs.rating, 0.0)
+    correction_strength = _clamp(float(inputs.correction_strength or 0.0), lo=0.0, hi=1.0)
+    if correction_strength > 0.0:
+        raw_components["correction_strength"] = correction_strength
     contradiction = _clamp(float(inputs.contradiction_signal or 0.0), lo=0.0, hi=1.0)
     if contradiction > 0.0:
         raw_components["contradiction"] = -contradiction

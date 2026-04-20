@@ -14,7 +14,7 @@ FeedbackRating = Literal["useful", "partial", "wrong", "irrelevant"]
 ExpandMode = Literal["details", "neighbors", "dependencies", "timeline", "related"]
 SearchMode = Literal["semantic", "lexical", "hybrid", "symbol", "path"]
 MemoryState = Literal["candidate", "trusted", "stale", "demoted"]
-MemorySection = Literal["invariants", "conventions", "decision_digest", "hotspots", "feedback"]
+MemorySection = Literal["invariants", "conventions", "decision_digests", "hotspot_notes", "feedback"]
 
 
 class ContextEnvelope(BaseModel):
@@ -69,6 +69,7 @@ class Resolution(BaseModel):
     alternatives_considered: list[Alternative] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
+    context_envelope: ContextEnvelope | None = None
     provenance: Provenance
     resolution_id: str
 

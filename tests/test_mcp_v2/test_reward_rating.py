@@ -23,3 +23,9 @@ def test_contradiction_signal_reduces_reward() -> None:
 def test_rating_absent_keeps_current_behavior() -> None:
     reward = compute_reward(RewardInput(cache_tier="full_hit", similarity=0.9)).reward_total
     assert -1.0 <= reward <= 1.0
+
+
+def test_correction_strength_increases_reward_when_present() -> None:
+    without = compute_reward(RewardInput(cache_tier="miss", similarity=0.5, rating="partial")).reward_total
+    with_strength = compute_reward(RewardInput(cache_tier="miss", similarity=0.5, rating="partial", correction_strength=0.9)).reward_total
+    assert with_strength > without

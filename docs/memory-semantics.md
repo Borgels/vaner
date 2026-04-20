@@ -54,3 +54,19 @@ Otherwise previous decisions are only reranking hints or ignored.
 `.vaner/memory/log.md` and `.vaner/memory/index.md` are inspectability traces over evolving scenario memory.
 
 They are not the semantic memory layer. The semantic memory layer is scenario state (`memory_state`, `memory_confidence`, `memory_evidence_hashes_json`, compiled memory sections).
+
+## Memory Quality Metrics
+
+Vaner tracks memory quality counters in telemetry and exposes derived rates:
+
+- `promotion_precision = promotions_still_trusted_total / max(1, promotions_total)`
+- `correction_survival_rate = corrections_survived_total / max(1, corrections_submitted)`
+- `demotion_recovery_rate = demotion_recovery_total / max(1, demotions_total)`
+- `trusted_evidence_avg = trusted_evidence_total / max(1, trusted_scenarios_count)`
+
+Related diagnostics:
+
+- `predictive_hit_rate = predictive_hit_total / max(1, resolves_total)`
+- `stale_hit_rate = stale_hit_total / max(1, resolves_total)`
+- `contradiction_rate = conflict_total / max(1, resolves_total)`
+- `abstain_rate = abstain_total / max(1, resolves_total)`

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -41,8 +42,9 @@ except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency pat
 
 from vaner.api import aprecompute
 from vaner.cli.commands.config import load_config
+from vaner.cli.commands.init import init_repo
 from vaner.learning.reward import RewardInput, compute_reward
-from vaner.mcp.contracts import CACHE_TIER_TO_PROVENANCE, Abstain, ConflictSignal, MemoryMeta, Resolution
+from vaner.mcp.contracts import CACHE_TIER_TO_PROVENANCE, Abstain, ConflictSignal, ContextEnvelope, MemoryMeta, Resolution
 from vaner.mcp.lint import run_lint
 from vaner.mcp.memory_log import append_log, write_index
 from vaner.memory.policy import (
@@ -60,6 +62,8 @@ from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor, S
 from vaner.models.scenario import Scenario
 from vaner.store.scenarios import ScenarioStore
 from vaner.telemetry.metrics import MetricsStore
+
+logger = logging.getLogger(__name__)
 
 BACKEND_NOT_CONFIGURED_MESSAGE = (
     "No LLM backend configured for Vaner.\n"
@@ -131,9 +135,8 @@ def _build_decision_id(prompt: str) -> str:
 
 
 def build_server(repo_root: Path) -> Server:
-    config = load_config(repo_root)
-    metrics_store = MetricsStore(repo_root / ".vaner" / "metrics.db")
-    scenario_store = ScenarioStore(repo_root / ".vaner" / "scenarios.db")
+    if not (repo_root / ".vaner" / "config.toml").exists():
+        init_repo(repo_root)
     suggestion_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
     promotion_ring: list[dict[str, str]] = []
     server: Server = Server("vaner")
@@ -262,6 +265,12 @@ def build_server(repo_root: Path) -> Server:
     async def call_tool(name: str, arguments: dict[str, Any] | None) -> CallToolResult:
         args = arguments or {}
         started = time.perf_counter()
+        active_repo_root = repo_root
+        if not (active_repo_root / ".vaner" / "config.toml").exists():
+            init_repo(active_repo_root)
+        config = load_config(active_repo_root)
+        metrics_store = MetricsStore(active_repo_root / ".vaner" / "metrics.db")
+        scenario_store = ScenarioStore(active_repo_root / ".vaner" / "scenarios.db")
         await metrics_store.initialize()
         await scenario_store.initialize()
 
@@ -288,6 +297,12 @@ def build_server(repo_root: Path) -> Server:
 
         def _backend_error(*, degradable: bool) -> CallToolResult:
             payload = {"code": "backend_not_configured", "message": BACKEND_NOT_CONFIGURED_MESSAGE}
+            logger.warning(
+                "backend not configured repo=%s base_url=%s model=%s",
+                repo_root,
+                str(getattr(config.backend, "base_url", "")),
+                str(getattr(config.backend, "model", "")),
+            )
             return _json_result(payload, is_error=not degradable)
 
         if name == "vaner.status":
@@ -404,6 +419,16 @@ def build_server(repo_root: Path) -> Server:
             expected = set(json.loads(candidate.memory_evidence_hashes_json or "[]"))
             fresh_fingerprints = set(_scenario_fingerprints(candidate))
             evidence_fresh = expected.issubset(fresh_fingerprints) if expected else candidate.freshness != "stale"
+            invalidated_this_request = False
+            if candidate.memory_state in {"trusted", "candidate"} and expected and not evidence_fresh:
+                await scenario_store.mark_stale_by_evidence(candidate.id, evidence_hashes_now=list(fresh_fingerprints))
+                invalidated_this_request = True
+                refreshed_after_invalidation = await scenario_store.get(candidate.id)
+                if refreshed_after_invalidation is not None:
+                    candidate = refreshed_after_invalidation
+                    expected = set(json.loads(candidate.memory_evidence_hashes_json or "[]"))
+                    fresh_fingerprints = set(_scenario_fingerprints(candidate))
+                    evidence_fresh = expected.issubset(fresh_fingerprints) if expected else candidate.freshness != "stale"
             similarity = _env_similarity(candidate.context_envelope_json, context)
             reuse = decide_reuse(
                 ReuseInput(
@@ -426,7 +451,7 @@ def build_server(repo_root: Path) -> Server:
                     fresh_fingerprints = set(_scenario_fingerprints(candidate))
                 if not fresh_fingerprints:
                     cache_tier = "miss"
-            compiled_sections = {"decision_digest": candidate.prepared_context[:500]}
+            compiled_sections = {"decision_digests": candidate.prepared_context[:500]}
             conflict = detect_conflict(
                 ConflictInput(
                     compiled_sections=compiled_sections,
@@ -443,9 +468,13 @@ def build_server(repo_root: Path) -> Server:
             if candidate.freshness == "stale":
                 freshness = "stale"
                 await metrics_store.increment_counter("stale_hit_total")
+            if invalidated_this_request:
+                freshness = "stale"
+                await metrics_store.increment_counter("stale_hit_total")
             if conflict.has_conflict and conflict.strength >= 0.5 and candidate.memory_state in {"trusted", "candidate"}:
                 gaps.append("memory_conflict")
                 freshness = "recent" if freshness == "fresh" else "stale"
+                confidence = max(0.05, confidence * (1.0 - min(0.6, conflict.strength * 0.35)))
                 await metrics_store.increment_counter("conflict_total")
                 if conflict.strength >= 0.7:
                     abstain = Abstain(
@@ -535,6 +564,23 @@ def build_server(repo_root: Path) -> Server:
                 ],
             )
             decision.write(repo_root)
+            resolved_hashes = list(fresh_fingerprints or expected)
+            await scenario_store.merge_memory_section(
+                candidate.id,
+                section="decision_digests",
+                body=f"{query}\n\n{candidate.prepared_context[:600]}",
+                evidence_hashes=resolved_hashes,
+                mark_stale_older=False,
+            )
+            if candidate.entities:
+                invariant_body = "Stable entities observed:\n" + "\n".join(f"- {entity}" for entity in candidate.entities[:8])
+                await scenario_store.merge_memory_section(
+                    candidate.id,
+                    section="invariants",
+                    body=invariant_body,
+                    evidence_hashes=resolved_hashes,
+                    mark_stale_older=False,
+                )
 
             evidence_items = []
             max_evidence_items = max(1, int(args.get("max_evidence_items", 8)))
@@ -558,6 +604,15 @@ def build_server(repo_root: Path) -> Server:
                 alternatives_considered=[],
                 gaps=sorted(set(gaps)),
                 next_actions=["vaner.expand", "vaner.explain"],
+                context_envelope=ContextEnvelope.model_validate(
+                    {
+                        "domain": str(context.get("domain", "code")),
+                        "current_artifact": context.get("current_artifact"),
+                        "selection": context.get("selection"),
+                        "recent_queries": list(context.get("recent_queries") or []),
+                        "agent_goal": context.get("agent_goal"),
+                    }
+                ),
                 provenance={
                     "mode": CACHE_TIER_TO_PROVENANCE.get(cache_tier, "retrieval_fallback"),
                     "cache": "warm" if cache_tier in {"full_hit", "partial_hit"} else "cold",
@@ -592,6 +647,12 @@ def build_server(repo_root: Path) -> Server:
             if not _ensure_backend(config):
                 await _record("error")
                 return _backend_error(degradable=False)
+            logger.info(
+                "vaner.expand repo=%s backend_base_url=%s backend_model=%s",
+                repo_root,
+                str(getattr(config.backend, "base_url", "")),
+                str(getattr(config.backend, "model", "")),
+            )
             target_id = str(args.get("target_id", "")).strip()
             mode = str(args.get("mode", "details")).strip()
             if not target_id:
@@ -749,7 +810,7 @@ def build_server(repo_root: Path) -> Server:
                         resolution_confidence=float(decision.partial_similarity if decision else scenario.confidence),
                         evidence_count=len(scenario.evidence),
                         contradiction_signal=float(scenario.contradiction_signal),
-                        prior_successes=int(scenario.prior_successes + (1 if rating == "useful" else 0)),
+                        prior_successes=int(scenario.prior_successes),
                         has_explicit_pin=bool(preferred_items),
                         correction_confirmed=False,
                     ),
@@ -765,6 +826,9 @@ def build_server(repo_root: Path) -> Server:
                         at=time.time(),
                     )
                     await metrics_store.increment_counter("promotions_total")
+                    if promotion.to_state == "trusted":
+                        await metrics_store.increment_counter("trusted_scenarios_count")
+                        await metrics_store.increment_counter("trusted_evidence_total", delta=len(evidence_hashes))
                 if correction:
                     await scenario_store.merge_memory_section(
                         scenario_id,
@@ -789,6 +853,8 @@ def build_server(repo_root: Path) -> Server:
                     contradiction_delta=0.25 if rating == "wrong" else 0.1,
                 )
                 await metrics_store.increment_counter("demotions_total")
+                if scenario.memory_state == "trusted" and negative.to_state != "trusted":
+                    await metrics_store.increment_counter("trusted_scenarios_count", delta=-1)
 
             reward = compute_reward(
                 RewardInput(
@@ -806,6 +872,12 @@ def build_server(repo_root: Path) -> Server:
             except Exception:
                 pass
             await metrics_store.increment_counter("feedback_total")
+            if rating == "useful" and scenario.memory_state == "trusted":
+                await metrics_store.increment_counter("promotions_still_trusted_total")
+            if rating == "useful" and scenario.last_outcome == "wrong":
+                await metrics_store.increment_counter("corrections_survived_total")
+            if rating in {"useful", "partial"} and scenario.memory_state == "demoted":
+                await metrics_store.increment_counter("demotion_recovery_total")
             promotion_ring.append(transition)
             if len(promotion_ring) > 5:
                 del promotion_ring[0]
@@ -904,6 +976,44 @@ def build_server(repo_root: Path) -> Server:
         return _json_result({"code": "unknown_tool", "message": f"Unknown tool '{name}'"}, is_error=True)
 
     return server
+
+
+async def run_smoke_probe(repo_root: Path) -> dict[str, Any]:
+    """Run a lightweight MCP readiness probe for install/doctor checks."""
+    if not (repo_root / ".vaner" / "config.toml").exists():
+        init_repo(repo_root)
+    config = load_config(repo_root)
+    store = ScenarioStore(repo_root / ".vaner" / "scenarios.db")
+    await store.initialize()
+    before = await store.list_top(limit=5)
+    try:
+        await aprecompute(repo_root, config=config)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "detail": f"precompute_failed: {exc}",
+            "fix": "Check backend/runtime config and run `vaner doctor --fix`.",
+            "before_count": len(before),
+            "after_count": len(before),
+        }
+    after = await store.list_top(limit=5)
+    if not after:
+        return {
+            "ok": False,
+            "detail": "no_scenarios_after_precompute",
+            "fix": "Ensure repository has readable source files and rerun `vaner precompute`.",
+            "before_count": len(before),
+            "after_count": 0,
+        }
+    if _ensure_backend(config):
+        await store.record_expansion(after[0].id)
+    return {
+        "ok": True,
+        "detail": "list+precompute+expand checks passed",
+        "before_count": len(before),
+        "after_count": len(after),
+        "scenario_id": after[0].id,
+    }
 
 
 async def run_stdio(repo_root: Path) -> None:

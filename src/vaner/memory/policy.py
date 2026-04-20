@@ -36,6 +36,11 @@ def _validate_transition(current: MemoryState, target: MemoryState) -> None:
         raise InvalidMemoryTransition(f"Invalid transition: {current} -> {target}")
 
 
+def validate_transition(current: MemoryState, target: MemoryState) -> None:
+    """Public transition guard for store/service boundaries."""
+    _validate_transition(current, target)
+
+
 @dataclass(slots=True)
 class PromotionContext:
     rating: FeedbackRating | None

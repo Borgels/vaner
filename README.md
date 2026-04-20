@@ -9,31 +9,93 @@
 
 > Status: alpha (pre-1.0). Interfaces may evolve quickly while we stabilize core behavior.
 
-Vaner is a local-first predictive context engine for AI coding workflows. It
-uses idle time to anticipate likely next prompts, pre-build useful context, and
-serve the best context package quickly when the real prompt arrives.
+## What is Vaner?
 
-## Quickstart
+Vaner is a local-first context engine for coding agents that turns idle compute into useful future context.
+Instead of waiting for a prompt and then starting retrieval from cold, Vaner continuously prepares likely
+next-context packages, scores them, and serves the best fit quickly when the real question arrives.
 
-1. Install:
+It is built around evidence-backed scenario memory, not chat-log accumulation:
+
+- context is compiled from repo evidence and stored as reusable scenarios
+- memory has explicit lifecycle states (`candidate`, `trusted`, `stale`, `demoted`)
+- fingerprints tie memory to concrete sources so drift is detected automatically
+- conflict handling can abstain instead of blending contradictory evidence
+
+## Install
+
+### One-line installer (Linux/macOS)
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash
 ```
 
-2. Configure your clients (interactive wizard):
+Common installer flags:
+
+- `--yes` (non-interactive), `--dry-run`, `--verify`
+- `--backend uv|pipx`
+- `--version <tag>`
+- `--with-ollama`
+- `--backend-preset ollama|lmstudio|vllm|openai|anthropic|openrouter|skip`
+- `--compute-preset background|balanced|dedicated`
+- `--max-session-minutes <n>`
+- `--no-mcp` (skip MCP extras)
+
+### pipx / uv tool install
+
+```bash
+pipx install 'vaner[mcp]'
+# or
+uv tool install 'vaner[mcp]'
+```
+
+### Upgrade
+
+```bash
+vaner upgrade
+vaner version
+```
+
+## Configure
+
+Run the setup wizard per repo:
 
 ```bash
 vaner init --path .
 ```
 
-3. Start Vaner:
+Key non-interactive flags:
+
+- `--backend-preset`
+- `--backend-model` and `--backend-api-key-env`
+- `--compute-preset background|balanced|dedicated`
+- `--max-session-minutes <n>`
+- `--clients auto|all|none|other|<csv>`
+- `--force`
+- `--dry-run`
+- `--accept-cloud-costs`
+
+Start / verify runtime:
 
 ```bash
 vaner up --path .
+vaner status
+vaner logs --daemon
+vaner down
 ```
 
-Asciinema demo: coming soon.
+### Supported MCP clients
+
+From the client registry IDs:
+
+`cursor`, `claude-desktop`, `claude-code`, `vscode-copilot`, `codex-cli`, `windsurf`, `zed`, `continue`, `cline`, `roo`
+
+## Quickstart
+
+```bash
+vaner init --path .
+vaner up --path .
+```
 
 ## Documentation
 
@@ -65,6 +127,15 @@ Vaner exposes the following MCP tools:
 - `vaner.debug.trace`
 
 Memory behavior details: `docs/memory-semantics.md`.
+
+### Minimal agent loop (MCP pseudo)
+
+```python
+state = client.call("vaner.status", {})
+resolution = client.call("vaner.resolve", {"query": prompt, "budget": {"tokens": 6000}})
+reply = llm.respond(resolution["summary"], prompt)
+client.call("vaner.feedback", {"resolution_id": resolution["resolution_id"], "rating": "useful"})
+```
 
 ## Community
 

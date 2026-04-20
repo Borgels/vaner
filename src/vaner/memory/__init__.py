@@ -14,6 +14,7 @@ from vaner.memory.policy import (
     decide_reuse,
     detect_conflict,
     evidence_fingerprint,
+    validate_transition,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "decide_reuse",
     "detect_conflict",
     "evidence_fingerprint",
+    "validate_transition",
 ]

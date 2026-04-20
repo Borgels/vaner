@@ -11,7 +11,7 @@ import aiosqlite
 
 from vaner.intent.scenario_scorer import scenario_score
 from vaner.mcp.contracts import MemoryMeta, MemorySection, MemoryState
-from vaner.memory.policy import InvalidationContext, decide_invalidation
+from vaner.memory.policy import InvalidationContext, decide_invalidation, validate_transition
 from vaner.models.scenario import (
     EvidenceRef,
     Scenario,
@@ -309,6 +309,10 @@ class ScenarioStore:
         evidence_hashes: list[str],
         at: float,
     ) -> None:
+        scenario = await self.get(scenario_id)
+        if scenario is None:
+            return
+        validate_transition(cast(MemoryState, scenario.memory_state), new_state)
         pinned = 1 if new_state == "trusted" else 0
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -338,6 +342,10 @@ class ScenarioStore:
         score_penalty: float = 0.30,
         contradiction_delta: float = 0.25,
     ) -> None:
+        scenario = await self.get(scenario_id)
+        if scenario is None:
+            return
+        validate_transition(cast(MemoryState, scenario.memory_state), new_state)
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -383,22 +391,31 @@ class ScenarioStore:
         evidence_hashes: list[str],
         mark_stale_older: bool = True,
     ) -> None:
-        allowed = {"invariants", "conventions", "decision_digest", "hotspots", "feedback"}
-        if section not in allowed:
+        aliases = {
+            "decision_digest": "decision_digests",
+            "hotspots": "hotspot_notes",
+            "decision_digests": "decision_digests",
+            "hotspot_notes": "hotspot_notes",
+            "invariants": "invariants",
+            "conventions": "conventions",
+            "feedback": "feedback",
+        }
+        normalized_section = aliases.get(str(section))
+        if normalized_section is None:
             raise ValueError(f"Unknown memory section: {section}")
         scenario = await self.get(scenario_id)
         if scenario is None:
             return
         prepared = scenario.prepared_context or ""
-        start_marker = f"<!-- vaner:memory:{section}:start"
-        end_marker = f"<!-- vaner:memory:{section}:end -->"
+        start_marker = f"<!-- vaner:memory:{normalized_section}:start"
+        end_marker = f"<!-- vaner:memory:{normalized_section}:end -->"
         pattern = re.compile(
-            rf"<!-- vaner:memory:{re.escape(section)}:start.*?-->.*?<!-- vaner:memory:{re.escape(section)}:end -->",
+            rf"<!-- vaner:memory:{re.escape(normalized_section)}:start.*?-->.*?<!-- vaner:memory:{re.escape(normalized_section)}:end -->",
             re.DOTALL,
         )
-        header = f"<!-- vaner:memory:{section}:start fingerprints={','.join(evidence_hashes)} validated_at={time.time():.3f} -->"
+        header = f"<!-- vaner:memory:{normalized_section}:start fingerprints={','.join(evidence_hashes)} validated_at={time.time():.3f} -->"
         block = f"{header}\n{body.strip()}\n{end_marker}"
-        if section != "feedback":
+        if normalized_section != "feedback":
             if start_marker in prepared:
                 prepared = pattern.sub(block, prepared, count=1)
             else:
@@ -406,7 +423,9 @@ class ScenarioStore:
         else:
             # Keep up to 3 feedback entries.
             tag = f"feedback_{int(time.time())}"
-            feedback_block = block.replace(f":{section}:start", f":{tag}:start").replace(f":{section}:end", f":{tag}:end")
+            feedback_block = block.replace(f":{normalized_section}:start", f":{tag}:start").replace(
+                f":{normalized_section}:end", f":{tag}:end"
+            )
             prepared = (prepared.rstrip() + "\n\n" + feedback_block).strip() + "\n"
             entries = re.findall(r"(<!-- vaner:memory:feedback_\d+:start.*?-->(?:.|\n)*?<!-- vaner:memory:feedback_\d+:end -->)", prepared)
             if len(entries) > 3:

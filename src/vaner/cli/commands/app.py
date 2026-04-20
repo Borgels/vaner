@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import ipaddress
 import json
 import re
@@ -27,24 +28,13 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from vaner import VERSION, api
-from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
-from vaner.cli.commands.daemon import (
-    COCKPIT_PROCESS,
-    DAEMON_PROCESS,
-    clear_pid,
-    daemon_status,
-    log_path,
-    process_status,
-    run_daemon_forever,
-    start_daemon,
-    stop_daemon,
-    write_pid,
-)
-from vaner.cli.commands.distill import distill_skill_file
+from vaner.cli.commands.config import global_config_path, load_config, set_compute_value, set_config_value
+from vaner.cli.commands.daemon import daemon_status, run_daemon_forever, start_daemon, stop_daemon
 from vaner.cli.commands.explain import render_human, render_json
 from vaner.cli.commands.init import (
     BACKEND_PRESETS,
     COMPUTE_PRESETS,
+    init_repo,
     run_wizard,
 )
 from vaner.cli.commands.inspect import inspect_decision as inspect_decision_output
@@ -137,6 +127,59 @@ def _is_loopback_host(host: str) -> bool:
 def _require_safe_mcp_sse_exposure(host: str) -> None:
     if not _is_loopback_host(host):
         raise typer.BadParameter("MCP SSE transport only supports loopback hosts by default.")
+
+
+def _module_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
+def _python_dep_checks() -> list[dict[str, str | bool]]:
+    requirements = [
+        ("sentence_transformers", "sentence-transformers"),
+        ("torch", "torch"),
+        ("mcp", "mcp[cli]"),
+        ("starlette", "starlette"),
+    ]
+    checks: list[dict[str, str | bool]] = []
+    for module_name, package_name in requirements:
+        checks.append({"module": module_name, "package": package_name, "ok": _module_available(module_name)})
+    return checks
+
+
+def _install_python_packages(packages: list[str]) -> tuple[bool, str]:
+    if not packages:
+        return True, "nothing to install"
+    pipx_bin = shutil.which("pipx")
+    if pipx_bin:
+        failed: list[str] = []
+        for package in packages:
+            cmd = [pipx_bin, "runpip", "vaner", "install", "-U", package]
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            if result.returncode != 0:
+                failed.append(f"{package}: {(result.stderr or result.stdout).strip()[:240]}")
+        if failed:
+            return False, "; ".join(failed)
+        return True, "installed via pipx runpip"
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        cmd = [uv_bin, "tool", "install", "--upgrade", "vaner[all]"]
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if result.returncode == 0:
+            return True, "installed via uv tool install --upgrade vaner[all]"
+        detail = (result.stderr or result.stdout).strip()[:240]
+        return False, detail or "uv tool install failed"
+    return False, "Neither pipx nor uv was found for automatic fixes."
+
+
+def _sync_global_config_from_home() -> Path:
+    source = Path.home() / ".vaner" / "config.toml"
+    target = global_config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.exists():
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    elif not target.exists():
+        target.write_text("", encoding="utf-8")
+    return target
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -455,7 +498,13 @@ def init(
     interactive: bool | None = typer.Option(
         None,
         "--interactive/--no-interactive",
-        help="Force or skip the backend/compute picker. Defaults to interactive when stdin is a TTY.",
+        help="Force or skip the backend/compute picker. Defaults to non-interactive.",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Alias for --no-interactive and --accept-cloud-costs."),
+    no_mcp_client_prompt: bool = typer.Option(
+        False,
+        "--no-mcp-client-prompt",
+        help="Skip MCP client picker prompts and use --clients/auto selection.",
     ),
     force: bool = typer.Option(
         False,
@@ -476,7 +525,12 @@ def init(
 ) -> None:
     """Initialize Vaner with guided backend, compute, and MCP client setup."""
     repo_root = _repo_root(path)
-    resolved_interactive = interactive if interactive is not None else sys.stdin.isatty()
+    resolved_interactive = interactive if interactive is not None else False
+    if yes:
+        resolved_interactive = False
+        accept_cloud_costs = True
+    if no_mcp_client_prompt and clients is None:
+        clients = "auto"
     exit_code = run_wizard(
         repo_root,
         interactive=resolved_interactive,
@@ -494,6 +548,62 @@ def init(
         raise typer.Exit(code=exit_code)
 
 
+@app.command("setup")
+def setup(
+    backend_preset: str | None = typer.Option(
+        None,
+        "--backend-preset",
+        help=f"Configure global [backend] using preset: {', '.join(sorted(BACKEND_PRESETS))} or 'skip'.",
+    ),
+    backend_model: str | None = typer.Option(None, "--backend-model", help="Override backend model name."),
+    backend_api_key_env: str | None = typer.Option(None, "--backend-api-key-env", help="Env var holding the cloud provider API key."),
+    compute_preset: str | None = typer.Option(
+        None,
+        "--compute-preset",
+        help=f"Global compute preset: {', '.join(sorted(COMPUTE_PRESETS))}.",
+    ),
+    max_session_minutes: int | None = typer.Option(
+        None,
+        "--max-session-minutes",
+        help="Hard wall-clock cap for a continuous `vaner daemon` session (minutes).",
+    ),
+    interactive: bool | None = typer.Option(
+        None,
+        "--interactive/--no-interactive",
+        help="Force or skip prompts. Defaults to interactive when stdin is a TTY.",
+    ),
+    accept_cloud_costs: bool = typer.Option(
+        False,
+        "--accept-cloud-costs",
+        help="Acknowledge potential API charges for cloud backends.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing files."),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing global backend values."),
+) -> None:
+    """Configure global Vaner defaults shared by repositories."""
+    interactive_mode = interactive if interactive is not None else sys.stdin.isatty()
+    exit_code = run_wizard(
+        Path.home(),
+        interactive=interactive_mode,
+        backend_preset=backend_preset,
+        backend_model=backend_model,
+        backend_api_key_env=backend_api_key_env,
+        compute_preset=compute_preset,
+        max_session_minutes=max_session_minutes,
+        clients_arg="none",
+        accept_cloud_costs=accept_cloud_costs,
+        dry_run=dry_run,
+        force=force,
+    )
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
+    target = _sync_global_config_from_home()
+    if dry_run:
+        typer.echo(f"Dry-run: global config would be synced to {target}")
+    else:
+        typer.echo(f"Global config written to {target}")
+
+
 @daemon_app.command("start")
 def daemon_start(
     path: str | None = typer.Option(None, help="Repository root"),
@@ -502,9 +612,9 @@ def daemon_start(
     force: bool = typer.Option(False, "--force", help="Allow broad/non-repo root paths."),
 ) -> None:
     repo_root = _repo_root(path)
-    root_check = check_repo_root(repo_root, force=force)
-    if not root_check.get("ok"):
-        _fail(str(root_check.get("detail")), hint=str(root_check.get("fix")))
+    if not (repo_root / ".vaner" / "config.toml").exists():
+        init_repo(repo_root)
+        typer.echo(f"Initialized .vaner for {repo_root} using shared defaults. Run `vaner init --path {repo_root}` to customize.")
     written = start_daemon(repo_root, once=once, interval_seconds=interval_seconds)
     typer.echo(f"Daemon started. Artefacts written: {written}")
 
@@ -836,6 +946,7 @@ def mcp_server(
     transport: str = typer.Option("stdio", "--transport", "-t", help="Transport: stdio | sse"),
     host: str = typer.Option("127.0.0.1", "--host", help="SSE server host (sse transport only)"),
     port: int = typer.Option(8472, "--port", "-p", help="SSE server port (sse transport only)"),
+    smoke: bool = typer.Option(False, "--smoke", help="Run MCP smoke checks and exit."),
 ) -> None:
     """Start the Vaner MCP server for native IDE integration.
 
@@ -855,18 +966,31 @@ def mcp_server(
         _require_safe_mcp_sse_exposure(host)
 
     try:
-        from vaner.mcp.server import run_sse, run_stdio
+        from vaner.mcp.server import run_smoke_probe, run_sse, run_stdio
     except ImportError as exc:  # pragma: no cover
         _fail(f"MCP not available: {exc}", hint="Install optional extras: pip install 'vaner[mcp]'.")
 
     repo_root = _repo_root(path)
+    if smoke:
+        payload = _asyncio.run(run_smoke_probe(repo_root))
+        ok = bool(payload.get("ok"))
+        typer.echo(json.dumps(payload, indent=2))
+        raise typer.Exit(code=0 if ok else 1)
 
     if transport == "sse":
         _require_safe_mcp_sse_exposure(host)
         typer.echo(f"Starting Vaner MCP server (SSE) on {host}:{port}  repo={repo_root}")
-        _asyncio.run(run_sse(repo_root, host=host, port=port))
+        try:
+            _asyncio.run(run_sse(repo_root, host=host, port=port))
+        except RuntimeError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1) from exc
     else:
-        _asyncio.run(run_stdio(repo_root))
+        try:
+            _asyncio.run(run_stdio(repo_root))
+        except RuntimeError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1) from exc
 
 
 @app.command("proxy", help="Start optional OpenAI-compatible proxy gateway.", rich_help_panel="Configure")
@@ -1521,6 +1645,7 @@ def doctor(
     path: str | None = typer.Option(None, help="Repository root"),
     cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
     as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    fix: bool = typer.Option(False, "--fix", help="Attempt automatic dependency fixes when possible."),
 ) -> None:
     """Run local diagnostics and print actionable fixes."""
     repo_root = _repo_root(path)
@@ -1536,8 +1661,41 @@ def doctor(
         }
     )
 
-    config = snapshot["config"] if config_path.exists() else None
-    runtime: dict[str, object] = {"detected": False}
+    dep_results = _python_dep_checks()
+    missing_packages = [str(item["package"]) for item in dep_results if not bool(item["ok"])]
+    checks.append(
+        {
+            "name": "python_deps",
+            "ok": len(missing_packages) == 0,
+            "detail": "all present" if not missing_packages else f"missing: {', '.join(missing_packages)}",
+            "fix": "Run `vaner doctor --fix` (or `pipx runpip vaner install -U " + " ".join(missing_packages) + "`)."
+            if missing_packages
+            else "",
+        }
+    )
+
+    if fix and missing_packages:
+        ok, detail = _install_python_packages(missing_packages)
+        checks.append(
+            {
+                "name": "python_deps_autofix",
+                "ok": ok,
+                "detail": detail,
+                "fix": "" if ok else "Install dependencies manually, then rerun `vaner doctor`.",
+            }
+        )
+        dep_results = _python_dep_checks()
+        missing_packages = [str(item["package"]) for item in dep_results if not bool(item["ok"])]
+        checks.append(
+            {
+                "name": "python_deps_after_fix",
+                "ok": len(missing_packages) == 0,
+                "detail": "all present" if not missing_packages else f"still missing: {', '.join(missing_packages)}",
+                "fix": "Install missing dependencies manually and rerun `vaner doctor`." if missing_packages else "",
+            }
+        )
+
+    config = load_config(repo_root) if config_path.exists() else None
     if config is not None:
         has_backend = bool(config.backend.base_url.strip() and config.backend.model.strip())
         has_routes = bool(config.gateway.routes)
@@ -1585,6 +1743,25 @@ def doctor(
                 "fix": "Use `vaner config set compute.cpu_fraction 0.2` and `vaner config set compute.gpu_memory_fraction 0.5`.",
             }
         )
+        embedding_model = str(config.exploration.embedding_model or "").strip()
+        if embedding_model:
+            embed_ok = False
+            embed_detail = "not checked"
+            try:
+                probe = f"from sentence_transformers import SentenceTransformer; SentenceTransformer({embedding_model!r}, device='cpu')"
+                result = subprocess.run([sys.executable, "-c", probe], check=False, capture_output=True, text=True, timeout=25)
+                embed_ok = result.returncode == 0
+                embed_detail = "loaded" if embed_ok else (result.stderr or result.stdout).strip()[:240]
+            except Exception as exc:
+                embed_detail = str(exc)
+            checks.append(
+                {
+                    "name": "embedding_model_available",
+                    "ok": embed_ok,
+                    "detail": f"model={embedding_model} {embed_detail}",
+                    "fix": "Install embedding deps (`vaner doctor --fix`) and ensure the model can be downloaded.",
+                }
+            )
         runtime = _detect_local_runtime()
         checks.append(
             {
@@ -1642,22 +1819,52 @@ def doctor(
                 }
             )
 
-    checks.append(
-        {
-            "name": "cockpit_reachable",
-            "ok": bool(snapshot["cockpit_reachable"]),
-            "detail": str(snapshot["cockpit_detail"]),
-            "fix": "Start everything with `vaner up --path .` (or run `vaner daemon serve-http --path .`).",
-        }
-    )
-    checks.append(
-        {
-            "name": "daemon_running",
-            "ok": bool(snapshot["daemon_pid_alive"]),
-            "detail": str(snapshot["daemon"]["status"]),
-            "fix": "Run `vaner up --path .` (or `vaner daemon start --path . --no-once`).",
-        }
-    )
+    try:
+        import asyncio
+
+        async def _mcp_smoke() -> dict[str, object]:
+            from vaner.mcp.server import run_smoke_probe
+
+            return await run_smoke_probe(repo_root)
+
+        mcp_smoke = asyncio.run(_mcp_smoke())
+        checks.append(
+            {
+                "name": "mcp_smoke",
+                "ok": bool(mcp_smoke.get("ok")),
+                "detail": str(mcp_smoke.get("detail", "ok")),
+                "fix": str(mcp_smoke.get("fix", "Run `vaner mcp --path . --smoke` for details.")),
+            }
+        )
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "mcp_smoke",
+                "ok": False,
+                "detail": str(exc),
+                "fix": "Run `vaner mcp --path . --smoke` to inspect the failure.",
+            }
+        )
+
+    try:
+        health = httpx.get(f"{cockpit_url.rstrip('/')}/health", timeout=2.0)
+        checks.append(
+            {
+                "name": "cockpit_reachable",
+                "ok": health.status_code == 200,
+                "detail": f"status={health.status_code}",
+                "fix": "Start the cockpit server with `vaner daemon serve-http`.",
+            }
+        )
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "cockpit_reachable",
+                "ok": False,
+                "detail": str(exc),
+                "fix": "Start the cockpit server with `vaner daemon serve-http`.",
+            }
+        )
 
     cursor_mcp_path = repo_root / ".cursor" / "mcp.json"
     claude_mcp_path = Path.home() / ".claude" / "claude_desktop_config.json"
