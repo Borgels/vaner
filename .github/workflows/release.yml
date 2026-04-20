@@ -128,16 +128,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p provenance
-          gh release download "$TAG" --pattern "*.intoto.jsonl" --dir provenance || true
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.intoto.jsonl" --dir provenance || true
       - name: Verify artifact signatures and attestations
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
           provenance_files=(provenance/*.intoto.jsonl)
+          artifacts=(dist-assets/dist/*.whl dist-assets/dist/*.tar.gz)
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo "No distribution artifacts found to verify."
+            exit 1
+          fi
           cert_identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
-          gh attestation verify dist-assets/dist/* --repo "$GITHUB_REPOSITORY"
-          for artifact in dist-assets/dist/*; do
+          for artifact in "${artifacts[@]}"; do
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
             bundle="${artifact}.sigstore.json"
             cosign verify-blob \
               --bundle "$bundle" \
