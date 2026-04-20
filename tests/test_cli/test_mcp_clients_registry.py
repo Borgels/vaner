@@ -45,9 +45,10 @@ def test_kinds_are_valid() -> None:
 
 def test_resolve_launcher_prefers_absolute_path(monkeypatch) -> None:
     monkeypatch.setattr(mcp_clients.shutil, "which", lambda name: "/x/vaner" if name == "vaner" else None)
-    command, args = mcp_clients.resolve_launcher(Path("/tmp/repo"))
+    repo_path = Path("/tmp/repo")
+    command, args = mcp_clients.resolve_launcher(repo_path)
     assert command == "/x/vaner"
-    assert args == ["mcp", "--path", "/tmp/repo"]
+    assert args == ["mcp", "--path", str(repo_path)]
 
     monkeypatch.setattr(mcp_clients.shutil, "which", lambda _name: None)
     fallback_cmd, fallback_args = mcp_clients.resolve_launcher()

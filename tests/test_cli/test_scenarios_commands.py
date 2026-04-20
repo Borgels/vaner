@@ -8,7 +8,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from vaner.cli.commands import app
+from vaner.cli.commands import app, mcp_clients
 from vaner.cli.commands.mcp_clients import _claude_desktop_dir
 from vaner.models.scenario import EvidenceRef, Scenario
 from vaner.store.scenarios import ScenarioStore
@@ -120,6 +120,7 @@ def test_init_writes_cursor_mcp_config(temp_repo, monkeypatch):
     fake_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr(mcp_clients, "_home", lambda: fake_home)
     result = runner.invoke(
         app.app,
         ["init", "--path", str(temp_repo), "--no-interactive", "--backend-preset", "skip", "--clients", "cursor"],
@@ -158,6 +159,7 @@ def test_init_writes_mcp_configs(temp_repo, monkeypatch):
     fake_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr(mcp_clients, "_home", lambda: fake_home)
 
     result = runner.invoke(
         app.app,

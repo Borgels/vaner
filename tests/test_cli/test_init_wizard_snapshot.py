@@ -29,7 +29,7 @@ def test_picker_snapshot(monkeypatch) -> None:
     detected = [_detected("cursor"), _detected("claude-code"), _detected("codex-cli", ClientStatus.MISSING)]
     monkeypatch.setattr(init_module, "_prompt", lambda *_args, **_kwargs: "")
     init_module._render_client_picker(console, detected, {"cursor", "claude-code"})
-    rendered = stream.getvalue().strip()
+    rendered = stream.getvalue().strip().replace("\\", "/")
 
     fixture = Path(__file__).parents[1] / "fixtures" / "init_wizard" / "picker.txt"
-    assert rendered == fixture.read_text(encoding="utf-8").strip()
+    assert rendered == fixture.read_text(encoding="utf-8").strip().replace("\\", "/")
