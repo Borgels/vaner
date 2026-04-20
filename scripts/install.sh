@@ -25,6 +25,13 @@ VANER_VERSION="${VANER_VERSION:-}"
 VANER_NO_MODIFY_PATH="${VANER_NO_MODIFY_PATH:-0}"
 VANER_VERBOSE="${VANER_VERBOSE:-0}"
 VANER_WITH_OLLAMA="${VANER_WITH_OLLAMA:-0}"
+VANER_NO_MCP="${VANER_NO_MCP:-0}"
+VANER_BACKEND_PRESET="${VANER_BACKEND_PRESET:-}"
+VANER_BACKEND_URL="${VANER_BACKEND_URL:-}"
+VANER_BACKEND_MODEL="${VANER_BACKEND_MODEL:-}"
+VANER_BACKEND_API_KEY_ENV="${VANER_BACKEND_API_KEY_ENV:-}"
+VANER_COMPUTE_PRESET="${VANER_COMPUTE_PRESET:-}"
+VANER_MAX_SESSION_MINUTES="${VANER_MAX_SESSION_MINUTES:-}"
 HELP=0
 
 INSTALL_STAGE_TOTAL=3
@@ -82,15 +89,28 @@ print_usage() {
 Vaner installer (Linux/macOS)
 
 Options:
-  --yes                    Non-interactive mode; auto-approve prompts
-  --dry-run                Print the install plan without making changes
-  --verify                 Run post-install smoke checks
-  --backend uv|pipx        Force installer backend
-  --version VERSION        Install a specific PyPI version (e.g. 0.1.0)
-  --no-modify-path         Do not run ensurepath/path integration steps
-  --verbose                Print executed commands
-  --with-ollama            Install/start Ollama and pull qwen2.5-coder:7b
-  --help, -h               Show help
+  --yes                           Non-interactive mode; auto-approve prompts
+  --dry-run                       Print the install plan without making changes
+  --verify                        Run post-install smoke checks
+  --backend uv|pipx               Force installer backend
+  --version VERSION               Install a specific PyPI version (e.g. 0.1.0)
+  --no-modify-path                Do not run ensurepath/path integration steps
+  --verbose                       Print executed commands
+  --with-ollama                   Install/start Ollama and pull qwen2.5-coder:7b
+                                  (alias for --backend-preset ollama)
+  --no-mcp                        Install without the [mcp] extra (read-only tools
+                                  will be disabled)
+  --backend-preset PRESET         Configure LLM backend non-interactively.
+                                  One of: ollama | lmstudio | vllm | openai |
+                                  anthropic | openrouter | skip
+  --backend-url URL               Override backend base_url (for vllm/lmstudio/custom)
+  --backend-model MODEL           Override backend model name
+  --backend-api-key-env VAR       Env var holding the cloud provider API key
+  --compute-preset PRESET         Compute budget: background (default) | balanced |
+                                  dedicated
+  --max-session-minutes N         Cap continuous ponder-session wall clock to N
+                                  minutes. Leave unset for unbounded.
+  --help, -h                      Show help
 
 Environment variable mirrors:
   VANER_YES=0|1
@@ -101,11 +121,21 @@ Environment variable mirrors:
   VANER_NO_MODIFY_PATH=0|1
   VANER_VERBOSE=0|1
   VANER_WITH_OLLAMA=0|1
+  VANER_NO_MCP=0|1
+  VANER_BACKEND_PRESET=<preset>
+  VANER_BACKEND_URL=<url>
+  VANER_BACKEND_MODEL=<model>
+  VANER_BACKEND_API_KEY_ENV=<var>
+  VANER_COMPUTE_PRESET=background|balanced|dedicated
+  VANER_MAX_SESSION_MINUTES=<minutes>
 
 Examples:
   curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash
   curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash -s -- --yes
-  curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash -s -- --backend pipx --verify
+  curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash -s -- \
+    --backend-preset ollama --compute-preset background
+  curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash -s -- \
+    --backend-preset openai --backend-api-key-env OPENAI_API_KEY --backend-model gpt-4o
 EOF
 }
 
@@ -142,7 +172,36 @@ parse_args() {
         ;;
       --with-ollama)
         VANER_WITH_OLLAMA=1
+        VANER_BACKEND_PRESET="${VANER_BACKEND_PRESET:-ollama}"
         shift
+        ;;
+      --no-mcp)
+        VANER_NO_MCP=1
+        shift
+        ;;
+      --backend-preset)
+        VANER_BACKEND_PRESET="$2"
+        shift 2
+        ;;
+      --backend-url)
+        VANER_BACKEND_URL="$2"
+        shift 2
+        ;;
+      --backend-model)
+        VANER_BACKEND_MODEL="$2"
+        shift 2
+        ;;
+      --backend-api-key-env)
+        VANER_BACKEND_API_KEY_ENV="$2"
+        shift 2
+        ;;
+      --compute-preset)
+        VANER_COMPUTE_PRESET="$2"
+        shift 2
+        ;;
+      --max-session-minutes)
+        VANER_MAX_SESSION_MINUTES="$2"
+        shift 2
         ;;
       --help|-h)
         HELP=1
@@ -528,16 +587,32 @@ pick_backend() {
   printf ''
 }
 
-package_spec() {
-  if [[ -n "$VANER_VERSION" ]]; then
-    printf 'vaner==%s' "$VANER_VERSION"
+package_extras() {
+  if [[ "$VANER_NO_MCP" == "1" ]]; then
+    printf ''
   else
-    printf 'vaner'
+    printf '[mcp]'
+  fi
+}
+
+package_spec() {
+  local extras
+  extras="$(package_extras)"
+  if [[ -n "$VANER_VERSION" ]]; then
+    printf 'vaner%s==%s' "$extras" "$VANER_VERSION"
+  else
+    printf 'vaner%s' "$extras"
   fi
 }
 
 github_package_spec() {
-  printf 'git+https://github.com/Borgels/vaner.git'
+  local extras
+  extras="$(package_extras)"
+  if [[ -n "$extras" ]]; then
+    printf 'vaner%s @ git+https://github.com/Borgels/vaner.git' "$extras"
+  else
+    printf 'git+https://github.com/Borgels/vaner.git'
+  fi
 }
 
 check_existing_vaner() {
@@ -616,14 +691,158 @@ verify_installation() {
 print_install_plan() {
   ui_section "Install plan"
   printf '  backend: %s\n' "$BACKEND"
+  local extras
+  extras="$(package_extras)"
   if [[ -n "$VANER_VERSION" ]]; then
-    printf '  package: vaner==%s\n' "$VANER_VERSION"
+    printf '  package: vaner%s==%s\n' "$extras" "$VANER_VERSION"
   else
-    printf '  package: vaner (latest; fallback to GitHub source if PyPI unavailable)\n'
+    printf '  package: vaner%s (latest; fallback to GitHub source if PyPI unavailable)\n' "$extras"
   fi
   printf '  dry-run: %s\n' "$VANER_DRY_RUN"
   printf '  verify: %s\n' "$VANER_VERIFY"
   printf '  with-ollama: %s\n' "$VANER_WITH_OLLAMA"
+  if [[ -n "$VANER_BACKEND_PRESET" ]]; then
+    printf '  backend-preset: %s\n' "$VANER_BACKEND_PRESET"
+  fi
+  if [[ -n "$VANER_COMPUTE_PRESET" ]]; then
+    printf '  compute-preset: %s\n' "$VANER_COMPUTE_PRESET"
+  fi
+  if [[ -n "$VANER_MAX_SESSION_MINUTES" ]]; then
+    printf '  max-session-minutes: %s\n' "$VANER_MAX_SESSION_MINUTES"
+  fi
+}
+
+prompt_line() {
+  local prompt="$1"
+  local default_value="${2:-}"
+  local answer=""
+  if ! is_promptable; then
+    printf '%s' "$default_value"
+    return 0
+  fi
+  if [[ -n "$default_value" ]]; then
+    printf '%s [%s]: ' "$prompt" "$default_value" > /dev/tty
+  else
+    printf '%s: ' "$prompt" > /dev/tty
+  fi
+  read -r answer < /dev/tty || true
+  if [[ -z "$answer" ]]; then
+    printf '%s' "$default_value"
+  else
+    printf '%s' "$answer"
+  fi
+}
+
+resolve_backend_preset() {
+  if [[ -n "$VANER_BACKEND_PRESET" ]]; then
+    return 0
+  fi
+  if ! is_promptable; then
+    VANER_BACKEND_PRESET="skip"
+    return 0
+  fi
+  {
+    printf '\n'
+    printf 'Pick a model backend (Vaner needs an LLM for scenario expansion):\n'
+    printf '  1) Ollama     — local, auto-install, privacy-first (recommended)\n'
+    printf '  2) LM Studio  — local app you already run\n'
+    printf '  3) vLLM / OpenAI-compatible self-hosted\n'
+    printf '  4) OpenAI     — cloud, needs API key\n'
+    printf '  5) Anthropic  — cloud, needs API key\n'
+    printf '  6) OpenRouter — cloud, 100+ models via one key\n'
+    printf '  7) Skip for now (read-only MCP tools still work)\n'
+  } > /dev/tty
+  local choice
+  choice="$(prompt_line "Choice" "1")"
+  case "$choice" in
+    1|ollama) VANER_BACKEND_PRESET="ollama" ;;
+    2|lmstudio|lm-studio) VANER_BACKEND_PRESET="lmstudio" ;;
+    3|vllm) VANER_BACKEND_PRESET="vllm" ;;
+    4|openai) VANER_BACKEND_PRESET="openai" ;;
+    5|anthropic|claude) VANER_BACKEND_PRESET="anthropic" ;;
+    6|openrouter) VANER_BACKEND_PRESET="openrouter" ;;
+    7|skip|"") VANER_BACKEND_PRESET="skip" ;;
+    *)
+      ui_warn "Unrecognized choice '$choice'; skipping backend configuration."
+      VANER_BACKEND_PRESET="skip"
+      ;;
+  esac
+}
+
+collect_backend_details() {
+  case "$VANER_BACKEND_PRESET" in
+    ollama)
+      VANER_BACKEND_URL="${VANER_BACKEND_URL:-http://127.0.0.1:11434/v1}"
+      VANER_BACKEND_MODEL="${VANER_BACKEND_MODEL:-qwen2.5-coder:7b}"
+      VANER_BACKEND_API_KEY_ENV="${VANER_BACKEND_API_KEY_ENV:-}"
+      VANER_WITH_OLLAMA=1
+      ;;
+    lmstudio)
+      local default_url="http://127.0.0.1:1234/v1"
+      VANER_BACKEND_URL="${VANER_BACKEND_URL:-$(prompt_line "LM Studio base URL" "$default_url")}"
+      VANER_BACKEND_MODEL="${VANER_BACKEND_MODEL:-$(prompt_line "Model name" "")}"
+      VANER_BACKEND_API_KEY_ENV="${VANER_BACKEND_API_KEY_ENV:-}"
+      ;;
+    vllm)
+      local default_url="http://127.0.0.1:8000/v1"
+      VANER_BACKEND_URL="${VANER_BACKEND_URL:-$(prompt_line "Server base URL" "$default_url")}"
+      VANER_BACKEND_MODEL="${VANER_BACKEND_MODEL:-$(prompt_line "Model name" "")}"
+      VANER_BACKEND_API_KEY_ENV="${VANER_BACKEND_API_KEY_ENV:-}"
+      ;;
+    openai)
+      VANER_BACKEND_URL="${VANER_BACKEND_URL:-https://api.openai.com/v1}"
+      VANER_BACKEND_MODEL="${VANER_BACKEND_MODEL:-$(prompt_line "Model name" "gpt-4o")}"
+      VANER_BACKEND_API_KEY_ENV="${VANER_BACKEND_API_KEY_ENV:-OPENAI_API_KEY}"
+      ;;
+    anthropic)
+      VANER_BACKEND_URL="${VANER_BACKEND_URL:-https://api.anthropic.com/v1}"
+      VANER_BACKEND_MODEL="${VANER_BACKEND_MODEL:-$(prompt_line "Model name" "claude-opus-4-5")}"
+      VANER_BACKEND_API_KEY_ENV="${VANER_BACKEND_API_KEY_ENV:-ANTHROPIC_API_KEY}"
+      ;;
+    openrouter)
+      VANER_BACKEND_URL="${VANER_BACKEND_URL:-https://openrouter.ai/api/v1}"
+      VANER_BACKEND_MODEL="${VANER_BACKEND_MODEL:-$(prompt_line "Model name" "anthropic/claude-3.5-sonnet")}"
+      VANER_BACKEND_API_KEY_ENV="${VANER_BACKEND_API_KEY_ENV:-OPENROUTER_API_KEY}"
+      ;;
+    skip|"")
+      ;;
+    *)
+      ui_warn "Unknown backend preset: $VANER_BACKEND_PRESET. Skipping."
+      VANER_BACKEND_PRESET="skip"
+      ;;
+  esac
+}
+
+configure_backend_and_compute() {
+  if [[ "$VANER_DRY_RUN" == "1" ]]; then
+    ui_info "Dry-run: skipping backend/compute configuration."
+    return 0
+  fi
+  if ! command -v vaner >/dev/null 2>&1; then
+    ui_warn "vaner not yet on PATH; skipping config writeback. Run 'vaner init' manually after opening a new shell."
+    return 0
+  fi
+  local args=("init" "--path" "$HOME" "--no-interactive")
+  if [[ -n "$VANER_BACKEND_PRESET" && "$VANER_BACKEND_PRESET" != "skip" ]]; then
+    args+=("--backend-preset" "$VANER_BACKEND_PRESET")
+  fi
+  if [[ -n "$VANER_BACKEND_URL" ]]; then
+    args+=("--backend-url" "$VANER_BACKEND_URL")
+  fi
+  if [[ -n "$VANER_BACKEND_MODEL" ]]; then
+    args+=("--backend-model" "$VANER_BACKEND_MODEL")
+  fi
+  if [[ -n "$VANER_BACKEND_API_KEY_ENV" ]]; then
+    args+=("--backend-api-key-env" "$VANER_BACKEND_API_KEY_ENV")
+  fi
+  if [[ -n "$VANER_COMPUTE_PRESET" ]]; then
+    args+=("--compute-preset" "$VANER_COMPUTE_PRESET")
+  fi
+  if [[ -n "$VANER_MAX_SESSION_MINUTES" ]]; then
+    args+=("--max-session-minutes" "$VANER_MAX_SESSION_MINUTES")
+  fi
+  ui_info "Writing backend/compute defaults to ~/.vaner/config.toml"
+  run_cmd vaner "${args[@]}" || ui_warn "vaner init returned non-zero; continuing."
 }
 
 print_footer() {
@@ -634,10 +853,15 @@ print_footer() {
     ui_success "Vaner installed successfully"
   fi
   printf '\nNext steps:\n'
-  printf '  vaner init --path .\n'
+  printf '  vaner init --path .            # initialize this repo\n'
   printf '  vaner daemon start --no-once --path .\n'
   printf '  vaner query "where is auth enforced?" --path .\n'
-  printf '  vaner inspect --last --path .\n'
+  printf '\nConnect your AI client over MCP:\n'
+  printf '  https://docs.vaner.ai/mcp      # Claude Code, Cursor, VS Code, Codex, ...\n'
+  if [[ "$VANER_NO_MCP" == "1" ]]; then
+    printf '\n  Note: installed without the [mcp] extra. Re-run without --no-mcp to enable\n'
+    printf "        'vaner mcp' for client integration.\n"
+  fi
 }
 
 main() {
@@ -649,6 +873,11 @@ main() {
   fi
 
   ui_section "Vaner Installer"
+  resolve_backend_preset
+  if [[ "$VANER_BACKEND_PRESET" == "ollama" ]]; then
+    VANER_WITH_OLLAMA=1
+  fi
+  collect_backend_details
   if [[ "$VANER_WITH_OLLAMA" == "1" ]]; then
     INSTALL_STAGE_TOTAL=4
   fi
@@ -705,6 +934,8 @@ main() {
   if [[ "$VANER_WITH_OLLAMA" == "1" ]]; then
     ensure_ollama_model
   fi
+
+  configure_backend_and_compute
 
   print_footer
 }

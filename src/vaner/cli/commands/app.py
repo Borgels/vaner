@@ -18,7 +18,16 @@ from vaner import api
 from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
 from vaner.cli.commands.daemon import daemon_status, run_daemon_forever, start_daemon, stop_daemon
 from vaner.cli.commands.explain import render_human, render_json
-from vaner.cli.commands.init import init_repo, write_mcp_configs
+from vaner.cli.commands.init import (
+    BACKEND_PRESETS,
+    COMPUTE_PRESETS,
+    apply_backend_config,
+    apply_compute_preset,
+    init_repo,
+    interactive_backend_choice,
+    interactive_compute_choice,
+    write_mcp_configs,
+)
 from vaner.cli.commands.inspect import inspect_decision as inspect_decision_output
 from vaner.cli.commands.inspect import inspect_last as inspect_last_output
 from vaner.cli.commands.inspect import list_decisions as list_decisions_output
@@ -106,11 +115,45 @@ def app_callback(
 @app.command("init")
 def init(
     path: str | None = typer.Option(None, help="Repository root"),
+    backend_preset: str | None = typer.Option(
+        None,
+        "--backend-preset",
+        help=f"Configure [backend] using a preset: {', '.join(sorted(BACKEND_PRESETS))} or 'skip'.",
+    ),
+    backend_url: str | None = typer.Option(None, "--backend-url", help="Override backend base_url."),
+    backend_model: str | None = typer.Option(None, "--backend-model", help="Override backend model name."),
+    backend_api_key_env: str | None = typer.Option(None, "--backend-api-key-env", help="Env var holding the cloud provider API key."),
+    compute_preset: str | None = typer.Option(
+        None,
+        "--compute-preset",
+        help=f"Compute preset: {', '.join(sorted(COMPUTE_PRESETS))}. Default: background.",
+    ),
+    max_session_minutes: int | None = typer.Option(
+        None,
+        "--max-session-minutes",
+        help="Hard wall-clock cap for a continuous `vaner daemon` session (minutes).",
+    ),
+    interactive: bool | None = typer.Option(
+        None,
+        "--interactive/--no-interactive",
+        help="Force or skip the backend/compute picker. Defaults to interactive when stdin is a TTY.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite existing backend config even if already populated.",
+    ),
     no_mcp: bool = typer.Option(False, "--no-mcp", help="Skip writing MCP client config files"),
 ) -> None:
+    """Initialize Vaner in the current repo and (optionally) pick a model backend.
+
+    Running ``vaner init`` a second time with no flags is idempotent: existing
+    ``[backend]`` values are preserved unless ``--force`` is passed.
+    """
     repo_root = _repo_root(path)
     config_path = init_repo(repo_root)
     typer.echo(f"Initialized Vaner at {config_path}")
+
     if not no_mcp:
         try:
             written = write_mcp_configs(repo_root)
@@ -119,6 +162,41 @@ def init(
                 typer.echo(f"  - {item}")
         except Exception as exc:
             typer.echo(f"Warning: could not write MCP client configs: {exc}")
+
+    import sys as _sys
+
+    resolved_interactive = interactive if interactive is not None else _sys.stdin.isatty()
+
+    if backend_preset is None and (backend_url or backend_model) is None and resolved_interactive:
+        choice = interactive_backend_choice()
+        if choice and choice != "skip":
+            backend_preset = choice
+
+    if backend_preset or backend_url or backend_model:
+        preset_id = backend_preset or "custom"
+        changed = apply_backend_config(
+            config_path,
+            preset_id,
+            base_url=backend_url,
+            model=backend_model,
+            api_key_env=backend_api_key_env,
+            force=force,
+        )
+        if changed:
+            typer.echo(f"Applied backend preset '{preset_id}' to {config_path.name}")
+        else:
+            typer.echo("Backend config already populated; pass --force to overwrite.")
+
+    if compute_preset is None and resolved_interactive and backend_preset != "skip":
+        compute_preset = interactive_compute_choice()
+
+    if compute_preset or max_session_minutes:
+        if apply_compute_preset(config_path, compute_preset or "background", max_session_minutes=max_session_minutes):
+            typer.echo(
+                f"Applied compute preset '{compute_preset or 'background'}'"
+                + (f" (max_session_minutes={max_session_minutes})" if max_session_minutes else "")
+            )
+
     runtime = _detect_local_runtime()
     hardware = _detect_hardware_profile()
     if runtime.get("detected"):
@@ -127,6 +205,7 @@ def init(
         typer.echo("No local runtime detected on localhost ports (11434/1234/8000).")
         typer.echo("Recommended: curl -fsSL https://vaner.ai/install.sh | bash -s -- --with-ollama")
     typer.echo(f"Hardware profile: device={hardware['device']} gpu_count={hardware['gpu_count']} vram_gb={hardware['vram_gb']}")
+    typer.echo("Next: connect your AI client → https://docs.vaner.ai/mcp")
     has_vscode = (repo_root / ".vscode").exists() or os.environ.get("TERM_PROGRAM") == "vscode"
     has_cursor = os.environ.get("CURSOR_TRACE_ID") is not None or os.environ.get("CURSOR_AGENT") is not None
     if has_vscode or has_cursor:
