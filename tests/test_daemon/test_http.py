@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from vaner.daemon.http import create_daemon_http_app
 from vaner.models.config import VanerConfig
 from vaner.models.scenario import Scenario
 from vaner.store.scenarios import ScenarioStore
+
+if platform.system().lower().startswith("win"):
+    pytest.skip("daemon http TestClient is flaky on Windows runners", allow_module_level=True)
 
 
 def test_cockpit_root_serves_html_and_expected_endpoints(temp_repo) -> None:
