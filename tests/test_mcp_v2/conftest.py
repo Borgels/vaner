@@ -6,16 +6,15 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("mcp")
-from mcp.types import CallToolRequest
-
-from vaner.mcp.server import build_server
 from vaner.models.scenario import Scenario
 from vaner.store.scenarios import ScenarioStore
 
 
 @pytest.fixture
 def mcp_server(temp_repo: Path):
+    pytest.importorskip("mcp")
+    from vaner.mcp.server import build_server
+
     (temp_repo / ".vaner").mkdir(parents=True, exist_ok=True)
     (temp_repo / ".vaner" / "config.toml").write_text(
         '[backend]\nbase_url = "http://127.0.0.1:11434/v1"\nmodel = "llama3.2:3b"\n',
@@ -50,6 +49,8 @@ def seed_scenario(repo: Path, *, scenario_id: str = "scn_1", memory_state: str =
 
 def call_tool(server, name: str, arguments: dict | None = None):
     async def _call():
+        from mcp.types import CallToolRequest
+
         handler = server.request_handlers[CallToolRequest]
         return await handler(CallToolRequest(method="tools/call", params={"name": name, "arguments": arguments or {}}))
 
