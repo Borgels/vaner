@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import pytest
-
+from vaner.cli.commands.config import set_config_value
+from vaner.cli.commands.init import init_repo
 from vaner.eval import evaluate_repo
-
-pytest.importorskip("sentence_transformers")
-pytestmark = pytest.mark.integration
 
 
 def test_evaluate_repo_returns_report(temp_repo):
+    init_repo(temp_repo)
+    set_config_value(temp_repo, "exploration", "embedding_model", "")
     report = evaluate_repo(temp_repo)
     assert 0.0 <= report.overall_hit_at_3 <= 1.0
     assert 0.0 <= report.overall_path_coverage <= 1.0

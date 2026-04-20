@@ -5,17 +5,16 @@ from __future__ import annotations
 import asyncio
 import time
 
-import pytest
-
+from vaner.cli.commands.config import set_config_value
+from vaner.cli.commands.init import init_repo
 from vaner.cli.commands.query import run_query
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.store.artefacts import ArtefactStore
 
-pytest.importorskip("sentence_transformers")
-pytestmark = pytest.mark.integration
-
 
 def test_run_query_returns_injected_context_and_writes_inspect(temp_repo):
+    init_repo(temp_repo)
+    set_config_value(temp_repo, "exploration", "embedding_model", "")
     store = ArtefactStore(temp_repo / ".vaner" / "store.db")
 
     async def _seed() -> None:

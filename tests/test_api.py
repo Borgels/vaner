@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import pytest
-
 from vaner import api
+from vaner.cli.commands.config import set_config_value
+from vaner.cli.commands.init import init_repo
 
 
-@pytest.mark.integration
 def test_api_prepare_and_query(temp_repo):
-    pytest.importorskip("sentence_transformers")
+    init_repo(temp_repo)
+    set_config_value(temp_repo, "exploration", "embedding_model", "")
     written = api.prepare(temp_repo)
     assert written >= 1
 
