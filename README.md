@@ -31,12 +31,13 @@ The installer:
 Non-interactive example (CI, Dockerfile):
 
 ```bash
-curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh \
-  | bash -s -- --yes --backend-preset openai \
-      --backend-api-key-env OPENAI_API_KEY \
-      --backend-model gpt-4o \
-      --compute-preset background \
-      --max-session-minutes 30
+VANER_YES=1 \
+VANER_BACKEND_PRESET=openai \
+VANER_BACKEND_API_KEY_ENV=OPENAI_API_KEY \
+VANER_BACKEND_MODEL=gpt-4o \
+VANER_COMPUTE_PRESET=background \
+VANER_MAX_SESSION_MINUTES=30 \
+curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash
 ```
 
 From source (no installer):

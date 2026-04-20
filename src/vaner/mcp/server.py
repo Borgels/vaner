@@ -77,6 +77,30 @@ def _make_text(content: str) -> list[TextContent]:
     return [TextContent(type="text", text=content)]
 
 
+BACKEND_NOT_CONFIGURED_MESSAGE = (
+    "No LLM backend configured for Vaner.\n"
+    "Fix it with one command:\n"
+    "  vaner init --backend-preset ollama          # local, free\n"
+    "  vaner init --backend-preset openrouter --backend-api-key-env OPENROUTER_API_KEY\n"
+    "Docs: https://docs.vaner.ai/mcp"
+)
+
+
+class BackendNotConfiguredError(RuntimeError):
+    code = "backend_not_configured"
+
+    def __init__(self) -> None:
+        super().__init__(BACKEND_NOT_CONFIGURED_MESSAGE)
+
+
+def _ensure_backend(config: Any) -> None:
+    backend = getattr(config, "backend", None)
+    base_url = str(getattr(backend, "base_url", "") or "").strip()
+    model = str(getattr(backend, "model", "") or "").strip()
+    if not base_url or not model:
+        raise BackendNotConfiguredError()
+
+
 def _scenario_to_summary(scenario: Scenario) -> dict[str, Any]:
     return {
         "id": scenario.id,
@@ -247,9 +271,18 @@ def build_server(repo_root: Path) -> Server:
                 # Metrics are best-effort; tool execution must remain non-fatal.
                 return
 
-        async def _error(message: str, *, tool_name: str | None = None, scenario_id: str | None = None) -> CallToolResult:
+        async def _error(
+            message: str,
+            *,
+            tool_name: str | None = None,
+            scenario_id: str | None = None,
+            code: str | None = None,
+        ) -> CallToolResult:
             await _record("error", tool_name=tool_name, scenario_id=scenario_id)
-            return CallToolResult(content=_make_text(message), isError=True)
+            structured: dict[str, Any] | None = None
+            if code:
+                structured = {"code": code, "message": message}
+            return CallToolResult(content=_make_text(message), isError=True, structuredContent=structured)
 
         if name == "list_scenarios":
             limit = int(args.get("limit", 10))
@@ -275,6 +308,10 @@ def build_server(repo_root: Path) -> Server:
             scenario_id = str(args.get("id", "")).strip()
             if not scenario_id:
                 return await _error("ERROR: id is required")
+            try:
+                _ensure_backend(config)
+            except BackendNotConfiguredError as exc:
+                return await _error(str(exc), scenario_id=scenario_id, code=exc.code)
             try:
                 await aprecompute(repo_root, config=config)
             except Exception as exc:
@@ -340,6 +377,10 @@ def build_server(repo_root: Path) -> Server:
             top_n = int(args.get("top_n", 8))
             if not prompt:
                 return await _error("ERROR: prompt is required", tool_name="legacy_get_context")
+            try:
+                _ensure_backend(config)
+            except BackendNotConfiguredError as exc:
+                return await _error(str(exc), tool_name="legacy_get_context", code=exc.code)
             try:
                 package = await aquery(prompt, repo_root, config=config, top_n=top_n)
             except Exception as exc:

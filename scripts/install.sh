@@ -709,6 +709,8 @@ print_install_plan() {
   fi
   if [[ -n "$VANER_MAX_SESSION_MINUTES" ]]; then
     printf '  max-session-minutes: %s\n' "$VANER_MAX_SESSION_MINUTES"
+  else
+    printf '  max-session-minutes: unbounded\n'
   fi
 }
 
@@ -813,6 +815,45 @@ collect_backend_details() {
   esac
 }
 
+resolve_compute_preferences() {
+  if [[ -z "$VANER_COMPUTE_PRESET" ]]; then
+    if is_promptable; then
+      {
+        printf '\n'
+        printf 'Pick a compute budget:\n'
+        printf '  1) background — idle-first and battery-safe (recommended)\n'
+        printf '  2) balanced   — available while you work, still bounded\n'
+        printf '  3) dedicated  — aggressive use for dedicated hardware\n'
+      } > /dev/tty
+      local preset_choice
+      preset_choice="$(prompt_line "Choice" "1")"
+      case "$preset_choice" in
+        1|background|"") VANER_COMPUTE_PRESET="background" ;;
+        2|balanced) VANER_COMPUTE_PRESET="balanced" ;;
+        3|dedicated) VANER_COMPUTE_PRESET="dedicated" ;;
+        *)
+          ui_warn "Unrecognized compute preset '$preset_choice'; defaulting to background."
+          VANER_COMPUTE_PRESET="background"
+          ;;
+      esac
+    else
+      VANER_COMPUTE_PRESET="${VANER_COMPUTE_PRESET:-background}"
+    fi
+  fi
+
+  if [[ -z "$VANER_MAX_SESSION_MINUTES" ]] && is_promptable; then
+    local minutes
+    minutes="$(prompt_line "Cap a continuous vaner daemon session (blank for unlimited, minutes)" "")"
+    if [[ -n "$minutes" ]]; then
+      if [[ "$minutes" =~ ^[0-9]+$ ]] && [[ "$minutes" -gt 0 ]]; then
+        VANER_MAX_SESSION_MINUTES="$minutes"
+      else
+        ui_warn "Ignoring invalid max-session-minutes value: '$minutes' (must be a positive integer)."
+      fi
+    fi
+  fi
+}
+
 configure_backend_and_compute() {
   if [[ "$VANER_DRY_RUN" == "1" ]]; then
     ui_info "Dry-run: skipping backend/compute configuration."
@@ -878,6 +919,7 @@ main() {
     VANER_WITH_OLLAMA=1
   fi
   collect_backend_details
+  resolve_compute_preferences
   if [[ "$VANER_WITH_OLLAMA" == "1" ]]; then
     INSTALL_STAGE_TOTAL=4
   fi
