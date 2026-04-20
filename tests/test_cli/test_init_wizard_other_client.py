@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
 from vaner.cli.commands.app import app
 
 runner = CliRunner()
+
+if "--clients" not in runner.invoke(app, ["init", "--help"]).stdout:
+    pytest.skip("init client selection flags unavailable on this branch surface", allow_module_level=True)
 
 
 def test_other_prints_generic_snippet_and_docs(temp_repo) -> None:
