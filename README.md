@@ -15,86 +15,22 @@ serve the best context package quickly when the real prompt arrives.
 
 ## Quickstart
 
-### 1. Install
+1. Install:
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash
 ```
 
-The installer:
-
-- Detects `uv` or `pipx` and installs `vaner[mcp]` (MCP client support included by default; pass `--no-mcp` to skip).
-- Falls back to `git+https://github.com/Borgels/vaner.git` if the PyPI package isn't available yet.
-- Asks you to pick a model backend (Ollama, LM Studio, vLLM, OpenAI, Anthropic, OpenRouter, or skip).
-- Offers a compute budget (`background` / `balanced` / `dedicated`) and an optional wall-clock cap on ponder time (`--max-session-minutes`).
-
-Non-interactive example (CI, Dockerfile):
+2. Configure your clients (interactive wizard):
 
 ```bash
-VANER_YES=1 \
-VANER_BACKEND_PRESET=openai \
-VANER_BACKEND_API_KEY_ENV=OPENAI_API_KEY \
-VANER_BACKEND_MODEL=gpt-4o \
-VANER_COMPUTE_PRESET=background \
-VANER_MAX_SESSION_MINUTES=30 \
-curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash
+vaner init --path .
 ```
 
-From source (no installer):
+3. Start Vaner:
 
 ```bash
-git clone https://github.com/Borgels/vaner.git
-cd vaner
-pip install '.[mcp]'
-```
-
-Installer source for review: [`scripts/install.sh`](scripts/install.sh).
-
-### 2. Connect your AI client
-
-Vaner exposes context to your agent over [MCP](https://modelcontextprotocol.io/). Pick your client and paste the one-liner:
-
-| Client | One command |
-| --- | --- |
-| Claude Code | `claude mcp add --transport stdio --scope user vaner -- vaner mcp --path .` |
-| Codex CLI   | `codex mcp add vaner -- vaner mcp --path .` |
-| Cursor / VS Code / Zed / Windsurf / Continue / Claude Desktop / Cline / Roo | see [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp) (client setup guides) |
-
-Or let Vaner write the config file for you:
-
-```bash
-vaner init --path .                 # initialize this repo + pick backend interactively
-vaner mcp --path .                  # smoke-test the MCP server in stdio mode
-```
-
-### 3. Start Vaner
-
-```bash
-# in your project repo
 vaner up --path .
-```
-
-`vaner up` starts both the background daemon and cockpit, opens `http://127.0.0.1:8473/`,
-and keeps them supervised in one command. Press `Ctrl+C` (or run `vaner down`) to stop.
-
-If nothing seems to happen, run:
-
-```bash
-vaner doctor --path .
-```
-
-Advanced (manual mode):
-
-```bash
-vaner daemon start --no-once --path .
-vaner daemon serve-http --path .
-```
-
-Optional local debugging:
-
-```bash
-vaner query "where is auth enforced?" --explain --path .
-vaner inspect --last --path .
 ```
 
 Asciinema demo: coming soon.

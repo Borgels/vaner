@@ -7,28 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-04-20
+## [0.5.0] - 2026-04-20
 
 ### Added
 
-- Added `vaner up` and `vaner down` to run daemon and cockpit as one supervised flow with a single startup command.
-- Added preflight safeguards for unsafe repo roots, inotify headroom checks, and proactive port selection.
-- Added runtime log tailing for daemon and cockpit via `vaner logs`.
-- Added fallback from inotify to polling watchers when Linux watch limits are exhausted.
-- Added runtime snapshot checks that power both `vaner status` and `vaner doctor` consistently.
-- Added new diagnostics for `repo_root_sensible`, `inotify_headroom`, and `cli_up_to_date`.
+- Added a full `vaner init` onboarding wizard with backend/compute prompts, multi-client MCP selection, safe config merges, and backup files.
+- Added new init controls: `--clients auto|all|none|other|csv`, `--dry-run`, and stronger `--force` handling for malformed files.
+- Added an explicit escape hatch for unsupported clients that prints a generic MCP snippet, docs links, and a support issue URL.
+- Added CLI tests for MCP client registry/merge behavior and the new onboarding wizard interaction flows.
 
 ### Changed
 
-- Hardened background daemon startup with dead-on-arrival detection and startup error surfacing.
-- Hardened cockpit startup with explicit busy-port remediation guidance and fallback port suggestions.
-- Updated onboarding docs, troubleshooting docs, README, and installer/landing callouts to make `vaner up` the primary post-install flow.
+- Updated onboarding docs and landing flows to promote `curl | bash` followed by `vaner init` as the default path.
+- Switched client config writes to a single MCP client registry implementation that supports Cursor, Claude Desktop/Code, VS Code, Codex CLI, Windsurf, Zed, Continue, Cline, and Roo.
 
-## [0.3.0] - 2026-04-20
+### Removed
 
-### Added
-
-- Initial public project scaffolding and documentation split to `docs.vaner.ai`.
+- Removed the legacy `write_mcp_configs(repo_root)` path from init in favor of the new wizard + registry flow.
 
 ## [0.2.0] - 2026-04-19
 

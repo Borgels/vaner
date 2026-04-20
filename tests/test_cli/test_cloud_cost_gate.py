@@ -19,7 +19,6 @@ def test_init_cloud_backend_requires_explicit_ack_non_interactive(temp_repo) -> 
             "--backend-preset",
             "openai",
             "--no-interactive",
-            "--no-mcp",
         ],
     )
     assert result.exit_code == 1
@@ -37,7 +36,6 @@ def test_init_cloud_backend_accepts_when_flag_provided(temp_repo) -> None:
             "--backend-preset",
             "openai",
             "--no-interactive",
-            "--no-mcp",
             "--accept-cloud-costs",
         ],
     )
