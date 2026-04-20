@@ -30,7 +30,8 @@ jobs:
       - name: Build
         run: |
           python -m pip install --require-hashes -r requirements/release.txt
-          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
           python -m build
       - name: Generate SBOM
         run: cyclonedx-py requirements requirements/release.txt --output-format json -o sbom.json
@@ -132,13 +133,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          provenance_files=(provenance/*.intoto.jsonl)
           gh attestation verify dist-assets/dist/* --repo "$GITHUB_REPOSITORY"
           for artifact in dist-assets/dist/*; do
             bundle="${artifact}.sigstore.json"
             cosign verify-blob --bundle "$bundle" "$artifact"
-            if ls provenance/*.intoto.jsonl >/dev/null 2>&1; then
+            if [ -e "${provenance_files[0]}" ]; then
               slsa-verifier verify-artifact "$artifact" \
-                --provenance-path "$(ls provenance/*.intoto.jsonl | head -n 1)" \
+                --provenance-path "${provenance_files[0]}" \
                 --source-uri "github.com/${GITHUB_REPOSITORY}" \
                 --source-tag "${GITHUB_REF_NAME}"
             fi
