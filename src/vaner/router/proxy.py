@@ -157,7 +157,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
     required_token = (config.proxy.proxy_token or "").strip()
     shadow_rate = max(0.0, min(config.gateway.shadow_rate, 1.0))
     decision_stream_subscribers: set[asyncio.Queue[dict[str, Any] | None]] = set()
-    gateway_enabled = True
+    gateway_enabled = bool(config.gateway.passthrough_enabled)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

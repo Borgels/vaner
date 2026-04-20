@@ -71,6 +71,8 @@ Most documentation lives at [docs.vaner.ai](https://docs.vaner.ai):
 
 - Contributing guide: `CONTRIBUTING.md`
 - Security policy: `SECURITY.md`
+- Governance model: `GOVERNANCE.md`
+- Maintainer roles and sensitive-resource ownership: `MAINTAINERS.md`
 - Code of conduct: `CODE_OF_CONDUCT.md`
 - Support channels: `SUPPORT.md`
 - Examples: `examples/`

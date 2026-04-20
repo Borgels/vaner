@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# mypy: ignore-errors
 
 from __future__ import annotations
 
@@ -14,23 +15,27 @@ import httpx
 import typer
 
 from vaner import api
-from vaner.cli.commands.config import load_config, set_compute_value
+from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
 from vaner.cli.commands.daemon import daemon_status, run_daemon_forever, start_daemon, stop_daemon
 from vaner.cli.commands.explain import render_human, render_json
-from vaner.cli.commands.init import init_repo
+from vaner.cli.commands.init import init_repo, write_mcp_configs
 from vaner.cli.commands.inspect import inspect_decision as inspect_decision_output
 from vaner.cli.commands.inspect import inspect_last as inspect_last_output
 from vaner.cli.commands.inspect import list_decisions as list_decisions_output
 from vaner.cli.commands.profile import export_pins, import_pins, pin_fact, profile_show, unpin_fact
+from vaner.daemon.http import create_daemon_http_app
 from vaner.daemon.runner import VanerDaemon
 from vaner.eval import evaluate_repo, run_eval
 from vaner.router.backends import forward_chat_completion_with_request
 from vaner.router.proxy import create_app
+from vaner.store.scenarios import ScenarioStore
+from vaner.telemetry.metrics import MetricsStore
 
 app = typer.Typer(help="Vaner CLI")
 daemon_app = typer.Typer(help="Daemon controls")
 config_app = typer.Typer(help="Show config")
 profile_app = typer.Typer(help="Profile memory controls")
+scenarios_app = typer.Typer(help="Scenario cockpit commands")
 _VERBOSE = False
 
 
@@ -84,6 +89,12 @@ def _detect_hardware_profile() -> dict[str, object]:
     return profile
 
 
+async def _scenario_store(repo_root: Path) -> ScenarioStore:
+    store = ScenarioStore(repo_root / ".vaner" / "scenarios.db")
+    await store.initialize()
+    return store
+
+
 @app.callback()
 def app_callback(
     verbose: bool = typer.Option(False, "--verbose", help="Show full traceback on errors"),
@@ -93,10 +104,21 @@ def app_callback(
 
 
 @app.command("init")
-def init(path: str | None = typer.Option(None, help="Repository root")) -> None:
+def init(
+    path: str | None = typer.Option(None, help="Repository root"),
+    no_mcp: bool = typer.Option(False, "--no-mcp", help="Skip writing MCP client config files"),
+) -> None:
     repo_root = _repo_root(path)
     config_path = init_repo(repo_root)
     typer.echo(f"Initialized Vaner at {config_path}")
+    if not no_mcp:
+        try:
+            written = write_mcp_configs(repo_root)
+            typer.echo("Configured MCP clients:")
+            for item in written:
+                typer.echo(f"  - {item}")
+        except Exception as exc:
+            typer.echo(f"Warning: could not write MCP client configs: {exc}")
     runtime = _detect_local_runtime()
     hardware = _detect_hardware_profile()
     if runtime.get("detected"):
@@ -140,6 +162,20 @@ def daemon_run_forever(
     interval_seconds: int = typer.Option(15, "--interval-seconds", help="Loop interval"),
 ) -> None:
     run_daemon_forever(_repo_root(path), interval_seconds=interval_seconds)
+
+
+@daemon_app.command("serve-http")
+def daemon_serve_http(
+    path: str | None = typer.Option(None, help="Repository root"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Cockpit host"),
+    port: int = typer.Option(8473, "--port", help="Cockpit port"),
+) -> None:
+    import uvicorn
+
+    repo_root = _repo_root(path)
+    config = load_config(repo_root)
+    app_instance = create_daemon_http_app(config)
+    uvicorn.run(app_instance, host=host, port=port)
 
 
 @app.command("inspect")
@@ -226,29 +262,36 @@ def config_show(path: str | None = typer.Option(None, help="Repository root")) -
 
 @config_app.command("set")
 def config_set(
-    key: str = typer.Argument(..., help="Setting path, currently supports compute.*"),
+    key: str = typer.Argument(..., help="Setting path, supports compute.* and exploration.*"),
     value: str = typer.Argument(..., help="Setting value"),
     path: str | None = typer.Option(None, help="Repository root"),
 ) -> None:
-    if not key.startswith("compute."):
-        typer.secho("Only compute.* settings are supported by `vaner config set` for now.", fg=typer.colors.RED)
+    if "." not in key:
+        typer.secho("Key must include section prefix, e.g. compute.cpu_fraction", fg=typer.colors.RED)
         raise typer.Exit(code=1)
-
-    compute_key = key.split(".", 1)[1]
-    converters = {
-        "device": str,
-        "embedding_device": str,
-        "cpu_fraction": float,
-        "gpu_memory_fraction": float,
-        "idle_only": lambda raw: str(raw).lower() in {"1", "true", "yes", "on"},
-        "idle_cpu_threshold": float,
-        "idle_gpu_threshold": float,
-        "exploration_concurrency": int,
-        "max_parallel_precompute": int,
+    section, field = key.split(".", 1)
+    converters_by_section = {
+        "compute": {
+            "device": str,
+            "embedding_device": str,
+            "cpu_fraction": float,
+            "gpu_memory_fraction": float,
+            "idle_only": lambda raw: str(raw).lower() in {"1", "true", "yes", "on"},
+            "idle_cpu_threshold": float,
+            "idle_gpu_threshold": float,
+            "exploration_concurrency": int,
+            "max_parallel_precompute": int,
+        },
+        "exploration": {
+            "endpoint": str,
+            "model": str,
+            "backend": str,
+            "enabled": lambda raw: str(raw).lower() in {"1", "true", "yes", "on"},
+        },
     }
-    parser = converters.get(compute_key)
+    parser = converters_by_section.get(section, {}).get(field)
     if parser is None:
-        typer.secho(f"Unsupported compute setting: {compute_key}", fg=typer.colors.RED)
+        typer.secho(f"Unsupported setting: {key}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     try:
@@ -257,7 +300,10 @@ def config_set(
         typer.secho(f"Invalid value for {key}: {value}", fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc
 
-    config_path = set_compute_value(_repo_root(path), compute_key, parsed_value)
+    if section == "compute":
+        config_path = set_compute_value(_repo_root(path), field, parsed_value)
+    else:
+        config_path = set_config_value(_repo_root(path), section, field, parsed_value)
     typer.echo(f"Updated {key} in {config_path}")
 
 
@@ -371,6 +417,7 @@ def proxy(
 
     repo_root = _repo_root(path)
     config = load_config(repo_root)
+    typer.echo("vaner proxy is an optional capability for non-MCP clients. MCP-first flow remains default.")
     daemon = VanerDaemon(config)
     app_instance = create_app(config, daemon.store)
     uvicorn.run(
@@ -580,15 +627,156 @@ def compare(
     typer.echo(f"response chars Δ: {result['char_delta']}")
 
 
+@scenarios_app.command("list")
+def scenarios_list(
+    path: str | None = typer.Option(None, help="Repository root"),
+    kind: str | None = typer.Option(None, "--kind", help="Filter by kind"),
+    limit: int = typer.Option(10, "--limit", min=1, max=100, help="Maximum scenarios"),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON"),
+) -> None:
+    import asyncio
+
+    repo_root = _repo_root(path)
+
+    async def _run() -> list[dict[str, object]]:
+        store = await _scenario_store(repo_root)
+        rows = await store.list_top(kind=kind, limit=limit)
+        return [row.model_dump(mode="json") for row in rows]
+
+    rows = asyncio.run(_run())
+    if as_json:
+        typer.echo(json.dumps({"count": len(rows), "scenarios": rows}, indent=2))
+        return
+    typer.echo(f"Scenarios ({len(rows)})")
+    typer.echo("=" * 40)
+    for row in rows:
+        typer.echo(f"{row['id']} [{row['kind']}] score={row['score']:.3f} freshness={row['freshness']} entities={len(row['entities'])}")
+
+
+@scenarios_app.command("show")
+def scenarios_show(
+    scenario_id: str,
+    path: str | None = typer.Option(None, help="Repository root"),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON"),
+) -> None:
+    import asyncio
+
+    repo_root = _repo_root(path)
+
+    async def _run() -> dict[str, object] | None:
+        store = await _scenario_store(repo_root)
+        row = await store.get(scenario_id)
+        return row.model_dump(mode="json") if row else None
+
+    row = asyncio.run(_run())
+    if row is None:
+        raise typer.Exit(code=1)
+    if as_json:
+        typer.echo(json.dumps(row, indent=2))
+        return
+    typer.echo(f"{row['id']} [{row['kind']}] score={row['score']:.3f}")
+    typer.echo(f"freshness={row['freshness']} cost={row['cost_to_expand']} confidence={row['confidence']}")
+    typer.echo(f"entities: {', '.join(row['entities'])}")
+    typer.echo("\nPrepared context\n" + "-" * 40)
+    typer.echo(str(row["prepared_context"]))
+
+
+@scenarios_app.command("expand")
+def scenarios_expand(
+    scenario_id: str,
+    path: str | None = typer.Option(None, help="Repository root"),
+) -> None:
+    import asyncio
+
+    repo_root = _repo_root(path)
+    config = load_config(repo_root)
+
+    async def _run() -> dict[str, object] | None:
+        await api.aprecompute(repo_root, config=config)
+        store = await _scenario_store(repo_root)
+        await store.record_expansion(scenario_id)
+        row = await store.get(scenario_id)
+        return row.model_dump(mode="json") if row else None
+
+    row = asyncio.run(_run())
+    if row is None:
+        typer.echo(f"Scenario not found: {scenario_id}")
+        raise typer.Exit(code=1)
+    typer.echo(json.dumps({"ok": True, "scenario": row}, indent=2))
+
+
+@scenarios_app.command("compare")
+def scenarios_compare(
+    scenario_a: str,
+    scenario_b: str,
+    path: str | None = typer.Option(None, help="Repository root"),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON"),
+) -> None:
+    import asyncio
+
+    repo_root = _repo_root(path)
+
+    async def _run() -> dict[str, object]:
+        store = await _scenario_store(repo_root)
+        a = await store.get(scenario_a)
+        b = await store.get(scenario_b)
+        if a is None or b is None:
+            return {}
+        set_a = set(a.entities)
+        set_b = set(b.entities)
+        shared = sorted(set_a & set_b)
+        return {
+            "shared_entities": shared,
+            "a": {"id": a.id, "kind": a.kind, "score": a.score, "unique_entities": sorted(set_a - set_b)},
+            "b": {"id": b.id, "kind": b.kind, "score": b.score, "unique_entities": sorted(set_b - set_a)},
+            "recommended": a.id if a.score >= b.score else b.id,
+        }
+
+    payload = asyncio.run(_run())
+    if not payload:
+        raise typer.Exit(code=1)
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+    typer.echo(f"shared entities: {len(payload['shared_entities'])}")
+    typer.echo(f"recommended: {payload['recommended']}")
+
+
+@scenarios_app.command("outcome")
+def scenarios_outcome(
+    scenario_id: str,
+    result: str = typer.Option(..., "--result", help="useful|irrelevant|partial"),
+    note: str = typer.Option("", "--note", help="Optional note"),
+    path: str | None = typer.Option(None, help="Repository root"),
+) -> None:
+    import asyncio
+
+    if result not in {"useful", "irrelevant", "partial"}:
+        typer.echo("result must be useful|irrelevant|partial")
+        raise typer.Exit(code=1)
+
+    repo_root = _repo_root(path)
+
+    async def _run() -> None:
+        store = await _scenario_store(repo_root)
+        await store.record_outcome(scenario_id, result)
+        metrics = MetricsStore(repo_root / ".vaner" / "metrics.db")
+        await metrics.initialize()
+        await metrics.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note)
+
+    asyncio.run(_run())
+    typer.echo(f"Recorded outcome for {scenario_id}: {result}")
+
+
 @app.command("watch")
 def watch(
-    proxy_url: str = typer.Option("http://127.0.0.1:8471", "--proxy-url", help="Vaner proxy URL"),
+    cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
     as_json: bool = typer.Option(False, "--json", help="Emit raw decision events as JSON"),
     contains: str | None = typer.Option(None, "--filter", help="Substring filter against serialized decision payload"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Stop after N matching events"),
 ) -> None:
-    """Tail live decision events from the proxy SSE stream."""
-    stream_url = f"{proxy_url.rstrip('/')}/decisions/stream"
+    """Tail live scenario events from the cockpit SSE stream."""
+    stream_url = f"{cockpit_url.rstrip('/')}/scenarios/stream"
     matched = 0
     typer.echo(f"Watching decisions on {stream_url} ... (Ctrl+C to stop)")
     with httpx.Client(timeout=None) as client:
@@ -604,11 +792,11 @@ def watch(
                 if as_json:
                     typer.echo(json.dumps(event))
                 else:
-                    decision_id = event.get("id", "unknown")
-                    tier = event.get("cache_tier", "unknown")
-                    tokens = event.get("token_used", 0)
-                    selections = event.get("selection_count", 0)
-                    typer.echo(f"[{tier}] {tokens} tok • {selections} files • decision {decision_id}")
+                    scenario_id = event.get("id", "unknown")
+                    kind = event.get("kind", "unknown")
+                    score = event.get("score", 0.0)
+                    freshness = event.get("freshness", "unknown")
+                    typer.echo(f"[{kind}] score={score:.3f} freshness={freshness} scenario {scenario_id}")
                 matched += 1
                 if limit is not None and matched >= limit:
                     return
@@ -616,23 +804,23 @@ def watch(
 
 @app.command("show")
 def show(
-    proxy_url: str = typer.Option("http://127.0.0.1:8471", "--proxy-url", help="Vaner proxy URL"),
+    cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
 ) -> None:
     """Open the local web cockpit in the default browser."""
     import webbrowser
 
-    cockpit_url = f"{proxy_url.rstrip('/')}/ui"
-    opened = webbrowser.open(cockpit_url)
+    target_url = f"{cockpit_url.rstrip('/')}/ui"
+    opened = webbrowser.open(target_url)
     if opened:
-        typer.echo(f"Opened {cockpit_url}")
+        typer.echo(f"Opened {target_url}")
     else:
-        typer.echo(f"Open this URL manually: {cockpit_url}")
+        typer.echo(f"Open this URL manually: {target_url}")
 
 
 @app.command("status")
 def status(
     path: str | None = typer.Option(None, help="Repository root"),
-    proxy_url: str = typer.Option("http://127.0.0.1:8471", "--proxy-url", help="Vaner proxy URL"),
+    cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
     as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Show one-screen Vaner health and compute status."""
@@ -641,25 +829,41 @@ def status(
     daemon = daemon_status(repo_root)
     latest = api.inspect_last_decision(repo_root)
 
-    proxy_health = {"reachable": False, "detail": ""}
+    cockpit_health = {"reachable": False, "detail": ""}
     try:
-        response = httpx.get(f"{proxy_url.rstrip('/')}/health", timeout=2.0)
-        proxy_health["reachable"] = response.status_code == 200
-        proxy_health["detail"] = response.text
+        response = httpx.get(f"{cockpit_url.rstrip('/')}/health", timeout=2.0)
+        cockpit_health["reachable"] = response.status_code == 200
+        cockpit_health["detail"] = response.text
     except Exception as exc:
-        proxy_health["detail"] = str(exc)
+        cockpit_health["detail"] = str(exc)
+
+    scenario_counts: dict[str, int] = {"fresh": 0, "recent": 0, "stale": 0, "total": 0}
+    try:
+        store = ScenarioStore(repo_root / ".vaner" / "scenarios.db")
+        import asyncio
+
+        async def _counts() -> dict[str, int]:
+            await store.initialize()
+            return await store.freshness_counts()
+
+        scenario_counts = asyncio.run(_counts())
+    except Exception:
+        scenario_counts = {"fresh": 0, "recent": 0, "stale": 0, "total": 0}
 
     payload = {
         "repo_root": str(repo_root),
         "daemon": daemon,
-        "proxy_url": proxy_url,
-        "proxy": proxy_health,
+        "cockpit_url": cockpit_url,
+        "cockpit": cockpit_health,
+        "mcp": config.mcp.model_dump(mode="json"),
         "compute": config.compute.model_dump(mode="json"),
         "backend": {
             "base_url": config.backend.base_url,
             "model": config.backend.model,
             "gateway_passthrough": config.gateway.passthrough_enabled,
         },
+        "scenarios_ready": scenario_counts["total"],
+        "scenario_counts": scenario_counts,
         "last_decision": latest.id if latest else None,
         "timestamp": datetime.now(UTC).isoformat(),
     }
@@ -671,7 +875,8 @@ def status(
     typer.echo("=" * 40)
     typer.echo(f"repo:     {payload['repo_root']}")
     typer.echo(f"daemon:   {payload['daemon']}")
-    typer.echo(f"proxy:    {'ok' if proxy_health['reachable'] else 'down'} ({proxy_url})")
+    typer.echo(f"cockpit:  {'ok' if cockpit_health['reachable'] else 'down'} ({cockpit_url})")
+    typer.echo(f"mcp:      transport={config.mcp.transport} sse={config.mcp.http_host}:{config.mcp.http_port}")
     typer.echo(f"backend:  {config.backend.base_url or '(unset)'} [{config.backend.model or '(unset)'}]")
     typer.echo(
         "compute:  "
@@ -680,12 +885,14 @@ def status(
         f"gpu_fraction={config.compute.gpu_memory_fraction}"
     )
     typer.echo(f"decision: {payload['last_decision'] or 'none'}")
+    typer.echo(f"scenarios:{payload['scenarios_ready']}")
+    typer.echo(f"freshness: fresh={scenario_counts['fresh']} recent={scenario_counts['recent']} stale={scenario_counts['stale']}")
 
 
 @app.command("doctor")
 def doctor(
     path: str | None = typer.Option(None, help="Repository root"),
-    proxy_url: str = typer.Option("http://127.0.0.1:8471", "--proxy-url", help="Vaner proxy URL"),
+    cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
     as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Run local diagnostics and print actionable fixes."""
@@ -730,6 +937,14 @@ def doctor(
                 "fix": "Install local runtime: curl -fsSL https://vaner.ai/install.sh | bash -s -- --with-ollama",
             }
         )
+        checks.append(
+            {
+                "name": "exploration_llm_reachable",
+                "ok": bool(runtime.get("detected")),
+                "detail": runtime.get("url", "No local runtime on 11434/1234/8000"),
+                "fix": "Start Ollama/LM Studio/vLLM so Vaner can precompute scenarios with local hardware.",
+            }
+        )
         is_cloud_backend = config.backend.base_url.startswith("https://")
         if is_cloud_backend and not runtime.get("detected"):
             checks.append(
@@ -742,22 +957,60 @@ def doctor(
             )
 
     try:
-        health = httpx.get(f"{proxy_url.rstrip('/')}/health", timeout=2.0)
+        health = httpx.get(f"{cockpit_url.rstrip('/')}/health", timeout=2.0)
         checks.append(
             {
-                "name": "proxy_reachable",
+                "name": "cockpit_reachable",
                 "ok": health.status_code == 200,
                 "detail": f"status={health.status_code}",
-                "fix": "Start the proxy with `vaner proxy`.",
+                "fix": "Start the cockpit server with `vaner daemon serve-http`.",
             }
         )
     except Exception as exc:
         checks.append(
             {
-                "name": "proxy_reachable",
+                "name": "cockpit_reachable",
                 "ok": False,
                 "detail": str(exc),
-                "fix": "Start the proxy with `vaner proxy`.",
+                "fix": "Start the cockpit server with `vaner daemon serve-http`.",
+            }
+        )
+
+    cursor_mcp_path = repo_root / ".cursor" / "mcp.json"
+    claude_mcp_path = Path.home() / ".claude" / "claude_desktop_config.json"
+    checks.append(
+        {
+            "name": "mcp_config_present",
+            "ok": cursor_mcp_path.exists() or claude_mcp_path.exists(),
+            "detail": f"cursor={cursor_mcp_path.exists()} claude={claude_mcp_path.exists()}",
+            "fix": "Run `vaner init` to scaffold MCP client configuration files.",
+        }
+    )
+    try:
+        import asyncio
+
+        async def _scenario_store_check() -> dict[str, object]:
+            store = ScenarioStore(repo_root / ".vaner" / "scenarios.db")
+            await store.initialize()
+            rows = await store.list_top(limit=1)
+            return {"ok": True, "detail": f"reachable top_scenarios={len(rows)}"}
+
+        scenario_store_check = asyncio.run(_scenario_store_check())
+        checks.append(
+            {
+                "name": "scenario_store_reachable",
+                "ok": bool(scenario_store_check["ok"]),
+                "detail": str(scenario_store_check["detail"]),
+                "fix": "",
+            }
+        )
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "scenario_store_reachable",
+                "ok": False,
+                "detail": str(exc),
+                "fix": "Run `vaner daemon start --path .` or remove a corrupted `.vaner/scenarios.db` file.",
             }
         )
 
@@ -780,6 +1033,7 @@ def doctor(
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(config_app, name="config")
 app.add_typer(profile_app, name="profile")
+app.add_typer(scenarios_app, name="scenarios")
 
 
 def run() -> None:

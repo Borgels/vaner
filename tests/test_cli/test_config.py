@@ -49,6 +49,16 @@ system_note = "off"
 [gateway.shadow]
 rate = 0.15
 
+[mcp]
+transport = "sse"
+http_host = "0.0.0.0"
+http_port = 8999
+
+[exploration]
+endpoint = "http://127.0.0.1:11434"
+model = "qwen2.5-coder:14b"
+backend = "ollama"
+
 [privacy]
 allowed_paths = ["src/**"]
 excluded_patterns = ["*.env"]
@@ -87,6 +97,10 @@ max_parallel_precompute = 2
     assert config.gateway.passthrough_enabled is True
     assert config.gateway.routes["gpt-"] == "https://api.openai.com/v1"
     assert config.gateway.shadow_rate == 0.15
+    assert config.mcp.transport == "sse"
+    assert config.mcp.http_port == 8999
+    assert config.exploration.exploration_endpoint == "http://127.0.0.1:11434"
+    assert config.exploration.exploration_model == "qwen2.5-coder:14b"
     assert config.privacy.allowed_paths == ["src/**"]
     assert config.max_age_seconds == 120
     assert config.max_context_tokens == 2048

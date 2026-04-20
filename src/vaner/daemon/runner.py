@@ -13,13 +13,16 @@ from vaner.daemon.engine.generator import (
     agenerate_file_summary,
 )
 from vaner.daemon.engine.planner import plan_targets
+from vaner.daemon.engine.scenario_builder import build_scenarios
 from vaner.daemon.engine.scorer import score_paths
 from vaner.daemon.signals.fs_watcher import RepoChangeWatcher, scan_repo_files
 from vaner.daemon.signals.git_reader import read_git_diff, read_git_state
+from vaner.models.artefact import Artefact
 from vaner.models.config import VanerConfig
 from vaner.models.session import WorkingSet
 from vaner.models.signal import SignalEvent
 from vaner.store.artefacts import ArtefactStore
+from vaner.store.scenarios import ScenarioStore
 from vaner.store.telemetry import TelemetryStore
 
 logger = logging.getLogger(__name__)
@@ -29,11 +32,13 @@ class VanerDaemon:
     def __init__(self, config: VanerConfig) -> None:
         self.config = config
         self.store = ArtefactStore(config.store_path)
+        self.scenarios = ScenarioStore(config.repo_root / ".vaner" / "scenarios.db")
         self.telemetry = TelemetryStore(config.telemetry_path)
         self._running = False
 
     async def initialize(self) -> None:
         await self.store.initialize()
+        await self.scenarios.initialize()
         await self.telemetry.initialize()
 
     async def run_once(self, changed_files: list[Path] | None = None) -> int:
@@ -89,7 +94,7 @@ class VanerDaemon:
         written = 0
         generated_files = []
 
-        async def _generate_with_limit(target: Path):
+        async def _generate_with_limit(target: Path) -> Artefact:
             async with generation_semaphore:
                 return await agenerate_file_summary(
                     target,
@@ -102,13 +107,14 @@ class VanerDaemon:
         generation_tasks = [_generate_with_limit(target) for target in ranked_targets[:max_per_cycle]]
         generated_results = await asyncio.gather(*generation_tasks, return_exceptions=True)
         for result in generated_results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning("Skipping failed file summary generation", exc_info=result)
                 continue
-            result.metadata.setdefault("corpus_id", "repo")
-            result.metadata.setdefault("privacy_zone", "project_local")
-            await self.store.upsert(result)
-            generated_files.append(result)
+            artefact = result
+            artefact.metadata.setdefault("corpus_id", "repo")
+            artefact.metadata.setdefault("privacy_zone", "project_local")
+            await self.store.upsert(artefact)
+            generated_files.append(artefact)
             written += 1
 
         for rel_path in sorted(recent_paths):
@@ -137,6 +143,11 @@ class VanerDaemon:
             reason="git_and_recency",
         )
         await self.store.upsert_working_set(working_set)
+        latest_artefacts = await self.store.list(limit=max(50, written * 2))
+        scenarios = build_scenarios(self.config.repo_root, latest_artefacts, sorted(recent_paths | staged_paths))
+        for scenario in scenarios:
+            await self.scenarios.upsert(scenario)
+        await self.scenarios.mark_stale()
         await self.telemetry.record("artefacts_written", float(written))
         return written
 

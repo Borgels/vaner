@@ -10,5 +10,7 @@ def test_init_creates_config(temp_repo):
     assert config_path.exists()
     content = config_path.read_text(encoding="utf-8")
     assert "[gateway.passthrough]" in content
+    assert "enabled = false" in content
+    assert "[mcp]" in content
     assert "[compute]" in content
     assert "idle_only = true" in content
