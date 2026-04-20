@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 def _clamp(value: float, *, lo: float, hi: float) -> float:
@@ -29,6 +30,9 @@ class RewardInput:
     judge_score: float | None = None
     latency_ms: float | None = None
     weight_overrides: dict[str, float] = field(default_factory=dict)
+    rating: Literal["useful", "partial", "wrong", "irrelevant"] | None = None
+    correction_strength: float = 0.0
+    contradiction_signal: float = 0.0
 
 
 @dataclass(slots=True)
@@ -44,6 +48,8 @@ _DEFAULT_WEIGHTS: dict[str, float] = {
     "host_outcome": 0.08,
     "judge_score": 0.07,
     "latency": 0.05,
+    "rating": 0.15,
+    "contradiction": 0.08,
 }
 
 
@@ -67,6 +73,12 @@ def compute_reward(inputs: RewardInput) -> RewardOutcome:
         latency_ms = max(0.0, float(inputs.latency_ms))
         # 0ms => 1.0, 3s => -1.0, and clamp for slower requests.
         raw_components["latency"] = _clamp(1.0 - ((latency_ms / 3000.0) * 2.0), lo=-1.0, hi=1.0)
+    if inputs.rating is not None:
+        rating_map = {"useful": 1.0, "partial": 0.3, "irrelevant": -0.3, "wrong": -1.0}
+        raw_components["rating"] = rating_map.get(inputs.rating, 0.0)
+    contradiction = _clamp(float(inputs.contradiction_signal or 0.0), lo=0.0, hi=1.0)
+    if contradiction > 0.0:
+        raw_components["contradiction"] = -contradiction
 
     active_weight_total = 0.0
     weighted_sum = 0.0

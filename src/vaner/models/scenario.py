@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 ScenarioKind = Literal["debug", "explain", "change", "research"]
 ScenarioFreshness = Literal["fresh", "recent", "stale"]
 ScenarioCost = Literal["low", "medium", "high"]
-ScenarioOutcome = Literal["useful", "irrelevant", "partial"]
+ScenarioOutcome = Literal["useful", "irrelevant", "partial", "wrong"]
+MemoryState = Literal["candidate", "trusted", "stale", "demoted"]
 
 
 class EvidenceRef(BaseModel):
@@ -33,3 +34,11 @@ class Scenario(BaseModel):
     expanded_at: float | None = None
     last_refreshed_at: float = Field(default_factory=lambda: datetime.now(UTC).timestamp())
     last_outcome: ScenarioOutcome | None = None
+    context_envelope_json: str = "{}"
+    memory_state: MemoryState = "candidate"
+    memory_confidence: float = 0.0
+    memory_last_validated_at: float | None = None
+    memory_evidence_hashes_json: str = "[]"
+    prior_successes: int = 0
+    contradiction_signal: float = 0.0
+    pinned: int = 0

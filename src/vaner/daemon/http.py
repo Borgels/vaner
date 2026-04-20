@@ -103,9 +103,41 @@ def create_daemon_http_app(config: VanerConfig) -> FastAPI:
         return JSONResponse({"ok": True, "compute": config.compute.model_dump(mode="json")})
 
     @app.get("/scenarios")
-    async def list_scenarios(kind: str | None = None, limit: int = 10) -> JSONResponse:
+    async def list_items(kind: str | None = None, limit: int = 10) -> JSONResponse:
         rows = await scenario_store.list_top(kind=kind, limit=max(1, min(limit, 100)))
         return JSONResponse({"count": len(rows), "scenarios": [row.model_dump(mode="json") for row in rows]})
+
+    @app.get("/scenarios/{scenario_id}")
+    async def fetch_item(scenario_id: str) -> JSONResponse:
+        row = await scenario_store.get(scenario_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+        return JSONResponse(row.model_dump(mode="json"))
+
+    @app.post("/scenarios/{scenario_id}/expand")
+    async def expand_item(scenario_id: str) -> JSONResponse:
+        row = await scenario_store.get(scenario_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+        await scenario_store.record_expansion(scenario_id)
+        refreshed = await scenario_store.get(scenario_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+        return JSONResponse({"ok": True, "scenario": refreshed.model_dump(mode="json")})
+
+    @app.post("/scenarios/{scenario_id}/outcome")
+    async def record_feedback(scenario_id: str, payload: dict[str, Any]) -> JSONResponse:
+        row = await scenario_store.get(scenario_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+        result = str(payload.get("result", "")).strip()
+        note = str(payload.get("note", "")).strip()
+        if result not in {"useful", "partial", "irrelevant"}:
+            raise HTTPException(status_code=400, detail="result must be one of useful|partial|irrelevant")
+        await scenario_store.record_outcome(scenario_id, result)
+        await metrics_store.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note)
+        refreshed = await scenario_store.get(scenario_id)
+        return JSONResponse({"ok": True, "scenario": refreshed.model_dump(mode="json") if refreshed else None})
 
     @app.get("/scenarios/stream")
     async def scenario_stream(limit: int | None = None) -> StreamingResponse:

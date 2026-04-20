@@ -45,8 +45,26 @@ Most documentation lives at [docs.vaner.ai](https://docs.vaner.ai):
 - Architecture: [docs.vaner.ai/architecture](https://docs.vaner.ai/architecture)
 - Security: [docs.vaner.ai/security](https://docs.vaner.ai/security)
 - CLI reference: [docs.vaner.ai/cli](https://docs.vaner.ai/cli)
+- MCP tools: [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp)
 - Examples: [docs.vaner.ai/examples](https://docs.vaner.ai/examples)
 - Agent skills loop (repo docs): [`docs/skills-integration.md`](docs/skills-integration.md)
+
+## MCP (v1.0)
+
+Vaner exposes the following MCP tools:
+
+- `vaner.status`
+- `vaner.suggest`
+- `vaner.resolve`
+- `vaner.expand`
+- `vaner.search`
+- `vaner.explain`
+- `vaner.feedback`
+- `vaner.warm`
+- `vaner.inspect`
+- `vaner.debug.trace`
+
+Memory behavior details: `docs/memory-semantics.md`.
 
 ## Community
 

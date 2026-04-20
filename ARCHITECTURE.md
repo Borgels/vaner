@@ -45,3 +45,11 @@ Vaner is a local-first predictive context engine for coding assistants.
 ## More details
 
 Detailed architecture docs live at `https://docs.vaner.ai/architecture`.
+
+## Memory semantics
+
+Vaner keeps persistent learning on top of scenario artefacts instead of a separate wiki layer. The memory model lives in scenario state and policy logic (`memory_state`, `memory_confidence`, evidence fingerprints, promotion/demotion/invalidation rules), while MCP exposes those results as structured outputs.
+
+Operator-facing traces are written to `.vaner/memory/log.md` and `.vaner/memory/index.md`; those files are inspectability surfaces, not the semantic memory store itself.
+
+See `docs/memory-semantics.md` for state transitions, promotion gate criteria, conflict-aware abstention, and decision reuse policy. A future full "Vaner Memory" wiki layer remains deferred.

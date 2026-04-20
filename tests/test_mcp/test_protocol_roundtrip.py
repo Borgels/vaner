@@ -48,33 +48,45 @@ def test_mcp_protocol_roundtrip(temp_repo: Path, monkeypatch: pytest.MonkeyPatch
             listed = await session.list_tools()
             names = {tool.name for tool in listed.tools}
             assert names == {
-                "list_scenarios",
-                "get_scenario",
-                "expand_scenario",
-                "compare_scenarios",
-                "report_outcome",
+                "vaner.status",
+                "vaner.suggest",
+                "vaner.resolve",
+                "vaner.expand",
+                "vaner.search",
+                "vaner.explain",
+                "vaner.feedback",
+                "vaner.warm",
+                "vaner.inspect",
+                "vaner.debug.trace",
             }
 
-            listed_scenarios = await session.call_tool("list_scenarios", {"limit": 5})
-            assert listed_scenarios.isError is not True
-            listed_payload = json.loads(listed_scenarios.content[0].text)
-            assert listed_payload["count"] >= 1
+            status = await session.call_tool("vaner.status", {})
+            assert status.isError is not True
+            assert json.loads(status.content[0].text)["ready"] is True
 
-            fetched = await session.call_tool("get_scenario", {"id": "scn_roundtrip_1"})
-            assert fetched.isError is not True
-            assert json.loads(fetched.content[0].text)["id"] == "scn_roundtrip_1"
+            suggested = await session.call_tool("vaner.suggest", {"query": "main flow"})
+            assert suggested.isError is not True
 
-            expanded = await session.call_tool("expand_scenario", {"id": "scn_roundtrip_1"})
+            resolved = await session.call_tool("vaner.resolve", {"query": "main flow"})
+            assert resolved.isError is not True
+
+            expanded = await session.call_tool("vaner.expand", {"target_id": "scn_roundtrip_1", "mode": "details"})
             assert expanded.isError is not True
-            assert json.loads(expanded.content[0].text)["id"] == "scn_roundtrip_1"
+            assert json.loads(expanded.content[0].text)["target_id"] == "scn_roundtrip_1"
 
-            outcome = await session.call_tool("report_outcome", {"id": "scn_roundtrip_1", "result": "useful"})
-            assert outcome.isError is not True
-            assert json.loads(outcome.content[0].text)["ok"] is True
+            feedback = await session.call_tool(
+                "vaner.feedback",
+                {
+                    "resolution_id": json.loads(resolved.content[0].text).get("resolution_id"),
+                    "rating": "partial",
+                    "query": "main flow",
+                },
+            )
+            assert feedback.isError is not True
+            assert json.loads(feedback.content[0].text)["accepted"] is True
 
-            compared = await session.call_tool("compare_scenarios", {"ids": ["scn_roundtrip_1", "scn_roundtrip_1"]})
-            assert compared.isError is not True
-            compare_payload = json.loads(compared.content[0].text)
-            assert compare_payload["recommended_scenario_id"] == "scn_roundtrip_1"
+            inspected = await session.call_tool("vaner.inspect", {"item_id": "scn_roundtrip_1"})
+            assert inspected.isError is not True
+            assert json.loads(inspected.content[0].text)["id"] == "scn_roundtrip_1"
 
     asyncio.run(_run())

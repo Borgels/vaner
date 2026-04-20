@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import cast
 
 import aiosqlite
 import pytest
@@ -11,25 +10,27 @@ pytest.importorskip("mcp")
 from mcp.types import CallToolRequest, ListToolsRequest
 
 from vaner.mcp.server import build_server
-from vaner.models.scenario import Scenario, ScenarioKind
+from vaner.models.scenario import Scenario
 from vaner.store.scenarios import ScenarioStore
 
 
-async def _seed_scenario(repo_root, scenario_id: str, kind: str = "change") -> None:
+async def _seed_scenario(repo_root, scenario_id: str, kind: str = "change", state: str = "candidate") -> None:
     store = ScenarioStore(repo_root / ".vaner" / "scenarios.db")
     await store.initialize()
     await store.upsert(
         Scenario(
             id=scenario_id,
-            kind=cast(ScenarioKind, kind),
+            kind=kind,
             score=0.9,
             confidence=0.8,
-            entities=["src/main.py"],
+            entities=["auth", "pipeline", "route"],
             evidence=[],
-            prepared_context="prepared",
+            prepared_context="auth is enforced in middleware",
             coverage_gaps=[],
             freshness="fresh",
             cost_to_expand="medium",
+            memory_state=state,
+            memory_confidence=0.8,
         )
     )
 
@@ -37,7 +38,7 @@ async def _seed_scenario(repo_root, scenario_id: str, kind: str = "change") -> N
 def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
     async def _run() -> None:
         await _seed_scenario(temp_repo, "scn_mcp_1", kind="change")
-        await _seed_scenario(temp_repo, "scn_mcp_2", kind="debug")
+        await _seed_scenario(temp_repo, "scn_mcp_2", kind="debug", state="trusted")
         (temp_repo / ".vaner" / "config.toml").write_text(
             '[backend]\nbase_url = "http://127.0.0.1:11434/v1"\nmodel = "llama3.2:3b"\n',
             encoding="utf-8",
@@ -49,122 +50,67 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
         listed = await list_handler(ListToolsRequest(method="tools/list"))
         names = {tool.name for tool in listed.root.tools}
         assert names == {
-            "list_scenarios",
-            "get_scenario",
-            "expand_scenario",
-            "compare_scenarios",
-            "report_outcome",
+            "vaner.status",
+            "vaner.suggest",
+            "vaner.resolve",
+            "vaner.expand",
+            "vaner.search",
+            "vaner.explain",
+            "vaner.feedback",
+            "vaner.warm",
+            "vaner.inspect",
+            "vaner.debug.trace",
         }
-        assert "legacy_get_context" not in names
-        assert "legacy_precompute" not in names
-        assert "legacy_get_metrics" not in names
-
-        listed_scenarios = await call_handler(
-            CallToolRequest(
-                method="tools/call",
-                params={"name": "list_scenarios", "arguments": {"limit": 5, "skill": "vaner-feedback"}},
-            )
-        )
-        payload = json.loads(listed_scenarios.root.content[0].text)
-        assert payload["count"] >= 1
-
-        filtered = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "list_scenarios", "arguments": {"kind": "debug", "limit": 5}})
-        )
-        filtered_payload = json.loads(filtered.root.content[0].text)
-        assert filtered_payload["count"] == 1
-        assert filtered_payload["scenarios"][0]["kind"] == "debug"
-
-        unknown_kind = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "list_scenarios", "arguments": {"kind": "bogus", "limit": 5}})
-        )
-        unknown_payload = json.loads(unknown_kind.root.content[0].text)
-        assert unknown_payload["count"] == 0
-
-        fetched = await call_handler(
-            CallToolRequest(
-                method="tools/call",
-                params={"name": "get_scenario", "arguments": {"id": "scn_mcp_1", "skill": "vaner-feedback"}},
-            )
-        )
-        scenario = json.loads(fetched.root.content[0].text)
-        assert scenario["id"] == "scn_mcp_1"
-
-        missing_id = await call_handler(CallToolRequest(method="tools/call", params={"name": "get_scenario", "arguments": {}}))
-        assert missing_id.root.isError is True
-
-        unknown_id = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "get_scenario", "arguments": {"id": "does_not_exist"}})
-        )
-        assert unknown_id.root.isError is True
 
         monkeypatch.setattr("vaner.mcp.server.aprecompute", lambda *args, **kwargs: asyncio.sleep(0, result=1))
+        status = await call_handler(CallToolRequest(method="tools/call", params={"name": "vaner.status", "arguments": {}}))
+        status_payload = json.loads(status.root.content[0].text)
+        assert status_payload["ready"] is True
+
+        suggest = await call_handler(
+            CallToolRequest(method="tools/call", params={"name": "vaner.suggest", "arguments": {"query": "where auth happens"}})
+        )
+        suggest_payload = json.loads(suggest.root.content[0].text)
+        assert "suggestions" in suggest_payload
+
+        resolved = await call_handler(
+            CallToolRequest(
+                method="tools/call",
+                params={"name": "vaner.resolve", "arguments": {"query": "where auth happens", "context": {"domain": "code"}}},
+            )
+        )
+        resolve_payload = json.loads(resolved.root.content[0].text)
+        assert "resolution_id" in resolve_payload or resolve_payload.get("abstained") is True
+
         expanded = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "expand_scenario", "arguments": {"id": "scn_mcp_1"}})
-        )
-        assert json.loads(expanded.root.content[0].text)["id"] == "scn_mcp_1"
-
-        expand_missing_id = await call_handler(CallToolRequest(method="tools/call", params={"name": "expand_scenario", "arguments": {}}))
-        assert expand_missing_id.root.isError is True
-
-        expand_unknown = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "expand_scenario", "arguments": {"id": "does_not_exist"}})
-        )
-        assert expand_unknown.root.isError is True
-
-        async def _boom(*_args, **_kwargs):
-            raise RuntimeError("boom")
-
-        monkeypatch.setattr("vaner.mcp.server.aprecompute", _boom)
-        expand_failure = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "expand_scenario", "arguments": {"id": "scn_mcp_1"}})
-        )
-        assert expand_failure.root.isError is True
-
-        compared = await call_handler(
             CallToolRequest(
                 method="tools/call",
-                params={"name": "compare_scenarios", "arguments": {"ids": ["scn_mcp_1", "scn_mcp_1"]}},
+                params={"name": "vaner.expand", "arguments": {"target_id": "scn_mcp_1", "mode": "details"}},
             )
         )
-        assert json.loads(compared.root.content[0].text)["recommended_scenario_id"] == "scn_mcp_1"
+        expanded_payload = json.loads(expanded.root.content[0].text)
+        assert expanded_payload["target_id"] == "scn_mcp_1"
 
-        compare_short = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "compare_scenarios", "arguments": {"ids": ["scn_mcp_1"]}})
-        )
-        assert compare_short.root.isError is True
-
-        compare_unknown = await call_handler(
-            CallToolRequest(
-                method="tools/call",
-                params={"name": "compare_scenarios", "arguments": {"ids": ["does_not_exist", "other_missing"]}},
-            )
-        )
-        assert compare_unknown.root.isError is True
-
-        outcome = await call_handler(
+        feedback = await call_handler(
             CallToolRequest(
                 method="tools/call",
                 params={
-                    "name": "report_outcome",
-                    "arguments": {"id": "scn_mcp_1", "result": "useful", "skill": "vaner-feedback"},
+                    "name": "vaner.feedback",
+                    "arguments": {
+                        "resolution_id": resolve_payload.get("resolution_id"),
+                        "rating": "partial",
+                        "query": "where auth happens",
+                    },
                 },
             )
         )
-        assert json.loads(outcome.root.content[0].text)["ok"] is True
-
-        invalid_outcome = await call_handler(
-            CallToolRequest(
-                method="tools/call",
-                params={"name": "report_outcome", "arguments": {"id": "scn_mcp_1", "result": "bad"}},
-            )
-        )
-        assert invalid_outcome.root.isError is True
+        feedback_payload = json.loads(feedback.root.content[0].text)
+        assert feedback_payload["accepted"] is True
 
         async with aiosqlite.connect(temp_repo / ".vaner" / "metrics.db") as db:
             cur = await db.execute(
                 "SELECT COUNT(*) FROM mcp_tool_calls WHERE tool_name = ? AND status = ?",
-                ("list_scenarios", "ok"),
+                ("vaner.status", "ok"),
             )
             assert int((await cur.fetchone())[0]) >= 1
 

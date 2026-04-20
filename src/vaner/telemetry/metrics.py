@@ -167,8 +167,15 @@ class MetricsStore:
                 )
                 """
             )
-            await self._ensure_column(db, "mcp_tool_calls", "skill", "TEXT")
-            await self._ensure_column(db, "scenario_outcomes", "skill", "TEXT")
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_quality_counters (
+                    name TEXT PRIMARY KEY,
+                    value REAL NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
             await db.commit()
 
     async def record(self, m: RequestMetrics) -> None:
@@ -362,3 +369,55 @@ class MetricsStore:
                 (str(uuid.uuid4()), scenario_id, result, note, skill, time.time()),
             )
             await db.commit()
+
+    async def increment_counter(self, name: str, delta: float = 1.0) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO memory_quality_counters (name, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    value = value + excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (name, float(delta), time.time()),
+            )
+            await db.commit()
+
+    async def set_counter(self, name: str, value: float) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO memory_quality_counters (name, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (name, float(value), time.time()),
+            )
+            await db.commit()
+
+    async def _counters_map(self) -> dict[str, float]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT name, value FROM memory_quality_counters")
+            rows = await cur.fetchall()
+        return {str(row["name"]): float(row["value"]) for row in rows}
+
+    async def memory_quality_snapshot(self) -> dict[str, float]:
+        counters = await self._counters_map()
+        resolves = max(1.0, counters.get("resolves_total", 0.0))
+        promotions = max(1.0, counters.get("promotions_total", 0.0))
+        corrections = max(1.0, counters.get("corrections_submitted", 0.0))
+        demotions = max(1.0, counters.get("demotions_total", 0.0))
+        return {
+            "predictive_hit_rate": counters.get("predictive_hit_total", 0.0) / resolves,
+            "stale_hit_rate": counters.get("stale_hit_total", 0.0) / resolves,
+            "promotion_precision": counters.get("promotions_still_trusted_total", 0.0) / promotions,
+            "contradiction_rate": counters.get("conflict_total", 0.0) / resolves,
+            "correction_survival_rate": counters.get("corrections_survived_total", 0.0) / corrections,
+            "demotion_recovery_rate": counters.get("demotion_recovery_total", 0.0) / demotions,
+            "trusted_evidence_avg": counters.get("trusted_evidence_total", 0.0) / max(1.0, counters.get("trusted_scenarios_count", 0.0)),
+            "abstain_rate": counters.get("abstain_total", 0.0) / resolves,
+        }
