@@ -38,12 +38,14 @@ def test_upgrade_refuses_downgrade_by_default(monkeypatch) -> None:
 
 
 def test_upgrade_uses_pinned_latest_version(monkeypatch) -> None:
+    latest_version = "9.9.9"
+
     class _Resp:
         status_code = 200
 
         @staticmethod
         def json() -> dict[str, object]:
-            return {"info": {"version": "0.6.0"}}
+            return {"info": {"version": latest_version}}
 
     captured: dict[str, object] = {}
 
@@ -62,4 +64,4 @@ def test_upgrade_uses_pinned_latest_version(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Upgrading via pipx..." in result.stdout
     assert "Upgrade complete." in result.stdout
-    assert captured["cmd"] == ["/usr/bin/pipx", "install", "--force", "vaner==0.6.0"]
+    assert captured["cmd"] == ["/usr/bin/pipx", "install", "--force", f"vaner=={latest_version}"]
