@@ -136,8 +136,11 @@ def build_server(repo_root: Path) -> Server:
                         "properties": {
                             "kind": {
                                 "type": "string",
-                                "enum": ["debug", "explain", "change", "research"],
-                                "description": "Optional filter by scenario kind",
+                                "description": (
+                                    "Optional filter by scenario kind "
+                                    "(debug | explain | change | research). "
+                                    "Unknown values return an empty list."
+                                ),
                             },
                             "limit": {
                                 "type": "integer",
