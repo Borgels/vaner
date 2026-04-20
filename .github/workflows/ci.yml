@@ -117,9 +117,8 @@ jobs:
           pipx install --force "${wheel_path}[all]"
       - name: End-to-end smoke
         run: |
-          tmpdir="$(mktemp -d)"
-          vaner init --path "$tmpdir" --no-interactive --clients none
-          vaner doctor --path "$tmpdir" --json || true
-          vaner mcp --path "$tmpdir" --smoke
-          vaner precompute --path "$tmpdir"
-          vaner query "summarize repository intent" --path "$tmpdir"
+          vaner init --path "$GITHUB_WORKSPACE" --no-interactive --clients none
+          vaner doctor --path "$GITHUB_WORKSPACE" --json || true
+          vaner mcp --path "$GITHUB_WORKSPACE" --smoke
+          vaner precompute --path "$GITHUB_WORKSPACE"
+          vaner query "summarize repository intent" --path "$GITHUB_WORKSPACE"
