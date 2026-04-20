@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,6 +121,13 @@ telemetry = "local"
 [limits]
 max_age_seconds = 3600
 max_context_tokens = 4096
+
+[intent]
+enabled = true
+
+[intent.skills_loop]
+enabled = true
+feedback_source = "mcp"
 """
 
 
@@ -131,6 +140,103 @@ def init_repo(repo_root: Path) -> Path:
     if not config_path.exists():
         config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
     return config_path
+
+
+def _default_vaner_feedback_skill() -> str:
+    default_path = Path(__file__).resolve().parents[4] / "src" / "vaner" / "defaults" / "skills" / "vaner-feedback" / "SKILL.md"
+    if default_path.exists():
+        return default_path.read_text(encoding="utf-8")
+    return (
+        "---\n"
+        "name: vaner-feedback\n"
+        "description: Report scenario outcomes back to Vaner after completing a task.\n"
+        "tags: [vaner, feedback]\n"
+        "vaner:\n"
+        "  kind: research\n"
+        "  feedback: auto\n"
+        "x-vaner-managed: true\n"
+        "---\n\n"
+        "Use this skill when finishing a task that used Vaner MCP scenarios.\n\n"
+        "1. Keep scenario ids returned by list/get/expand calls.\n"
+        "2. Call report_outcome with id, result (useful|partial|irrelevant), optional note.\n"
+        "3. Set skill to vaner-feedback for attribution.\n"
+    )
+
+
+def _write_managed_skill(path: Path, content: str) -> bool:
+    if path.exists():
+        existing = path.read_text(encoding="utf-8")
+        if "x-vaner-managed: true" not in existing:
+            return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
+def write_mcp_configs(repo_root: Path) -> tuple[list[Path], str]:
+    """Legacy helper used by CLI tests and `vaner up` path.
+
+    New setup flows should prefer the registry-backed `run_wizard`, but keeping this
+    helper preserves compatibility for existing command paths and tests.
+    """
+
+    written: list[Path] = []
+    vaner_command = shutil.which("vaner")
+    uvx_command = shutil.which("uvx")
+    if vaner_command:
+        command = vaner_command
+        args = ["mcp", "--path", "."]
+    elif uvx_command:
+        command = uvx_command
+        args = ["--from", "vaner[mcp]", "vaner", "mcp", "--path", "."]
+    else:
+        command = "vaner"
+        args = ["mcp", "--path", "."]
+
+    cursor_dir = repo_root / ".cursor"
+    cursor_dir.mkdir(parents=True, exist_ok=True)
+    cursor_path = cursor_dir / "mcp.json"
+    cursor_payload: dict[str, object] = {"mcpServers": {}}
+    if cursor_path.exists():
+        try:
+            cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+        except Exception:
+            cursor_payload = {"mcpServers": {}}
+    servers = cursor_payload.setdefault("mcpServers", {})
+    if isinstance(servers, dict):
+        servers["vaner"] = {"command": command, "args": args}
+    cursor_path.write_text(json.dumps(cursor_payload, indent=2) + "\n", encoding="utf-8")
+    written.append(cursor_path)
+
+    claude_path = Path.home() / ".claude" / "claude_desktop_config.json"
+    claude_path.parent.mkdir(parents=True, exist_ok=True)
+    claude_payload: dict[str, object] = {"mcpServers": {}}
+    if claude_path.exists():
+        try:
+            claude_payload = json.loads(claude_path.read_text(encoding="utf-8"))
+        except Exception:
+            claude_payload = {"mcpServers": {}}
+        backup_path = claude_path.with_suffix(f".backup-{int(time.time())}.json")
+        backup_path.write_text(json.dumps(claude_payload, indent=2) + "\n", encoding="utf-8")
+    claude_servers = claude_payload.setdefault("mcpServers", {})
+    if isinstance(claude_servers, dict):
+        claude_args = list(args)
+        if "--path" in claude_args:
+            idx = claude_args.index("--path")
+            claude_args[idx + 1] = str(repo_root)
+        claude_servers["vaner"] = {"command": command, "args": claude_args}
+    claude_path.write_text(json.dumps(claude_payload, indent=2) + "\n", encoding="utf-8")
+    written.append(claude_path)
+
+    skill_content = _default_vaner_feedback_skill()
+    managed_targets = [
+        repo_root / ".cursor" / "skills" / "vaner" / "vaner-feedback" / "SKILL.md",
+        Path.home() / ".claude" / "skills" / "vaner" / "vaner-feedback" / "SKILL.md",
+    ]
+    for target in managed_targets:
+        if _write_managed_skill(target, skill_content):
+            written.append(target)
+    return written, command
 
 
 @dataclass(slots=True)
