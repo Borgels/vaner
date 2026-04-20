@@ -44,7 +44,7 @@ jobs:
             cosign sign-blob --yes --bundle "${f}.sigstore.json" "$f"
           done
       - name: Attest SBOM
-        uses: actions/attest-sbom@v2
+        uses: actions/attest-sbom@10926c72720ffc3f7b666661c8e55b1344e2a365 # v2
         with:
           subject-path: "dist/*"
           sbom-path: "sbom.json"

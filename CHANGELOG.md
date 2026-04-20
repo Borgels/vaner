@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-20
+
 ### Added
 
 - Initial public project scaffolding and documentation split to `docs.vaner.ai`.
@@ -16,6 +18,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   - scenario feedback queue for adaptive frontier weighting
   - managed bundled `vaner-feedback` skill installation in `vaner init`
   - `vaner distill-skill` for converting decision records into reusable `SKILL.md`
+- Added hardening checks for MCP command wiring, boot probing, config drift detection, and optional release update probing.
 
 ### Changed
 
@@ -26,6 +29,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   - added `vaner upgrade` helper
   - `vaner init` now applies detected compute defaults and offers shell-completion install
   - MCP config scaffolding now prefers the absolute `vaner` binary path and only falls back to `uvx`
+- Core eval/query test paths now run without requiring `sentence-transformers`, enabling hermetic default CI coverage.
+- GitHub workflow hardening improved by pinning `actions/attest-sbom` and reducing unnecessary workflow token permissions.
 
 ### Breaking changes
 
