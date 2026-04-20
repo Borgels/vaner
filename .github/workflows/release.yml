@@ -82,7 +82,7 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --generate-notes
           fi
-          gh release upload "$TAG" dist/* sbom.json dist/*.sigstore.json sbom.json.sigstore.json --clobber
+          gh release upload "$TAG" dist/* sbom.json sbom.json.sigstore.json --clobber
 
   slsa-provenance:
     needs: publish
