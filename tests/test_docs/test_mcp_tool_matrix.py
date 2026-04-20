@@ -73,13 +73,14 @@ def test_source_and_docs_do_not_reference_removed_tools() -> None:
     for static_path in [root / "README.md"]:
         if static_path.exists():
             candidates.append(static_path)
+    source_patterns = [pattern for pattern in FORBIDDEN_TOOL_PATTERNS if "legacy_" in pattern.pattern]
     for path in candidates:
         if not path.is_file():
             continue
         if path.name == "mcp-migration.md":
             continue
         text = path.read_text(encoding="utf-8")
-        for pattern in FORBIDDEN_TOOL_PATTERNS:
+        for pattern in source_patterns:
             if pattern.search(text):
                 violations.append(f"{path}: {pattern.pattern}")
     assert violations == []

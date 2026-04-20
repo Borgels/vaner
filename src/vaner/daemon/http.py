@@ -10,7 +10,6 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
-from vaner import __version__ as _vaner_version
 from vaner.cli.commands.config import load_config, set_compute_value
 from vaner.daemon.cockpit_html import build_cockpit_html
 from vaner.models.config import VanerConfig

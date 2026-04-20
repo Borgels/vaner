@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from dataclasses import dataclass
@@ -62,10 +63,10 @@ max_generations_per_cycle = 200
 [exploration]
 # Optional: separate LLM Vaner uses internally for background exploration.
 # Leave endpoint empty to auto-detect a local Ollama or vLLM instance.
+enabled = true
 endpoint = ""      # e.g. "http://127.0.0.1:11434" or "http://127.0.0.1:8000/v1"
 model = ""         # e.g. "qwen2.5-coder:32b" -- leave empty to auto-select
 backend = "auto"   # "auto" | "ollama" | "openai"
-api_key = ""       # optional API key env passthrough for remote exploration endpoints
 
 [proxy]
 proxy_token = ""
@@ -94,15 +95,6 @@ transport = "stdio"
 http_host = "127.0.0.1"
 http_port = 8472
 
-[intent]
-enabled = true
-include_global_skills = false
-skill_roots = [".cursor/skills", ".claude/skills", "skills"]
-
-[intent.skills_loop]
-enabled = true
-max_feedback_events_per_cycle = 200
-
 [compute]
 device = "auto"
 cpu_fraction = 0.2
@@ -130,6 +122,14 @@ telemetry = "local"
 [limits]
 max_age_seconds = 3600
 max_context_tokens = 4096
+
+[intent]
+enabled = true
+lookback_turns = 8
+
+[intent.skills_loop]
+enabled = true
+max_candidates = 5
 """
 
 
@@ -142,6 +142,37 @@ def init_repo(repo_root: Path) -> Path:
     if not config_path.exists():
         config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
     return config_path
+
+
+def _default_vaner_feedback_skill() -> str:
+    packaged = Path(__file__).resolve().parents[2] / "defaults" / "skills" / "vaner-feedback" / "SKILL.md"
+    if packaged.exists():
+        return packaged.read_text(encoding="utf-8")
+    return "Report scenario outcomes back to Vaner after completing a task.\n"
+
+
+def _write_managed_skill(base_dir: Path, content: str) -> Path:
+    skill_path = base_dir / "skills" / "vaner" / "vaner-feedback" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True, exist_ok=True)
+    skill_path.write_text(content, encoding="utf-8")
+    return skill_path
+
+
+def write_mcp_configs(repo_root: Path) -> tuple[list[Path], str]:
+    launcher = shutil.which("vaner") or "vaner"
+    args = ["mcp", "--path", str(repo_root)]
+    payload = {"mcpServers": {"vaner": {"command": launcher, "args": args}}}
+
+    cursor_path = repo_root / ".cursor" / "mcp.json"
+    cursor_path.parent.mkdir(parents=True, exist_ok=True)
+    cursor_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    skill_content = _default_vaner_feedback_skill()
+    repo_skill_path = _write_managed_skill(repo_root / ".cursor", skill_content)
+    claude_skill_path = _write_managed_skill(Path.home() / ".claude", skill_content)
+
+    written_paths = [cursor_path, repo_skill_path, claude_skill_path]
+    return written_paths, launcher
 
 
 @dataclass(slots=True)

@@ -13,14 +13,11 @@ from vaner.models.config import (
     ExplorationConfig,
     GatewayConfig,
     GenerationConfig,
-    IntentConfig,
     MCPConfig,
     PrivacyConfig,
     ProxyConfig,
     VanerConfig,
 )
-
-logger = logging.getLogger(__name__)
 
 
 def global_config_path() -> Path:
@@ -58,7 +55,6 @@ def load_config(repo_root: Path) -> VanerConfig:
     proxy_section = parsed.get("proxy", {})
     gateway_section = parsed.get("gateway", {})
     mcp_section = parsed.get("mcp", {})
-    intent_section = parsed.get("intent", {})
     compute_section = parsed.get("compute", {})
     exploration_section = parsed.get("exploration", {})
     limits_section = parsed.get("limits", {})
@@ -87,34 +83,14 @@ def load_config(repo_root: Path) -> VanerConfig:
     else:
         gateway = GatewayConfig()
     mcp = MCPConfig(**mcp_section) if isinstance(mcp_section, dict) else MCPConfig()
-    if isinstance(intent_section, dict):
-        skills_loop = intent_section.get("skills_loop", {})
-        mapped_intent = dict(intent_section)
-        if isinstance(skills_loop, dict):
-            if "enabled" in skills_loop:
-                mapped_intent["skills_loop_enabled"] = bool(skills_loop["enabled"])
-            if "max_feedback_events_per_cycle" in skills_loop:
-                mapped_intent["max_feedback_events_per_cycle"] = int(skills_loop["max_feedback_events_per_cycle"])
-        mapped_intent.pop("skills_loop", None)
-        intent = IntentConfig(**mapped_intent)
-    else:
-        intent = IntentConfig()
     compute = ComputeConfig(**compute_section) if isinstance(compute_section, dict) else ComputeConfig()
     if isinstance(exploration_section, dict):
-        legacy_keys = sorted(
-            {str(key) for key in exploration_section.keys() if str(key) == "embedding_device" or str(key).startswith("exploration_")}
-        )
-        if legacy_keys:
-            logger.warning(
-                "Legacy exploration config keys detected and ignored: %s",
-                ", ".join(legacy_keys),
-            )
         mapped_exploration = {
-            "endpoint": exploration_section.get("endpoint", ""),
-            "model": exploration_section.get("model", ""),
-            "backend": exploration_section.get("backend", "auto"),
-            "api_key": exploration_section.get("api_key", ""),
+            "exploration_endpoint": exploration_section.get("endpoint", ""),
+            "exploration_model": exploration_section.get("model", ""),
+            "exploration_backend": exploration_section.get("backend", "auto"),
             "embedding_model": exploration_section.get("embedding_model", "all-MiniLM-L6-v2"),
+            "embedding_device": exploration_section.get("embedding_device", "cpu"),
         }
         exploration = ExplorationConfig(**mapped_exploration)
     else:
@@ -137,7 +113,6 @@ def load_config(repo_root: Path) -> VanerConfig:
         proxy=proxy,
         gateway=gateway,
         mcp=mcp,
-        intent=intent,
         compute=compute,
         exploration=exploration,
     )
@@ -148,14 +123,6 @@ def _toml_literal(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_literal(item) for item in value) + "]"
-    if isinstance(value, dict):
-        chunks: list[str] = []
-        for key, item in value.items():
-            escaped_key = str(key).replace('"', '\\"')
-            chunks.append(f'"{escaped_key}" = {_toml_literal(item)}')
-        return "{ " + ", ".join(chunks) + " }"
     escaped = str(value).replace('"', '\\"')
     return f'"{escaped}"'
 

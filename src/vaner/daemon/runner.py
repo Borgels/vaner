@@ -17,7 +17,6 @@ from vaner.daemon.engine.scenario_builder import build_scenarios
 from vaner.daemon.engine.scorer import score_paths
 from vaner.daemon.signals.fs_watcher import RepoChangeWatcher, scan_repo_files
 from vaner.daemon.signals.git_reader import read_git_diff, read_git_state
-from vaner.intent.skills_discovery import discover_skills
 from vaner.models.artefact import Artefact
 from vaner.models.config import VanerConfig
 from vaner.models.session import WorkingSet
@@ -85,22 +84,6 @@ class VanerDaemon:
             )
             for rel_path in git_paths
         )
-        if self.config.intent.enabled:
-            skills = discover_skills(
-                repo_root,
-                include_global=self.config.intent.include_global_skills,
-                skill_roots=self.config.intent.skill_roots,
-            )
-            signals.extend(
-                SignalEvent(
-                    id=str(uuid.uuid4()),
-                    source="skill_scan",
-                    kind="skill_loaded",
-                    timestamp=time.time(),
-                    payload=skill.as_signal_payload(repo_root),
-                )
-                for skill in skills
-            )
         for signal in signals:
             await self.store.insert_signal_event(signal)
         targets = plan_targets(

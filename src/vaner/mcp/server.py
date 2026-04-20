@@ -274,13 +274,7 @@ def build_server(repo_root: Path) -> Server:
         await metrics_store.initialize()
         await scenario_store.initialize()
 
-        async def _record(
-            status: str,
-            *,
-            tool_name: str | None = None,
-            scenario_id: str | None = None,
-            skill: str | None = None,
-        ) -> None:
+        async def _record(status: str, *, tool_name: str | None = None, scenario_id: str | None = None) -> None:
             latency_ms = (time.perf_counter() - started) * 1000.0
             try:
                 await metrics_store.increment_mode_usage("mcp")
@@ -290,7 +284,6 @@ def build_server(repo_root: Path) -> Server:
                     status=status,
                     latency_ms=latency_ms,
                     scenario_id=scenario_id,
-                    skill=skill,
                 )
             except Exception:
                 return
@@ -1028,7 +1021,7 @@ async def run_stdio(repo_root: Path) -> None:
                 server_name="vaner",
                 server_version="1.0.0",
                 capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
+                    notification_options=None,
                     experimental_capabilities={},
                 ),
             ),
@@ -1053,7 +1046,7 @@ async def run_sse(repo_root: Path, host: str, port: int) -> None:
                     server_name="vaner",
                     server_version="1.0.0",
                     capabilities=server.get_capabilities(
-                        notification_options=NotificationOptions(),
+                        notification_options=None,
                         experimental_capabilities={},
                     ),
                 ),

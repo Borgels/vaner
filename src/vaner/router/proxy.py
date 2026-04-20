@@ -15,7 +15,6 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
-from vaner import __version__ as _vaner_version
 from vaner.api import aquery
 from vaner.cli.commands.config import load_config, set_compute_value
 from vaner.daemon.cockpit_html import build_cockpit_html

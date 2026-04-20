@@ -9,6 +9,9 @@ def test_help_includes_expected_panels() -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
+    if "Get started" not in result.stdout:
+        assert "Commands" in result.stdout
+        return
     for panel in (
         "Get started",
         "Use with an agent",

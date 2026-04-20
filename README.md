@@ -109,7 +109,6 @@ Most documentation lives at [docs.vaner.ai](https://docs.vaner.ai):
 - CLI reference: [docs.vaner.ai/cli](https://docs.vaner.ai/cli)
 - MCP tools: [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp)
 - Examples: [docs.vaner.ai/examples](https://docs.vaner.ai/examples)
-- Agent skills loop (repo docs): [`docs/skills-integration.md`](docs/skills-integration.md)
 
 ## MCP (v1.0)
 

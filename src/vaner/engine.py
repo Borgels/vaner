@@ -31,7 +31,6 @@ from vaner.intent.maturity import MaturityTracker
 from vaner.intent.reasoner import CorpusReasoner, PredictionScenario
 from vaner.intent.scorer import IntentScorer
 from vaner.intent.scoring_policy import ScoringPolicy
-from vaner.intent.skills_discovery import discover_skills
 from vaner.intent.trainer import IntentTrainer
 from vaner.intent.transfer import bootstrap_transfer_priors
 from vaner.learning.reward import RewardInput, compute_reward
@@ -41,7 +40,6 @@ from vaner.models.context import ContextPackage
 from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor
 from vaner.models.signal import SignalEvent
 from vaner.store.artefacts import ArtefactStore
-from vaner.store.scenarios import ScenarioStore
 
 LLMCallable = Callable[[str], Awaitable[str]]
 EmbedCallable = Callable[[list[str]], Awaitable[list[list[float]]]]
@@ -98,7 +96,6 @@ class VanerEngine:
         repo_root = getattr(adapter, "repo_root", Path.cwd())
         self.config = config if config is not None else load_config(Path(repo_root))
         self.store = ArtefactStore(self.config.store_path)
-        self._scenario_store = ScenarioStore(self.config.repo_root / ".vaner" / "scenarios.db")
         self.llm = self._resolve_llm(llm)
         self.embed = embed
         self._background_task: asyncio.Task[None] | None = None
@@ -143,7 +140,6 @@ class VanerEngine:
 
     async def initialize(self) -> None:
         await self.store.initialize()
-        await self._scenario_store.initialize()
         await self._load_learning_state()
         self._try_load_trained_scorer()
         if not self._arc_loaded:
@@ -693,9 +689,6 @@ class VanerEngine:
             saturation_coverage=ecfg.saturation_coverage,
             scoring_policy=self._scoring_policy,
         )
-        if self.config.intent.skills_loop_enabled:
-            for source, hit in await self._scenario_store.consume_feedback(limit=max(1, self.config.intent.max_feedback_events_per_cycle)):
-                frontier.record_feedback(source, hit=hit)
 
         # Seed the frontier from all sources
         graph = await self._load_graph()
@@ -727,13 +720,6 @@ class VanerEngine:
 
         patterns = await self.store.list_validated_patterns(limit=50)
         frontier.seed_from_patterns(patterns)
-        if self.config.intent.enabled:
-            skills = discover_skills(
-                self.config.repo_root,
-                include_global=self.config.intent.include_global_skills,
-                skill_roots=self.config.intent.skill_roots,
-            )
-            frontier.seed_from_skills(skills, available_paths)
 
         # Seed recovery scenarios for recent cold-miss queries.  These paths
         # clearly weren't precomputed and should be prioritized in this cycle.
@@ -2220,10 +2206,10 @@ def _build_exploration_llm(ecfg: ExplorationConfig) -> LLMCallable | None:
 
     _log = _logging.getLogger(__name__)
 
-    backend = ecfg.backend  # "auto", "ollama", "openai"
-    endpoint = ecfg.endpoint.strip()
-    model = ecfg.model.strip()
-    api_key = ecfg.api_key.strip() or os.environ.get("VANER_EXPLORATION_API_KEY", "")
+    backend = ecfg.exploration_backend  # "auto", "ollama", "openai"
+    endpoint = ecfg.exploration_endpoint.strip()
+    model = ecfg.exploration_model.strip()
+    api_key = ecfg.exploration_api_key.strip() or os.environ.get("VANER_EXPLORATION_API_KEY", "")
 
     def _make_openai(base_url: str, m: str) -> LLMCallable:
         from vaner.clients.openai import openai_llm
@@ -2262,7 +2248,7 @@ def _build_exploration_llm(ecfg: ExplorationConfig) -> LLMCallable | None:
                 if m:
                     return _make_openai(endpoint, m)
         _log.warning(
-            "Vaner: endpoint=%r is unreachable or has no models; falling back to heuristic-only exploration.",
+            "Vaner: exploration_endpoint=%r is unreachable or has no models; falling back to heuristic-only exploration.",
             endpoint,
         )
         return None
@@ -2287,18 +2273,16 @@ def _build_exploration_llm(ecfg: ExplorationConfig) -> LLMCallable | None:
 
     _log.debug(
         "Vaner: no exploration LLM detected on localhost (tried vLLM :8000 and Ollama :11434). "
-        "Set exploration.endpoint in config to enable LLM-powered exploration."
+        "Set exploration_endpoint in config to enable LLM-powered exploration."
     )
     return None
 
 
-def _build_embed_callable(config: VanerConfig) -> EmbedCallable | None:
+def _build_embed_callable(ecfg: ExplorationConfig) -> EmbedCallable | None:
     """Build an embedding callable from ExplorationConfig. Returns None if disabled."""
     import logging as _logging
 
     _log = _logging.getLogger(__name__)
-    ecfg = config.exploration
-    embedding_device = _embedding_device_from_compute(config)
 
     if not ecfg.embedding_model:
         return None
@@ -2308,11 +2292,11 @@ def _build_embed_callable(config: VanerConfig) -> EmbedCallable | None:
         _log.info(
             "Vaner embeddings: sentence-transformers model=%s device=%s",
             ecfg.embedding_model,
-            embedding_device,
+            ecfg.embedding_device,
         )
         return sentence_transformer_embed(
             model=ecfg.embedding_model,
-            device=embedding_device,
+            device=ecfg.embedding_device,
         )
     except Exception as exc:
         _log.warning(
@@ -2352,12 +2336,12 @@ def _apply_compute_settings(compute: ComputeConfig) -> None:
 def _embedding_device_from_compute(config: VanerConfig) -> str:
     compute_device = (config.compute.embedding_device or config.compute.device).strip().lower()
     if not compute_device or compute_device == "auto":
-        return "cpu"
+        return config.exploration.embedding_device
     if compute_device.startswith("cuda"):
         return "cuda"
     if compute_device in {"cpu", "mps"}:
         return compute_device
-    return "cpu"
+    return config.exploration.embedding_device
 
 
 def _cpu_load_fraction() -> float:
@@ -2408,12 +2392,12 @@ def _record_idle_usage_seconds(config: VanerConfig, seconds: float) -> None:
 def build_default_engine(repo: Path | str | None = None, config: VanerConfig | None = None) -> VanerEngine:
     """Build a VanerEngine with auto-detected exploration LLM and embeddings.
 
-    Auto-detection order (when ``endpoint`` is empty):
+    Auto-detection order (when ``exploration_endpoint`` is empty):
     1. vLLM / OpenAI-compatible on ``http://127.0.0.1:8000/v1``
     2. Ollama on ``http://127.0.0.1:11434``
     3. Heuristic-only (no LLM) — graceful fallback
 
-    Set ``config.exploration.endpoint`` to point at a remote
+    Set ``config.exploration.exploration_endpoint`` to point at a remote
     OpenAI-compatible endpoint (vLLM, LM Studio, remote Ollama, etc.).
     """
     root = Path(repo).resolve() if repo is not None else Path.cwd().resolve()
@@ -2421,7 +2405,9 @@ def build_default_engine(repo: Path | str | None = None, config: VanerConfig | N
     resolved = config if config is not None else load_config(root)
     _apply_compute_settings(resolved.compute)
 
+    resolved.exploration.embedding_device = _embedding_device_from_compute(resolved)
+
     exploration_llm = _build_exploration_llm(resolved.exploration)
-    embed = _build_embed_callable(resolved)
+    embed = _build_embed_callable(resolved.exploration)
 
     return VanerEngine(adapter=adapter, config=resolved, llm=exploration_llm, embed=embed)

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "vaner": {
+      "command": "/home/abo/.local/bin/vaner",
+      "args": [
+        "mcp",
+        "--path",
+        "."
+      ]
+    }
+  }
+}
