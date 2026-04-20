@@ -150,7 +150,7 @@ jobs:
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               --certificate-identity-regexp "^${cert_identity}$" \
               "$artifact"
-            if [ -e "${provenance_files[0]}" ]; then
+            if [ "${#provenance_files[@]}" -gt 0 ] && [ -e "${provenance_files[0]}" ]; then
               slsa-verifier verify-artifact "$artifact" \
                 --provenance-path "${provenance_files[0]}" \
                 --source-uri "github.com/${GITHUB_REPOSITORY}" \
