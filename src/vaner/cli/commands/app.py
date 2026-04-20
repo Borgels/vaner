@@ -146,6 +146,18 @@ def _require_safe_mcp_sse_exposure(host: str) -> None:
         raise typer.BadParameter("MCP SSE transport only supports loopback hosts by default.")
 
 
+def _is_loopback_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host in {"localhost"}
+
+
+def _require_safe_mcp_sse_exposure(host: str) -> None:
+    if not _is_loopback_host(host):
+        raise typer.BadParameter("MCP SSE transport only supports loopback hosts by default.")
+
+
 def _friendly_error_message(exc: Exception) -> str:
     if isinstance(exc, FileNotFoundError):
         return f"File not found: {exc}. Check your repo path or run `vaner init`."
@@ -897,6 +909,7 @@ def mcp_server(
     repo_root = _repo_root(path)
 
     if transport == "sse":
+        _require_safe_mcp_sse_exposure(host)
         typer.echo(f"Starting Vaner MCP server (SSE) on {host}:{port}  repo={repo_root}")
         _asyncio.run(run_sse(repo_root, host=host, port=port))
     else:

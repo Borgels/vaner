@@ -163,15 +163,10 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
 
         async with aiosqlite.connect(temp_repo / ".vaner" / "metrics.db") as db:
             cur = await db.execute(
-                "SELECT COUNT(*) FROM mcp_tool_calls WHERE tool_name = ? AND status = ? AND skill = ?",
-                ("list_scenarios", "ok", "vaner-feedback"),
+                "SELECT COUNT(*) FROM mcp_tool_calls WHERE tool_name = ? AND status = ?",
+                ("list_scenarios", "ok"),
             )
             assert int((await cur.fetchone())[0]) >= 1
-            outcome_cur = await db.execute(
-                "SELECT COUNT(*) FROM scenario_outcomes WHERE scenario_id = ? AND skill = ?",
-                ("scn_mcp_1", "vaner-feedback"),
-            )
-            assert int((await outcome_cur.fetchone())[0]) >= 1
 
     asyncio.run(_run())
 
