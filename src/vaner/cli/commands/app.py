@@ -484,6 +484,9 @@ def mcp_server(
     """
     import asyncio as _asyncio
 
+    if transport == "sse":
+        _require_safe_mcp_sse_exposure(host)
+
     try:
         from vaner.mcp.server import run_sse, run_stdio
     except ImportError as exc:  # pragma: no cover
@@ -493,7 +496,6 @@ def mcp_server(
     repo_root = _repo_root(path)
 
     if transport == "sse":
-        _require_safe_mcp_sse_exposure(host)
         typer.echo(f"Starting Vaner MCP server (SSE) on {host}:{port}  repo={repo_root}")
         _asyncio.run(run_sse(repo_root, host=host, port=port))
     else:
