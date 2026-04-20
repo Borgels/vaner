@@ -44,7 +44,7 @@ async def test_precompute_cycle_respects_max_cycle_seconds(temp_repo) -> None:
             return base[0]
         return base[0] + 1000.0
 
-    with patch("vaner.engine_legacy.time.monotonic", side_effect=fake_monotonic):
+    with patch("vaner.engine.time.monotonic", side_effect=fake_monotonic):
         full_packages = await engine.precompute_cycle()
 
     assert isinstance(full_packages, int)
