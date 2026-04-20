@@ -165,6 +165,8 @@ BACKEND_PRESETS: dict[str, BackendPreset] = {
     ),
 }
 
+CLOUD_BACKEND_PRESETS = {"openai", "anthropic", "openrouter"}
+
 
 COMPUTE_PRESETS: dict[str, dict[str, object]] = {
     "background": {
@@ -353,7 +355,19 @@ def interactive_backend_choice() -> str | None:
     choice = _prompt("Choice", "1")
     mapping = {num: slug for num, slug, _ in menu}
     mapping.update({slug: slug for _num, slug, _ in menu})
-    return mapping.get(choice, "skip")
+    selected = mapping.get(choice, "skip")
+    if selected in CLOUD_BACKEND_PRESETS:
+        confirm = (
+            _prompt(
+                (f"You selected '{selected}', which is a cloud backend and can incur API costs. Continue"),
+                "n",
+            )
+            .strip()
+            .lower()
+        )
+        if confirm not in {"y", "yes"}:
+            return "skip"
+    return selected
 
 
 def interactive_compute_choice() -> str | None:
