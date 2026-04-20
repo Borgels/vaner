@@ -10,3 +10,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Added
 
 - Initial public project scaffolding and documentation split to `docs.vaner.ai`.
+
+## [0.2.0] - 2026-04-19
+
+### Removed
+
+- Removed deprecated MCP compatibility tools: `legacy_get_context`, `legacy_precompute`, and `legacy_get_metrics`.
+- Removed deprecated `ExplorationPolicy`; `ScoringPolicy` is now the sole exploration policy surface.
+
+### Changed
+
+- Hardened MCP tests with explicit tool-matrix assertions, per-tool error-path checks, telemetry checks, and an in-memory protocol round-trip test.
+- Added CLI MCP smoke tests for `stdio`/`sse` wiring and non-loopback SSE safety checks.
+- Added docs drift tests to prevent reintroducing removed MCP tool names in docs examples.
+- Hardened release CI with strict provenance enforcement, keyless Sigstore signing for artifacts, SBOM attestation, and release verification gates.
+- Added container provenance/SBOM output plus keyless SBOM attestation for Docker releases.
+- Added VSIX provenance attestation and Sigstore bundle upload to GitHub releases.

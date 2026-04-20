@@ -10,15 +10,20 @@ default integration path is MCP-first.
 
 Tools exposed
 -------------
-``legacy_get_context(prompt)``
-    Retrieve the most relevant repository context for a given prompt.
-    Returns the injected context string plus metadata (cache tier, token count).
+``list_scenarios(kind?, limit?)``
+    List top-ranked scenarios for the current repository.
 
-``legacy_precompute()``
-    Trigger a background precompute cycle to warm the cache.
+``get_scenario(id)``
+    Return full prepared context and evidence for a scenario.
 
-``legacy_get_metrics()``
-    Return recent proxy/engine metrics as a JSON summary.
+``expand_scenario(id, depth?)``
+    Trigger deeper precompute and return the refreshed scenario.
+
+``compare_scenarios(ids)``
+    Compare overlap/divergence across candidate scenarios.
+
+``report_outcome(id, result, note?)``
+    Record whether a scenario was useful, partial, or irrelevant.
 
 Usage
 -----
@@ -66,7 +71,7 @@ from mcp.types import (
     Tool,
 )
 
-from vaner.api import aprecompute, aquery
+from vaner.api import aprecompute
 from vaner.cli.commands.config import load_config
 from vaner.models.scenario import Scenario
 from vaner.store.scenarios import ScenarioStore
@@ -208,47 +213,6 @@ def build_server(repo_root: Path) -> Server:
                         "required": ["id", "result"],
                     },
                 ),
-                Tool(
-                    name="legacy_get_context",
-                    description=("Deprecated compatibility tool. Retrieve repository context for a prompt."),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "prompt": {
-                                "type": "string",
-                                "description": "The user's question or task description",
-                            },
-                            "top_n": {
-                                "type": "integer",
-                                "description": "Maximum number of context snippets to return (default: 8)",
-                                "default": 8,
-                            },
-                        },
-                        "required": ["prompt"],
-                    },
-                ),
-                Tool(
-                    name="legacy_precompute",
-                    description=("Deprecated compatibility tool. Trigger a background precompute cycle."),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="legacy_get_metrics",
-                    description="Deprecated compatibility tool. Return recent Vaner performance metrics.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "last_n": {
-                                "type": "integer",
-                                "description": "Number of recent requests to summarize (default: 100)",
-                                "default": 100,
-                            }
-                        },
-                    },
-                ),
             ]
         )
 
@@ -375,53 +339,6 @@ def build_server(repo_root: Path) -> Server:
             await _record("ok", scenario_id=scenario_id)
             return CallToolResult(content=_make_text(json.dumps({"ok": True, "scenario_id": scenario_id, "result": result})))
 
-        if name in {"legacy_get_context", "legacy:get_context", "get_context"}:
-            prompt = str(args.get("prompt", ""))
-            top_n = int(args.get("top_n", 8))
-            if not prompt:
-                return await _error("ERROR: prompt is required", tool_name="legacy_get_context")
-            try:
-                _ensure_backend(config)
-            except BackendNotConfiguredError as exc:
-                return await _error(str(exc), tool_name="legacy_get_context", code=exc.code)
-            try:
-                package = await aquery(prompt, repo_root, config=config, top_n=top_n)
-            except Exception as exc:
-                return await _error(f"ERROR: {exc}", tool_name="legacy_get_context")
-            metadata = {
-                "cache_tier": package.cache_tier,
-                "partial_similarity": round(package.partial_similarity, 3),
-                "token_used": package.token_used,
-                "selections": len(package.selections),
-                "paths": [s.source_path for s in package.selections],
-            }
-            output = f"<!-- vaner:metadata {json.dumps(metadata)} -->\n\n" + package.injected_context
-            await _record("ok", tool_name="legacy_get_context")
-            return CallToolResult(content=_make_text(output))
-
-        if name in {"legacy_precompute", "legacy:precompute", "precompute"}:
-            try:
-                written = await aprecompute(repo_root, config=config)
-            except Exception as exc:
-                return await _error(f"ERROR: {exc}", tool_name="legacy_precompute")
-            await _record("ok", tool_name="legacy_precompute")
-            return CallToolResult(content=_make_text(f"Precompute cycle complete. Artefacts written: {written}"))
-
-        if name in {"legacy_get_metrics", "legacy:get_metrics", "get_metrics"}:
-            last_n = int(args.get("last_n", 100))
-            try:
-                metrics_db = repo_root / ".vaner" / "metrics.db"
-                if not metrics_db.exists():
-                    await _record("ok", tool_name="legacy_get_metrics")
-                    return CallToolResult(content=_make_text("No metrics yet. Run `vaner proxy` and make some requests first."))
-                store = MetricsStore(metrics_db)
-                await store.initialize()
-                summary = await store.summary(last_n=last_n)
-                await _record("ok", tool_name="legacy_get_metrics")
-                return CallToolResult(content=_make_text(json.dumps(summary, indent=2)))
-            except Exception as exc:
-                return await _error(f"ERROR: {exc}", tool_name="legacy_get_metrics")
-
         return await _error(f"ERROR: Unknown tool '{name}'")
 
     return server
@@ -438,7 +355,7 @@ async def run_stdio(repo_root: Path) -> None:
             write_stream,
             InitializationOptions(
                 server_name="vaner",
-                server_version="0.1.0",
+                server_version="0.2.0",
                 capabilities=server.get_capabilities(
                     notification_options=None,
                     experimental_capabilities={},
@@ -464,7 +381,7 @@ async def run_sse(repo_root: Path, host: str, port: int) -> None:
                 streams[1],
                 InitializationOptions(
                     server_name="vaner",
-                    server_version="0.1.0",
+                    server_version="0.2.0",
                     capabilities=server.get_capabilities(
                         notification_options=None,
                         experimental_capabilities={},

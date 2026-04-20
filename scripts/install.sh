@@ -93,7 +93,7 @@ Options:
   --dry-run                       Print the install plan without making changes
   --verify                        Run post-install smoke checks
   --backend uv|pipx               Force installer backend
-  --version VERSION               Install a specific PyPI version (e.g. 0.1.0)
+  --version VERSION               Install a specific PyPI version (e.g. 0.2.0)
   --no-modify-path                Do not run ensurepath/path integration steps
   --verbose                       Print executed commands
   --with-ollama                   Install/start Ollama and pull qwen2.5-coder:7b

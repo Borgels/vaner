@@ -87,6 +87,19 @@ pre-commit run --all-files
 - CI must pass before merge.
 - Add a clear PR description and test notes.
 
+## Branch Protection and CI (Important)
+
+- `main` is branch-protected: push changes via PR branches, not direct pushes.
+- Do not merge or tag releases until required checks are green.
+- If you edit GitHub workflows, make sure the Actionlint check passes.
+- Prefer checking CI status explicitly with GitHub CLI:
+
+```bash
+gh pr view --json url,state,headRefName,baseRefName
+gh run list --limit 20
+gh run view <run-id>
+```
+
 ## Commit style
 
 - Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) when possible.

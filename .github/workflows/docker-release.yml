@@ -46,6 +46,8 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: true
+          sbom: true
           tags: |
             ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
             ${{ env.IMAGE_NAME }}:latest
@@ -56,6 +58,13 @@ jobs:
           image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build_push.outputs.digest }}
           format: sarif
           output: trivy-results.sarif
+
+      - name: Generate SPDX SBOM for image
+        uses: aquasecurity/trivy-action@876cf04c63f65e9799bcf1043b584e72469c7143 # v0.35.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build_push.outputs.digest }}
+          format: spdx-json
+          output: sbom.spdx.json
 
       - name: Upload Trivy scan results to Security tab
         uses: github/codeql-action/upload-sarif@865f5f5c36632f18690a3d569fa0a764f2da0c3e # v3
@@ -69,3 +78,8 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.build_push.outputs.digest }}
         run: cosign sign --yes "${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+      - name: Attest image SBOM
+        env:
+          IMAGE_DIGEST: ${{ steps.build_push.outputs.digest }}
+        run: cosign attest --yes --predicate sbom.spdx.json --type spdxjson "${IMAGE_NAME}@${IMAGE_DIGEST}"

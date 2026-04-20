@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import traceback
@@ -50,6 +51,18 @@ _VERBOSE = False
 
 def _repo_root(path: str | None) -> Path:
     return Path(path).resolve() if path else Path.cwd()
+
+
+def _is_loopback_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host in {"localhost"}
+
+
+def _require_safe_mcp_sse_exposure(host: str) -> None:
+    if not _is_loopback_host(host):
+        raise typer.BadParameter("MCP SSE transport only supports loopback hosts by default.")
 
 
 def _friendly_error_message(exc: Exception) -> str:
@@ -470,6 +483,9 @@ def mcp_server(
     See src/vaner/mcp/server.py for configuration examples.
     """
     import asyncio as _asyncio
+
+    if transport == "sse":
+        _require_safe_mcp_sse_exposure(host)
 
     try:
         from vaner.mcp.server import run_sse, run_stdio
