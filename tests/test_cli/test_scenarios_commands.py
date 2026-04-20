@@ -119,9 +119,10 @@ def test_init_writes_cursor_mcp_config(temp_repo, monkeypatch):
     fake_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-    result = runner.invoke(app.app, ["init", "--path", str(temp_repo)])
+    monkeypatch.setattr(mcp_clients, "_home", lambda: fake_home)
+    result = runner.invoke(app.app, ["init", "--path", str(temp_repo), "--clients", "cursor"])
     assert result.exit_code == 0
-    cursor_mcp = temp_repo / ".cursor" / "mcp.json"
+    cursor_mcp = fake_home / ".cursor" / "mcp.json"
     assert cursor_mcp.exists()
     payload = json.loads(cursor_mcp.read_text(encoding="utf-8"))
     server = payload["mcpServers"]["vaner"]
@@ -159,6 +160,6 @@ def test_init_writes_mcp_configs(temp_repo, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
     monkeypatch.setattr(mcp_clients, "_home", lambda: fake_home)
 
-    result = runner.invoke(app.app, ["init", "--path", str(temp_repo)])
+    result = runner.invoke(app.app, ["init", "--path", str(temp_repo), "--clients", "cursor,claude-desktop"])
     assert result.exit_code == 0
-    assert (temp_repo / ".cursor" / "mcp.json").exists()
+    assert (fake_home / ".cursor" / "mcp.json").exists()
