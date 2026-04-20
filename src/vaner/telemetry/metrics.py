@@ -87,6 +87,14 @@ class MetricsStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
 
+    @staticmethod
+    async def _ensure_column(db: aiosqlite.Connection, table: str, column: str, column_def: str) -> None:
+        cursor = await db.execute(f"PRAGMA table_info({table})")
+        rows = await cursor.fetchall()
+        names = {str(row[1]) for row in rows}
+        if column not in names:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
+
     async def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
@@ -142,6 +150,7 @@ class MetricsStore:
                     status TEXT NOT NULL,
                     latency_ms REAL NOT NULL,
                     scenario_id TEXT,
+                    skill TEXT,
                     timestamp REAL NOT NULL
                 )
                 """
@@ -153,10 +162,13 @@ class MetricsStore:
                     scenario_id TEXT NOT NULL,
                     result TEXT NOT NULL,
                     note TEXT NOT NULL DEFAULT '',
+                    skill TEXT,
                     timestamp REAL NOT NULL
                 )
                 """
             )
+            await self._ensure_column(db, "mcp_tool_calls", "skill", "TEXT")
+            await self._ensure_column(db, "scenario_outcomes", "skill", "TEXT")
             await db.commit()
 
     async def record(self, m: RequestMetrics) -> None:
@@ -321,24 +333,32 @@ class MetricsStore:
         status: str,
         latency_ms: float,
         scenario_id: str | None = None,
+        skill: str | None = None,
     ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO mcp_tool_calls (id, tool_name, status, latency_ms, scenario_id, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO mcp_tool_calls (id, tool_name, status, latency_ms, scenario_id, skill, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (str(uuid.uuid4()), tool_name, status, latency_ms, scenario_id, time.time()),
+                (str(uuid.uuid4()), tool_name, status, latency_ms, scenario_id, skill, time.time()),
             )
             await db.commit()
 
-    async def record_scenario_outcome(self, *, scenario_id: str, result: str, note: str = "") -> None:
+    async def record_scenario_outcome(
+        self,
+        *,
+        scenario_id: str,
+        result: str,
+        note: str = "",
+        skill: str | None = None,
+    ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO scenario_outcomes (id, scenario_id, result, note, timestamp)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO scenario_outcomes (id, scenario_id, result, note, skill, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (str(uuid.uuid4()), scenario_id, result, note, time.time()),
+                (str(uuid.uuid4()), scenario_id, result, note, skill, time.time()),
             )
             await db.commit()

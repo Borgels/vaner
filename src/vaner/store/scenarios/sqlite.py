@@ -59,10 +59,24 @@ class ScenarioStore:
                 )
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scenario_feedback (
+                    id TEXT PRIMARY KEY,
+                    scenario_id TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'graph',
+                    skill TEXT,
+                    result TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    processed INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_kind ON scenarios(kind)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_score ON scenarios(score DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_freshness ON scenarios(freshness)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenario_evidence_sid ON scenario_evidence(scenario_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_scenario_feedback_processed ON scenario_feedback(processed, timestamp)")
             await db.commit()
 
     async def upsert(self, scenario: Scenario) -> None:
@@ -150,7 +164,7 @@ class ScenarioStore:
             )
             await db.commit()
 
-    async def record_outcome(self, scenario_id: str, outcome: str) -> None:
+    async def record_outcome(self, scenario_id: str, outcome: str, *, skill: str | None = None, source: str | None = None) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("UPDATE scenarios SET last_outcome = ? WHERE id = ?", (outcome, scenario_id))
@@ -161,7 +175,38 @@ class ScenarioStore:
                 scenario = self._row_to_scenario(row, evidence_map.get(scenario_id, []))
                 score = scenario_score(scenario)
                 await db.execute("UPDATE scenarios SET score = ? WHERE id = ?", (score, scenario_id))
+                now = time.time()
+                resolved_source = source or ("skill" if skill else "graph")
+                await db.execute(
+                    """
+                    INSERT INTO scenario_feedback(id, scenario_id, source, skill, result, timestamp, processed)
+                    VALUES (?, ?, ?, ?, ?, ?, 0)
+                    """,
+                    (f"{scenario_id}:{now}", scenario_id, resolved_source, skill, outcome, now),
+                )
             await db.commit()
+
+    async def consume_feedback(self, *, limit: int = 200) -> list[tuple[str, bool]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT id, source, result
+                FROM scenario_feedback
+                WHERE processed = 0
+                ORDER BY timestamp ASC
+                LIMIT ?
+                """,
+                (max(1, limit),),
+            )
+            rows = await cur.fetchall()
+            if not rows:
+                return []
+            ids = [str(row["id"]) for row in rows]
+            placeholders = ", ".join("?" for _ in ids)
+            await db.execute(f"UPDATE scenario_feedback SET processed = 1 WHERE id IN ({placeholders})", ids)
+            await db.commit()
+        return [(str(row["source"] or "graph"), str(row["result"] or "") in {"useful", "partial"}) for row in rows]
 
     async def mark_stale(self) -> None:
         now = time.time()

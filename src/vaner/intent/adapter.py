@@ -22,6 +22,7 @@ from typing import Protocol
 
 from vaner.daemon.signals.fs_watcher import scan_repo_files
 from vaner.daemon.signals.git_reader import read_git_state
+from vaner.intent.skills_discovery import discover_skills
 from vaner.models.signal import SignalEvent
 
 
@@ -245,13 +246,20 @@ class CodeRepoAdapter:
 
     async def get_context_for_reasoning(self) -> ReasonerContext:
         git_state = read_git_state(self.repo_root)
+        skills = discover_skills(self.repo_root, include_global=False)
         summary = (
             f"branch={git_state.get('branch', '')}\nrecent_diff={git_state.get('recent_diff', '')}\nstaged={git_state.get('staged', '')}\n"
         )
         return ReasonerContext(
             corpus_type=self.corpus_type,
             summary=summary,
-            metadata={"repo_root": str(self.repo_root), "corpus_id": self.corpus_id, "privacy_zone": self.privacy_zone},
+            metadata={
+                "repo_root": str(self.repo_root),
+                "corpus_id": self.corpus_id,
+                "privacy_zone": self.privacy_zone,
+                "skills": ",".join(skill.name for skill in skills[:20]),
+                "skill_kinds": ",".join(skill.vaner_kind for skill in skills[:20] if skill.vaner_kind),
+            },
             corpus_id=self.corpus_id,
             privacy_zone=self.privacy_zone,
         )

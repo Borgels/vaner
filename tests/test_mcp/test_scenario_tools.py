@@ -60,7 +60,10 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
         assert "legacy_get_metrics" not in names
 
         listed_scenarios = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "list_scenarios", "arguments": {"limit": 5}})
+            CallToolRequest(
+                method="tools/call",
+                params={"name": "list_scenarios", "arguments": {"limit": 5, "skill": "vaner-feedback"}},
+            )
         )
         payload = json.loads(listed_scenarios.root.content[0].text)
         assert payload["count"] >= 1
@@ -79,7 +82,10 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
         assert unknown_payload["count"] == 0
 
         fetched = await call_handler(
-            CallToolRequest(method="tools/call", params={"name": "get_scenario", "arguments": {"id": "scn_mcp_1"}})
+            CallToolRequest(
+                method="tools/call",
+                params={"name": "get_scenario", "arguments": {"id": "scn_mcp_1", "skill": "vaner-feedback"}},
+            )
         )
         scenario = json.loads(fetched.root.content[0].text)
         assert scenario["id"] == "scn_mcp_1"
@@ -139,7 +145,10 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
         outcome = await call_handler(
             CallToolRequest(
                 method="tools/call",
-                params={"name": "report_outcome", "arguments": {"id": "scn_mcp_1", "result": "useful"}},
+                params={
+                    "name": "report_outcome",
+                    "arguments": {"id": "scn_mcp_1", "result": "useful", "skill": "vaner-feedback"},
+                },
             )
         )
         assert json.loads(outcome.root.content[0].text)["ok"] is True
@@ -154,10 +163,15 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
 
         async with aiosqlite.connect(temp_repo / ".vaner" / "metrics.db") as db:
             cur = await db.execute(
-                "SELECT COUNT(*) FROM mcp_tool_calls WHERE tool_name = ? AND status = ?",
-                ("list_scenarios", "ok"),
+                "SELECT COUNT(*) FROM mcp_tool_calls WHERE tool_name = ? AND status = ? AND skill = ?",
+                ("list_scenarios", "ok", "vaner-feedback"),
             )
             assert int((await cur.fetchone())[0]) >= 1
+            outcome_cur = await db.execute(
+                "SELECT COUNT(*) FROM scenario_outcomes WHERE scenario_id = ? AND skill = ?",
+                ("scn_mcp_1", "vaner-feedback"),
+            )
+            assert int((await outcome_cur.fetchone())[0]) >= 1
 
     asyncio.run(_run())
 

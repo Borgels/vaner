@@ -124,7 +124,9 @@ def test_init_writes_cursor_mcp_config(temp_repo, monkeypatch):
     cursor_mcp = temp_repo / ".cursor" / "mcp.json"
     assert cursor_mcp.exists()
     payload = json.loads(cursor_mcp.read_text(encoding="utf-8"))
-    assert payload["mcpServers"]["vaner"]["command"] == "vaner"
+    server = payload["mcpServers"]["vaner"]
+    assert server["command"]
+    assert "mcp" in server["args"]
 
 
 def test_scenarios_expand_and_compare_json(temp_repo, monkeypatch):

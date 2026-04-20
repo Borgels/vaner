@@ -76,7 +76,7 @@ def test_doctor_fails_when_config_missing(temp_repo):
     assert any(item["name"] == "config_exists" for item in payload["checks"])
 
 
-def test_doctor_includes_mcp_and_store_checks(temp_repo):
+def test_doctor_includes_mcp_and_store_checks(temp_repo, monkeypatch):
     (temp_repo / ".vaner").mkdir(parents=True, exist_ok=True)
     (temp_repo / ".vaner" / "config.toml").write_text(
         """
@@ -86,10 +86,25 @@ model = "qwen2.5-coder:7b"
 """.strip(),
         encoding="utf-8",
     )
+
+    class _FakeProc:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            return None
+
+    monkeypatch.setattr(app.shutil, "which", lambda *_args, **_kwargs: "/usr/local/bin/vaner")
+    monkeypatch.setattr(app.subprocess, "Popen", lambda *args, **kwargs: _FakeProc())
     result = runner.invoke(app.app, ["doctor", "--path", str(temp_repo), "--json"])
     payload = json.loads(result.stdout)
     names = {item["name"] for item in payload["checks"]}
     assert "mcp_config_present" in names
+    assert "mcp_command_exists" in names
+    assert "mcp_server_boots" in names
+    assert "config_drift" in names
     assert "scenario_store_reachable" in names
     assert "exploration_llm_reachable" in names
 
