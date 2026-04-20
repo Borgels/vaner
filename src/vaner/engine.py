@@ -23,7 +23,6 @@ from vaner.daemon.signals.git_reader import read_git_state
 from vaner.intent.adapter import CodeRepoAdapter, ContextSource, CorpusAdapter, RelationshipEdge, SignalSource
 from vaner.intent.arcs import ArcObservation, ConversationArcModel, classify_query_category, derive_prompt_macro
 from vaner.intent.cache import TieredPredictionCache
-from vaner.intent.exploration import ExplorationPolicy
 from vaner.intent.features import extract_hybrid_features
 from vaner.intent.frontier import ExplorationFrontier, ExplorationScenario, file_set_fingerprint
 from vaner.intent.governor import PredictionGovernor
@@ -104,7 +103,6 @@ class VanerEngine:
         self._reasoner = CorpusReasoner()
         self._arc_model = ConversationArcModel()
         self._intent_scorer = IntentScorer()
-        self._exploration = ExplorationPolicy()
         self._maturity = MaturityTracker()
         self._trainer = IntentTrainer(self.store, self._intent_scorer)
         self._scoring_policy = ScoringPolicy()
@@ -567,7 +565,6 @@ class VanerEngine:
             query_count = await self.store.count_query_history()
             phase = self._maturity.phase_for_query_count(query_count)
             transfer_priors = bootstrap_transfer_priors(corpus_type=self.adapter.corpus_type, query_count=query_count)
-            self._exploration.set_phase(phase.value)
             await self.store.insert_signal_event(
                 SignalEvent(
                     id=str(uuid.uuid4()),
@@ -659,9 +656,6 @@ class VanerEngine:
         governor.reset()
         self._precompute_cycles += 1
         self._last_explored_scenarios = []
-        query_count = await self.store.count_query_history()
-        phase = self._maturity.phase_for_query_count(query_count)
-        self._exploration.set_phase(phase.value)
         full_packages = 0
 
         if not self._corpus_prepared:
