@@ -154,7 +154,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         except (NotImplementedError, RuntimeError):
             pass
 
-    app = FastAPI(title="Vaner Proxy", version=_vaner_version, lifespan=lifespan)
+    app = FastAPI(title="Vaner Proxy", version="0.2.0", lifespan=lifespan)
     limiter = _RateLimiter(config.proxy.max_requests_per_minute)
     required_token = (config.proxy.proxy_token or "").strip()
     shadow_rate = max(0.0, min(config.gateway.shadow_rate, 1.0))

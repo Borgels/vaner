@@ -32,7 +32,7 @@ def create_daemon_http_app(config: VanerConfig) -> FastAPI:
         await metrics_store.initialize()
         yield
 
-    app = FastAPI(title="Vaner Cockpit", version=_vaner_version, lifespan=lifespan)
+    app = FastAPI(title="Vaner Cockpit", version="0.2.0", lifespan=lifespan)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
