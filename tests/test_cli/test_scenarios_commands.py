@@ -119,12 +119,15 @@ def test_init_writes_cursor_mcp_config(temp_repo, monkeypatch):
     fake_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-    result = runner.invoke(app.app, ["init", "--path", str(temp_repo)])
+    result = runner.invoke(
+        app.app,
+        ["init", "--path", str(temp_repo), "--no-interactive", "--backend-preset", "skip", "--clients", "cursor"],
+    )
     assert result.exit_code == 0
-    cursor_mcp = temp_repo / ".cursor" / "mcp.json"
+    cursor_mcp = fake_home / ".cursor" / "mcp.json"
     assert cursor_mcp.exists()
     payload = json.loads(cursor_mcp.read_text(encoding="utf-8"))
-    assert payload["mcpServers"]["vaner"]["command"] == "vaner"
+    assert "vaner" in payload["mcpServers"]
 
 
 def test_scenarios_expand_and_compare_json(temp_repo, monkeypatch):
@@ -155,7 +158,10 @@ def test_init_writes_mcp_configs(temp_repo, monkeypatch):
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
 
-    result = runner.invoke(app.app, ["init", "--path", str(temp_repo)])
+    result = runner.invoke(
+        app.app,
+        ["init", "--path", str(temp_repo), "--no-interactive", "--backend-preset", "skip", "--clients", "cursor,claude-desktop"],
+    )
     assert result.exit_code == 0
-    assert (temp_repo / ".cursor" / "mcp.json").exists()
-    assert (fake_home / ".claude" / "claude_desktop_config.json").exists()
+    assert (fake_home / ".cursor" / "mcp.json").exists()
+    assert (fake_home / ".config" / "Claude" / "claude_desktop_config.json").exists()

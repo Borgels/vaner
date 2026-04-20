@@ -355,7 +355,7 @@ async def run_stdio(repo_root: Path) -> None:
             write_stream,
             InitializationOptions(
                 server_name="vaner",
-                server_version="0.2.0",
+                server_version="0.5.0",
                 capabilities=server.get_capabilities(
                     notification_options=None,
                     experimental_capabilities={},
@@ -381,7 +381,7 @@ async def run_sse(repo_root: Path, host: str, port: int) -> None:
                 streams[1],
                 InitializationOptions(
                     server_name="vaner",
-                    server_version="0.2.0",
+                    server_version="0.5.0",
                     capabilities=server.get_capabilities(
                         notification_options=None,
                         experimental_capabilities={},

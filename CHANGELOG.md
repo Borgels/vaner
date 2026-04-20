@@ -7,9 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-20
+
 ### Added
 
-- Initial public project scaffolding and documentation split to `docs.vaner.ai`.
+- Added a full `vaner init` onboarding wizard with backend/compute prompts, multi-client MCP selection, safe config merges, and backup files.
+- Added new init controls: `--clients auto|all|none|other|csv`, `--dry-run`, and stronger `--force` handling for malformed files.
+- Added an explicit escape hatch for unsupported clients that prints a generic MCP snippet, docs links, and a support issue URL.
+- Added CLI tests for MCP client registry/merge behavior and the new onboarding wizard interaction flows.
+
+### Changed
+
+- Updated onboarding docs and landing flows to promote `curl | bash` followed by `vaner init` as the default path.
+- Switched client config writes to a single MCP client registry implementation that supports Cursor, Claude Desktop/Code, VS Code, Codex CLI, Windsurf, Zed, Continue, Cline, and Roo.
+
+### Removed
+
+- Removed the legacy `write_mcp_configs(repo_root)` path from init in favor of the new wizard + registry flow.
 
 ## [0.2.0] - 2026-04-19
 
