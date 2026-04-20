@@ -37,7 +37,7 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
     async def _run() -> None:
         await _seed_scenario(temp_repo)
         (temp_repo / ".vaner" / "config.toml").write_text(
-            "[backend]\nbase_url = \"http://127.0.0.1:11434/v1\"\nmodel = \"llama3.2:3b\"\n",
+            '[backend]\nbase_url = "http://127.0.0.1:11434/v1"\nmodel = "llama3.2:3b"\n',
             encoding="utf-8",
         )
         server = build_server(temp_repo)
