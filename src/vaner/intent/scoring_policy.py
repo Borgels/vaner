@@ -35,6 +35,7 @@ _DEFAULT_SOURCE_MULTIPLIERS: dict[str, float] = {
     "arc": 1.0,
     "pattern": 1.2,
     "llm_branch": 0.9,
+    "skill": 1.1,
 }
 
 # Layer multipliers — strategic scenarios are slightly prioritized.

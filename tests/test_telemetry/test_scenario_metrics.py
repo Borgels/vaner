@@ -18,12 +18,18 @@ def test_record_scenario_outcome_and_mcp_tool_call(temp_repo):
             status="ok",
             latency_ms=12.3,
             scenario_id="scn_1",
+            skill="vaner-feedback",
         )
-        await store.record_scenario_outcome(scenario_id="scn_1", result="useful", note="high quality")
+        await store.record_scenario_outcome(
+            scenario_id="scn_1",
+            result="useful",
+            note="high quality",
+            skill="vaner-feedback",
+        )
         async with aiosqlite.connect(db_path) as db:
-            mcp_cur = await db.execute("SELECT COUNT(*) FROM mcp_tool_calls")
+            mcp_cur = await db.execute("SELECT COUNT(*) FROM mcp_tool_calls WHERE skill = ?", ("vaner-feedback",))
             mcp_count = int((await mcp_cur.fetchone())[0])
-            out_cur = await db.execute("SELECT COUNT(*) FROM scenario_outcomes")
+            out_cur = await db.execute("SELECT COUNT(*) FROM scenario_outcomes WHERE skill = ?", ("vaner-feedback",))
             outcome_count = int((await out_cur.fetchone())[0])
         return mcp_count, outcome_count
 

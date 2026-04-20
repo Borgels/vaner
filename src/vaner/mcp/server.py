@@ -62,7 +62,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mcp.server import Server
+from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.types import (
     CallToolResult,
@@ -152,6 +152,10 @@ def build_server(repo_root: Path) -> Server:
                                 "description": "Maximum number of scenarios to return (default: 10)",
                                 "default": 10,
                             },
+                            "skill": {
+                                "type": "string",
+                                "description": "Optional skill attribution label for telemetry.",
+                            },
                         },
                     },
                 ),
@@ -164,7 +168,11 @@ def build_server(repo_root: Path) -> Server:
                             "id": {
                                 "type": "string",
                                 "description": "Scenario id returned by list_scenarios",
-                            }
+                            },
+                            "skill": {
+                                "type": "string",
+                                "description": "Optional skill attribution label for telemetry.",
+                            },
                         },
                         "required": ["id"],
                     },
@@ -180,6 +188,10 @@ def build_server(repo_root: Path) -> Server:
                                 "type": "integer",
                                 "default": 1,
                                 "description": "Expansion depth hint (currently best-effort)",
+                            },
+                            "skill": {
+                                "type": "string",
+                                "description": "Optional skill attribution label for telemetry.",
                             },
                         },
                         "required": ["id"],
@@ -209,6 +221,7 @@ def build_server(repo_root: Path) -> Server:
                             "id": {"type": "string"},
                             "result": {"type": "string", "enum": ["useful", "irrelevant", "partial"]},
                             "note": {"type": "string"},
+                            "skill": {"type": "string"},
                         },
                         "required": ["id", "result"],
                     },
@@ -223,7 +236,13 @@ def build_server(repo_root: Path) -> Server:
         await metrics_store.initialize()
         await scenario_store.initialize()
 
-        async def _record(status: str, *, tool_name: str | None = None, scenario_id: str | None = None) -> None:
+        async def _record(
+            status: str,
+            *,
+            tool_name: str | None = None,
+            scenario_id: str | None = None,
+            skill: str | None = None,
+        ) -> None:
             latency_ms = (time.perf_counter() - started) * 1000.0
             try:
                 await metrics_store.increment_mode_usage("mcp")
@@ -233,6 +252,7 @@ def build_server(repo_root: Path) -> Server:
                     status=status,
                     latency_ms=latency_ms,
                     scenario_id=scenario_id,
+                    skill=skill,
                 )
             except Exception:
                 # Metrics are best-effort; tool execution must remain non-fatal.
@@ -244,8 +264,9 @@ def build_server(repo_root: Path) -> Server:
             tool_name: str | None = None,
             scenario_id: str | None = None,
             code: str | None = None,
+            skill: str | None = None,
         ) -> CallToolResult:
-            await _record("error", tool_name=tool_name, scenario_id=scenario_id)
+            await _record("error", tool_name=tool_name, scenario_id=scenario_id, skill=skill)
             structured: dict[str, Any] | None = None
             if code:
                 structured = {"code": code, "message": message}
@@ -254,40 +275,43 @@ def build_server(repo_root: Path) -> Server:
         if name == "list_scenarios":
             limit = int(args.get("limit", 10))
             kind = args.get("kind")
+            skill = str(args.get("skill", "")).strip() or None
             if kind is not None:
                 kind = str(kind)
             scenarios = await scenario_store.list_top(kind=kind, limit=limit)
             payload = {"count": len(scenarios), "scenarios": [_scenario_to_summary(s) for s in scenarios]}
-            await _record("ok")
+            await _record("ok", skill=skill)
             return CallToolResult(content=_make_text(json.dumps(payload, indent=2)))
 
         if name == "get_scenario":
             scenario_id = str(args.get("id", "")).strip()
+            skill = str(args.get("skill", "")).strip() or None
             if not scenario_id:
-                return await _error("ERROR: id is required")
+                return await _error("ERROR: id is required", skill=skill)
             scenario = await scenario_store.get(scenario_id)
             if scenario is None:
-                return await _error(f"ERROR: Scenario '{scenario_id}' not found", scenario_id=scenario_id)
-            await _record("ok", scenario_id=scenario_id)
+                return await _error(f"ERROR: Scenario '{scenario_id}' not found", scenario_id=scenario_id, skill=skill)
+            await _record("ok", scenario_id=scenario_id, skill=skill)
             return CallToolResult(content=_make_text(json.dumps(scenario.model_dump(mode="json"), indent=2)))
 
         if name == "expand_scenario":
             scenario_id = str(args.get("id", "")).strip()
+            skill = str(args.get("skill", "")).strip() or None
             if not scenario_id:
-                return await _error("ERROR: id is required")
+                return await _error("ERROR: id is required", skill=skill)
             try:
                 _ensure_backend(config)
             except BackendNotConfiguredError as exc:
-                return await _error(str(exc), scenario_id=scenario_id, code=exc.code)
+                return await _error(str(exc), scenario_id=scenario_id, code=exc.code, skill=skill)
             try:
                 await aprecompute(repo_root, config=config)
             except Exception as exc:
-                return await _error(f"ERROR: {exc}", scenario_id=scenario_id)
+                return await _error(f"ERROR: {exc}", scenario_id=scenario_id, skill=skill)
             await scenario_store.record_expansion(scenario_id)
             scenario = await scenario_store.get(scenario_id)
             if scenario is None:
-                return await _error(f"ERROR: Scenario '{scenario_id}' not found", scenario_id=scenario_id)
-            await _record("ok", scenario_id=scenario_id)
+                return await _error(f"ERROR: Scenario '{scenario_id}' not found", scenario_id=scenario_id, skill=skill)
+            await _record("ok", scenario_id=scenario_id, skill=skill)
             return CallToolResult(content=_make_text(json.dumps(scenario.model_dump(mode="json"), indent=2)))
 
         if name == "compare_scenarios":
@@ -326,17 +350,18 @@ def build_server(repo_root: Path) -> Server:
             scenario_id = str(args.get("id", "")).strip()
             result = str(args.get("result", "")).strip()
             note = str(args.get("note", "")).strip()
+            skill = str(args.get("skill", "")).strip() or None
             if not scenario_id:
-                return await _error("ERROR: id is required")
+                return await _error("ERROR: id is required", skill=skill)
             if result not in {"useful", "irrelevant", "partial"}:
-                return await _error("ERROR: result must be useful|irrelevant|partial", scenario_id=scenario_id)
-            await scenario_store.record_outcome(scenario_id, result)
+                return await _error("ERROR: result must be useful|irrelevant|partial", scenario_id=scenario_id, skill=skill)
+            await scenario_store.record_outcome(scenario_id, result, skill=skill, source="skill" if skill else None)
             try:
-                await metrics_store.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note)
+                await metrics_store.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note, skill=skill)
             except Exception:
                 # Outcome telemetry should not fail the tool response.
                 pass
-            await _record("ok", scenario_id=scenario_id)
+            await _record("ok", scenario_id=scenario_id, skill=skill)
             return CallToolResult(content=_make_text(json.dumps({"ok": True, "scenario_id": scenario_id, "result": result})))
 
         return await _error(f"ERROR: Unknown tool '{name}'")
@@ -357,7 +382,7 @@ async def run_stdio(repo_root: Path) -> None:
                 server_name="vaner",
                 server_version="0.2.0",
                 capabilities=server.get_capabilities(
-                    notification_options=None,
+                    notification_options=NotificationOptions(),
                     experimental_capabilities={},
                 ),
             ),
@@ -383,7 +408,7 @@ async def run_sse(repo_root: Path, host: str, port: int) -> None:
                     server_name="vaner",
                     server_version="0.2.0",
                     capabilities=server.get_capabilities(
-                        notification_options=None,
+                        notification_options=NotificationOptions(),
                         experimental_capabilities={},
                     ),
                 ),

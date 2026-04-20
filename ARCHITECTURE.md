@@ -25,6 +25,14 @@ Vaner is a local-first predictive context engine for coding assistants.
 - Safety and privacy policy modules gate what leaves local storage.
 - Training and moat-sensitive workflows are intentionally isolated to private repos.
 
+## Agent skills loop
+
+- Vaner discovers workspace `SKILL.md` files and emits `skill_loaded` intent signals.
+- Skills seed tactical frontier candidates through trigger/path matching and optional `vaner.kind`.
+- MCP tools accept an optional `skill` label so outcomes are attributed to the active skill.
+- Feedback is fed back into source multipliers, reinforcing successful frontier sources.
+- `vaner distill-skill` converts successful decision records into managed reusable skills.
+
 ## Decision transparency
 
 - Every `query` writes a structured decision record to `.vaner/runtime/decisions/`.

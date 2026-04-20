@@ -129,10 +129,11 @@ def create_daemon_http_app(config: VanerConfig) -> FastAPI:
             raise HTTPException(status_code=404, detail="Scenario not found")
         result = str(payload.get("result", "")).strip()
         note = str(payload.get("note", "")).strip()
+        skill = str(payload.get("skill", "")).strip() or None
         if result not in {"useful", "partial", "irrelevant"}:
             raise HTTPException(status_code=400, detail="result must be one of useful|partial|irrelevant")
-        await scenario_store.record_outcome(scenario_id, result)
-        await metrics_store.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note)
+        await scenario_store.record_outcome(scenario_id, result, skill=skill, source="skill" if skill else None)
+        await metrics_store.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note, skill=skill)
         refreshed = await scenario_store.get(scenario_id)
         return JSONResponse({"ok": True, "scenario": refreshed.model_dump(mode="json") if refreshed else None})
 

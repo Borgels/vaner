@@ -58,7 +58,7 @@ Vaner exposes context to your agent over [MCP](https://modelcontextprotocol.io/)
 | --- | --- |
 | Claude Code | `claude mcp add --transport stdio --scope user vaner -- vaner mcp --path .` |
 | Codex CLI   | `codex mcp add vaner -- vaner mcp --path .` |
-| Cursor / VS Code / Zed / Windsurf / Continue / Claude Desktop / Cline / Roo | see [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp) |
+| Cursor / VS Code / Zed / Windsurf / Continue / Claude Desktop / Cline / Roo | see [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp) (client setup guides) |
 
 Or let Vaner write the config file for you:
 
@@ -88,6 +88,7 @@ Most documentation lives at [docs.vaner.ai](https://docs.vaner.ai):
 - Security: [docs.vaner.ai/security](https://docs.vaner.ai/security)
 - CLI reference: [docs.vaner.ai/cli](https://docs.vaner.ai/cli)
 - Examples: [docs.vaner.ai/examples](https://docs.vaner.ai/examples)
+- Agent skills loop (repo docs): [`docs/skills-integration.md`](docs/skills-integration.md)
 
 ## Community
 

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from vaner.intent.scoring_policy import ScoringPolicy
+from vaner.intent.skills_discovery import SkillRef, match_skill_paths
 
 if TYPE_CHECKING:
     from vaner.intent.arcs import ConversationArcModel
@@ -139,6 +140,7 @@ class ExplorationFrontier:
         "arc": 1.0,
         "pattern": 1.2,  # validated patterns get a slight head start
         "llm_branch": 0.9,
+        "skill": 1.1,
     }
 
     def __init__(
@@ -447,6 +449,41 @@ class ExplorationFrontier:
                 priority=priority,
                 depth=0,
                 reason=f"validated pattern (confirmed {confirmation_count}x)",
+                layer="tactical",
+            )
+            if self.push(scenario):
+                admitted += 1
+        return admitted
+
+    def seed_from_skills(self, skills: list[SkillRef], available_paths: list[str]) -> int:
+        """Seed scenarios from loaded skill hints."""
+        if not skills:
+            return 0
+        self._total_available = max(self._total_available, len(available_paths))
+        admitted = 0
+        for skill in skills:
+            matched = match_skill_paths(skill, available_paths, limit=10)
+            if not matched:
+                continue
+            pattern_strength = min(1.0, (len(skill.tags) + len(skill.triggers)) / 8.0)
+            priority = self._score(
+                source="skill",
+                graph_proximity=0.0,
+                arc_probability=0.55 if skill.vaner_kind else 0.45,
+                coverage_gap=0.5,
+                pattern_strength=pattern_strength,
+                freshness_decay=1.0,
+                depth=0,
+                layer="tactical",
+            )
+            scenario = ExplorationScenario(
+                id=file_set_fingerprint(matched),
+                file_paths=matched,
+                anchor=skill.name,
+                source="skill",
+                priority=priority,
+                depth=0,
+                reason=f"skill hint: {skill.name}",
                 layer="tactical",
             )
             if self.push(scenario):
