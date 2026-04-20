@@ -45,7 +45,12 @@ jobs:
       - name: Type check
         run: mypy src/vaner/__init__.py src/vaner/server.py src/vaner/cli/main.py
       - name: Tests
-        run: pytest tests -m "not slow and not integration" --cov=src/vaner --cov-fail-under=70
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            pytest tests -p no:randomly -m "not slow and not integration" --cov=src/vaner --cov-fail-under=70
+          else
+            pytest tests -m "not slow and not integration" --cov=src/vaner --cov-fail-under=70
+          fi
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
