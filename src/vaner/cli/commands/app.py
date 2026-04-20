@@ -6,11 +6,10 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import shutil
-import socket
 import subprocess
 import sys
-import tomllib
 import traceback
 from datetime import UTC, datetime
 from errno import EADDRINUSE
@@ -28,7 +27,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from vaner import __version__, api
+from vaner import VERSION, api
 from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
 from vaner.cli.commands.daemon import (
     COCKPIT_PROCESS,
@@ -46,6 +45,7 @@ from vaner.cli.commands.distill import distill_skill_file
 from vaner.cli.commands.explain import render_human, render_json
 from vaner.cli.commands.init import (
     BACKEND_PRESETS,
+    CLOUD_BACKEND_PRESETS,
     COMPUTE_PRESETS,
     apply_backend_config,
     apply_compute_preset,
@@ -213,17 +213,50 @@ def _detect_hardware_profile() -> dict[str, object]:
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             profile["device"] = "mps"
     except Exception:
-        nvidia_smi = shutil.which("nvidia-smi")
-        if nvidia_smi:
-            try:
-                output = subprocess.check_output([nvidia_smi, "--list-gpus"], text=True, timeout=1.5)
-                lines = [line for line in output.splitlines() if line.strip()]
-                if lines:
-                    profile["device"] = "cuda"
-                    profile["gpu_count"] = len(lines)
-            except Exception:
-                pass
+        pass
+    # Some Linux installs can have working NVIDIA drivers but missing/partial
+    # torch CUDA metadata; in that case prefer nvidia-smi as a fallback.
+    if profile["device"] == "cpu" or profile["vram_gb"] == 0:
+        smi_profile = _detect_nvidia_smi_profile()
+        if smi_profile is not None:
+            profile.update(smi_profile)
     return profile
+
+
+def _detect_nvidia_smi_profile() -> dict[str, object] | None:
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return None
+    try:
+        output = subprocess.check_output(
+            [
+                nvidia_smi,
+                "--query-gpu=name,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=1.5,
+        )
+    except Exception:
+        return None
+    rows = [line.strip() for line in output.splitlines() if line.strip()]
+    if not rows:
+        return None
+    gpu_count = 0
+    first_vram_gb = 0.0
+    for row in rows:
+        parts = [part.strip() for part in row.split(",")]
+        if len(parts) < 2:
+            continue
+        gpu_count += 1
+        if first_vram_gb <= 0:
+            try:
+                first_vram_gb = round(int(parts[-1]) / 1024, 1)
+            except ValueError:
+                first_vram_gb = 0.0
+    if gpu_count == 0:
+        return None
+    return {"device": "cuda", "gpu_count": gpu_count, "vram_gb": first_vram_gb}
 
 
 async def _scenario_store(repo_root: Path) -> ScenarioStore:
@@ -388,13 +421,25 @@ def app_callback(
     version: bool = typer.Option(False, "--version", help="Show installed Vaner version and exit.", is_eager=True),
 ) -> None:
     if version:
-        typer.echo(f"vaner {__version__}")
+        typer.echo(f"vaner {VERSION}")
         raise typer.Exit()
     global _VERBOSE
     _VERBOSE = verbose
 
 
-@app.command("init", help="Initialize Vaner config and MCP client wiring.", rich_help_panel="Get started")
+@app.command("version")
+def version_command() -> None:
+    """Show installed Vaner version."""
+    typer.echo(f"vaner {VERSION}")
+
+
+@app.command("help")
+def help_command(ctx: typer.Context) -> None:
+    """Show CLI help."""
+    typer.echo(ctx.find_root().get_help())
+
+
+@app.command("init")
 def init(
     path: str | None = typer.Option(None, help="Repository root"),
     backend_preset: str | None = typer.Option(
@@ -426,6 +471,11 @@ def init(
         help="Overwrite existing backend config even if already populated.",
     ),
     no_mcp: bool = typer.Option(False, "--no-mcp", help="Skip writing MCP client config files"),
+    accept_cloud_costs: bool = typer.Option(
+        False,
+        "--accept-cloud-costs",
+        help="Acknowledge potential API charges for cloud backends (OpenAI/Anthropic/OpenRouter).",
+    ),
 ) -> None:
     """Initialize Vaner in the current repo and (optionally) pick a model backend.
 
@@ -463,6 +513,32 @@ def init(
 
     if backend_preset or backend_url or backend_model:
         preset_id = backend_preset or "custom"
+        if preset_id in CLOUD_BACKEND_PRESETS and not accept_cloud_costs:
+            if resolved_interactive:
+                proceed = typer.confirm(
+                    f"Backend '{preset_id}' can incur API charges. Continue?",
+                    default=False,
+                )
+                if not proceed:
+                    typer.secho("Cloud backend selection cancelled.", fg=typer.colors.RED, err=True)
+                    typer.secho(
+                        "hint: Pick a local preset (e.g. ollama/lmstudio/vllm) or pass --accept-cloud-costs.",
+                        fg=typer.colors.YELLOW,
+                        err=True,
+                    )
+                    raise typer.Exit(code=1)
+            else:
+                typer.secho(
+                    f"Cloud backend '{preset_id}' requires explicit acknowledgement.",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                typer.secho(
+                    "hint: Re-run with --accept-cloud-costs if this is intentional.",
+                    fg=typer.colors.YELLOW,
+                    err=True,
+                )
+                raise typer.Exit(code=1)
         changed = apply_backend_config(
             config_path,
             preset_id,
@@ -1852,25 +1928,71 @@ def doctor(
     raise typer.Exit(code=0 if overall_ok else 1)
 
 
-@app.command("upgrade", help="Upgrade Vaner using pipx or pip.", rich_help_panel="Configure")
-def upgrade() -> None:
+def _parse_version_parts(raw: str) -> tuple[tuple[int, int | str], ...]:
+    pieces = [piece for piece in re.split(r"[\\.-]", raw.strip()) if piece]
+    parsed: list[tuple[int, int | str]] = []
+    for piece in pieces:
+        if piece.isdigit():
+            parsed.append((0, int(piece)))
+        else:
+            parsed.append((1, piece.lower()))
+    return tuple(parsed)
+
+
+def _is_newer_version(candidate: str, installed: str) -> bool:
+    return _parse_version_parts(candidate) > _parse_version_parts(installed)
+
+
+@app.command("upgrade")
+def upgrade(allow_downgrade: bool = typer.Option(False, "--allow-downgrade", help="Allow installing an older version.")) -> None:
+    """Upgrade Vaner using pipx or pip, guarded against accidental downgrades."""
+    installed = VERSION
+    latest: str | None = None
+    try:
+        response = httpx.get("https://pypi.org/pypi/vaner/json", timeout=1.5)
+        if response.status_code == 200:
+            latest = str(response.json().get("info", {}).get("version", "")).strip() or None
+    except Exception:
+        latest = None
+
+    if latest and _is_newer_version(installed, latest) and not allow_downgrade:
+        typer.secho(
+            f"Refusing downgrade: installed={installed} latest_on_pypi={latest}",
+            fg=typer.colors.YELLOW,
+        )
+        typer.secho(
+            "hint: publish a newer release first, or rerun with `vaner upgrade --allow-downgrade`.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=1)
+    if latest and not _is_newer_version(latest, installed):
+        typer.echo(f"Already up to date (installed={installed}).")
+        return
+
     pipx_bin = shutil.which("pipx")
     if pipx_bin:
-        cmd = [pipx_bin, "upgrade", "vaner"]
+        if latest:
+            cmd = [pipx_bin, "install", "--force", f"vaner=={latest}"]
+        else:
+            cmd = [pipx_bin, "upgrade", "vaner"]
         typer.echo("Upgrading via pipx...")
     else:
-        cmd = [sys.executable, "-m", "pip", "install", "-U", "vaner"]
+        if latest:
+            cmd = [sys.executable, "-m", "pip", "install", "-U", f"vaner=={latest}"]
+        else:
+            cmd = [sys.executable, "-m", "pip", "install", "-U", "vaner"]
         typer.echo("Upgrading via pip...")
+
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
-        _fail("Upgrade failed.", hint="Run with --verbose and inspect command output.")
+        raise typer.Exit(code=result.returncode)
     typer.echo("Upgrade complete.")
 
 
-app.add_typer(daemon_app, name="daemon", rich_help_panel="Background and local")
-app.add_typer(config_app, name="config", rich_help_panel="Configure")
-app.add_typer(profile_app, name="profile", rich_help_panel="Background and local")
-app.add_typer(scenarios_app, name="scenarios", rich_help_panel="Use with an agent")
+app.add_typer(daemon_app, name="daemon")
+app.add_typer(config_app, name="config")
+app.add_typer(profile_app, name="profile")
+app.add_typer(scenarios_app, name="scenarios")
 
 
 def run() -> None:

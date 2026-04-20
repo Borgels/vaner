@@ -96,7 +96,7 @@ Options:
   --version VERSION               Install a specific PyPI version (e.g. 0.2.0)
   --no-modify-path                Do not run ensurepath/path integration steps
   --verbose                       Print executed commands
-  --with-ollama                   Install/start Ollama and pull qwen2.5-coder:7b
+  --with-ollama                   Install/start Ollama and configure a local model
                                   (alias for --backend-preset ollama)
   --no-mcp                        Install without the [mcp] extra (read-only tools
                                   will be disabled)
@@ -557,9 +557,80 @@ ensure_ollama_model() {
   if [[ "$VANER_WITH_OLLAMA" != "1" ]]; then
     return 0
   fi
+  local target_model="${VANER_BACKEND_MODEL:-qwen2.5-coder:7b}"
   ensure_ollama || return 1
+  if ollama_has_model "$target_model"; then
+    ui_success "Ollama model already available: $target_model"
+    return 0
+  fi
+  if is_promptable && ! confirm "Ollama model '$target_model' is not installed. Pull it now?"; then
+    ui_warn "Skipping model pull. Run 'ollama pull $target_model' later."
+    return 0
+  fi
   ui_stage "Preparing local model"
-  run_cmd ollama pull qwen2.5-coder:7b
+  run_cmd ollama pull "$target_model"
+}
+
+ollama_list_models() {
+  if ! command -v ollama >/dev/null 2>&1; then
+    return 0
+  fi
+  ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" { print $1 }'
+}
+
+ollama_has_model() {
+  local target="$1"
+  if [[ -z "$target" ]]; then
+    return 1
+  fi
+  ollama_list_models | awk -v target="$target" '$0 == target { found=1 } END { exit(found ? 0 : 1) }'
+}
+
+select_existing_ollama_model() {
+  local default_model="${1:-qwen2.5-coder:7b}"
+  local models=()
+  local idx=1
+  local choice=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    models+=("$line")
+  done < <(ollama_list_models)
+  if [[ "${#models[@]}" -eq 0 ]]; then
+    printf '%s' "$default_model"
+    return 0
+  fi
+  if ! is_promptable; then
+    printf '%s' "${models[0]}"
+    return 0
+  fi
+  {
+    printf '\n'
+    printf 'Detected existing Ollama models:\n'
+    for model in "${models[@]}"; do
+      printf '  %d) %s\n' "$idx" "$model"
+      idx=$((idx + 1))
+    done
+    printf '  %d) Pull default (%s)\n' "$idx" "$default_model"
+  } > /dev/tty
+  choice="$(prompt_line "Use which model" "1")"
+  if [[ "$choice" =~ ^[0-9]+$ ]]; then
+    if (( choice >= 1 && choice <= ${#models[@]} )); then
+      printf '%s' "${models[$((choice - 1))]}"
+      return 0
+    fi
+    if (( choice == ${#models[@]} + 1 )); then
+      printf '%s' "$default_model"
+      return 0
+    fi
+  fi
+  for model in "${models[@]}"; do
+    if [[ "$choice" == "$model" ]]; then
+      printf '%s' "$model"
+      return 0
+    fi
+  done
+  ui_warn "Unrecognized choice '$choice'; using default model '$default_model'."
+  printf '%s' "$default_model"
 }
 
 pick_backend() {
@@ -735,8 +806,33 @@ prompt_line() {
   fi
 }
 
+is_cloud_backend_preset() {
+  case "$1" in
+    openai|anthropic|openrouter) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+confirm_cloud_backend_costs() {
+  local preset="$1"
+  if ! is_cloud_backend_preset "$preset"; then
+    return 0
+  fi
+  if confirm "You selected cloud backend '${preset}'. This can incur API costs. Continue?"; then
+    return 0
+  fi
+  ui_warn "Cloud backend selection cancelled; falling back to 'skip'."
+  VANER_BACKEND_PRESET="skip"
+  VANER_BACKEND_URL=""
+  VANER_BACKEND_MODEL=""
+  unset VANER_BACKEND_API_KEY_ENV
+  VANER_WITH_OLLAMA=0
+  return 0
+}
+
 resolve_backend_preset() {
   if [[ -n "$VANER_BACKEND_PRESET" ]]; then
+    confirm_cloud_backend_costs "$VANER_BACKEND_PRESET"
     return 0
   fi
   if ! is_promptable; then
@@ -769,13 +865,17 @@ resolve_backend_preset() {
       VANER_BACKEND_PRESET="skip"
       ;;
   esac
+  confirm_cloud_backend_costs "$VANER_BACKEND_PRESET"
 }
 
 collect_backend_details() {
   case "$VANER_BACKEND_PRESET" in
     ollama)
       VANER_BACKEND_URL="${VANER_BACKEND_URL:-http://127.0.0.1:11434/v1}"
-      VANER_BACKEND_MODEL="${VANER_BACKEND_MODEL:-qwen2.5-coder:7b}"
+      local default_ollama_model="qwen2.5-coder:7b"
+      if [[ -z "$VANER_BACKEND_MODEL" ]]; then
+        VANER_BACKEND_MODEL="$(select_existing_ollama_model "$default_ollama_model")"
+      fi
       VANER_BACKEND_API_KEY_ENV="${VANER_BACKEND_API_KEY_ENV:-}"
       VANER_WITH_OLLAMA=1
       ;;

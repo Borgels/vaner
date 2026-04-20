@@ -40,13 +40,16 @@ def _count_files_limited(root: Path, limit: int = 100_000) -> int:
 
 
 def check_repo_root(repo_root: Path, *, force: bool = False) -> dict[str, object]:
+    guidance = (
+        "Use an explicit repo path, e.g. `vaner daemon start --path ~/repos/my-project --no-once` or `vaner up --path ~/repos/my-project`."
+    )
     resolved = repo_root.resolve()
     if resolved in _DISALLOWED_ROOTS and not force:
         return {
             "ok": False,
             "reason": "unsafe_root",
             "detail": f"Refusing broad root path: {resolved}",
-            "fix": "Pick your project root, e.g. `vaner up --path ~/repos/my-project`.",
+            "fix": guidance,
         }
     is_git = _is_git_repo(resolved)
     if is_git:
@@ -57,7 +60,7 @@ def check_repo_root(repo_root: Path, *, force: bool = False) -> dict[str, object
             "ok": False,
             "reason": "non_git_large_root",
             "detail": f"Path is not a git repo and is very large (files >= {approx_files}).",
-            "fix": "Pick your project root, e.g. `vaner up --path ~/repos/my-project`.",
+            "fix": guidance,
         }
     return {"ok": True, "reason": "small_non_git", "detail": f"non-git path files={approx_files}"}
 
