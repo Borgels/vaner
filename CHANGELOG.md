@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-20
+
+### Added
+
+- Added `vaner up` and `vaner down` to run daemon and cockpit as one supervised flow with a single startup command.
+- Added preflight safeguards for unsafe repo roots, inotify headroom checks, and proactive port selection.
+- Added runtime log tailing for daemon and cockpit via `vaner logs`.
+- Added fallback from inotify to polling watchers when Linux watch limits are exhausted.
+- Added runtime snapshot checks that power both `vaner status` and `vaner doctor` consistently.
+- Added new diagnostics for `repo_root_sensible`, `inotify_headroom`, and `cli_up_to_date`.
+
+### Changed
+
+- Hardened background daemon startup with dead-on-arrival detection and startup error surfacing.
+- Hardened cockpit startup with explicit busy-port remediation guidance and fallback port suggestions.
+- Updated onboarding docs, troubleshooting docs, README, and installer/landing callouts to make `vaner up` the primary post-install flow.
+
 ## [0.3.0] - 2026-04-20
 
 ### Added
@@ -22,6 +39,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
+- Cockpit now serves an interactive dashboard at `/` (scenario cards, outcome actions, compute device switching), and `/ui` redirects to `/` for backwards compatibility.
 - CLI UX polish:
   - added `vaner --version`, grouped help panels, and command aliases (`ls`, `ps`, `logs`)
   - added `config get`, `config keys`, and `config edit`

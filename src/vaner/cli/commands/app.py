@@ -7,11 +7,13 @@ import ipaddress
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
 import traceback
 from datetime import UTC, datetime
+from errno import EADDRINUSE
 from pathlib import Path
 from time import perf_counter
 from typing import Any, get_origin
@@ -22,12 +24,24 @@ import typer
 from pydantic import TypeAdapter
 from pydantic_core import to_jsonable_python
 from rich.console import Console
+from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from vaner import __version__, api
 from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
-from vaner.cli.commands.daemon import daemon_status, run_daemon_forever, start_daemon, stop_daemon
+from vaner.cli.commands.daemon import (
+    COCKPIT_PROCESS,
+    DAEMON_PROCESS,
+    clear_pid,
+    daemon_status,
+    log_path,
+    process_status,
+    run_daemon_forever,
+    start_daemon,
+    stop_daemon,
+    write_pid,
+)
 from vaner.cli.commands.distill import distill_skill_file
 from vaner.cli.commands.explain import render_human, render_json
 from vaner.cli.commands.init import (
@@ -44,7 +58,10 @@ from vaner.cli.commands.inspect import inspect_decision as inspect_decision_outp
 from vaner.cli.commands.inspect import inspect_last as inspect_last_output
 from vaner.cli.commands.inspect import list_decisions as list_decisions_output
 from vaner.cli.commands.profile import export_pins, import_pins, pin_fact, profile_show, unpin_fact
+from vaner.cli.commands.runtime_snapshot import runtime_snapshot
+from vaner.cli.commands.supervisor import run_down, run_up
 from vaner.daemon.http import create_daemon_http_app
+from vaner.daemon.preflight import check_repo_root
 from vaner.daemon.runner import VanerDaemon
 from vaner.eval import evaluate_repo, run_eval
 from vaner.models.config import VanerConfig
@@ -139,6 +156,19 @@ def _friendly_error_message(exc: Exception) -> str:
     if isinstance(exc, aiosqlite.Error):
         return f"Database error: {exc}. Remove `.vaner/store.db` if it is corrupted, then rerun."
     return f"Vaner failed: {exc}"
+
+
+def _is_port_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        return sock.connect_ex((host, port)) != 0
+
+
+def _next_free_port(host: str, start_port: int, max_offset: int = 10) -> int | None:
+    for candidate in range(start_port, start_port + max_offset + 1):
+        if _is_port_free(host, candidate):
+            return candidate
+    return None
 
 
 def _detect_local_runtime() -> dict[str, object]:
@@ -467,6 +497,17 @@ def init(
         typer.echo("Recommended: curl -fsSL https://vaner.ai/install.sh | bash -s -- --with-ollama")
     typer.echo(f"Hardware profile: device={hardware['device']} gpu_count={hardware['gpu_count']} vram_gb={hardware['vram_gb']}")
     typer.echo("Next: connect your AI client → https://docs.vaner.ai/mcp")
+    checklist_lines = [
+        "1. Start the background worker: `vaner daemon start` (or `vaner daemon run-forever`).",
+        "2. Ensure local runtime is ready: `ollama serve`, then `ollama pull <model>`.",
+        "3. Open the cockpit: `vaner show` (http://127.0.0.1:8473/).",
+        "4. Enable the `vaner` MCP tool in your client and reload the window.",
+        "5. Ask the agent to use Vaner MCP tools for non-trivial tasks.",
+        "",
+        "Vaner is local-first. No background process runs unless you start the daemon",
+        "or your MCP client invokes it. `vaner doctor` will tell you what's missing.",
+    ]
+    _console.print(Panel("\n".join(checklist_lines), title="What happens next", border_style="cyan"))
     has_vscode = (repo_root / ".vscode").exists() or os.environ.get("TERM_PROGRAM") == "vscode"
     has_cursor = os.environ.get("CURSOR_TRACE_ID") is not None or os.environ.get("CURSOR_AGENT") is not None
     if has_vscode or has_cursor:
@@ -493,8 +534,13 @@ def daemon_start(
     path: str | None = typer.Option(None, help="Repository root"),
     once: bool = typer.Option(True, help="Run one cycle only"),
     interval_seconds: int = typer.Option(15, "--interval-seconds", help="Loop interval for background mode"),
+    force: bool = typer.Option(False, "--force", help="Allow broad/non-repo root paths."),
 ) -> None:
-    written = start_daemon(_repo_root(path), once=once, interval_seconds=interval_seconds)
+    repo_root = _repo_root(path)
+    root_check = check_repo_root(repo_root, force=force)
+    if not root_check.get("ok"):
+        _fail(str(root_check.get("detail")), hint=str(root_check.get("fix")))
+    written = start_daemon(repo_root, once=once, interval_seconds=interval_seconds)
     typer.echo(f"Daemon started. Artefacts written: {written}")
 
 
@@ -528,7 +574,30 @@ def daemon_serve_http(
     repo_root = _repo_root(path)
     config = load_config(repo_root)
     app_instance = create_daemon_http_app(config)
-    uvicorn.run(app_instance, host=host, port=port)
+    write_pid(repo_root, COCKPIT_PROCESS, os.getpid())
+    try:
+        uvicorn.run(app_instance, host=host, port=port)
+    except OSError as exc:
+        if exc.errno not in {EADDRINUSE, 98}:
+            raise
+        current = process_status(repo_root, COCKPIT_PROCESS)
+        next_port = _next_free_port(host, port)
+        if current.get("running") and current.get("pid") != os.getpid():
+            _fail(
+                f"Cockpit port {host}:{port} is already in use by an existing Vaner cockpit process.",
+                hint="Run `vaner down --path .` or use a different port with `vaner daemon serve-http --port <port>`.",
+            )
+        if next_port is not None:
+            _fail(
+                f"Cockpit port {host}:{port} is busy.",
+                hint=f"Try `vaner daemon serve-http --path . --host {host} --port {next_port}`.",
+            )
+        _fail(
+            f"Cockpit port {host}:{port} is busy and no fallback port was found.",
+            hint="Free the port or stop conflicting process, then rerun `vaner daemon serve-http`.",
+        )
+    finally:
+        clear_pid(repo_root, COCKPIT_PROCESS)
 
 
 @app.command("inspect", help="Inspect context decision records.", rich_help_panel="Inspect and debug")
@@ -1248,7 +1317,7 @@ def show(
     """Open the local web cockpit in the default browser."""
     import webbrowser
 
-    target_url = f"{cockpit_url.rstrip('/')}/ui"
+    target_url = f"{cockpit_url.rstrip('/')}/"
     opened = webbrowser.open(target_url)
     if opened:
         typer.echo(f"Opened {target_url}")
@@ -1256,14 +1325,134 @@ def show(
         typer.echo(f"Open this URL manually: {target_url}")
 
 
+@app.command("up", help="Start daemon and cockpit together.", rich_help_panel="Get started")
+def up(
+    path: str | None = typer.Option(None, help="Repository root"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Cockpit host"),
+    port: int = typer.Option(8473, "--port", help="Cockpit port"),
+    interval_seconds: int = typer.Option(15, "--interval-seconds", help="Daemon loop interval"),
+    open_browser: bool | None = typer.Option(
+        None,
+        "--open/--no-open",
+        help="Open cockpit in browser. Defaults to true on TTY sessions.",
+    ),
+    detach: bool = typer.Option(False, "--detach", help="Start processes and return immediately."),
+    force: bool = typer.Option(False, "--force", help="Allow broad/non-repo root paths."),
+) -> None:
+    """Start a supervised local Vaner session."""
+    should_open = _console.is_terminal if open_browser is None else open_browser
+    payload = run_up(
+        _repo_root(path),
+        host=host,
+        port=port,
+        mcp_sse_port=8472,
+        interval_seconds=interval_seconds,
+        open_browser=should_open,
+        force=force,
+    )
+    if payload.get("reattached"):
+        typer.echo(f"Vaner already running (daemon pid={payload['daemon_pid']}, cockpit pid={payload['cockpit_pid']}).")
+        return
+    cockpit_url = str(payload.get("cockpit_url", f"http://{host}:{port}"))
+    ready = bool(payload.get("ready"))
+    checklist_lines = [
+        f"Daemon PID: {payload.get('daemon_pid')}",
+        f"Cockpit PID: {payload.get('cockpit_pid')}",
+        f"Cockpit URL: {cockpit_url}",
+        "Health: ready" if ready else "Health: still starting (check `vaner logs`).",
+        "Next: run `vaner status` to verify full readiness.",
+    ]
+    ports = payload.get("ports", {})
+    if isinstance(ports, dict) and ports.get("cockpit_changed"):
+        checklist_lines.append(f"Cockpit port auto-shifted to {cockpit_url} because {host}:{port} was busy.")
+    inotify = payload.get("inotify", {})
+    if isinstance(inotify, dict) and not inotify.get("ok", True):
+        checklist_lines.append(
+            f"Inotify warning: {inotify.get('detail')}. Consider `{inotify.get('fix', 'sudo sysctl fs.inotify.max_user_watches=524288')}`."
+        )
+    _console.print(Panel("\n".join(checklist_lines), title="Vaner up", border_style="green" if ready else "yellow"))
+    if detach:
+        return
+    typer.echo("Press Ctrl+C to stop daemon and cockpit.")
+    try:
+        while True:
+            import time as _time
+
+            _time.sleep(1)
+    except KeyboardInterrupt:
+        down_payload = run_down(_repo_root(path))
+        daemon_state = down_payload["daemon"]
+        cockpit_state = down_payload["cockpit"]
+        typer.echo(
+            "Stopped: "
+            f"daemon(pid={daemon_state['pid']}, ok={daemon_state['stopped']}), "
+            f"cockpit(pid={cockpit_state['pid']}, ok={cockpit_state['stopped']})"
+        )
+
+
+@app.command("down", help="Stop daemon and cockpit from `vaner up`.", rich_help_panel="Get started")
+def down(path: str | None = typer.Option(None, help="Repository root")) -> None:
+    payload = run_down(_repo_root(path))
+    daemon_state = payload["daemon"]
+    cockpit_state = payload["cockpit"]
+    typer.echo(
+        "Stopped: "
+        f"daemon(pid={daemon_state['pid']}, ok={daemon_state['stopped']}), "
+        f"cockpit(pid={cockpit_state['pid']}, ok={cockpit_state['stopped']})"
+    )
+
+
 @app.command("logs", help="Alias for `vaner watch`.", rich_help_panel="Use with an agent")
 def logs_alias(
-    cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL"),
-    as_json: bool = typer.Option(False, "--json", help="Emit raw decision events as JSON"),
-    contains: str | None = typer.Option(None, "--filter", help="Substring filter against serialized decision payload"),
-    limit: int | None = typer.Option(None, "--limit", min=1, help="Stop after N matching events"),
+    path: str | None = typer.Option(None, help="Repository root"),
+    follow: bool = typer.Option(True, "--follow/--no-follow", help="Tail runtime logs continuously."),
+    events: bool = typer.Option(False, "--events", help="Show decision stream events instead of runtime logs."),
+    cockpit_url: str = typer.Option("http://127.0.0.1:8473", "--cockpit-url", help="Vaner cockpit URL for --events mode."),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw decision events as JSON (--events mode)."),
+    contains: str | None = typer.Option(None, "--filter", help="Substring filter for --events mode."),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Stop after N matching lines/events."),
 ) -> None:
-    watch(cockpit_url=cockpit_url, as_json=as_json, contains=contains, limit=limit)
+    if events:
+        watch(cockpit_url=cockpit_url, as_json=as_json, contains=contains, limit=limit)
+        return
+    repo_root = _repo_root(path)
+    daemon_log = log_path(repo_root, DAEMON_PROCESS)
+    cockpit_log = log_path(repo_root, COCKPIT_PROCESS)
+    paths = [("daemon", daemon_log), ("cockpit", cockpit_log)]
+    for label, file_path in paths:
+        if not file_path.exists():
+            typer.echo(f"[{label}] no log file yet at {file_path}")
+            continue
+        lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        tail = lines[-20:]
+        for line in tail:
+            typer.echo(f"[{label}] {line}")
+    if not follow:
+        return
+    typer.echo("Following runtime logs... (Ctrl+C to stop)")
+    offsets = {label: (path.stat().st_size if path.exists() else 0) for label, path in paths}
+    emitted = 0
+    try:
+        while True:
+            import time as _time
+
+            for label, file_path in paths:
+                if not file_path.exists():
+                    continue
+                with file_path.open("r", encoding="utf-8", errors="replace") as handle:
+                    handle.seek(offsets[label])
+                    chunk = handle.read()
+                    offsets[label] = handle.tell()
+                if not chunk:
+                    continue
+                for line in chunk.splitlines():
+                    typer.echo(f"[{label}] {line}")
+                    emitted += 1
+                    if limit is not None and emitted >= limit:
+                        return
+            _time.sleep(0.5)
+    except KeyboardInterrupt:
+        return
 
 
 @app.command("ps", help="Alias for `vaner status`.", rich_help_panel="Get started")
@@ -1283,36 +1472,18 @@ def status(
 ) -> None:
     """Show one-screen Vaner health and compute status."""
     repo_root = _repo_root(path)
-    config = load_config(repo_root)
-    daemon = daemon_status(repo_root)
+    snapshot = runtime_snapshot(repo_root, cockpit_url)
+    config = snapshot["config"]
     latest = api.inspect_last_decision(repo_root)
-
-    cockpit_health = {"reachable": False, "detail": ""}
-    try:
-        response = httpx.get(f"{cockpit_url.rstrip('/')}/health", timeout=2.0)
-        cockpit_health["reachable"] = response.status_code == 200
-        cockpit_health["detail"] = response.text
-    except Exception as exc:
-        cockpit_health["detail"] = str(exc)
-
-    scenario_counts: dict[str, int] = {"fresh": 0, "recent": 0, "stale": 0, "total": 0}
-    try:
-        store = ScenarioStore(repo_root / ".vaner" / "scenarios.db")
-        import asyncio
-
-        async def _counts() -> dict[str, int]:
-            await store.initialize()
-            return await store.freshness_counts()
-
-        scenario_counts = asyncio.run(_counts())
-    except Exception:
-        scenario_counts = {"fresh": 0, "recent": 0, "stale": 0, "total": 0}
+    scenario_counts = dict(snapshot["scenario_counts"])
+    daemon_text = str(snapshot["daemon"]["status"])
+    cockpit_ok = bool(snapshot["cockpit_reachable"])
 
     payload = {
         "repo_root": str(repo_root),
-        "daemon": daemon,
+        "daemon": daemon_text,
         "cockpit_url": cockpit_url,
-        "cockpit": cockpit_health,
+        "cockpit": {"reachable": cockpit_ok, "detail": snapshot["cockpit_detail"]},
         "mcp": config.mcp.model_dump(mode="json"),
         "compute": config.compute.model_dump(mode="json"),
         "backend": {
@@ -1323,6 +1494,14 @@ def status(
         "scenarios_ready": scenario_counts["total"],
         "scenario_counts": scenario_counts,
         "last_decision": latest.id if latest else None,
+        "runtime_snapshot": {
+            "daemon_pid_alive": snapshot["daemon_pid_alive"],
+            "cockpit_pid_alive": snapshot["cockpit_pid_alive"],
+            "backend_reachable": snapshot["backend_reachable"],
+            "repo_root_sensible": snapshot["repo_root_sensible"],
+            "inotify_headroom_pct": snapshot["inotify_headroom_pct"],
+            "cli_up_to_date": snapshot["cli_up_to_date"],
+        },
         "timestamp": datetime.now(UTC).isoformat(),
     }
     if as_json:
@@ -1333,7 +1512,7 @@ def status(
     typer.echo("=" * 40)
     typer.echo(f"repo:     {payload['repo_root']}")
     typer.echo(f"daemon:   {payload['daemon']}")
-    typer.echo(f"cockpit:  {'ok' if cockpit_health['reachable'] else 'down'} ({cockpit_url})")
+    typer.echo(f"cockpit:  {'ok' if cockpit_ok else 'down'} ({cockpit_url})")
     typer.echo(f"mcp:      transport={config.mcp.transport} sse={config.mcp.http_host}:{config.mcp.http_port}")
     typer.echo(f"backend:  {config.backend.base_url or '(unset)'} [{config.backend.model or '(unset)'}]")
     typer.echo(
@@ -1345,6 +1524,30 @@ def status(
     typer.echo(f"decision: {payload['last_decision'] or 'none'}")
     typer.echo(f"scenarios:{payload['scenarios_ready']}")
     typer.echo(f"freshness: fresh={scenario_counts['fresh']} recent={scenario_counts['recent']} stale={scenario_counts['stale']}")
+    if not bool(snapshot["repo_root_sensible"]):
+        _console.print(
+            Panel(
+                str(snapshot["repo_root_fix"] or "Use a project repository path instead of your home directory."),
+                title="Next best step",
+                border_style="yellow",
+            )
+        )
+    elif not bool(snapshot["daemon_pid_alive"]):
+        _console.print(
+            Panel(
+                "Start everything with `vaner up --path .` (or run `vaner daemon start --path . --no-once`).",
+                title="Next best step",
+                border_style="yellow",
+            )
+        )
+    elif not cockpit_ok:
+        _console.print(
+            Panel(
+                "Cockpit is down. Run `vaner up --path .` or restart HTTP with `vaner daemon serve-http --path .`.",
+                title="Next best step",
+                border_style="yellow",
+            )
+        )
 
 
 @app.command("doctor", rich_help_panel="Get started")
@@ -1355,6 +1558,7 @@ def doctor(
 ) -> None:
     """Run local diagnostics and print actionable fixes."""
     repo_root = _repo_root(path)
+    snapshot = runtime_snapshot(repo_root, cockpit_url)
     checks: list[dict[str, object]] = []
     config_path = repo_root / ".vaner" / "config.toml"
     checks.append(
@@ -1366,7 +1570,8 @@ def doctor(
         }
     )
 
-    config = load_config(repo_root) if config_path.exists() else None
+    config = snapshot["config"] if config_path.exists() else None
+    runtime: dict[str, object] = {"detected": False}
     if config is not None:
         has_backend = bool(config.backend.base_url.strip() and config.backend.model.strip())
         has_routes = bool(config.gateway.routes)
@@ -1376,6 +1581,34 @@ def doctor(
                 "ok": has_backend or has_routes,
                 "detail": "backend/base_url+model or gateway/routes must be set",
                 "fix": "Set [backend] base_url/model or add [gateway.routes] entries in .vaner/config.toml.",
+            }
+        )
+        checks.append(
+            {
+                "name": "repo_root_sensible",
+                "ok": bool(snapshot["repo_root_sensible"]),
+                "level": "warn" if not snapshot["repo_root_sensible"] else "pass",
+                "detail": snapshot["repo_root_detail"],
+                "fix": snapshot["repo_root_fix"],
+            }
+        )
+        inotify_payload = snapshot["inotify"]
+        checks.append(
+            {
+                "name": "inotify_headroom",
+                "ok": bool(inotify_payload.get("ok", True)),
+                "level": "warn" if not inotify_payload.get("ok", True) else "pass",
+                "detail": inotify_payload.get("detail", ""),
+                "fix": inotify_payload.get("fix", ""),
+            }
+        )
+        checks.append(
+            {
+                "name": "cli_up_to_date",
+                "ok": bool(snapshot["cli_up_to_date"]),
+                "level": "warn" if not snapshot["cli_up_to_date"] else "pass",
+                "detail": snapshot["cli_update_detail"],
+                "fix": "Run `pipx upgrade vaner` (or `vaner upgrade`).",
             }
         )
         checks.append(
@@ -1403,6 +1636,35 @@ def doctor(
                 "fix": "Start Ollama/LM Studio/vLLM so Vaner can precompute scenarios with local hardware.",
             }
         )
+        if runtime.get("name") == "ollama" and config.backend.model.strip():
+            backend_model = config.backend.model.strip()
+            ollama_ok = False
+            ollama_detail = "model not found"
+            try:
+                tags_response = httpx.get("http://127.0.0.1:11434/api/tags", timeout=1.5)
+                tags_response.raise_for_status()
+                payload = tags_response.json()
+                models_payload = payload.get("models", []) if isinstance(payload, dict) else []
+                model_names = {
+                    str(item.get("name", "")).strip()
+                    for item in models_payload
+                    if isinstance(item, dict) and str(item.get("name", "")).strip()
+                }
+                ollama_ok = backend_model in model_names
+                if model_names:
+                    ollama_detail = f"backend_model={backend_model} installed={', '.join(sorted(model_names)[:5])}"
+                else:
+                    ollama_detail = "no models returned by /api/tags"
+            except Exception as exc:
+                ollama_detail = str(exc)
+            checks.append(
+                {
+                    "name": "ollama_model_pulled",
+                    "ok": ollama_ok,
+                    "detail": ollama_detail,
+                    "fix": f"Run `ollama pull {backend_model}` to install the configured model.",
+                }
+            )
         is_cloud_backend = config.backend.base_url.startswith("https://")
         if is_cloud_backend and not runtime.get("detected"):
             checks.append(
@@ -1414,25 +1676,22 @@ def doctor(
                 }
             )
 
-    try:
-        health = httpx.get(f"{cockpit_url.rstrip('/')}/health", timeout=2.0)
-        checks.append(
-            {
-                "name": "cockpit_reachable",
-                "ok": health.status_code == 200,
-                "detail": f"status={health.status_code}",
-                "fix": "Start the cockpit server with `vaner daemon serve-http`.",
-            }
-        )
-    except Exception as exc:
-        checks.append(
-            {
-                "name": "cockpit_reachable",
-                "ok": False,
-                "detail": str(exc),
-                "fix": "Start the cockpit server with `vaner daemon serve-http`.",
-            }
-        )
+    checks.append(
+        {
+            "name": "cockpit_reachable",
+            "ok": bool(snapshot["cockpit_reachable"]),
+            "detail": str(snapshot["cockpit_detail"]),
+            "fix": "Start everything with `vaner up --path .` (or run `vaner daemon serve-http --path .`).",
+        }
+    )
+    checks.append(
+        {
+            "name": "daemon_running",
+            "ok": bool(snapshot["daemon_pid_alive"]),
+            "detail": str(snapshot["daemon"]["status"]),
+            "fix": "Run `vaner up --path .` (or `vaner daemon start --path . --no-once`).",
+        }
+    )
 
     cursor_mcp_path = repo_root / ".cursor" / "mcp.json"
     claude_mcp_path = Path.home() / ".claude" / "claude_desktop_config.json"
@@ -1444,6 +1703,16 @@ def doctor(
             "fix": "Run `vaner init` to scaffold MCP client configuration files.",
         }
     )
+    if cursor_mcp_path.exists():
+        checks.append(
+            {
+                "name": "mcp_client_instructions",
+                "ok": False,
+                "level": "warn",
+                "detail": "Cursor MCP config found.",
+                "fix": "Reload Cursor after `vaner init` so the MCP server is picked up.",
+            }
+        )
     mcp_commands: list[str] = []
     for path_candidate in (cursor_mcp_path, claude_mcp_path):
         if not path_candidate.exists():
@@ -1523,27 +1792,6 @@ def doctor(
                         "fix": "Run `vaner mcp --path .` manually to inspect startup errors.",
                     }
                 )
-    if os.environ.get("VANER_DOCTOR_CHECK_UPDATES", "").strip() == "1":
-        try:
-            response = httpx.get("https://pypi.org/pypi/vaner/json", timeout=1.5)
-            latest = str(response.json().get("info", {}).get("version", "")).strip()
-            checks.append(
-                {
-                    "name": "vaner_release_probe",
-                    "ok": (not latest) or latest == __version__,
-                    "detail": f"installed={__version__} latest={latest or 'unknown'}",
-                    "fix": "Run `vaner upgrade` to install the latest release.",
-                }
-            )
-        except Exception as exc:
-            checks.append(
-                {
-                    "name": "vaner_release_probe",
-                    "ok": False,
-                    "detail": str(exc),
-                    "fix": "Run `vaner upgrade` to install the latest release.",
-                }
-            )
     try:
         import asyncio
 
@@ -1572,7 +1820,7 @@ def doctor(
             }
         )
 
-    overall_ok = all(bool(item["ok"]) for item in checks)
+    overall_ok = all(bool(item["ok"]) or item.get("level") == "warn" for item in checks)
     payload = {"ok": overall_ok, "checks": checks}
     if as_json:
         typer.echo(json.dumps(payload, indent=2))
@@ -1581,9 +1829,12 @@ def doctor(
     _console.print("[bold]Vaner doctor[/bold]")
     _console.print("=" * 40)
     for check in checks:
-        mark = "[green]PASS[/green]" if check["ok"] else "[red]FAIL[/red]"
+        if check.get("level") == "warn":
+            mark = "[yellow]WARN[/yellow]"
+        else:
+            mark = "[green]PASS[/green]" if check["ok"] else "[red]FAIL[/red]"
         _console.print(f"{mark} {check['name']}: {check['detail']}")
-        if not check["ok"] and check["fix"]:
+        if (not check["ok"] or check.get("level") == "warn") and check["fix"]:
             _console.print(f"       fix: {_format_fix_hint(str(check['fix']))}")
     raise typer.Exit(code=0 if overall_ok else 1)
 
