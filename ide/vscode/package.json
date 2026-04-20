@@ -13,7 +13,8 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:vaner.openCockpit",
-    "onCommand:vaner.configureOpenAIBaseUrl"
+    "onCommand:vaner.configureMcp",
+    "onCommand:vaner.enableGatewayCapability"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -23,17 +24,21 @@
         "title": "Vaner: Open Cockpit"
       },
       {
-        "command": "vaner.configureOpenAIBaseUrl",
-        "title": "Vaner: Configure OPENAI_BASE_URL"
+        "command": "vaner.configureMcp",
+        "title": "Vaner: Configure MCP"
+      },
+      {
+        "command": "vaner.enableGatewayCapability",
+        "title": "Vaner: Enable Gateway Capability (OPENAI_BASE_URL)"
       }
     ],
     "configuration": {
       "title": "Vaner",
       "properties": {
-        "vaner.proxyUrl": {
+        "vaner.cockpitUrl": {
           "type": "string",
-          "default": "http://127.0.0.1:8471",
-          "description": "Local Vaner proxy base URL."
+          "default": "http://127.0.0.1:8473",
+          "description": "Local Vaner cockpit base URL."
         }
       }
     }

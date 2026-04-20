@@ -74,18 +74,24 @@ class ProxyConfig(BaseModel):
 
 
 class GatewayConfig(BaseModel):
-    passthrough_enabled: bool = True
+    passthrough_enabled: bool = False
     routes: dict[str, str] = Field(default_factory=dict)
     annotate_response_trailer: bool = False
     annotate_system_note: Literal["off", "min", "full"] = "off"
     shadow_rate: float = 0.0
 
 
+class MCPConfig(BaseModel):
+    transport: Literal["stdio", "sse"] = "stdio"
+    http_host: str = "127.0.0.1"
+    http_port: int = 8472
+
+
 class ComputeConfig(BaseModel):
     device: str = "auto"
     cpu_fraction: float = 0.2
     gpu_memory_fraction: float = 0.5
-    idle_only: bool = False
+    idle_only: bool = True
     idle_cpu_threshold: float = 0.6
     idle_gpu_threshold: float = 0.7
     embedding_device: str | None = None
@@ -253,5 +259,6 @@ class VanerConfig(BaseModel):
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)

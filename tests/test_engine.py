@@ -77,6 +77,7 @@ async def test_engine_precompute_cycle_populates_intent_state(temp_repo):
     (temp_repo / "consumer.py").write_text("import sample\n", encoding="utf-8")
     (temp_repo / "todo_notes.py").write_text("# TODO: add validation\n", encoding="utf-8")
     engine = VanerEngine(adapter=CodeRepoAdapter(temp_repo))
+    engine.config.compute.idle_only = False
     await engine.prepare()
 
     produced = await engine.precompute_cycle()

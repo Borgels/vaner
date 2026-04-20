@@ -6,7 +6,17 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from vaner.models.config import BackendConfig, ComputeConfig, GatewayConfig, GenerationConfig, PrivacyConfig, ProxyConfig, VanerConfig
+from vaner.models.config import (
+    BackendConfig,
+    ComputeConfig,
+    ExplorationConfig,
+    GatewayConfig,
+    GenerationConfig,
+    MCPConfig,
+    PrivacyConfig,
+    ProxyConfig,
+    VanerConfig,
+)
 
 
 def load_config(repo_root: Path) -> VanerConfig:
@@ -20,7 +30,9 @@ def load_config(repo_root: Path) -> VanerConfig:
     privacy_section = parsed.get("privacy", {})
     proxy_section = parsed.get("proxy", {})
     gateway_section = parsed.get("gateway", {})
+    mcp_section = parsed.get("mcp", {})
     compute_section = parsed.get("compute", {})
+    exploration_section = parsed.get("exploration", {})
     limits_section = parsed.get("limits", {})
 
     backend = BackendConfig(**backend_section) if isinstance(backend_section, dict) else BackendConfig()
@@ -32,18 +44,33 @@ def load_config(repo_root: Path) -> VanerConfig:
         annotate_section = gateway_section.get("annotate", {})
         shadow_section = gateway_section.get("shadow", {})
         routes_section = gateway_section.get("routes", {})
+        annotate_value = str(annotate_section.get("system_note", "off")) if isinstance(annotate_section, dict) else "off"
+        if annotate_value not in {"off", "min", "full"}:
+            annotate_value = "off"
         gateway = GatewayConfig(
-            passthrough_enabled=bool(passthrough_section.get("enabled", True)) if isinstance(passthrough_section, dict) else True,
+            passthrough_enabled=bool(passthrough_section.get("enabled", False)) if isinstance(passthrough_section, dict) else False,
             routes={str(key): str(value) for key, value in routes_section.items()} if isinstance(routes_section, dict) else {},
             annotate_response_trailer=bool(annotate_section.get("response_trailer", False))
             if isinstance(annotate_section, dict)
             else False,
-            annotate_system_note=str(annotate_section.get("system_note", "off")) if isinstance(annotate_section, dict) else "off",
+            annotate_system_note=annotate_value,  # type: ignore[arg-type]
             shadow_rate=float(shadow_section.get("rate", 0.0)) if isinstance(shadow_section, dict) else 0.0,
         )
     else:
         gateway = GatewayConfig()
+    mcp = MCPConfig(**mcp_section) if isinstance(mcp_section, dict) else MCPConfig()
     compute = ComputeConfig(**compute_section) if isinstance(compute_section, dict) else ComputeConfig()
+    if isinstance(exploration_section, dict):
+        mapped_exploration = {
+            "exploration_endpoint": exploration_section.get("endpoint", ""),
+            "exploration_model": exploration_section.get("model", ""),
+            "exploration_backend": exploration_section.get("backend", "auto"),
+            "embedding_model": exploration_section.get("embedding_model", "all-MiniLM-L6-v2"),
+            "embedding_device": exploration_section.get("embedding_device", "cpu"),
+        }
+        exploration = ExplorationConfig(**mapped_exploration)
+    else:
+        exploration = ExplorationConfig()
 
     max_age_seconds = int(limits_section.get("max_age_seconds", 3600)) if isinstance(limits_section, dict) else 3600
     max_context_tokens = int(limits_section.get("max_context_tokens", 4096)) if isinstance(limits_section, dict) else 4096
@@ -61,7 +88,9 @@ def load_config(repo_root: Path) -> VanerConfig:
         generation=generation,
         proxy=proxy,
         gateway=gateway,
+        mcp=mcp,
         compute=compute,
+        exploration=exploration,
     )
 
 
@@ -75,6 +104,10 @@ def _toml_literal(value: Any) -> str:
 
 
 def set_compute_value(repo_root: Path, key: str, value: Any) -> Path:
+    return set_config_value(repo_root, "compute", key, value)
+
+
+def set_config_value(repo_root: Path, section: str, key: str, value: Any) -> Path:
     config_path = repo_root / ".vaner" / "config.toml"
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -83,7 +116,7 @@ def set_compute_value(repo_root: Path, key: str, value: Any) -> Path:
     section_start = None
     section_end = len(lines)
     for idx, line in enumerate(lines):
-        if line.strip() == "[compute]":
+        if line.strip() == f"[{section}]":
             section_start = idx
             break
 
@@ -107,7 +140,7 @@ def set_compute_value(repo_root: Path, key: str, value: Any) -> Path:
     else:
         if lines and lines[-1].strip():
             lines.append("")
-        lines.append("[compute]")
+        lines.append(f"[{section}]")
         lines.append(f"{key} = {_toml_literal(value)}")
 
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

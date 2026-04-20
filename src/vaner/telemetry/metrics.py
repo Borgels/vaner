@@ -24,6 +24,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -64,7 +65,7 @@ class RequestMetrics:
         if self.t4_complete and self.t0_received:
             self.total_e2e_ms = (self.t4_complete - self.t0_received) * 1000.0
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "request_id": self.request_id,
             "timestamp": self.timestamp,
@@ -133,6 +134,29 @@ class MetricsStore:
                 )
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mcp_tool_calls (
+                    id TEXT PRIMARY KEY,
+                    tool_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    latency_ms REAL NOT NULL,
+                    scenario_id TEXT,
+                    timestamp REAL NOT NULL
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scenario_outcomes (
+                    id TEXT PRIMARY KEY,
+                    scenario_id TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    timestamp REAL NOT NULL
+                )
+                """
+            )
             await db.commit()
 
     async def record(self, m: RequestMetrics) -> None:
@@ -163,7 +187,7 @@ class MetricsStore:
             )
             await db.commit()
 
-    async def recent(self, limit: int = 100) -> list[dict]:
+    async def recent(self, limit: int = 100) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
@@ -173,7 +197,7 @@ class MetricsStore:
             rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    async def summary(self, last_n: int = 1000) -> dict:
+    async def summary(self, last_n: int = 1000) -> dict[str, Any]:
         """Aggregate statistics over the last *last_n* requests."""
         rows = await self.recent(last_n)
         if not rows:
@@ -181,16 +205,16 @@ class MetricsStore:
 
         def _avg(key: str) -> float:
             vals = [r[key] for r in rows if r[key] > 0]
-            return round(sum(vals) / len(vals), 2) if vals else 0.0
+            return round(float(sum(vals) / len(vals)), 2) if vals else 0.0
 
         def _p95(key: str) -> float:
             vals = sorted(r[key] for r in rows if r[key] > 0)
             if not vals:
                 return 0.0
             idx = max(0, int(len(vals) * 0.95) - 1)
-            return round(vals[idx], 2)
+            return round(float(vals[idx]), 2)
 
-        tiers = {}
+        tiers: dict[str, int] = {}
         for r in rows:
             tiers[r["cache_tier"]] = tiers.get(r["cache_tier"], 0) + 1
 
@@ -248,7 +272,7 @@ class MetricsStore:
             )
             await db.commit()
 
-    async def shadow_summary(self, last_n: int = 500) -> dict:
+    async def shadow_summary(self, last_n: int = 500) -> dict[str, Any]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
@@ -289,3 +313,32 @@ class MetricsStore:
             cursor = await db.execute("SELECT mode, count FROM integration_usage ORDER BY count DESC")
             rows = await cursor.fetchall()
         return {str(row["mode"]): int(row["count"]) for row in rows}
+
+    async def record_mcp_tool_call(
+        self,
+        *,
+        tool_name: str,
+        status: str,
+        latency_ms: float,
+        scenario_id: str | None = None,
+    ) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO mcp_tool_calls (id, tool_name, status, latency_ms, scenario_id, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), tool_name, status, latency_ms, scenario_id, time.time()),
+            )
+            await db.commit()
+
+    async def record_scenario_outcome(self, *, scenario_id: str, result: str, note: str = "") -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO scenario_outcomes (id, scenario_id, result, note, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), scenario_id, result, note, time.time()),
+            )
+            await db.commit()
