@@ -31,7 +31,7 @@ jobs:
           export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
           python -m build
       - name: Generate SBOM
-        run: cyclonedx-py requirements requirements/release.txt --output-format json --output-file sbom.json
+        run: cyclonedx-py requirements requirements/release.txt --output-format json -o sbom.json
       - name: Install cosign
         uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
       - name: Sign release artifacts with keyless Sigstore
