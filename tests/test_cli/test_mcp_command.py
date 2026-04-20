@@ -7,6 +7,9 @@ from typer.testing import CliRunner
 
 from vaner.cli.commands.app import app
 
+pytest.importorskip("mcp")
+pytestmark = pytest.mark.integration
+
 
 def test_mcp_stdio_command_wires_repo_root(temp_repo: Path, monkeypatch) -> None:
     pytest.importorskip("mcp")
