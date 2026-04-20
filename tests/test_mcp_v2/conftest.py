@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 from pathlib import Path
 
@@ -12,12 +13,9 @@ from vaner.store.scenarios import ScenarioStore
 
 @pytest.fixture
 def mcp_server(temp_repo: Path):
-    try:
-        from vaner.mcp.server import build_server
-    except ModuleNotFoundError as exc:  # pragma: no cover - CI matrix dependent
-        if exc.name == "mcp":
-            pytest.skip("mcp package is unavailable in this test environment")
-        raise
+    if importlib.util.find_spec("mcp") is None:  # pragma: no cover - CI matrix dependent
+        pytest.skip("mcp package is unavailable in this test environment")
+    from vaner.mcp.server import build_server
 
     (temp_repo / ".vaner").mkdir(parents=True, exist_ok=True)
     (temp_repo / ".vaner" / "config.toml").write_text(

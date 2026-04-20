@@ -9,6 +9,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from vaner.cli.commands import app
+from vaner.cli.commands.mcp_clients import _claude_desktop_dir
 from vaner.models.scenario import EvidenceRef, Scenario
 from vaner.store.scenarios import ScenarioStore
 
@@ -164,4 +165,4 @@ def test_init_writes_mcp_configs(temp_repo, monkeypatch):
     )
     assert result.exit_code == 0
     assert (fake_home / ".cursor" / "mcp.json").exists()
-    assert (fake_home / ".config" / "Claude" / "claude_desktop_config.json").exists()
+    assert (_claude_desktop_dir() / "claude_desktop_config.json").exists()
