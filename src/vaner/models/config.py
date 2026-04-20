@@ -48,25 +48,27 @@ class BackendConfig(BaseModel):
         model = "Qwen/Qwen2.5-Coder-32B-Instruct"
     """
 
-    name: str = Field(default="custom", description="Human-readable backend profile name.")
-    base_url: str = Field(default="", description="OpenAI-compatible base URL for user-facing completions.")
-    model: str = Field(default="", description="User-facing chat model name.")
-    api_key_env: str = Field(default="OPENAI_API_KEY", description="Environment variable that stores backend API key.")
-    prefer_local: bool = Field(default=True, description="Prefer local backend routes when both local and remote exist.")
-    fallback_enabled: bool = Field(default=False, description="Enable fallback backend when primary fails.")
-    fallback_base_url: str | None = Field(default=None, description="Fallback OpenAI-compatible base URL.")
-    fallback_model: str | None = Field(default=None, description="Fallback model name.")
-    fallback_api_key_env: str = Field(default="OPENAI_API_KEY", description="Environment variable for fallback API key.")
-    remote_budget_per_hour: int = Field(default=60, description="Soft hourly budget guard for remote inference.")
+    name: str = "custom"
+    base_url: str = ""
+    model: str = ""
+    api_key_env: str = "OPENAI_API_KEY"
+    prefer_local: bool = True
+    fallback_enabled: bool = False
+    fallback_base_url: str | None = None
+    fallback_model: str | None = None
+    fallback_api_key_env: str = "OPENAI_API_KEY"
+    remote_budget_per_hour: int = 60
+    request_timeout_seconds: float = 30.0
 
 
 class GenerationConfig(BaseModel):
-    use_llm: bool = Field(default=False, description="Enable LLM-generated file summaries during precompute.")
-    generation_model: str | None = Field(default=None, description="Override model for generation summaries.")
-    max_file_chars: int = Field(default=8000, description="Maximum source characters sent for one summary.")
-    summary_max_tokens: int = Field(default=400, description="Token cap for generated summary text.")
-    max_concurrent_generations: int = Field(default=4, description="Max parallel summary generations.")
-    max_generations_per_cycle: int = Field(default=4000, description="Max summary generations per precompute cycle.")
+    use_llm: bool = False
+    generation_model: str | None = None
+    max_file_chars: int = 8000
+    summary_max_tokens: int = 400
+    llm_timeout_seconds: float = 30.0
+    max_concurrent_generations: int = 4
+    max_generations_per_cycle: int = 4000
 
 
 class ProxyConfig(BaseModel):

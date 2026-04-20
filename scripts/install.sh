@@ -19,7 +19,7 @@ NC=$'\033[0m'
 
 VANER_YES="${VANER_YES:-0}"
 VANER_DRY_RUN="${VANER_DRY_RUN:-0}"
-VANER_VERIFY="${VANER_VERIFY:-0}"
+VANER_VERIFY="${VANER_VERIFY:-1}"
 VANER_BACKEND="${VANER_BACKEND:-}"
 VANER_VERSION="${VANER_VERSION:-}"
 VANER_NO_MODIFY_PATH="${VANER_NO_MODIFY_PATH:-0}"
@@ -92,6 +92,7 @@ Options:
   --yes                           Non-interactive mode; auto-approve prompts
   --dry-run                       Print the install plan without making changes
   --verify                        Run post-install smoke checks
+  --no-verify                     Skip post-install smoke checks
   --backend uv|pipx               Force installer backend
   --version VERSION               Install a specific PyPI version (e.g. 0.2.0)
   --no-modify-path                Do not run ensurepath/path integration steps
@@ -152,6 +153,10 @@ parse_args() {
         ;;
       --verify)
         VANER_VERIFY=1
+        shift
+        ;;
+      --no-verify)
+        VANER_VERIFY=0
         shift
         ;;
       --backend)
@@ -751,10 +756,30 @@ verify_installation() {
   local tmpdir
   tmpdir="$(mktemp -d)"
   TMPFILES+=("$tmpdir")
-  run_cmd vaner init --path "$tmpdir"
-  if [[ "$VANER_DRY_RUN" != "1" && ! -d "$tmpdir/.vaner" ]]; then
-    ui_error "Verification failed: workspace was not initialized."
-    exit 1
+  run_cmd vaner init --path "$tmpdir" --no-interactive --clients none
+  if [[ "$VANER_DRY_RUN" != "1" ]]; then
+    if [[ ! -d "$tmpdir/.vaner" ]]; then
+      ui_error "Verification failed: workspace was not initialized."
+      exit 1
+    fi
+    local doctor_json
+    doctor_json="$(mktempfile)"
+    if ! vaner doctor --path "$tmpdir" --json > "$doctor_json"; then
+      ui_warn "vaner doctor returned non-zero; validating required smoke checks."
+    fi
+    python3 - "$doctor_json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+payload = json.loads(open(path, encoding="utf-8").read() or "{}")
+checks = {item.get("name"): item for item in payload.get("checks", []) if isinstance(item, dict)}
+required = ("python_deps", "mcp_smoke")
+failed = [name for name in required if not bool(checks.get(name, {}).get("ok", False))]
+if failed:
+    raise SystemExit(f"required doctor checks failed: {', '.join(failed)}")
+PY
+    run_cmd vaner mcp --path "$tmpdir" --smoke
   fi
   ui_success "Smoke verification passed"
 }

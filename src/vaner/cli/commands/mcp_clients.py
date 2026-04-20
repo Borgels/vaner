@@ -227,7 +227,11 @@ def _contains_vaner_entry(config_path: Path, *, container_key: str) -> bool:
     except Exception:
         return False
     container = payload.get(container_key)
-    return isinstance(container, dict) and "vaner" in container
+    if not isinstance(container, dict):
+        return False
+    if "vaner" in container:
+        return True
+    return any(str(key).startswith("vaner-") for key in container.keys())
 
 
 def detect_all(repo_root: Path | None = None) -> list[DetectedClient]:
@@ -294,6 +298,7 @@ def _merge_json_server(
     container_key: str,
     launcher_cmd: str,
     launcher_args: list[str],
+    server_key: str = "vaner",
     dry_run: bool,
     force: bool,
 ) -> WriteResult:
@@ -315,7 +320,7 @@ def _merge_json_server(
                 )
             doc = {}
         if doc and container_key in doc and isinstance(doc.get(container_key), dict):
-            existing_entry = doc[container_key].get("vaner")
+            existing_entry = doc[container_key].get(server_key)
             if existing_entry == entry:
                 return WriteResult(client_id=client_id, path=path, action="skipped")
         if not dry_run:
@@ -327,9 +332,9 @@ def _merge_json_server(
     if not isinstance(container, dict):
         container = {}
         doc[container_key] = container
-    previous = container.get("vaner")
+    previous = container.get(server_key)
     action: WriteAction = "updated" if previous is not None else "added"
-    container["vaner"] = entry
+    container[server_key] = entry
     if previous == entry:
         action = "skipped"
 
@@ -404,6 +409,7 @@ def write_client(
     *,
     launcher_cmd: str,
     launcher_args: list[str],
+    server_key: str = "vaner",
     path_override: Path | None = None,
     dry_run: bool = False,
     force: bool = False,
@@ -418,6 +424,7 @@ def write_client(
             container_key="mcpServers",
             launcher_cmd=launcher_cmd,
             launcher_args=launcher_args,
+            server_key=server_key,
             dry_run=dry_run,
             force=force,
         )
@@ -429,6 +436,7 @@ def write_client(
             container_key="servers",
             launcher_cmd=launcher_cmd,
             launcher_args=launcher_args,
+            server_key=server_key,
             dry_run=dry_run,
             force=force,
         )
@@ -440,6 +448,7 @@ def write_client(
             container_key="context_servers",
             launcher_cmd=launcher_cmd,
             launcher_args=launcher_args,
+            server_key=server_key,
             dry_run=dry_run,
             force=force,
         )

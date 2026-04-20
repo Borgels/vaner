@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import os
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -23,11 +23,34 @@ from vaner.models.config import (
 logger = logging.getLogger(__name__)
 
 
+def global_config_path() -> Path:
+    env_override = os.environ.get("VANER_GLOBAL_CONFIG", "").strip()
+    if env_override:
+        return Path(env_override).expanduser().resolve()
+    return Path.home() / ".config" / "vaner" / "config.toml"
+
+
+def _load_toml_if_exists(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def load_config(repo_root: Path) -> VanerConfig:
     config_path = repo_root / ".vaner" / "config.toml"
-    parsed: dict[str, object] = {}
-    if config_path.exists():
-        parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    parsed_global = _load_toml_if_exists(global_config_path())
+    parsed_local = _load_toml_if_exists(config_path)
+    parsed: dict[str, object] = dict(parsed_global)
+    for key, value in parsed_local.items():
+        if isinstance(value, dict) and isinstance(parsed.get(key), dict):
+            merged = dict(parsed.get(key, {}))
+            merged.update(value)
+            parsed[key] = merged
+        else:
+            parsed[key] = value
 
     backend_section = parsed.get("backend", {})
     generation_section = parsed.get("generation", {})

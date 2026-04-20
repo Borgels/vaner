@@ -43,8 +43,14 @@ class VanerDaemon:
         await self.telemetry.initialize()
 
     async def run_once(self, changed_files: list[Path] | None = None) -> int:
+        cycle_started = time.monotonic()
         await self.initialize()
         repo_root = self.config.repo_root
+        logger.info(
+            "Daemon cycle start repo=%s changed_files=%s",
+            repo_root,
+            len(changed_files) if changed_files is not None else "scan",
+        )
         include = self.config.privacy.allowed_paths or None
         files = changed_files if changed_files is not None else scan_repo_files(repo_root, include_paths=include)
         git_state = read_git_state(repo_root)
@@ -166,6 +172,14 @@ class VanerDaemon:
             await self.scenarios.upsert(scenario)
         await self.scenarios.mark_stale()
         await self.telemetry.record("artefacts_written", float(written))
+        logger.info(
+            "Daemon cycle end repo=%s artefacts_written=%d signals=%d scenarios=%d elapsed_ms=%.1f",
+            repo_root,
+            written,
+            len(signals),
+            len(scenarios),
+            (time.monotonic() - cycle_started) * 1000.0,
+        )
         return written
 
     async def run_forever(self, interval_seconds: int = 15) -> None:
@@ -187,8 +201,10 @@ class VanerDaemon:
                     break
                 changed_files = watcher.drain_changes()
                 if changed_files:
+                    logger.info("Daemon processing %d watched file changes", len(changed_files))
                     await self.run_once(changed_files=changed_files)
                 else:
+                    logger.info("Daemon running periodic cycle (no watched changes)")
                     await self.run_once()
                 await asyncio.sleep(interval_seconds)
         finally:

@@ -1844,14 +1844,19 @@ class VanerEngine:
             api_key = os.environ.get(self.config.backend.api_key_env, "")
             if not api_key:
                 return None
-            return openai_llm(model=model, api_key=api_key, base_url=self.config.backend.base_url)
+            return openai_llm(
+                model=model,
+                api_key=api_key,
+                base_url=self.config.backend.base_url,
+                timeout=float(self.config.backend.request_timeout_seconds),
+            )
         if llm.startswith("ollama:"):
             from vaner.clients.ollama import ollama_llm
 
             model = llm.split(":", 1)[1]
             if not model:
                 return None
-            return ollama_llm(model=model)
+            return ollama_llm(model=model, timeout=float(self.config.backend.request_timeout_seconds))
         if llm.startswith("vllm:"):
             # vllm:<model>  or  vllm:<model>@<host>:<port>
             from vaner.clients.openai import openai_llm
@@ -1864,7 +1869,7 @@ class VanerEngine:
                 model = rest
                 base_url = "http://127.0.0.1:8000/v1"
             api_key = os.environ.get("VANER_EXPLORATION_API_KEY", "EMPTY")
-            return openai_llm(model=model, api_key=api_key, base_url=base_url)
+            return openai_llm(model=model, api_key=api_key, base_url=base_url, timeout=float(self.config.backend.request_timeout_seconds))
         return None
 
     async def _run_reasoner(self) -> None:

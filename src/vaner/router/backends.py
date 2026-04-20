@@ -122,7 +122,8 @@ async def _post_chat(backend: BackendConfig, payload: dict[str, Any], *, use_fal
     full_payload = payload if "model" in payload else {**payload, "model": model_name}
     endpoint, translated = translate_request(full_payload, backend_format=backend_format, model=model_name)
     headers = _headers(backend, use_fallback=use_fallback, backend_format=backend_format)
-    async with httpx.AsyncClient(timeout=60) as client:
+    timeout_seconds = max(1.0, float(getattr(backend, "request_timeout_seconds", 30.0)))
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         response = await client.post(
             f"{base_url}{endpoint}",
             json=translated,
@@ -182,7 +183,8 @@ async def _post_chat_passthrough(
         backend_format=backend_format,
         passthrough_authorization=authorization_header,
     )
-    async with httpx.AsyncClient(timeout=60) as client:
+    timeout_seconds = max(1.0, float(getattr(temp_backend, "request_timeout_seconds", 30.0)))
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         response = await client.post(
             f"{target.base_url}{endpoint}",
             json=translated,
@@ -244,7 +246,8 @@ async def _stream_chat(backend: BackendConfig, payload: dict[str, Any], *, use_f
     full_payload = payload if "model" in payload else {**payload, "model": model_name}
     endpoint, translated = translate_request(full_payload, backend_format=backend_format, model=model_name)
     headers = _headers(backend, use_fallback=use_fallback, backend_format=backend_format)
-    async with httpx.AsyncClient(timeout=60) as client:
+    timeout_seconds = max(1.0, float(getattr(backend, "request_timeout_seconds", 30.0)))
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         async with client.stream(
             "POST",
             f"{base_url}{endpoint}",
@@ -279,7 +282,8 @@ async def _stream_chat_passthrough(
         backend_format=backend_format,
         passthrough_authorization=authorization_header,
     )
-    async with httpx.AsyncClient(timeout=60) as client:
+    timeout_seconds = max(1.0, float(getattr(temp_backend, "request_timeout_seconds", 30.0)))
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         async with client.stream(
             "POST",
             f"{target.base_url}{endpoint}",

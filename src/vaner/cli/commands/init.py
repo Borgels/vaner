@@ -46,6 +46,7 @@ fallback_base_url = ""
 fallback_model = ""
 fallback_api_key_env = "OPENAI_API_KEY"
 remote_budget_per_hour = 60
+request_timeout_seconds = 30.0
 
 [generation]
 # If true, Vaner uses the backend LLM to generate file summaries during
@@ -54,6 +55,7 @@ use_llm = false
 generation_model = ""   # leave empty to inherit from [backend]
 max_file_chars = 8000
 summary_max_tokens = 400
+llm_timeout_seconds = 30.0
 max_concurrent_generations = 4
 max_generations_per_cycle = 200
 
@@ -617,10 +619,14 @@ def run_wizard(
 
     write_results: list[WriteResult] = []
     for item in selected_clients:
+        server_key = "vaner"
+        if item.spec.id == "claude-desktop":
+            server_key = f"vaner-{repo_root.name}"
         result = write_client(
             item,
             launcher_cmd=launcher_cmd,
             launcher_args=launcher_args,
+            server_key=server_key,
             dry_run=dry_run,
             force=force,
         )
