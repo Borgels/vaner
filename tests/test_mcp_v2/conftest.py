@@ -12,8 +12,12 @@ from vaner.store.scenarios import ScenarioStore
 
 @pytest.fixture
 def mcp_server(temp_repo: Path):
-    pytest.importorskip("mcp")
-    from vaner.mcp.server import build_server
+    try:
+        from vaner.mcp.server import build_server
+    except ModuleNotFoundError as exc:  # pragma: no cover - CI matrix dependent
+        if exc.name == "mcp":
+            pytest.skip("mcp package is unavailable in this test environment")
+        raise
 
     (temp_repo / ".vaner").mkdir(parents=True, exist_ok=True)
     (temp_repo / ".vaner" / "config.toml").write_text(
