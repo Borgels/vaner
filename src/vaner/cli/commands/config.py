@@ -87,8 +87,13 @@ def load_config(repo_root: Path) -> VanerConfig:
     mcp = MCPConfig(**mcp_section) if isinstance(mcp_section, dict) else MCPConfig()
     if isinstance(intent_section, dict):
         skills_loop_section = intent_section.get("skills_loop", {})
+        skill_roots = intent_section.get("skill_roots", [".cursor/skills", ".claude/skills", "skills"])
         intent = IntentConfig(
             enabled=bool(intent_section.get("enabled", True)),
+            include_global_skills=bool(intent_section.get("include_global_skills", True)),
+            skill_roots=[str(item) for item in skill_roots]
+            if isinstance(skill_roots, list)
+            else [".cursor/skills", ".claude/skills", "skills"],
             lookback_turns=int(intent_section.get("lookback_turns", 8)),
             skills_loop_enabled=bool(skills_loop_section.get("enabled", True)) if isinstance(skills_loop_section, dict) else True,
             max_feedback_events_per_cycle=int(
