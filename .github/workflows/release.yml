@@ -85,7 +85,13 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --generate-notes
           fi
-          gh release upload "$TAG" dist/* sbom.json dist/*.sigstore.json sbom.json.sigstore.json --clobber
+          # Collect assets into a deduped set so we don't pass the same sigstore
+          # JSONs twice (dist/* already matches them alongside the wheel/sdist).
+          # Prior runs hit `HTTP 422 ReleaseAsset.name already exists` when the
+          # duplicates raced --clobber. Sort -u keeps the list canonical.
+          assets=$(printf '%s\n' dist/* sbom.json sbom.json.sigstore.json | sort -u)
+          # shellcheck disable=SC2086
+          gh release upload "$TAG" $assets --clobber
 
   slsa-provenance:
     needs: publish
