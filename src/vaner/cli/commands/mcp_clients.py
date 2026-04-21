@@ -100,7 +100,7 @@ def _cline_path() -> Path:
 
 
 def _detect_cursor(repo_root: Path) -> Path | None:
-    candidates = [_home() / ".cursor", repo_root / ".cursor"]
+    candidates = [repo_root / ".cursor", _home() / ".cursor"]
     return next((candidate for candidate in candidates if candidate.exists()), None)
 
 
@@ -157,6 +157,9 @@ def _detect_roo(_repo_root: Path) -> Path | None:
 
 
 def _cursor_config(_repo_root: Path) -> Path:
+    repo_cursor = _repo_root / ".cursor" / "mcp.json"
+    if repo_cursor.exists():
+        return repo_cursor
     return _home() / ".cursor" / "mcp.json"
 
 

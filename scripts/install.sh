@@ -720,10 +720,14 @@ package_base_spec() {
 github_package_spec() {
   local extras
   extras="$(package_extras)"
+  local ref=""
+  if [[ -n "$VANER_VERSION" ]]; then
+    ref="@v$VANER_VERSION"
+  fi
   if [[ -n "$extras" ]]; then
-    printf 'vaner%s @ git+https://github.com/Borgels/vaner.git' "$extras"
+    printf 'vaner%s @ git+https://github.com/Borgels/vaner.git%s' "$extras" "$ref"
   else
-    printf 'git+https://github.com/Borgels/vaner.git'
+    printf 'git+https://github.com/Borgels/vaner.git%s' "$ref"
   fi
 }
 
@@ -754,24 +758,25 @@ install_vaner_with_uv() {
       return 0
     fi
   fi
-  if [[ -z "$VANER_VERSION" ]]; then
+  if [[ -n "$VANER_VERSION" ]]; then
+    ui_warn "Pinned PyPI package 'vaner==$VANER_VERSION' not found. Falling back to matching GitHub tag."
+  else
     ui_warn "PyPI package 'vaner' not found yet. Falling back to GitHub source install."
-    run_cmd uv tool install --upgrade "$(github_package_spec)"
-    return 0
   fi
-  return 1
+  run_cmd uv tool install --upgrade "$(github_package_spec)"
+  return 0
 }
 
 install_vaner_with_pipx() {
   local spec
   spec="$(package_spec)"
   if ! run_cmd pipx install --force "$spec"; then
-    if [[ -z "$VANER_VERSION" ]]; then
-      ui_warn "PyPI package 'vaner' not found yet. Falling back to GitHub source install."
-      run_cmd pipx install --force "$(github_package_spec)"
+    if [[ -n "$VANER_VERSION" ]]; then
+      ui_warn "Pinned PyPI package 'vaner==$VANER_VERSION' not found. Falling back to matching GitHub tag."
     else
-      return 1
+      ui_warn "PyPI package 'vaner' not found yet. Falling back to GitHub source install."
     fi
+    run_cmd pipx install --force "$(github_package_spec)"
   fi
   if [[ "$VANER_NO_MODIFY_PATH" != "1" ]]; then
     run_cmd pipx ensurepath
@@ -838,7 +843,7 @@ print_install_plan() {
   local extras
   extras="$(package_extras)"
   if [[ -n "$VANER_VERSION" ]]; then
-    printf '  package: vaner%s==%s\n' "$extras" "$VANER_VERSION"
+    printf '  package: vaner%s==%s (fallback to GitHub tag if PyPI unavailable)\n' "$extras" "$VANER_VERSION"
   else
     printf '  package: vaner%s (latest; fallback to GitHub source if PyPI unavailable)\n' "$extras"
   fi

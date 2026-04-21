@@ -119,7 +119,12 @@ def _remove_vaner_from_json_config(path: Path, *, container_key: str = "mcpServe
         return False
     for key in keys_to_remove:
         container.pop(key, None)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    if not container:
+        payload.pop(container_key, None)
+    if payload:
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
     return True
 
 
@@ -139,9 +144,18 @@ def _remove_managed_skill(path: Path) -> bool:
 
 def _remove_mcp_config_entries(repo_root: Path) -> int:
     updated = 0
+    updated_paths: set[Path] = set()
+
+    repo_cursor = repo_root / ".cursor" / "mcp.json"
+    if _remove_vaner_from_json_config(repo_cursor, container_key="mcpServers"):
+        updated += 1
+        updated_paths.add(repo_cursor)
+
     for detected in mcp_clients.detect_all(repo_root):
         config_path = detected.path
         if config_path is None:
+            continue
+        if config_path in updated_paths:
             continue
         if detected.spec.kind == "json-mcpServers":
             if _remove_vaner_from_json_config(config_path, container_key="mcpServers"):

@@ -43,6 +43,7 @@ Common installer flags:
 - `--with-ollama`
 - `--minimal` (legacy minimal extras; pairs with `--no-mcp` when needed)
 - `--backend-preset ollama|lmstudio|vllm|openai|anthropic|openrouter|skip`
+- `--backend-url <url>`, `--backend-model <model>`, `--backend-api-key-env <env>`
 - `--compute-preset background|balanced|dedicated`
 - `--max-session-minutes <n>`
 - `--no-mcp` (skip MCP extras)
@@ -50,9 +51,9 @@ Common installer flags:
 ### Manual install (advanced)
 
 ```bash
-pipx install 'vaner[mcp]'
+pipx install 'vaner[all]'
 # or
-uv tool install 'vaner[mcp]'
+uv tool install 'vaner[all]'
 ```
 
 ### Upgrade
@@ -66,7 +67,8 @@ vaner version
 
 Vaner stores local runtime state in your repository under `.vaner/` (for example `store.db`, `scenarios.db`,
 `metrics.db`, and `telemetry.db`). Retention is controlled by `limits.max_age_seconds` in `.vaner/config.toml`.
-Old signal/replay/query and stale cache entries are purged during precompute cycles.
+Old signal/replay/query and stale cache entries are purged during engine/precompute activity. There is not yet a
+separate `prune` or `compact` command.
 
 Useful commands:
 
@@ -88,10 +90,18 @@ Key non-interactive flags:
 - `--backend-model` and `--backend-api-key-env`
 - `--compute-preset background|balanced|dedicated`
 - `--max-session-minutes <n>`
-- `--clients auto|all|none|other|<csv>`
 - `--force`
-- `--dry-run`
-- `--accept-cloud-costs`
+- `--interactive/--no-interactive`
+- `--no-mcp`
+
+What `vaner init` does by default:
+
+- writes repo-local config to `.vaner/config.toml`
+- writes repo-local Cursor MCP wiring to `.cursor/mcp.json`
+- writes managed feedback skills to `.cursor/skills/vaner/vaner-feedback/SKILL.md` and `~/.claude/skills/vaner/vaner-feedback/SKILL.md`
+
+Use `vaner init --no-mcp --path .` if you want config only and do not want Vaner to wire MCP clients or managed
+skills. If Cursor is already open, reload the window after `vaner init` so the new MCP server is picked up.
 
 Start / verify runtime:
 
