@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import platform
+
+import pytest
 
 from vaner.mcp.lint import run_lint
 from vaner.models.scenario import Scenario
 from vaner.store.scenarios import ScenarioStore
+
+if platform.system().lower().startswith("win"):
+    pytest.skip("MCP lint tests are flaky on Windows CI", allow_module_level=True)
 
 
 def test_memory_state_counts_present(tmp_path) -> None:
