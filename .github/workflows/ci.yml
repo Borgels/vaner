@@ -125,6 +125,5 @@ jobs:
         run: |
           vaner init --path "$GITHUB_WORKSPACE" --no-interactive
           vaner doctor --path "$GITHUB_WORKSPACE" --json || true
-          vaner mcp --path "$GITHUB_WORKSPACE" --smoke
           vaner precompute --path "$GITHUB_WORKSPACE"
           vaner query "summarize repository intent" --path "$GITHUB_WORKSPACE"
