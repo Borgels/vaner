@@ -1,0 +1,213 @@
+@import "@fontsource/space-grotesk/400.css";
+@import "@fontsource/space-grotesk/500.css";
+@import "@fontsource/space-grotesk/600.css";
+@import "@fontsource/space-grotesk/700.css";
+@import "@fontsource/instrument-serif/400.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+
+:root {
+  --bg-0: oklch(0.18 0.006 280);
+  --bg-1: oklch(0.22 0.007 280);
+  --bg-2: oklch(0.26 0.008 280);
+  --bg-3: oklch(0.3 0.009 280);
+  --bg-inset: oklch(0.15 0.005 280);
+
+  --line-1: oklch(0.32 0.008 280);
+  --line-2: oklch(0.4 0.01 280);
+  --line-hair: oklch(0.28 0.007 280);
+
+  --fg-1: oklch(0.96 0.005 90);
+  --fg-2: oklch(0.78 0.008 90);
+  --fg-3: oklch(0.6 0.01 90);
+  --fg-4: oklch(0.45 0.01 90);
+
+  --accent: oklch(0.72 0.095 310);
+  --accent-soft: oklch(0.56 0.07 310);
+  --accent-glow: oklch(0.72 0.095 310 / 0.35);
+  --accent-bg: oklch(0.3 0.05 310 / 0.4);
+
+  --amber: oklch(0.8 0.13 75);
+  --amber-soft: oklch(0.62 0.1 75);
+  --amber-bg: oklch(0.35 0.06 75 / 0.35);
+
+  --ok: oklch(0.78 0.09 150);
+  --warn: oklch(0.78 0.12 75);
+  --err: oklch(0.68 0.16 25);
+  --muted: oklch(0.55 0.01 280);
+
+  --kind-research: oklch(0.72 0.095 310);
+  --kind-explain: oklch(0.8 0.11 85);
+  --kind-debug: oklch(0.72 0.1 25);
+  --kind-change: oklch(0.74 0.08 220);
+  --kind-refactor: oklch(0.76 0.08 150);
+
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-editorial: "Instrument Serif", "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Menlo", monospace;
+
+  --r-1: 3px;
+  --r-2: 6px;
+  --r-3: 10px;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.5), 0 4px 10px rgba(0, 0, 0, 0.25);
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font-family: var(--font-display);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.editorial {
+  font-family: var(--font-editorial);
+  letter-spacing: -0.01em;
+}
+
+.hair {
+  height: 1px;
+  background: var(--line-hair);
+}
+
+.vhair {
+  width: 1px;
+  background: var(--line-hair);
+}
+
+@keyframes dc-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--accent-glow);
+  }
+  50% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+@keyframes dc-pulse-amber {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 oklch(0.8 0.13 75 / 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+@keyframes dc-flow {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+@keyframes dc-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@keyframes dc-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes dc-flow-particle {
+  0% {
+    offset-distance: 0%;
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    offset-distance: 100%;
+    opacity: 0;
+  }
+}
+
+@keyframes dc-lane-flash {
+  0% {
+    background: color-mix(in oklch, var(--accent) 24%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+@keyframes dc-fadein {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 4px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 4px;
+}
+
+.scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-4);
+}
