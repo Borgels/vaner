@@ -51,6 +51,16 @@ The Claude Code plugin lives under `plugins/vaner/` and is catalogued by `.claud
 
 Claude Code uses `plugin.json::version` to decide whether to propagate updates to installed users, so a missed bump strands everyone on the previous version. CI fails the PR if either parity check fails.
 
+### Version parity with the installed CLI
+
+The plugin's primer and `/vaner:next` skill target the v1.0 MCP tool surface introduced in Vaner **0.6.0** (`vaner.status`, `vaner.resolve`, `vaner.search`, `vaner.suggest`, `vaner.expand`, `vaner.feedback`, …). Users on v0.5.x or older expose the legacy 5-tool surface (`list_scenarios`, `expand_scenario`, `compare_scenarios`, `get_scenario`, `report_outcome`) and the primer's tool references will not resolve.
+
+Before announcing the plugin to the Anthropic marketplace or cutting a new release tag, confirm:
+
+1. PyPI has a `vaner` build at or above the tool-surface floor (currently 0.6.0).
+2. The installer (`scripts/install.sh`) default pin resolves to that build.
+3. `claude --plugin-dir ./plugins/vaner mcp list` succeeds against a fresh install.
+
 ## Dependency and Supply-Chain Hygiene
 
 Direct dependencies are declared in `pyproject.toml`.

@@ -56,9 +56,11 @@ import sys
 
 message = (
     "The Vaner plugin is enabled, but the `vaner` CLI is not on PATH, so the "
-    "bundled MCP server cannot start. Vaner provides predictive context tools "
-    "(`mcp__vaner__search`, `mcp__vaner__resolve`, `mcp__vaner__expand`, "
-    "`mcp__vaner__feedback`, and more).\n\n"
+    "bundled MCP server cannot start. Once installed, Vaner will expose "
+    "predictive context tools through Claude Code's MCP plugin namespace "
+    "(`mcp__plugin_vaner_vaner__vaner.resolve`, "
+    "`mcp__plugin_vaner_vaner__vaner.search`, "
+    "`mcp__plugin_vaner_vaner__vaner.feedback`, and more).\n\n"
     "To install Vaner, the user can run:\n\n"
     "    curl -fsSL https://vaner.ai/install.sh | bash -s -- --yes\n\n"
     "Or, with explicit consent, invoke `/vaner:install` which wraps the same "

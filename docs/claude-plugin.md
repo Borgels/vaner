@@ -56,6 +56,42 @@ rm -rf ~/.claude/skills/vaner
 
 For Cursor, Codex CLI, and other clients that don't support Claude Code plugins, continue using `vaner init` / the per-client instructions at [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp).
 
+## Running in scripted / non-interactive mode
+
+`claude --print` mode defaults to denying MCP tool calls that would require a permission prompt. Plugin MCP tools fall into that category. When scripting — benchmarks, CI checks, shell automations — grant the tools explicitly:
+
+```bash
+# Fastest, trust-everything approach (local shell scripts):
+claude --plugin-dir ./plugins/vaner --permission-mode bypassPermissions --print "…"
+
+# Surgical — only allow Vaner's MCP tools (recommended for CI):
+claude --plugin-dir ./plugins/vaner \
+  --allowedTools "mcp__plugin_vaner_vaner__*" \
+  --print "/vaner:next"
+```
+
+### MCP tool naming
+
+The canonical primer (`src/vaner/defaults/prompts/agent-primer.md`) and the `/vaner:next` skill refer to tools by their conceptual names: `vaner.status`, `vaner.resolve`, `vaner.search`, `vaner.suggest`, `vaner.expand`, `vaner.feedback`, `vaner.explain`, `vaner.warm`, `vaner.inspect`, `vaner.debug.trace`.
+
+Claude Code exposes plugin MCP tools with a namespaced prefix: `mcp__plugin_<plugin-name>_<server-name>__<tool>`. For the Vaner plugin that resolves to `mcp__plugin_vaner_vaner__vaner.status`, `mcp__plugin_vaner_vaner__vaner.resolve`, and so on. Confirm the exact names in a session with:
+
+```bash
+claude --plugin-dir ./plugins/vaner mcp list
+```
+
+(Expect `plugin:vaner:vaner: vaner mcp - ✓ Connected`.)
+
+The model generally maps the conceptual names to the prefixed names without help, but if you're writing automation that invokes tools by name, use the prefixed form directly.
+
+### Required CLI version
+
+The plugin targets the v1.0 MCP tool surface introduced in Vaner **0.6.0**. Older installs (0.5.x and below) expose a legacy 5-tool surface (`list_scenarios`, `get_scenario`, `expand_scenario`, `compare_scenarios`, `report_outcome`) — the primer's tool references will not match and the `/vaner:next` skill will not find the tools it expects. Check with `vaner --help` (look for `suggest`, `resolve`, and `feedback` subcommands) and upgrade via the canonical installer if needed:
+
+```bash
+curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash -s -- --yes
+```
+
 ## Troubleshooting
 
 - **`/mcp` does not show a `vaner` server.** Confirm `command -v vaner` works in the same shell you launched Claude Code from. The plugin's `.mcp.json` calls `vaner` directly; if it isn't on PATH, the server cannot start and the SessionStart hook will have told you so at session start.
