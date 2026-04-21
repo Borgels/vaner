@@ -1012,6 +1012,7 @@ async def run_smoke_probe(repo_root: Path) -> dict[str, Any]:
 async def run_stdio(repo_root: Path) -> None:
     """Run the MCP server on stdio (for Claude Desktop / Cursor local config)."""
     try:
+        from mcp.server.lowlevel import NotificationOptions
         from mcp.server.stdio import stdio_server
     except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency path
         raise RuntimeError("MCP transport requires 'mcp[cli]>=1.0'. Install with: pip install 'mcp[cli]>=1.0'.") from exc
@@ -1025,7 +1026,11 @@ async def run_stdio(repo_root: Path) -> None:
                 server_name="vaner",
                 server_version="1.0.0",
                 capabilities=server.get_capabilities(
-                    notification_options=None,
+                    notification_options=NotificationOptions(
+                        prompts_changed=False,
+                        resources_changed=False,
+                        tools_changed=False,
+                    ),
                     experimental_capabilities={},
                 ),
             ),
@@ -1036,6 +1041,7 @@ async def run_sse(repo_root: Path, host: str, port: int) -> None:
     import uvicorn
 
     try:
+        from mcp.server.lowlevel import NotificationOptions
         from mcp.server.sse import SseServerTransport
     except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency path
         raise RuntimeError("MCP transport requires 'mcp[cli]>=1.0'. Install with: pip install 'mcp[cli]>=1.0'.") from exc
@@ -1055,7 +1061,11 @@ async def run_sse(repo_root: Path, host: str, port: int) -> None:
                     server_name="vaner",
                     server_version="1.0.0",
                     capabilities=server.get_capabilities(
-                        notification_options=None,
+                        notification_options=NotificationOptions(
+                            prompts_changed=False,
+                            resources_changed=False,
+                            tools_changed=False,
+                        ),
                         experimental_capabilities={},
                     ),
                 ),

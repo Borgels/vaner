@@ -118,6 +118,15 @@ class ComputeConfig(BaseModel):
     """
 
 
+class IntentConfig(BaseModel):
+    enabled: bool = True
+    include_global_skills: bool = True
+    skill_roots: list[str] = Field(default_factory=lambda: [".cursor/skills", ".claude/skills", "skills"])
+    lookback_turns: int = 8
+    skills_loop_enabled: bool = True
+    max_feedback_events_per_cycle: int = 5
+
+
 class ExplorationConfig(BaseModel):
     """Controls how aggressively Vaner explores the scenario space.
 
@@ -218,6 +227,18 @@ class ExplorationConfig(BaseModel):
     embedding_device: str = "cpu"
     """Torch device for the embedding model (``"cpu"`` or ``"cuda"``)."""
 
+    @property
+    def endpoint(self) -> str:
+        return self.exploration_endpoint
+
+    @property
+    def model(self) -> str:
+        return self.exploration_model
+
+    @property
+    def backend(self) -> str:
+        return self.exploration_backend
+
     @classmethod
     def conservative(cls) -> ExplorationConfig:
         """Graph-walk only, no LLM, shallow depth."""
@@ -262,5 +283,6 @@ class VanerConfig(BaseModel):
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    intent: IntentConfig = Field(default_factory=IntentConfig)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)

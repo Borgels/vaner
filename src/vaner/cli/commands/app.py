@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tomllib
 import traceback
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from errno import EADDRINUSE
 from pathlib import Path
@@ -29,6 +30,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from vaner import __version__, api
+from vaner.cli.commands import mcp_clients
 from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
 from vaner.cli.commands.daemon import (
     COCKPIT_PROCESS,
@@ -79,6 +81,13 @@ _VERBOSE = False
 _console = Console()
 
 
+@dataclass(slots=True)
+class _UninstallStats:
+    mcp_configs_updated: int = 0
+    skills_removed: int = 0
+    state_files_removed: int = 0
+
+
 def _repo_root(path: str | None) -> Path:
     if path:
         return Path(path).resolve()
@@ -91,6 +100,63 @@ def _fail(message: str, *, hint: str | None = None, code: int = 1) -> None:
     if hint:
         typer.secho(f"hint: {hint}", fg=typer.colors.YELLOW, err=True)
     raise typer.Exit(code=code)
+
+
+def _remove_vaner_from_json_config(path: Path, *, container_key: str = "mcpServers") -> bool:
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    container = payload.get(container_key)
+    if not isinstance(container, dict):
+        return False
+    keys_to_remove = [key for key in container if str(key) == "vaner" or str(key).startswith("vaner-")]
+    if not keys_to_remove:
+        return False
+    for key in keys_to_remove:
+        container.pop(key, None)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def _remove_managed_skill(path: Path) -> bool:
+    if not path.exists():
+        return False
+    path.unlink(missing_ok=True)
+    for parent in path.parents:
+        if parent in {Path.home(), Path("/")}:
+            break
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+    return True
+
+
+def _remove_mcp_config_entries(repo_root: Path) -> int:
+    updated = 0
+    for detected in mcp_clients.detect_all(repo_root):
+        config_path = detected.path
+        if config_path is None:
+            continue
+        if detected.spec.kind == "json-mcpServers":
+            if _remove_vaner_from_json_config(config_path, container_key="mcpServers"):
+                updated += 1
+        elif detected.spec.kind == "json-servers":
+            if _remove_vaner_from_json_config(config_path, container_key="servers"):
+                updated += 1
+        elif detected.spec.kind == "json-context_servers":
+            if _remove_vaner_from_json_config(config_path, container_key="context_servers"):
+                updated += 1
+        elif detected.spec.kind == "yaml-continue":
+            if config_path.exists() and "name: vaner" in config_path.read_text(encoding="utf-8"):
+                config_path.unlink(missing_ok=True)
+                updated += 1
+    return updated
 
 
 def _annotation_name(annotation: Any) -> str:
@@ -699,6 +765,32 @@ def precompute(path: str | None = typer.Option(None, help="Repository root")) ->
 def forget(path: str | None = typer.Option(None, help="Repository root")) -> None:
     removed = api.forget(_repo_root(path))
     typer.echo(f"Removed {removed} local state files.")
+
+
+@app.command("uninstall", help="Remove managed Vaner client wiring and skills.", rich_help_panel="Background and local")
+def uninstall(
+    path: str | None = typer.Option(None, help="Repository root"),
+    keep_state: bool = typer.Option(False, "--keep-state", help="Keep local .vaner state files."),
+) -> None:
+    repo_root = _repo_root(path)
+    stats = _UninstallStats()
+    stats.mcp_configs_updated = _remove_mcp_config_entries(repo_root)
+    managed_skills = [
+        repo_root / ".cursor" / "skills" / "vaner" / "vaner-feedback" / "SKILL.md",
+        Path.home() / ".claude" / "skills" / "vaner" / "vaner-feedback" / "SKILL.md",
+    ]
+    for skill_path in managed_skills:
+        if _remove_managed_skill(skill_path):
+            stats.skills_removed += 1
+    if not keep_state:
+        stats.state_files_removed = api.forget(repo_root)
+
+    typer.echo(
+        "Uninstall complete: "
+        f"updated {stats.mcp_configs_updated} client configs, "
+        f"removed {stats.skills_removed} managed skills, "
+        f"removed {stats.state_files_removed} local state files."
+    )
 
 
 @config_app.command("show")

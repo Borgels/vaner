@@ -266,9 +266,17 @@ def generic_snippet(launcher_cmd: str, launcher_args: list[str]) -> dict[str, ob
     }
 
 
-def _write_backup(path: Path) -> Path:
+def _write_backup(path: Path, *, keep_latest: int = 3) -> Path:
     backup_path = path.with_suffix(path.suffix + f".vaner-backup-{int(time.time())}")
     backup_path.write_bytes(path.read_bytes())
+    try:
+        pattern = f"{path.name}.vaner-backup-*"
+        backups = sorted(path.parent.glob(pattern), key=lambda candidate: candidate.stat().st_mtime, reverse=True)
+        for stale in backups[keep_latest:]:
+            stale.unlink(missing_ok=True)
+    except OSError:
+        # Best-effort cleanup only; never fail the caller for retention maintenance.
+        pass
     return backup_path
 
 
@@ -305,6 +313,7 @@ def _merge_json_server(
     entry = _json_entry(container_key, launcher_cmd, launcher_args)
     backup: Path | None = None
     doc: dict[str, object]
+    raw: str | None = None
     if path.exists():
         raw = path.read_text(encoding="utf-8")
         try:
@@ -319,12 +328,6 @@ def _merge_json_server(
                     error=f"malformed JSON at {path}; pass --force to overwrite or fix the file",
                 )
             doc = {}
-        if doc and container_key in doc and isinstance(doc.get(container_key), dict):
-            existing_entry = doc[container_key].get(server_key)
-            if existing_entry == entry:
-                return WriteResult(client_id=client_id, path=path, action="skipped")
-        if not dry_run:
-            backup = _write_backup(path)
     else:
         doc = {}
 
@@ -337,12 +340,19 @@ def _merge_json_server(
     container[server_key] = entry
     if previous == entry:
         action = "skipped"
+    rendered = json.dumps(doc, indent=2) + "\n"
+
+    if raw is not None and raw == rendered:
+        return WriteResult(client_id=client_id, path=path, action="skipped")
 
     if dry_run or action == "skipped":
         return WriteResult(client_id=client_id, path=path, action=action, backup=backup)
 
+    if path.exists():
+        backup = _write_backup(path)
+
     try:
-        _atomic_write(path, json.dumps(doc, indent=2) + "\n")
+        _atomic_write(path, rendered)
     except Exception as exc:  # pragma: no cover - defensive I/O guard
         return WriteResult(client_id=client_id, path=path, action="failed", backup=backup, error=str(exc))
     return WriteResult(client_id=client_id, path=path, action=action, backup=backup)
