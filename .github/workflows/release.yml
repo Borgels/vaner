@@ -36,7 +36,7 @@ jobs:
       - name: Generate SBOM
         run: cyclonedx-py requirements requirements/release.txt --output-format json -o sbom.json
       - name: Install cosign
-        uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
       - name: Sign release artifacts with keyless Sigstore
         run: |
           set -euo pipefail
@@ -114,7 +114,7 @@ jobs:
           name: python-dist
           path: dist-assets
       - name: Install cosign
-        uses: sigstore/cosign-installer@1aa8e0f2454b781fbf0fbf306a4c9533a0c57409 # v3.7.0
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
       - name: Install slsa-verifier
         run: |
           set -euo pipefail
