@@ -17,6 +17,8 @@ from vaner.daemon.engine.scenario_builder import build_scenarios
 from vaner.daemon.engine.scorer import score_paths
 from vaner.daemon.signals.fs_watcher import RepoChangeWatcher, scan_repo_files
 from vaner.daemon.signals.git_reader import read_git_diff, read_git_state
+from vaner.events import cycle_scope
+from vaner.events import publish as publish_event
 from vaner.models.artefact import Artefact
 from vaner.models.config import VanerConfig
 from vaner.models.session import WorkingSet
@@ -43,6 +45,18 @@ class VanerDaemon:
 
     async def run_once(self, changed_files: list[Path] | None = None) -> int:
         await self.initialize()
+        cycle_id = f"cyc_{uuid.uuid4().hex[:8]}"
+        cycle_started_at = time.monotonic()
+        with cycle_scope(cycle_id):
+            return await self._run_once_impl(cycle_id, cycle_started_at, changed_files)
+
+    async def _run_once_impl(
+        self,
+        cycle_id: str,
+        cycle_started_at: float,
+        changed_files: list[Path] | None,
+    ) -> int:
+        publish_event("system", "cycle.start", {"msg": f"cycle {cycle_id} started"}, cycle_id=cycle_id)
         repo_root = self.config.repo_root
         include = self.config.privacy.allowed_paths or None
         files = changed_files if changed_files is not None else scan_repo_files(repo_root, include_paths=include)
@@ -80,6 +94,18 @@ class VanerDaemon:
         )
         for signal in signals:
             await self.store.insert_signal_event(signal)
+        fs_scan_count = sum(1 for signal in signals if signal.source == "fs_scan")
+        git_count = len(git_paths)
+        publish_event(
+            "signals",
+            "signal.ingest",
+            {
+                "msg": f"{fs_scan_count} file_seen, {git_count} git_changed",
+                "fs_scan": fs_scan_count,
+                "git_changed": git_count,
+            },
+            cycle_id=cycle_id,
+        )
         targets = plan_targets(
             repo_root,
             signals,
@@ -89,6 +115,20 @@ class VanerDaemon:
         prioritized_abs = {str((repo_root / rel_path).resolve()) for rel_path in git_paths}
         ranked_targets = [path for path, _ in score_paths(targets, prioritized_paths=prioritized_abs)]
         max_per_cycle = max(1, self.config.generation.max_generations_per_cycle)
+        planned_paths = [
+            str(target.relative_to(repo_root)) if target.is_relative_to(repo_root) else str(target)
+            for target in ranked_targets[:max_per_cycle]
+        ]
+        publish_event(
+            "targets",
+            "target.planned",
+            {
+                "msg": f"{len(planned_paths)} targets planned",
+                "count": len(planned_paths),
+                "paths": planned_paths,
+            },
+            cycle_id=cycle_id,
+        )
         concurrent_limit = max(1, self.config.generation.max_concurrent_generations)
         generation_semaphore = asyncio.Semaphore(concurrent_limit)
         written = 0
@@ -116,6 +156,17 @@ class VanerDaemon:
             await self.store.upsert(artefact)
             generated_files.append(artefact)
             written += 1
+            publish_event(
+                "artefacts",
+                "artefact.upsert",
+                {
+                    "msg": f"{artefact.kind.value}: {artefact.source_path}",
+                    "key": artefact.key,
+                    "kind": artefact.kind.value,
+                },
+                path=artefact.source_path,
+                cycle_id=cycle_id,
+            )
 
         for rel_path in sorted(recent_paths):
             diff_text = read_git_diff(repo_root, rel_path)
@@ -133,6 +184,17 @@ class VanerDaemon:
             diff_artefact.metadata.setdefault("privacy_zone", "project_local")
             await self.store.upsert(diff_artefact)
             written += 1
+            publish_event(
+                "artefacts",
+                "artefact.upsert",
+                {
+                    "msg": f"{diff_artefact.kind.value}: {diff_artefact.source_path}",
+                    "key": diff_artefact.key,
+                    "kind": diff_artefact.kind.value,
+                },
+                path=diff_artefact.source_path,
+                cycle_id=cycle_id,
+            )
 
         working_keys = [f"file_summary:{path}" for path in sorted(recent_paths | staged_paths)]
         working_keys.extend(artefact.key for artefact in generated_files[:8])
@@ -149,6 +211,17 @@ class VanerDaemon:
             await self.scenarios.upsert(scenario)
         await self.scenarios.mark_stale()
         await self.telemetry.record("artefacts_written", float(written))
+        duration_ms = (time.monotonic() - cycle_started_at) * 1000.0
+        publish_event(
+            "system",
+            "cycle.end",
+            {
+                "msg": f"cycle {cycle_id} wrote {written} artefacts in {duration_ms:.0f}ms",
+                "written": written,
+                "duration_ms": round(duration_ms, 2),
+            },
+            cycle_id=cycle_id,
+        )
         return written
 
     async def run_forever(self, interval_seconds: int = 15) -> None:

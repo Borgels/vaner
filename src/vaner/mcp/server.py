@@ -62,7 +62,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mcp.server import Server
+from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.types import (
     CallToolResult,
@@ -344,31 +344,97 @@ def build_server(repo_root: Path) -> Server:
     return server
 
 
-async def run_stdio(repo_root: Path) -> None:
-    """Run the MCP server on stdio (for Claude Desktop / Cursor local config)."""
+def build_cockpit(repo_root: Path):
+    """Return the shared cockpit FastAPI app configured for MCP mode."""
+
+    from vaner.ui.server import build_cockpit_app
+
+    config = load_config(repo_root)
+    return build_cockpit_app(config, mode="mcp")
+
+
+async def run_cockpit_sidecar(repo_root: Path, host: str, port: int) -> None:
+    """Run the cockpit FastAPI app on its own uvicorn server.
+
+    Used when the MCP transport does not otherwise expose an HTTP surface
+    (``stdio``). The cockpit still wants real-time scenario streams and the
+    full settings control plane, so we co-launch it beside the MCP server.
+    """
+
+    import uvicorn
+
+    app = build_cockpit(repo_root)
+    uvi_config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    await uvicorn.Server(uvi_config).serve()
+
+
+async def run_stdio(repo_root: Path, *, cockpit_host: str | None = None, cockpit_port: int | None = None) -> None:
+    """Run the MCP server on stdio (for Claude Desktop / Cursor local config).
+
+    When ``cockpit_host``/``cockpit_port`` are provided, the cockpit FastAPI
+    app is co-started on that host/port so the user has the same UI as the
+    daemon and proxy surfaces.
+    """
+
+    import asyncio as _asyncio
+
     from mcp.server.stdio import stdio_server
 
     server = build_server(repo_root)
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="vaner",
-                server_version="0.2.0",
-                capabilities=server.get_capabilities(
-                    notification_options=None,
-                    experimental_capabilities={},
+
+    async def _run_mcp() -> None:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                InitializationOptions(
+                    server_name="vaner",
+                    server_version="0.2.0",
+                    capabilities=server.get_capabilities(
+                        notification_options=NotificationOptions(),
+                        experimental_capabilities={},
+                    ),
                 ),
+            )
+
+    if cockpit_host and cockpit_port:
+        tasks = [
+            _asyncio.create_task(_run_mcp(), name="vaner-mcp-stdio"),
+            _asyncio.create_task(
+                run_cockpit_sidecar(repo_root, cockpit_host, cockpit_port),
+                name="vaner-mcp-cockpit",
             ),
-        )
+        ]
+        try:
+            done, pending = await _asyncio.wait(tasks, return_when=_asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            for task in done:
+                exc = task.exception()
+                if exc:
+                    raise exc
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+    else:
+        await _run_mcp()
 
 
-async def run_sse(repo_root: Path, host: str, port: int) -> None:
-    """Run the MCP server over HTTP+SSE (for remote/network access)."""
+async def run_sse(repo_root: Path, host: str, port: int, *, cockpit_enabled: bool = True) -> None:
+    """Run the MCP server over HTTP+SSE, co-mounting the cockpit UI.
+
+    When ``cockpit_enabled`` is true (the default) the same FastAPI app the
+    daemon/proxy serve is mounted at ``/``. The MCP SSE endpoint remains at
+    ``/sse`` and the message drop at ``/messages/``. Both the SPA and its
+    JSON API live under the root, so loading ``/`` renders the cockpit and
+    ``/status``/``/scenarios``/``/cockpit/bootstrap.json`` all resolve.
+    """
+
     import uvicorn
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
+    from starlette.responses import RedirectResponse
     from starlette.routing import Mount, Route
 
     server = build_server(repo_root)
@@ -383,17 +449,28 @@ async def run_sse(repo_root: Path, host: str, port: int) -> None:
                     server_name="vaner",
                     server_version="0.2.0",
                     capabilities=server.get_capabilities(
-                        notification_options=None,
+                        notification_options=NotificationOptions(),
                         experimental_capabilities={},
                     ),
                 ),
             )
 
-    starlette_app = Starlette(
-        routes=[
-            Route("/sse", endpoint=handle_sse),
-            Mount("/messages/", app=sse_transport.handle_post_message),
-        ]
-    )
+    async def redirect_to_sse(_request):
+        return RedirectResponse(url="/sse", status_code=307)
+
+    routes: list = [
+        Route("/sse", endpoint=handle_sse),
+        Mount("/messages/", app=sse_transport.handle_post_message),
+    ]
+    if cockpit_enabled:
+        # Mount the cockpit at the root so the SPA's absolute asset paths
+        # (`/assets/...`) and API calls (`/status`, `/scenarios`, ...) resolve
+        # correctly. ``/cockpit/bootstrap.json`` is still reachable because the
+        # cockpit app itself defines that route.
+        routes.append(Mount("/", app=build_cockpit(repo_root)))
+    else:
+        routes.insert(0, Route("/", endpoint=redirect_to_sse))
+
+    starlette_app = Starlette(routes=routes)
     config = uvicorn.Config(starlette_app, host=host, port=port)
     await uvicorn.Server(config).serve()

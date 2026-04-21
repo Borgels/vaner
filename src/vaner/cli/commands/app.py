@@ -469,16 +469,33 @@ def mcp_server(
     transport: str = typer.Option("stdio", "--transport", "-t", help="Transport: stdio | sse"),
     host: str = typer.Option("127.0.0.1", "--host", help="SSE server host (sse transport only)"),
     port: int = typer.Option(8472, "--port", "-p", help="SSE server port (sse transport only)"),
+    cockpit: bool = typer.Option(
+        True,
+        "--cockpit/--no-cockpit",
+        help="Serve the Vaner cockpit UI alongside the MCP server (default: on)",
+    ),
+    cockpit_host: str = typer.Option(
+        "127.0.0.1",
+        "--cockpit-host",
+        help="Host for the cockpit UI sidecar (stdio transport only)",
+    ),
+    cockpit_port: int = typer.Option(
+        8473,
+        "--cockpit-port",
+        help="Port for the cockpit UI sidecar (stdio transport only). Same port as `vaner daemon serve-http` uses.",
+    ),
 ) -> None:
     """Start the Vaner MCP server for native IDE integration.
 
-    Stdio mode (for Claude Desktop / Cursor):
+    Stdio mode (for Claude Desktop / Cursor), cockpit on :8473 by default::
 
         vaner mcp --path /your/repo
 
-    SSE mode (for network/remote access):
+    SSE mode (for network/remote access), cockpit co-mounted under ``/cockpit/``::
 
         vaner mcp --path /your/repo --transport sse --port 8472
+
+    Disable the cockpit with ``--no-cockpit`` if another process already serves it.
 
     See src/vaner/mcp/server.py for configuration examples.
     """
@@ -494,10 +511,17 @@ def mcp_server(
 
     if transport == "sse":
         _require_safe_mcp_sse_exposure(host)
-        typer.echo(f"Starting Vaner MCP server (SSE) on {host}:{port}  repo={repo_root}")
-        _asyncio.run(run_sse(repo_root, host=host, port=port))
+        if cockpit:
+            typer.echo(f"Starting Vaner MCP (SSE) on {host}:{port}  cockpit UI on http://{host}:{port}/cockpit/  repo={repo_root}")
+        else:
+            typer.echo(f"Starting Vaner MCP server (SSE) on {host}:{port}  repo={repo_root}")
+        _asyncio.run(run_sse(repo_root, host=host, port=port, cockpit_enabled=cockpit))
     else:
-        _asyncio.run(run_stdio(repo_root))
+        if cockpit:
+            typer.echo(f"Starting Vaner MCP (stdio)  cockpit UI on http://{cockpit_host}:{cockpit_port}/  repo={repo_root}")
+            _asyncio.run(run_stdio(repo_root, cockpit_host=cockpit_host, cockpit_port=cockpit_port))
+        else:
+            _asyncio.run(run_stdio(repo_root))
 
 
 @app.command("proxy")

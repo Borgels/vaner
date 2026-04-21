@@ -145,20 +145,24 @@ model = "test-model"
     monkeypatch.setattr(proxy_module, "forward_chat_completion_with_request", _fake_forward_chat_completion)
     config = _make_config(temp_repo)
     app = create_app(config, ArtefactStore(config.store_path))
-    client = TestClient(app)
+    with TestClient(app) as client:
+        status = client.get("/status")
+        assert status.status_code == 200
+        assert status.json()["health"] == "ok"
 
-    status = client.get("/status")
-    assert status.status_code == 200
-    assert status.json()["health"] == "ok"
+        html = client.get("/")
+        assert html.status_code == 200
+        assert "Vaner Cockpit" in html.text
+        assert client.get("/cockpit/bootstrap.json").json()["mode"] == "proxy"
 
-    html = client.get("/ui")
-    assert html.status_code == 200
-    assert "Vaner Cockpit" in html.text
+        redirect = client.get("/ui", follow_redirects=False)
+        assert redirect.status_code == 307
+        assert redirect.headers["location"] == "/"
 
-    updated = client.post("/compute", json={"cpu_fraction": 0.3})
-    assert updated.status_code == 200
-    assert updated.json()["compute"]["cpu_fraction"] == 0.3
+        updated = client.post("/compute", json={"cpu_fraction": 0.3})
+        assert updated.status_code == 200
+        assert updated.json()["compute"]["cpu_fraction"] == 0.3
 
-    toggled = client.post("/gateway/toggle", json={"enabled": False})
-    assert toggled.status_code == 200
-    assert toggled.json()["gateway_enabled"] is False
+        toggled = client.post("/gateway/toggle", json={"enabled": False})
+        assert toggled.status_code == 200
+        assert toggled.json()["gateway_enabled"] is False

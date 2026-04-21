@@ -5,6 +5,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+ui/cockpit/node_modules/
+ui/cockpit/dist/
+src/vaner/daemon/cockpit_assets/dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

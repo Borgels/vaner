@@ -71,6 +71,7 @@ Documentation = "https://docs.vaner.ai"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vaner"]
+force-include = { "src/vaner/daemon/cockpit_assets/dist" = "vaner/daemon/cockpit_assets/dist" }
 
 [tool.ruff]
 line-length = 140

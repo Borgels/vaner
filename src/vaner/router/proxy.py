@@ -1,4 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Vaner proxy FastAPI surface.
+
+The proxy reuses :func:`vaner.ui.server.build_cockpit_app` for its UI and
+control plane (``/``, ``/status``, ``/compute``, ``/backend``, ...). Only
+proxy-specific routes — chat completions, shadow metrics, decision stream,
+readiness probe, and gateway toggle — live here.
+"""
 
 from __future__ import annotations
 
@@ -8,15 +15,16 @@ import random
 import signal
 import time
 from collections import deque
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from vaner.api import aquery
-from vaner.cli.commands.config import load_config, set_compute_value
+from vaner.events import publish as publish_event
 from vaner.models.config import VanerConfig
 from vaner.models.decision import DecisionRecord
 from vaner.router.backends import (
@@ -25,7 +33,9 @@ from vaner.router.backends import (
     validate_backend_config,
 )
 from vaner.store.artefacts import ArtefactStore
+from vaner.store.scenarios import ScenarioStore
 from vaner.telemetry.metrics import MetricsStore, RequestMetrics
+from vaner.ui.server import build_cockpit_app
 
 
 def _inject_context(payload: dict[str, Any], context: str) -> dict[str, Any]:
@@ -58,7 +68,7 @@ def _metrics_db_path(repo_root: Path) -> Path:
 class _RateLimiter:
     def __init__(self, max_requests_per_minute: int) -> None:
         self.max_requests_per_minute = max(1, max_requests_per_minute)
-        self._timestamps = deque()
+        self._timestamps: deque[float] = deque()
 
     def allow(self) -> bool:
         now = time.monotonic()
@@ -116,25 +126,22 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
     validate_backend_config(config)
 
     metrics_store = MetricsStore(_metrics_db_path(config.repo_root))
+    scenario_store = ScenarioStore(config.repo_root / ".vaner" / "scenarios.db")
     prom = _PrometheusCounters()
 
-    # Track in-flight requests for graceful shutdown
-    _inflight: set[asyncio.Task] = set()
-    _shutting_down = False
+    _inflight: set[asyncio.Task[Any]] = set()
+    state = {"shutting_down": False, "gateway_enabled": bool(config.gateway.passthrough_enabled)}
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def proxy_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await store.initialize()
-        await metrics_store.initialize()
 
         loop = asyncio.get_running_loop()
 
-        def _handle_sigterm():
-            nonlocal _shutting_down
-            _shutting_down = True
+        def _handle_sigterm() -> None:
+            state["shutting_down"] = True
 
-            # Wait for in-flight requests to drain, then stop
-            async def _drain():
+            async def _drain() -> None:
                 if _inflight:
                     await asyncio.gather(*_inflight, return_exceptions=True)
 
@@ -145,29 +152,32 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         except (NotImplementedError, RuntimeError):
             pass  # Windows or non-main thread
 
-        yield
-
         try:
-            loop.remove_signal_handler(signal.SIGTERM)
-        except (NotImplementedError, RuntimeError):
-            pass
+            yield
+        finally:
+            try:
+                loop.remove_signal_handler(signal.SIGTERM)
+            except (NotImplementedError, RuntimeError):
+                pass
 
-    app = FastAPI(title="Vaner Proxy", version="0.2.0", lifespan=lifespan)
+    app = build_cockpit_app(
+        config,
+        mode="proxy",
+        scenario_store=scenario_store,
+        metrics_store=metrics_store,
+        app_title="Vaner Proxy",
+        extra_lifespan=proxy_lifespan,
+    )
     limiter = _RateLimiter(config.proxy.max_requests_per_minute)
     required_token = (config.proxy.proxy_token or "").strip()
     shadow_rate = max(0.0, min(config.gateway.shadow_rate, 1.0))
     decision_stream_subscribers: set[asyncio.Queue[dict[str, Any] | None]] = set()
-    gateway_enabled = bool(config.gateway.passthrough_enabled)
-
-    @app.get("/health")
-    async def health() -> dict[str, str]:
-        """Liveness probe -- always returns 200 when the server is running."""
-        return {"status": "ok"}
 
     @app.get("/ready")
     async def ready() -> dict[str, str]:
-        """Readiness probe -- returns 200 when the store is initialized and available."""
-        if _shutting_down:
+        """Readiness probe — returns 200 once the artefact store is online."""
+
+        if state["shutting_down"]:
             raise HTTPException(status_code=503, detail="Shutting down")
         try:
             await store.initialize()
@@ -177,31 +187,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
 
     @app.get("/metrics", response_class=PlainTextResponse)
     async def prometheus_metrics() -> str:
-        """Prometheus-compatible metrics endpoint."""
         return prom.render()
-
-    @app.get("/compute/devices")
-    async def compute_devices() -> JSONResponse:
-        devices: list[dict[str, Any]] = [{"id": "cpu", "label": "CPU", "kind": "cpu"}]
-        try:  # pragma: no cover - GPU visibility depends on environment
-            import torch
-
-            if torch.cuda.is_available():
-                for idx in range(torch.cuda.device_count()):
-                    props = torch.cuda.get_device_properties(idx)
-                    devices.append(
-                        {
-                            "id": f"cuda:{idx}",
-                            "label": props.name,
-                            "kind": "cuda",
-                            "total_memory_bytes": props.total_memory,
-                        }
-                    )
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                devices.append({"id": "mps", "label": "Apple Metal (MPS)", "kind": "mps"})
-        except Exception:
-            pass
-        return JSONResponse({"devices": devices, "selected": config.compute.device})
 
     @app.get("/impact/summary")
     async def impact_summary(last: int = 500) -> JSONResponse:
@@ -217,119 +203,10 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         summary["idle_seconds_used"] = round(idle_seconds, 3)
         return JSONResponse(summary)
 
-    @app.get("/status")
-    async def cockpit_status() -> JSONResponse:
-        return JSONResponse(
-            {
-                "health": "ok",
-                "gateway_enabled": gateway_enabled,
-                "compute": config.compute.model_dump(mode="json"),
-                "backend": {
-                    "base_url": config.backend.base_url,
-                    "model": config.backend.model,
-                },
-            }
-        )
-
-    @app.post("/compute")
-    async def update_compute(payload: dict[str, Any]) -> JSONResponse:
-        allowed_keys = {
-            "device",
-            "cpu_fraction",
-            "gpu_memory_fraction",
-            "idle_only",
-            "idle_cpu_threshold",
-            "idle_gpu_threshold",
-            "embedding_device",
-            "exploration_concurrency",
-            "max_parallel_precompute",
-        }
-        for key, value in payload.items():
-            if key not in allowed_keys:
-                raise HTTPException(status_code=400, detail=f"Unsupported compute key: {key}")
-            set_compute_value(config.repo_root, key, value)
-        refreshed = load_config(config.repo_root)
-        config.compute = refreshed.compute
-        return JSONResponse({"ok": True, "compute": config.compute.model_dump(mode="json")})
-
     @app.post("/gateway/toggle")
     async def toggle_gateway(payload: dict[str, Any]) -> JSONResponse:
-        nonlocal gateway_enabled
-        gateway_enabled = bool(payload.get("enabled", True))
-        return JSONResponse({"ok": True, "gateway_enabled": gateway_enabled})
-
-    @app.get("/ui", response_class=HTMLResponse)
-    async def cockpit_ui() -> str:
-        return """<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <title>Vaner Cockpit</title>
-    <style>
-      body { font-family: sans-serif; margin: 20px; background: #0f1117; color: #e8e8e8; }
-      .card { background: #171a22; border: 1px solid #2a2f3b; border-radius: 8px; padding: 12px; margin: 12px 0; }
-      button { background: #3a7afe; color: white; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-      pre { background: #10131a; border-radius: 6px; padding: 10px; overflow-x: auto; }
-      input { padding: 6px 8px; border-radius: 6px; border: 1px solid #2a2f3b; background: #10131a; color: #e8e8e8; }
-    </style>
-  </head>
-  <body>
-    <h2>Vaner Cockpit</h2>
-    <div class="card"><strong>Status</strong><pre id="status">loading…</pre></div>
-    <div class="card"><strong>Impact</strong><pre id="impact">loading…</pre></div>
-    <div class="card"><strong>Last decision</strong><pre id="decision">waiting…</pre></div>
-    <div class="card">
-      <strong>Compute controls</strong><br/>
-      <label>CPU fraction <input id="cpu" value="0.2"/></label>
-      <button id="applyCompute">Apply</button>
-      <pre id="computeResult"></pre>
-    </div>
-    <div class="card">
-      <strong>Gateway toggle</strong><br/>
-      <button id="disable">Disable enrichment</button>
-      <button id="enable">Enable enrichment</button>
-    </div>
-    <script>
-      async function refresh() {
-        const status = await fetch('/status').then(r => r.json());
-        const impact = await fetch('/impact/summary').then(r => r.json());
-        document.getElementById('status').textContent = JSON.stringify(status, null, 2);
-        document.getElementById('impact').textContent = JSON.stringify(impact, null, 2);
-      }
-      const stream = new EventSource('/decisions/stream');
-      stream.onmessage = (event) => {
-        document.getElementById('decision').textContent = JSON.stringify(JSON.parse(event.data), null, 2);
-      };
-      document.getElementById('applyCompute').onclick = async () => {
-        const cpu = parseFloat(document.getElementById('cpu').value);
-        const result = await fetch('/compute', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({cpu_fraction: cpu}),
-        }).then(r => r.json());
-        document.getElementById('computeResult').textContent = JSON.stringify(result, null, 2);
-        refresh();
-      };
-      document.getElementById('disable').onclick = async () => {
-        await fetch('/gateway/toggle', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({enabled: false}),
-        });
-        refresh();
-      };
-      document.getElementById('enable').onclick = async () => {
-        await fetch('/gateway/toggle', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({enabled: true}),
-        });
-        refresh();
-      };
-      refresh();
-    </script>
-  </body>
-</html>"""
+        state["gateway_enabled"] = bool(payload.get("enabled", True))
+        return JSONResponse({"ok": True, "gateway_enabled": state["gateway_enabled"]})
 
     async def _publish_decision_event(event: dict[str, Any]) -> None:
         if not decision_stream_subscribers:
@@ -369,7 +246,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=200)
         decision_stream_subscribers.add(queue)
 
-        async def _event_stream():
+        async def _event_stream() -> AsyncIterator[str]:
             try:
                 while True:
                     event = await queue.get()
@@ -398,12 +275,6 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
             decision_stream_subscribers.discard(queue)
 
     def _resolve_repo_root(request: Request) -> Path:
-        """Determine which repo root to use for a request.
-
-        Clients can override the default via ``X-Vaner-Repo`` header (absolute
-        path) or by mounting the proxy at a sub-path like ``/repos/myproject/v1/...``.
-        Falls back to the config default.
-        """
         override = request.headers.get("X-Vaner-Repo", "").strip()
         if override:
             p = Path(override)
@@ -413,7 +284,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
 
     @app.post("/v1/chat/completions")
     async def chat_completions(payload: dict[str, Any], request: Request) -> Any:
-        if _shutting_down:
+        if state["shutting_down"]:
             raise HTTPException(status_code=503, detail="Shutting down, please retry.")
         if required_token:
             auth_header = request.headers.get("Authorization", "")
@@ -431,7 +302,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         user_messages = [msg for msg in payload.get("messages", []) if msg.get("role") == "user"]
         prompt = _normalize_message_content(user_messages[-1].get("content")) if user_messages else ""
         metrics.prompt_tokens = len(prompt.split())
-        if gateway_enabled:
+        if state["gateway_enabled"]:
             context_package = await aquery(prompt, repo_root, config=config, top_n=6)
             metrics.t1_context_ready = time.monotonic()
             metrics.cache_tier = context_package.cache_tier
@@ -439,7 +310,11 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
             metrics.context_tokens = context_package.token_used
             enriched = _inject_context(payload, context_package.injected_context)
         else:
-            context_package = type("Package", (), {"cache_tier": "disabled", "partial_similarity": 0.0, "token_used": 0})()
+            context_package = type(
+                "Package",
+                (),
+                {"cache_tier": "disabled", "partial_similarity": 0.0, "token_used": 0},
+            )()
             metrics.t1_context_ready = time.monotonic()
             metrics.cache_tier = "disabled"
             metrics.partial_similarity = 0.0
@@ -466,7 +341,18 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         }
 
         if decision_record is not None:
-            await _publish_decision_event(_serialize_decision(decision_record))
+            serialized = _serialize_decision(decision_record)
+            await _publish_decision_event(serialized)
+            publish_event(
+                "decisions",
+                "decision.recorded",
+                {
+                    "msg": f"decision {decision_id} with {serialized.get('selection_count', 0)} selections",
+                    "decision_id": decision_id,
+                    "selection_count": serialized.get("selection_count", 0),
+                    "cache_tier": metrics.cache_tier,
+                },
+            )
 
         async def _run_shadow_sample(with_context_ms: float) -> None:
             if shadow_rate <= 0.0:
@@ -493,10 +379,27 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                 without_context_tokens=0,
             )
 
+        model_name = payload.get("model") or config.backend.model
+        llm_request_event = publish_event(
+            "model",
+            "llm.request",
+            {
+                "msg": f"{model_name} <- proxy:{decision_id}",
+                "model": model_name,
+                "streaming": bool(metrics.is_stream),
+                "decision_id": decision_id,
+                "prompt_tokens": metrics.prompt_tokens,
+                "context_tokens": metrics.context_tokens,
+                "base_url": config.backend.base_url,
+            },
+        )
+        llm_request_id = llm_request_event.id
+        llm_started = time.monotonic()
+
         try:
             if metrics.is_stream:
 
-                async def _instrumented_stream():
+                async def _instrumented_stream() -> AsyncIterator[str]:
                     first_token_set = False
                     try:
                         async for chunk in stream_chat_completion_with_request(
@@ -510,6 +413,20 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                             yield chunk
                     finally:
                         metrics.t4_complete = time.monotonic()
+                        latency_ms = (time.monotonic() - llm_started) * 1000.0
+                        publish_event(
+                            "model",
+                            "llm.response",
+                            {
+                                "msg": f"{model_name} -> proxy:{decision_id} ({latency_ms:.0f}ms)",
+                                "model": model_name,
+                                "latency_ms": round(latency_ms, 2),
+                                "ok": True,
+                                "streaming": True,
+                                "request_id": llm_request_id,
+                                "decision_id": decision_id,
+                            },
+                        )
                         await _finalize_metrics()
 
                 return StreamingResponse(
@@ -524,12 +441,43 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                     authorization_header=request_authorization,
                 )
                 metrics.t4_complete = time.monotonic()
+                latency_ms = (time.monotonic() - llm_started) * 1000.0
+                usage = result.get("usage") if isinstance(result, dict) else None
+                publish_event(
+                    "model",
+                    "llm.response",
+                    {
+                        "msg": f"{model_name} -> proxy:{decision_id} ({latency_ms:.0f}ms)",
+                        "model": model_name,
+                        "latency_ms": round(latency_ms, 2),
+                        "ok": True,
+                        "streaming": False,
+                        "request_id": llm_request_id,
+                        "decision_id": decision_id,
+                        "usage": usage if isinstance(usage, dict) else None,
+                    },
+                )
                 await _finalize_metrics()
                 await _run_shadow_sample(metrics.total_e2e_ms)
                 response_headers["X-Vaner-Latency-Ms"] = f"{metrics.total_e2e_ms:.2f}"
                 return JSONResponse(result, headers=response_headers)
         except Exception as exc:  # pragma: no cover - network errors
             metrics.t4_complete = time.monotonic()
+            latency_ms = (time.monotonic() - llm_started) * 1000.0
+            publish_event(
+                "model",
+                "llm.response",
+                {
+                    "msg": f"{model_name} !! proxy:{decision_id} ({latency_ms:.0f}ms): {exc}",
+                    "model": model_name,
+                    "latency_ms": round(latency_ms, 2),
+                    "ok": False,
+                    "streaming": bool(metrics.is_stream),
+                    "request_id": llm_request_id,
+                    "decision_id": decision_id,
+                    "error": str(exc),
+                },
+            )
             await _finalize_metrics()
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 

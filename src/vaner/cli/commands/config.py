@@ -107,6 +107,18 @@ def set_compute_value(repo_root: Path, key: str, value: Any) -> Path:
     return set_config_value(repo_root, "compute", key, value)
 
 
+def set_backend_value(repo_root: Path, key: str, value: Any) -> Path:
+    return set_config_value(repo_root, "backend", key, value)
+
+
+def set_mcp_value(repo_root: Path, key: str, value: Any) -> Path:
+    return set_config_value(repo_root, "mcp", key, value)
+
+
+def set_limits_value(repo_root: Path, key: str, value: Any) -> Path:
+    return set_config_value(repo_root, "limits", key, value)
+
+
 def set_config_value(repo_root: Path, section: str, key: str, value: Any) -> Path:
     config_path = repo_root / ".vaner" / "config.toml"
     if not config_path.exists():

@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-ScenarioKind = Literal["debug", "explain", "change", "research"]
+ScenarioKind = Literal["debug", "explain", "change", "research", "refactor"]
 ScenarioFreshness = Literal["fresh", "recent", "stale"]
 ScenarioCost = Literal["low", "medium", "high"]
 ScenarioOutcome = Literal["useful", "irrelevant", "partial"]
@@ -16,6 +16,8 @@ class EvidenceRef(BaseModel):
     source_path: str = ""
     excerpt: str = ""
     weight: float = 0.0
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 class Scenario(BaseModel):
@@ -33,3 +35,5 @@ class Scenario(BaseModel):
     expanded_at: float | None = None
     last_refreshed_at: float = Field(default_factory=lambda: datetime.now(UTC).timestamp())
     last_outcome: ScenarioOutcome | None = None
+    memory_state: str = "candidate"
+    pinned: bool = False

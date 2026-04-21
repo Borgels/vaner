@@ -1,0 +1,62 @@
+.cockpit-root {
+  display: grid;
+  grid-template-areas:
+    "top top top"
+    "rail graph stream";
+  grid-template-rows: 54px 1fr;
+  grid-template-columns: 260px minmax(0, 1fr) 340px;
+  height: 100vh;
+  background: var(--bg-0);
+  color: var(--fg-1);
+}
+
+.cockpit-panel-button {
+  appearance: none;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input {
+  font-feature-settings: "ss01";
+}
+
+pre {
+  margin: 0;
+}
+
+@media (max-width: 1280px) {
+  .cockpit-root {
+    grid-template-columns: 240px minmax(0, 1fr) 320px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .cockpit-root {
+    grid-template-areas:
+      "top top"
+      "graph stream"
+      "rail rail";
+    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-rows: 54px minmax(0, 1fr) auto;
+  }
+}
+
+@media (max-width: 900px) {
+  .cockpit-root {
+    grid-template-areas:
+      "top"
+      "graph"
+      "stream"
+      "rail";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 54px minmax(420px, 1fr) 420px auto;
+    height: auto;
+    min-height: 100vh;
+  }
+}

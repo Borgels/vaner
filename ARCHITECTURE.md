@@ -34,6 +34,17 @@ Vaner is a local-first predictive context engine for coding assistants.
   - `vaner why [decision-id] [--list|--verbose|--json]`
   - `vaner query --explain [--verbose|--json]`
 
+## Cockpit UI
+
+- The cockpit is a bundled SPA built from `ui/cockpit/` with Vite + React + TypeScript.
+- A single factory in `src/vaner/ui/server.py` (`build_cockpit_app`) is used by all three Vaner surfaces — daemon HTTP, proxy, and MCP — so every mode shares the same routes, control plane, and UI.
+- Built assets land in `src/vaner/daemon/cockpit_assets/dist/` and are served at `/` in daemon/proxy mode, or under `/cockpit/` when mounted by MCP SSE.
+- Daemon mode consumes enriched scenario payloads, pinned facts, skills, and a live SSE stream from `ScenarioStore`.
+- Proxy mode serves the same UI shell but switches to decision timelines, impact summaries, and proxy decision streams.
+- MCP mode mounts the cockpit alongside the MCP transport (stdio sidecar or SSE subpath) so operators can inspect scenarios without leaving the agent session.
+- Settings drawer writes to `.vaner/config.toml` via `vaner config set` helpers (backend preset, compute device, context limit, MCP transport). A restart of the running process is required for the change to take effect, signalled by the "cockpit bundle out of date" banner driven by `/cockpit/bootstrap.json`'s `cockpit_sha`.
+- The detailed operator workflow, local dev loop, and shortcuts live in `docs/cockpit.md`.
+
 ## More details
 
 Detailed architecture docs live at `https://docs.vaner.ai/architecture`.

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 
+from vaner.events import publish as publish_event
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.models.config import VanerConfig
 from vaner.policy.privacy import redact_text
@@ -200,13 +201,57 @@ async def _llm_summarize(text: str, prompt_template: str, config: VanerConfig, s
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    request_event = publish_event(
+        "model",
+        "llm.request",
+        {
+            "msg": f"{model} <- {source_label}",
+            "model": model,
+            "prompt_chars": len(prompt_template),
+            "base_url": config.backend.base_url,
+        },
+        path=source_label,
+    )
+    request_id = request_event.id
+    started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=45) as client:
             response = await client.post(f"{config.backend.base_url.rstrip('/')}/chat/completions", json=payload, headers=headers)
             response.raise_for_status()
-        content = _extract_message_text(response.json()).strip()
+        response_payload = response.json()
+        content = _extract_message_text(response_payload).strip()
+        latency_ms = (time.monotonic() - started) * 1000.0
+        usage = response_payload.get("usage") if isinstance(response_payload, dict) else None
+        publish_event(
+            "model",
+            "llm.response",
+            {
+                "msg": f"{model} -> {source_label} ({latency_ms:.0f}ms)",
+                "model": model,
+                "latency_ms": round(latency_ms, 2),
+                "ok": True,
+                "request_id": request_id,
+                "response_chars": len(content or ""),
+                "usage": usage if isinstance(usage, dict) else None,
+            },
+            path=source_label,
+        )
         return content or None
     except Exception as exc:  # pragma: no cover - network errors
+        latency_ms = (time.monotonic() - started) * 1000.0
+        publish_event(
+            "model",
+            "llm.response",
+            {
+                "msg": f"{model} !! {source_label} ({latency_ms:.0f}ms): {exc}",
+                "model": model,
+                "latency_ms": round(latency_ms, 2),
+                "ok": False,
+                "error": str(exc),
+                "request_id": request_id,
+            },
+            path=source_label,
+        )
         logger.warning("LLM summary failed for %s: %s", source_label, exc)
         return None
 
