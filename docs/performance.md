@@ -8,6 +8,14 @@ Vaner's "ponder" loop runs one scenario at a time by default. Under a real workl
 
 Each of these does a different thing. They stack.
 
+> ### ⚠️ Read this before raising `exploration_concurrency`
+>
+> **Concurrency without a concurrent backend makes things slower, not faster.** Raising `exploration_concurrency` to 4 against a default ollama (`OLLAMA_NUM_PARALLEL=1`) measured **~3× slower total wall time** than serial on live benchmarking — every request queues at the ollama server, plus the client pays asyncio scheduling overhead.
+>
+> Always raise your exploration server's concurrency *first*, confirm it serves concurrent requests (e.g., 8 concurrent `/api/generate` calls complete in ≲ 1.5× the time of one), and only then raise `compute.exploration_concurrency` to match.
+>
+> The daemon logs a warning once per engine instance when `exploration_concurrency > 1`; if you ignore it, you'll see the slowdown in `scenarios-per-min`.
+
 ## 1. `compute.exploration_concurrency`
 
 This tells Vaner how many scenarios to explore in parallel per precompute cycle. Default is `4`; the daemon's exploration loop now wraps all LLM calls in an `asyncio.Semaphore(exploration_concurrency)`, so concurrent scenarios fan out up to that bound.

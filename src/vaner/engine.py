@@ -138,6 +138,7 @@ class VanerEngine:
         self._policy_persist_interval_seconds = 2.0
         self._learning_state_loaded = False
         self._last_decision_record: DecisionRecord | None = None
+        self._concurrency_banner_emitted = False
 
     async def initialize(self) -> None:
         await self.store.initialize()
@@ -774,6 +775,27 @@ class VanerEngine:
         # 1 rather than skipping the cycle entirely (which was the pre-P3 behavior
         # for idle_only=true).
         effective_concurrency = self._compute_effective_concurrency(ecfg, compute)
+
+        # One-time warning: raising `exploration_concurrency` without matching
+        # server-side concurrency (e.g. OLLAMA_NUM_PARALLEL) actively hurts
+        # throughput. Live benchmarks on default ollama confirmed that 8
+        # parallel generate requests took ~3x the wall time of the same 8
+        # serial requests. Warn the operator exactly once per engine instance
+        # so the footgun is surfaced in the daemon log.
+        if compute.exploration_concurrency > 1 and not self._concurrency_banner_emitted:
+            import logging as _logging
+
+            _log = _logging.getLogger(__name__)
+            _log.warning(
+                "Vaner: compute.exploration_concurrency=%d. The exploration LLM "
+                "endpoint must serve concurrent requests or throughput will *degrade* "
+                "below serial. For ollama, set OLLAMA_NUM_PARALLEL=%d on the server. "
+                "vLLM / OpenAI-compatible servers typically serve concurrency natively. "
+                "See docs/performance.md for the full tuning ladder.",
+                compute.exploration_concurrency,
+                compute.exploration_concurrency,
+            )
+            self._concurrency_banner_emitted = True
         cycle_sem = asyncio.Semaphore(effective_concurrency)
         state_lock = asyncio.Lock()
         in_flight: list[asyncio.Task[None]] = []
