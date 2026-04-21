@@ -59,6 +59,7 @@ from vaner.cli.commands.init import (
 from vaner.cli.commands.inspect import inspect_decision as inspect_decision_output
 from vaner.cli.commands.inspect import inspect_last as inspect_last_output
 from vaner.cli.commands.inspect import list_decisions as list_decisions_output
+from vaner.cli.commands.primer import PRIMER_SURFACES, write_primers
 from vaner.cli.commands.profile import export_pins, import_pins, pin_fact, profile_show, unpin_fact
 from vaner.cli.commands.runtime_snapshot import runtime_snapshot
 from vaner.cli.commands.supervisor import run_down, run_up
@@ -494,6 +495,18 @@ def init(
         help="Overwrite existing backend config even if already populated.",
     ),
     no_mcp: bool = typer.Option(False, "--no-mcp", help="Skip writing MCP client config files"),
+    no_primer: bool = typer.Option(
+        False,
+        "--no-primer",
+        help="Skip installing per-client usage primers (guidance markdown for each detected MCP client).",
+    ),
+    user_primer: bool = typer.Option(
+        False,
+        "--user-primer",
+        help=(
+            "Also install the Claude Code primer at the user scope (~/.claude/CLAUDE.md) in addition to the repo scope (.claude/CLAUDE.md)."
+        ),
+    ),
 ) -> None:
     """Initialize Vaner in the current repo and (optionally) pick a model backend.
 
@@ -519,6 +532,28 @@ def init(
             typer.echo(f"Scaffolded MCP client configs using `{launcher_command}`")
         except Exception as exc:
             typer.echo(f"Warning: could not write MCP client configs: {exc}")
+
+    if not no_primer:
+        try:
+            supported = sorted(PRIMER_SURFACES.keys())
+            primer_results = write_primers(
+                supported,
+                repo_root,
+                include_user_scope=user_primer,
+            )
+            installed = [r for r in primer_results if r.action in ("added", "updated")]
+            skipped = [r for r in primer_results if r.action == "skipped"]
+            failed = [r for r in primer_results if r.action == "failed"]
+            if installed:
+                typer.echo("Installed per-client usage primers:")
+                for r in installed:
+                    typer.echo(f"  - {r.path} ({r.action})")
+            if skipped:
+                typer.echo(f"Primer already up to date for {len(skipped)} client(s); no changes needed.")
+            for r in failed:
+                typer.echo(f"Warning: could not write primer for {r.client_id}: {r.error}")
+        except Exception as exc:  # pragma: no cover - defensive
+            typer.echo(f"Warning: could not install primers: {exc}")
 
     import sys as _sys
 
