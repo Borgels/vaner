@@ -129,7 +129,7 @@ lookback_turns = 8
 
 [intent.skills_loop]
 enabled = true
-max_candidates = 5
+max_feedback_events_per_cycle = 5
 """
 
 

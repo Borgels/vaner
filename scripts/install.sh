@@ -709,6 +709,14 @@ package_spec() {
   fi
 }
 
+package_base_spec() {
+  if [[ -n "$VANER_VERSION" ]]; then
+    printf 'vaner==%s' "$VANER_VERSION"
+  else
+    printf 'vaner'
+  fi
+}
+
 github_package_spec() {
   local extras
   extras="$(package_extras)"
@@ -733,6 +741,18 @@ install_vaner_with_uv() {
   spec="$(package_spec)"
   if run_cmd uv tool install --upgrade "$spec"; then
     return 0
+  fi
+  if [[ "$VANER_NO_MCP" != "1" ]]; then
+    ui_warn "uv extra resolution failed; retrying with explicit MCP dependencies."
+    local base_spec
+    base_spec="$(package_base_spec)"
+    local uv_args=(tool install --upgrade "$base_spec" --with "mcp[cli]>=1.0" --with "starlette>=0.40")
+    if [[ "$VANER_MINIMAL" != "1" ]]; then
+      uv_args+=(--with "sentence-transformers>=3.0" --with "torch>=2.3")
+    fi
+    if run_cmd uv "${uv_args[@]}"; then
+      return 0
+    fi
   fi
   if [[ -z "$VANER_VERSION" ]]; then
     ui_warn "PyPI package 'vaner' not found yet. Falling back to GitHub source install."

@@ -118,6 +118,13 @@ class ComputeConfig(BaseModel):
     """
 
 
+class IntentConfig(BaseModel):
+    enabled: bool = True
+    lookback_turns: int = 8
+    skills_loop_enabled: bool = True
+    max_feedback_events_per_cycle: int = 5
+
+
 class ExplorationConfig(BaseModel):
     """Controls how aggressively Vaner explores the scenario space.
 
@@ -262,5 +269,6 @@ class VanerConfig(BaseModel):
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    intent: IntentConfig = Field(default_factory=IntentConfig)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)

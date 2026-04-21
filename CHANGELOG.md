@@ -11,6 +11,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - _TBD_
 
+## [0.6.1] - 2026-04-21
+
+### Fixed
+
+- Fixed MCP server startup for both stdio and SSE by passing explicit `NotificationOptions` during capability initialization (resolves `tools_changed` crash on connect).
+- Fixed `vaner config show` / `vaner config keys` crashes by restoring `intent` settings in `VanerConfig` and wiring `[intent]` + `[intent.skills_loop]` config loading.
+- Fixed repeated MCP client wiring from creating unbounded `*.vaner-backup-*` files by skipping backups on no-op merges and rotating backups to keep only the latest 3.
+- Hardened installer behavior for uv by retrying with explicit MCP dependencies (`mcp[cli]`, `starlette`) when extras resolution fails.
+
+### Added
+
+- Added `vaner uninstall` command to remove managed MCP wiring + managed skill files, with `--keep-state` support for preserving local `.vaner` state.
+- Added regression tests for MCP boot/session readiness, config command intent keys, and MCP backup idempotence/rotation.
+
 ## [0.6.0] - 2026-04-20
 
 ### Changed (BREAKING)

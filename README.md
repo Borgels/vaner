@@ -47,7 +47,7 @@ Common installer flags:
 - `--max-session-minutes <n>`
 - `--no-mcp` (skip MCP extras)
 
-### pipx / uv tool install
+### Manual install (advanced)
 
 ```bash
 pipx install 'vaner[mcp]'
@@ -61,6 +61,18 @@ uv tool install 'vaner[mcp]'
 vaner upgrade
 vaner version
 ```
+
+### What Vaner stores and when it expires
+
+Vaner stores local runtime state in your repository under `.vaner/` (for example `store.db`, `scenarios.db`,
+`metrics.db`, and `telemetry.db`). Retention is controlled by `limits.max_age_seconds` in `.vaner/config.toml`.
+Old signal/replay/query and stale cache entries are purged during precompute cycles.
+
+Useful commands:
+
+- `vaner config set limits.max_age_seconds 3600 --path .`
+- `vaner forget --path .` (remove local Vaner state for this repo)
+- `vaner uninstall --path . --keep-state` (remove client wiring while keeping state)
 
 ## Configure
 
