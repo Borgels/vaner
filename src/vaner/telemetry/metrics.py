@@ -87,6 +87,14 @@ class MetricsStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
 
+    @staticmethod
+    async def _ensure_column(db: aiosqlite.Connection, table: str, column: str, column_def: str) -> None:
+        cursor = await db.execute(f"PRAGMA table_info({table})")
+        rows = await cursor.fetchall()
+        names = {str(row[1]) for row in rows}
+        if column not in names:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
+
     async def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
@@ -142,6 +150,7 @@ class MetricsStore:
                     status TEXT NOT NULL,
                     latency_ms REAL NOT NULL,
                     scenario_id TEXT,
+                    skill TEXT,
                     timestamp REAL NOT NULL
                 )
                 """
@@ -153,7 +162,17 @@ class MetricsStore:
                     scenario_id TEXT NOT NULL,
                     result TEXT NOT NULL,
                     note TEXT NOT NULL DEFAULT '',
+                    skill TEXT,
                     timestamp REAL NOT NULL
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_quality_counters (
+                    name TEXT PRIMARY KEY,
+                    value REAL NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL
                 )
                 """
             )
@@ -321,24 +340,84 @@ class MetricsStore:
         status: str,
         latency_ms: float,
         scenario_id: str | None = None,
+        skill: str | None = None,
     ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO mcp_tool_calls (id, tool_name, status, latency_ms, scenario_id, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO mcp_tool_calls (id, tool_name, status, latency_ms, scenario_id, skill, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (str(uuid.uuid4()), tool_name, status, latency_ms, scenario_id, time.time()),
+                (str(uuid.uuid4()), tool_name, status, latency_ms, scenario_id, skill, time.time()),
             )
             await db.commit()
 
-    async def record_scenario_outcome(self, *, scenario_id: str, result: str, note: str = "") -> None:
+    async def record_scenario_outcome(
+        self,
+        *,
+        scenario_id: str,
+        result: str,
+        note: str = "",
+        skill: str | None = None,
+    ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO scenario_outcomes (id, scenario_id, result, note, timestamp)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO scenario_outcomes (id, scenario_id, result, note, skill, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (str(uuid.uuid4()), scenario_id, result, note, time.time()),
+                (str(uuid.uuid4()), scenario_id, result, note, skill, time.time()),
             )
             await db.commit()
+
+    async def increment_counter(self, name: str, delta: float = 1.0) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO memory_quality_counters (name, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    value = value + excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (name, float(delta), time.time()),
+            )
+            await db.commit()
+
+    async def set_counter(self, name: str, value: float) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO memory_quality_counters (name, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (name, float(value), time.time()),
+            )
+            await db.commit()
+
+    async def _counters_map(self) -> dict[str, float]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT name, value FROM memory_quality_counters")
+            rows = await cur.fetchall()
+        return {str(row["name"]): float(row["value"]) for row in rows}
+
+    async def memory_quality_snapshot(self) -> dict[str, float]:
+        counters = await self._counters_map()
+        resolves = max(1.0, counters.get("resolves_total", 0.0))
+        promotions = max(1.0, counters.get("promotions_total", 0.0))
+        corrections = max(1.0, counters.get("corrections_submitted", 0.0))
+        demotions = max(1.0, counters.get("demotions_total", 0.0))
+        return {
+            "predictive_hit_rate": counters.get("predictive_hit_total", 0.0) / resolves,
+            "stale_hit_rate": counters.get("stale_hit_total", 0.0) / resolves,
+            "promotion_precision": counters.get("promotions_still_trusted_total", 0.0) / promotions,
+            "contradiction_rate": counters.get("conflict_total", 0.0) / resolves,
+            "correction_survival_rate": counters.get("corrections_survived_total", 0.0) / corrections,
+            "demotion_recovery_rate": counters.get("demotion_recovery_total", 0.0) / demotions,
+            "trusted_evidence_avg": counters.get("trusted_evidence_total", 0.0) / max(1.0, counters.get("trusted_scenarios_count", 0.0)),
+            "abstain_rate": counters.get("abstain_total", 0.0) / resolves,
+        }

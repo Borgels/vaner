@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from vaner.cli.commands.config import load_config, set_compute_value
+from vaner.daemon.cockpit_html import build_cockpit_html
 from vaner.models.config import VanerConfig
 from vaner.store.scenarios import ScenarioStore
 from vaner.telemetry.metrics import MetricsStore
@@ -45,6 +46,7 @@ def create_daemon_http_app(config: VanerConfig) -> FastAPI:
                 "health": "ok",
                 "gateway_enabled": config.gateway.passthrough_enabled,
                 "compute": config.compute.model_dump(mode="json"),
+                "backend": config.backend.model_dump(mode="json"),
                 "mcp": config.mcp.model_dump(mode="json"),
                 "scenario_counts": freshness,
                 "top_scenario": top[0].id if top else None,
@@ -100,19 +102,19 @@ def create_daemon_http_app(config: VanerConfig) -> FastAPI:
         return JSONResponse({"ok": True, "compute": config.compute.model_dump(mode="json")})
 
     @app.get("/scenarios")
-    async def list_scenarios(kind: str | None = None, limit: int = 10) -> JSONResponse:
+    async def list_items(kind: str | None = None, limit: int = 10) -> JSONResponse:
         rows = await scenario_store.list_top(kind=kind, limit=max(1, min(limit, 100)))
         return JSONResponse({"count": len(rows), "scenarios": [row.model_dump(mode="json") for row in rows]})
 
     @app.get("/scenarios/{scenario_id}")
-    async def get_scenario(scenario_id: str) -> JSONResponse:
+    async def fetch_item(scenario_id: str) -> JSONResponse:
         row = await scenario_store.get(scenario_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Scenario not found")
         return JSONResponse(row.model_dump(mode="json"))
 
     @app.post("/scenarios/{scenario_id}/expand")
-    async def expand_scenario(scenario_id: str) -> JSONResponse:
+    async def expand_item(scenario_id: str) -> JSONResponse:
         row = await scenario_store.get(scenario_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Scenario not found")
@@ -123,7 +125,7 @@ def create_daemon_http_app(config: VanerConfig) -> FastAPI:
         return JSONResponse({"ok": True, "scenario": refreshed.model_dump(mode="json")})
 
     @app.post("/scenarios/{scenario_id}/outcome")
-    async def report_outcome(scenario_id: str, payload: dict[str, Any]) -> JSONResponse:
+    async def record_feedback(scenario_id: str, payload: dict[str, Any]) -> JSONResponse:
         row = await scenario_store.get(scenario_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Scenario not found")
@@ -194,41 +196,45 @@ def create_daemon_http_app(config: VanerConfig) -> FastAPI:
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
 
-    @app.get("/ui", response_class=HTMLResponse)
-    async def ui() -> str:
-        return """<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>Vaner Cockpit</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      body { font-family: system-ui, sans-serif; margin: 16px; line-height: 1.4; }
-      pre { padding: 10px; border: 1px solid #ddd; border-radius: 6px; overflow-x: auto; }
-      .row { margin: 12px 0; }
-    </style>
-  </head>
-  <body>
-    <h2>Vaner Cockpit</h2>
-    <div class="row"><strong>Top Scenario</strong></div>
-    <pre id="scenario">loading...</pre>
-    <div class="row"><strong>Compute devices</strong></div>
-    <pre id="devices">loading...</pre>
-    <script>
-      const scenarioEl = document.getElementById("scenario");
-      const devicesEl = document.getElementById("devices");
-      const stream = new EventSource("/scenarios/stream");
-      stream.onmessage = (event) => {
-        scenarioEl.textContent = JSON.stringify(JSON.parse(event.data), null, 2);
-      };
-      fetch("/compute/devices").then((r) => r.json()).then((d) => {
-        devicesEl.textContent = JSON.stringify(d, null, 2);
-      }).catch(() => {
-        devicesEl.textContent = "Failed to load compute devices";
-      });
-    </script>
-  </body>
-</html>
-"""
+    @app.get("/scenarios/{scenario_id}")
+    async def get_scenario(scenario_id: str) -> JSONResponse:
+        row = await scenario_store.get(scenario_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+        return JSONResponse(row.model_dump(mode="json"))
+
+    @app.post("/scenarios/{scenario_id}/expand")
+    async def expand_scenario(scenario_id: str) -> JSONResponse:
+        row = await scenario_store.get(scenario_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+        await scenario_store.record_expansion(scenario_id)
+        refreshed = await scenario_store.get(scenario_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+        return JSONResponse({"ok": True, "scenario": refreshed.model_dump(mode="json")})
+
+    @app.post("/scenarios/{scenario_id}/outcome")
+    async def report_outcome(scenario_id: str, payload: dict[str, Any]) -> JSONResponse:
+        row = await scenario_store.get(scenario_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+        result = str(payload.get("result", "")).strip()
+        note = str(payload.get("note", "")).strip()
+        skill = str(payload.get("skill", "")).strip() or None
+        if result not in {"useful", "partial", "irrelevant"}:
+            raise HTTPException(status_code=400, detail="result must be one of useful|partial|irrelevant")
+        await scenario_store.record_outcome(scenario_id, result, skill=skill, source="skill" if skill else None)
+        await metrics_store.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note, skill=skill)
+        refreshed = await scenario_store.get(scenario_id)
+        return JSONResponse({"ok": True, "scenario": refreshed.model_dump(mode="json") if refreshed else None})
+
+    @app.get("/", response_class=HTMLResponse)
+    async def cockpit() -> str:
+        return build_cockpit_html("daemon")
+
+    @app.get("/ui")
+    async def ui() -> RedirectResponse:
+        return RedirectResponse(url="/", status_code=307)
 
     return app

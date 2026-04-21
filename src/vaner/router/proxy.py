@@ -5,20 +5,25 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 import signal
 import time
+import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from vaner.api import aquery
 from vaner.cli.commands.config import load_config, set_compute_value
+from vaner.daemon.cockpit_html import build_cockpit_html
+from vaner.intent.arcs import derive_prompt_macro
 from vaner.models.config import VanerConfig
 from vaner.models.decision import DecisionRecord
+from vaner.models.signal import SignalEvent
 from vaner.router.backends import (
     forward_chat_completion_with_request,
     stream_chat_completion_with_request,
@@ -49,6 +54,60 @@ def _normalize_message_content(content: Any) -> str:
                     parts.append(text)
         return "\n".join(parts)
     return ""
+
+
+_FOLLOW_UP_ACTION_PATTERNS = (
+    ("would_you_like_me_to", "offer", re.compile(r"\bwould you like me to\s+(.+?)(?:\?|\.|$)", re.IGNORECASE | re.DOTALL)),
+    ("do_you_want_me_to", "offer", re.compile(r"\bdo you want me to\s+(.+?)(?:\?|\.|$)", re.IGNORECASE | re.DOTALL)),
+    ("want_me_to", "offer", re.compile(r"\bwant me to\s+(.+?)(?:\?|\.|$)", re.IGNORECASE | re.DOTALL)),
+    ("shall_i", "proposal", re.compile(r"\bshall i\s+(.+?)(?:\?|\.|$)", re.IGNORECASE | re.DOTALL)),
+    ("i_can_next", "can_do_next", re.compile(r"\bi can\s+(.+?)\s+next(?:\?|\.|$)", re.IGNORECASE | re.DOTALL)),
+)
+_AFFIRMATIVE_PROMPT_RE = re.compile(
+    r"^(?:yes|yep|yeah|sure|ok|okay|go ahead|please do|do it|sounds good|that works|let'?s do it)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_follow_up_offer(assistant_text: str) -> dict[str, str]:
+    normalized = " ".join(assistant_text.split())
+    if not normalized:
+        return {}
+    for pattern_id, phrase_family, pattern in _FOLLOW_UP_ACTION_PATTERNS:
+        match = pattern.search(normalized)
+        if not match:
+            continue
+        action = " ".join(match.group(1).split()).strip(" .")
+        if action:
+            return {
+                "action": action,
+                "phrase_pattern_id": pattern_id,
+                "phrase_family": phrase_family,
+            }
+    return {}
+
+
+def _extract_follow_up_action(assistant_text: str) -> str:
+    offer = _extract_follow_up_offer(assistant_text)
+    return str(offer.get("action", ""))
+
+
+def _build_retrieval_prompt(messages: list[dict[str, Any]], user_prompt: str, *, follow_up_action: str = "") -> str:
+    prompt = user_prompt.strip()
+    if not prompt:
+        return ""
+    if not _AFFIRMATIVE_PROMPT_RE.match(prompt):
+        return prompt
+    action = follow_up_action.strip()
+    if not action:
+        assistant_messages = [msg for msg in messages if msg.get("role") == "assistant"]
+        if not assistant_messages:
+            return prompt
+        last_assistant = _normalize_message_content(assistant_messages[-1].get("content"))
+        action = _extract_follow_up_action(last_assistant)
+    if not action:
+        return prompt
+    return f"{prompt}\n\nfollow_up_request: {action}"
 
 
 def _metrics_db_path(repo_root: Path) -> Path:
@@ -224,10 +283,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                 "health": "ok",
                 "gateway_enabled": gateway_enabled,
                 "compute": config.compute.model_dump(mode="json"),
-                "backend": {
-                    "base_url": config.backend.base_url,
-                    "model": config.backend.model,
-                },
+                "backend": config.backend.model_dump(mode="json"),
             }
         )
 
@@ -258,78 +314,13 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         gateway_enabled = bool(payload.get("enabled", True))
         return JSONResponse({"ok": True, "gateway_enabled": gateway_enabled})
 
-    @app.get("/ui", response_class=HTMLResponse)
-    async def cockpit_ui() -> str:
-        return """<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <title>Vaner Cockpit</title>
-    <style>
-      body { font-family: sans-serif; margin: 20px; background: #0f1117; color: #e8e8e8; }
-      .card { background: #171a22; border: 1px solid #2a2f3b; border-radius: 8px; padding: 12px; margin: 12px 0; }
-      button { background: #3a7afe; color: white; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-      pre { background: #10131a; border-radius: 6px; padding: 10px; overflow-x: auto; }
-      input { padding: 6px 8px; border-radius: 6px; border: 1px solid #2a2f3b; background: #10131a; color: #e8e8e8; }
-    </style>
-  </head>
-  <body>
-    <h2>Vaner Cockpit</h2>
-    <div class="card"><strong>Status</strong><pre id="status">loading…</pre></div>
-    <div class="card"><strong>Impact</strong><pre id="impact">loading…</pre></div>
-    <div class="card"><strong>Last decision</strong><pre id="decision">waiting…</pre></div>
-    <div class="card">
-      <strong>Compute controls</strong><br/>
-      <label>CPU fraction <input id="cpu" value="0.2"/></label>
-      <button id="applyCompute">Apply</button>
-      <pre id="computeResult"></pre>
-    </div>
-    <div class="card">
-      <strong>Gateway toggle</strong><br/>
-      <button id="disable">Disable enrichment</button>
-      <button id="enable">Enable enrichment</button>
-    </div>
-    <script>
-      async function refresh() {
-        const status = await fetch('/status').then(r => r.json());
-        const impact = await fetch('/impact/summary').then(r => r.json());
-        document.getElementById('status').textContent = JSON.stringify(status, null, 2);
-        document.getElementById('impact').textContent = JSON.stringify(impact, null, 2);
-      }
-      const stream = new EventSource('/decisions/stream');
-      stream.onmessage = (event) => {
-        document.getElementById('decision').textContent = JSON.stringify(JSON.parse(event.data), null, 2);
-      };
-      document.getElementById('applyCompute').onclick = async () => {
-        const cpu = parseFloat(document.getElementById('cpu').value);
-        const result = await fetch('/compute', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({cpu_fraction: cpu}),
-        }).then(r => r.json());
-        document.getElementById('computeResult').textContent = JSON.stringify(result, null, 2);
-        refresh();
-      };
-      document.getElementById('disable').onclick = async () => {
-        await fetch('/gateway/toggle', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({enabled: false}),
-        });
-        refresh();
-      };
-      document.getElementById('enable').onclick = async () => {
-        await fetch('/gateway/toggle', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({enabled: true}),
-        });
-        refresh();
-      };
-      refresh();
-    </script>
-  </body>
-</html>"""
+    @app.get("/", response_class=HTMLResponse)
+    async def cockpit() -> str:
+        return build_cockpit_html("proxy")
+
+    @app.get("/ui")
+    async def cockpit_ui() -> RedirectResponse:
+        return RedirectResponse(url="/", status_code=307)
 
     async def _publish_decision_event(event: dict[str, Any]) -> None:
         if not decision_stream_subscribers:
@@ -428,11 +419,59 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         metrics.is_stream = payload.get("stream") is True
 
         repo_root = _resolve_repo_root(request)
-        user_messages = [msg for msg in payload.get("messages", []) if msg.get("role") == "user"]
+        messages = payload.get("messages", [])
+        assistant_messages = [msg for msg in messages if msg.get("role") == "assistant"]
+        user_messages = [msg for msg in messages if msg.get("role") == "user"]
         prompt = _normalize_message_content(user_messages[-1].get("content")) if user_messages else ""
+        prompt_macro = derive_prompt_macro(prompt) if prompt else "general"
+        corpus_id = "repo"
+        await store.initialize()
+        if assistant_messages:
+            last_assistant = _normalize_message_content(assistant_messages[-1].get("content"))
+            offer = _extract_follow_up_offer(last_assistant)
+            if offer:
+                action = str(offer.get("action", ""))
+                phrase_pattern_id = str(offer.get("phrase_pattern_id", ""))
+                phrase_family = str(offer.get("phrase_family", ""))
+                await store.insert_signal_event(
+                    SignalEvent(
+                        id=str(uuid.uuid4()),
+                        source="proxy",
+                        kind="follow_up_offer_detected",
+                        timestamp=time.time(),
+                        payload={
+                            "action": action,
+                            "phrase_pattern_id": phrase_pattern_id,
+                            "phrase_family": phrase_family,
+                            "prompt_macro": prompt_macro,
+                            "corpus_id": corpus_id,
+                            "privacy_zone": "local",
+                        },
+                    )
+                )
+                if prompt and _AFFIRMATIVE_PROMPT_RE.match(prompt):
+                    await store.insert_signal_event(
+                        SignalEvent(
+                            id=str(uuid.uuid4()),
+                            source="proxy",
+                            kind="follow_up_offer_accepted",
+                            timestamp=time.time(),
+                            payload={
+                                "action": action,
+                                "phrase_pattern_id": phrase_pattern_id,
+                                "phrase_family": phrase_family,
+                                "prompt_macro": prompt_macro,
+                                "corpus_id": corpus_id,
+                                "privacy_zone": "local",
+                            },
+                        )
+                    )
+        else:
+            offer = {}
+        retrieval_prompt = _build_retrieval_prompt(messages, prompt, follow_up_action=str(offer.get("action", "")))
         metrics.prompt_tokens = len(prompt.split())
         if gateway_enabled:
-            context_package = await aquery(prompt, repo_root, config=config, top_n=6)
+            context_package = await aquery(retrieval_prompt, repo_root, config=config, top_n=6)
             metrics.t1_context_ready = time.monotonic()
             metrics.cache_tier = context_package.cache_tier
             metrics.partial_similarity = context_package.partial_similarity

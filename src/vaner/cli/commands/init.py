@@ -3,10 +3,25 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from vaner.cli.commands.mcp_clients import (
+    ClientStatus,
+    DetectedClient,
+    WriteResult,
+    detect_all,
+    print_other_client_help,
+    resolve_launcher,
+    write_client,
+)
 
 DEFAULT_CONFIG = """# Vaner configuration
 # Run `vaner init` to regenerate this file.
@@ -32,6 +47,7 @@ fallback_base_url = ""
 fallback_model = ""
 fallback_api_key_env = "OPENAI_API_KEY"
 remote_budget_per_hour = 60
+request_timeout_seconds = 30.0
 
 [generation]
 # If true, Vaner uses the backend LLM to generate file summaries during
@@ -40,6 +56,7 @@ use_llm = false
 generation_model = ""   # leave empty to inherit from [backend]
 max_file_chars = 8000
 summary_max_tokens = 400
+llm_timeout_seconds = 30.0
 max_concurrent_generations = 4
 max_generations_per_cycle = 200
 
@@ -105,6 +122,14 @@ telemetry = "local"
 [limits]
 max_age_seconds = 3600
 max_context_tokens = 4096
+
+[intent]
+enabled = true
+lookback_turns = 8
+
+[intent.skills_loop]
+enabled = true
+max_feedback_events_per_cycle = 5
 """
 
 
@@ -117,6 +142,37 @@ def init_repo(repo_root: Path) -> Path:
     if not config_path.exists():
         config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
     return config_path
+
+
+def _default_vaner_feedback_skill() -> str:
+    packaged = Path(__file__).resolve().parents[2] / "defaults" / "skills" / "vaner-feedback" / "SKILL.md"
+    if packaged.exists():
+        return packaged.read_text(encoding="utf-8")
+    return "Report scenario outcomes back to Vaner after completing a task.\n"
+
+
+def _write_managed_skill(base_dir: Path, content: str) -> Path:
+    skill_path = base_dir / "skills" / "vaner" / "vaner-feedback" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True, exist_ok=True)
+    skill_path.write_text(content, encoding="utf-8")
+    return skill_path
+
+
+def write_mcp_configs(repo_root: Path) -> tuple[list[Path], str]:
+    launcher = shutil.which("vaner") or "vaner"
+    args = ["mcp", "--path", str(repo_root)]
+    payload = {"mcpServers": {"vaner": {"command": launcher, "args": args}}}
+
+    cursor_path = repo_root / ".cursor" / "mcp.json"
+    cursor_path.parent.mkdir(parents=True, exist_ok=True)
+    cursor_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    skill_content = _default_vaner_feedback_skill()
+    repo_skill_path = _write_managed_skill(repo_root / ".cursor", skill_content)
+    claude_skill_path = _write_managed_skill(Path.home() / ".claude", skill_content)
+
+    written_paths = [cursor_path, repo_skill_path, claude_skill_path]
+    return written_paths, launcher
 
 
 @dataclass(slots=True)
@@ -165,6 +221,8 @@ BACKEND_PRESETS: dict[str, BackendPreset] = {
     ),
 }
 
+CLOUD_BACKEND_PRESETS = {"openai", "anthropic", "openrouter"}
+
 
 COMPUTE_PRESETS: dict[str, dict[str, object]] = {
     "background": {
@@ -193,8 +251,6 @@ def _is_tty() -> bool:
 
 
 def _prompt(prompt: str, default: str = "") -> str:
-    if not _is_tty():
-        return default
     suffix = f" [{default}]" if default else ""
     try:
         answer = input(f"{prompt}{suffix}: ").strip()
@@ -334,10 +390,7 @@ def apply_compute_preset(
     return False
 
 
-def interactive_backend_choice() -> str | None:
-    """Render the same backend menu the installer shows. TTY-only."""
-    if not _is_tty():
-        return None
+def _prompt_backend() -> str:
     menu = [
         ("1", "ollama", "Ollama — local, auto-detect, privacy-first (recommended)"),
         ("2", "lmstudio", "LM Studio — local app you already run"),
@@ -347,56 +400,289 @@ def interactive_backend_choice() -> str | None:
         ("6", "openrouter", "OpenRouter — cloud, 100+ models via one key"),
         ("7", "skip", "Skip (read-only MCP tools still work)"),
     ]
-    sys.stdout.write("\nPick a model backend (Vaner needs an LLM for scenario expansion):\n")
-    for num, _slug, label in menu:
-        sys.stdout.write(f"  {num}) {label}\n")
+    sys.stdout.write("\nStep 1 of 4 — Pick a model backend:\n")
+    for number, _slug, label in menu:
+        sys.stdout.write(f"  {number}) {label}\n")
     choice = _prompt("Choice", "1")
-    mapping = {num: slug for num, slug, _ in menu}
-    mapping.update({slug: slug for _num, slug, _ in menu})
+    mapping = {number: slug for number, slug, _ in menu}
+    mapping.update({slug: slug for _number, slug, _ in menu})
     return mapping.get(choice, "skip")
 
 
-def interactive_compute_choice() -> str | None:
-    if not _is_tty():
-        return None
-    sys.stdout.write("\nCompute budget:\n")
+def _prompt_compute() -> str:
+    sys.stdout.write("\nStep 2 of 4 — Compute budget:\n")
     sys.stdout.write("  1) background — cpu_fraction=0.2, gpu_memory_fraction=0.5, idle_only=true (default)\n")
     sys.stdout.write("  2) balanced   — cpu_fraction=0.5, gpu_memory_fraction=0.7\n")
     sys.stdout.write("  3) dedicated  — cpu_fraction=1.0, gpu_memory_fraction=1.0\n")
     choice = _prompt("Choice", "1")
-    return {"1": "background", "2": "balanced", "3": "dedicated"}.get(choice, choice if choice in COMPUTE_PRESETS else "background")
+    return {"1": "background", "2": "balanced", "3": "dedicated"}.get(choice, "background")
 
 
-def write_mcp_configs(repo_root: Path) -> list[Path]:
-    written: list[Path] = []
-    cursor_dir = repo_root / ".cursor"
-    cursor_dir.mkdir(parents=True, exist_ok=True)
-    cursor_path = cursor_dir / "mcp.json"
-    cursor_payload: dict[str, object] = {"mcpServers": {}}
-    if cursor_path.exists():
-        try:
-            cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
-        except Exception:
-            cursor_payload = {"mcpServers": {}}
-    servers = cursor_payload.setdefault("mcpServers", {})
-    if isinstance(servers, dict):
-        servers["vaner"] = {"command": "vaner", "args": ["mcp", "--path", "."]}
-    cursor_path.write_text(json.dumps(cursor_payload, indent=2) + "\n", encoding="utf-8")
-    written.append(cursor_path)
+def interactive_backend_choice() -> str:
+    """Compatibility wrapper consumed by the CLI app module."""
+    return _prompt_backend()
 
-    claude_path = Path.home() / ".claude" / "claude_desktop_config.json"
-    claude_path.parent.mkdir(parents=True, exist_ok=True)
-    claude_payload: dict[str, object] = {"mcpServers": {}}
-    if claude_path.exists():
-        try:
-            claude_payload = json.loads(claude_path.read_text(encoding="utf-8"))
-        except Exception:
-            claude_payload = {"mcpServers": {}}
-        backup_path = claude_path.with_suffix(f".backup-{int(time.time())}.json")
-        backup_path.write_text(json.dumps(claude_payload, indent=2) + "\n", encoding="utf-8")
-    claude_servers = claude_payload.setdefault("mcpServers", {})
-    if isinstance(claude_servers, dict):
-        claude_servers["vaner"] = {"command": "vaner", "args": ["mcp", "--path", str(repo_root)]}
-    claude_path.write_text(json.dumps(claude_payload, indent=2) + "\n", encoding="utf-8")
-    written.append(claude_path)
-    return written
+
+def interactive_compute_choice() -> str:
+    """Compatibility wrapper consumed by the CLI app module."""
+    return _prompt_compute()
+
+
+def _client_id_to_detected(detected: list[DetectedClient]) -> dict[str, DetectedClient]:
+    return {item.spec.id: item for item in detected}
+
+
+def _default_selected_ids(detected: list[DetectedClient]) -> set[str]:
+    return {item.spec.id for item in detected if item.status != ClientStatus.MISSING}
+
+
+def _parse_client_selection(raw: str, default_ids: set[str], ordered_ids: list[str]) -> tuple[set[str], bool]:
+    cleaned = raw.strip().lower()
+    if not cleaned:
+        return set(default_ids), False
+    if cleaned == "all":
+        return set(ordered_ids), False
+    if cleaned == "none":
+        return set(), False
+
+    tokens = [token for token in cleaned.replace(",", " ").split() if token]
+    show_other = any(token in {"o", "other"} for token in tokens)
+    numeric_tokens = [token for token in tokens if token not in {"o", "other"}]
+    if not numeric_tokens:
+        return set(default_ids), show_other
+
+    selection: set[str] = set()
+    for token in numeric_tokens:
+        if token.startswith("+") or token.startswith("-"):
+            sign = token[0]
+            value = token[1:]
+            if not value.isdigit():
+                continue
+            idx = int(value) - 1
+            if idx < 0 or idx >= len(ordered_ids):
+                continue
+            client_id = ordered_ids[idx]
+            if sign == "+":
+                selection.add(client_id)
+            else:
+                selection.discard(client_id)
+            continue
+        if token.isdigit():
+            idx = int(token) - 1
+            if idx < 0 or idx >= len(ordered_ids):
+                continue
+            selection.add(ordered_ids[idx])
+    return selection, show_other
+
+
+def _render_client_picker(console: Console, detected: list[DetectedClient], default_ids: set[str]) -> tuple[set[str], bool]:
+    console.print("\nStep 3 of 4 — Connect MCP clients", markup=False)
+    console.print("Detected on this system (pre-selected):", markup=False)
+    ordered_ids = [item.spec.id for item in detected]
+    for idx, item in enumerate(detected, start=1):
+        mark = "x" if item.spec.id in default_ids else " "
+        location = str(item.path) if item.path is not None else item.spec.manual_snippet_hint
+        console.print(
+            f"  [{mark}] {idx:<2} {item.spec.label:<18} {location:<48} ({item.status.value})",
+            markup=False,
+        )
+    console.print("  [ ] o  Other / not listed (prints a generic snippet + docs link)", markup=False)
+    choice = _prompt(
+        'Toggle with numbers (e.g. "1 3 5"), "all", "none", "o" for other, or press Enter',
+        "",
+    )
+    return _parse_client_selection(choice, default_ids, ordered_ids)
+
+
+def _resolve_clients_arg(
+    clients_arg: str | None,
+    detected: list[DetectedClient],
+    interactive: bool,
+) -> tuple[list[DetectedClient], bool]:
+    by_id = _client_id_to_detected(detected)
+    ordered = [item.spec.id for item in detected]
+    default_ids = _default_selected_ids(detected)
+    if interactive and (clients_arg is None or clients_arg == "auto"):
+        selected_ids, show_other = _render_client_picker(Console(), detected, default_ids)
+        selected = [by_id[item_id] for item_id in ordered if item_id in selected_ids]
+        return selected, show_other
+    mode = (clients_arg or "auto").strip().lower()
+    if mode == "none":
+        return [], False
+    if mode == "all":
+        return list(detected), False
+    if mode == "other":
+        return [], True
+    if mode == "auto":
+        return [item for item in detected if item.status != ClientStatus.MISSING], False
+
+    requested = [part.strip() for part in mode.split(",") if part.strip()]
+    selected: list[DetectedClient] = []
+    show_other = False
+    for item in requested:
+        if item in {"other", "o"}:
+            show_other = True
+            continue
+        if item in by_id:
+            selected.append(by_id[item])
+    return selected, show_other
+
+
+def _render_env_banner(console: Console, repo_root: Path) -> None:
+    profile = "cuda" if shutil.which("nvidia-smi") else "cpu"
+    ollama = "yes" if shutil.which("ollama") else "no"
+    panel = Panel(
+        f"repo_root: {repo_root}\nnvidia_smi: {'present' if profile == 'cuda' else 'missing'}\nollama: {ollama}",
+        title="Vaner init",
+    )
+    console.print(panel)
+
+
+def _render_review(console: Console, selected_clients: list[DetectedClient], results_preview: list[WriteResult]) -> None:
+    table = Table(title="Step 4 of 4 — Review")
+    table.add_column("Client", style="cyan")
+    table.add_column("Path")
+    table.add_column("Action")
+    table.add_column("Backup")
+    preview_by_id = {item.client_id: item for item in results_preview}
+    for client in selected_clients:
+        preview = preview_by_id.get(client.spec.id)
+        action = preview.action if preview else "added"
+        backup = str(preview.backup) if preview and preview.backup else "-"
+        table.add_row(client.spec.label, str(client.path or "-"), action, backup)
+    if not selected_clients:
+        table.add_row("(none)", "-", "skipped", "-")
+    console.print(table)
+
+
+def _summarize_results(console: Console, results: list[WriteResult]) -> None:
+    table = Table(title="MCP setup results")
+    table.add_column("Client", style="cyan")
+    table.add_column("Action")
+    table.add_column("Path")
+    table.add_column("Detail")
+    for item in results:
+        detail = item.error or ""
+        if item.manual_snippet and not detail:
+            detail = "manual snippet emitted"
+        table.add_row(item.client_id, item.action, str(item.path or "-"), detail)
+    console.print(table)
+
+
+def run_wizard(
+    repo_root: Path,
+    *,
+    interactive: bool,
+    backend_preset: str | None,
+    backend_model: str | None,
+    backend_api_key_env: str | None,
+    compute_preset: str | None,
+    max_session_minutes: int | None,
+    clients_arg: str | None,
+    accept_cloud_costs: bool,
+    dry_run: bool,
+    force: bool,
+) -> int:
+    console = Console()
+    config_path = init_repo(repo_root)
+    console.print(f"Initialized Vaner at {config_path}")
+
+    resolved_interactive = interactive
+    if resolved_interactive:
+        _render_env_banner(console, repo_root)
+
+    chosen_backend = backend_preset
+    if chosen_backend is None and resolved_interactive:
+        chosen_backend = _prompt_backend()
+    if chosen_backend and chosen_backend != "skip":
+        if chosen_backend in CLOUD_BACKEND_PRESETS and not accept_cloud_costs:
+            if not resolved_interactive:
+                typer.secho(
+                    f"Cloud backend '{chosen_backend}' requires explicit acknowledgement.",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                typer.secho(
+                    "hint: Re-run with --accept-cloud-costs if this is intentional.",
+                    fg=typer.colors.YELLOW,
+                    err=True,
+                )
+                return 1
+            proceed = typer.confirm(
+                f"Backend '{chosen_backend}' can incur API charges. Continue?",
+                default=False,
+            )
+            if not proceed:
+                typer.secho("Cloud backend selection cancelled.", fg=typer.colors.RED, err=True)
+                return 1
+
+        changed = apply_backend_config(
+            config_path,
+            chosen_backend,
+            model=backend_model,
+            api_key_env=backend_api_key_env,
+            force=force,
+        )
+        if changed:
+            console.print(f"Applied backend preset '{chosen_backend}' to {config_path.name}")
+        else:
+            console.print("Backend config already populated; pass --force to overwrite.")
+
+    chosen_compute = compute_preset
+    if chosen_compute is None and resolved_interactive and chosen_backend != "skip":
+        chosen_compute = _prompt_compute()
+    if chosen_compute or max_session_minutes:
+        applied = apply_compute_preset(
+            config_path,
+            chosen_compute or "background",
+            max_session_minutes=max_session_minutes,
+        )
+        if applied:
+            console.print(f"Applied compute preset '{chosen_compute or 'background'}'")
+
+    detected = detect_all(repo_root)
+    selected_clients, show_other = _resolve_clients_arg(clients_arg, detected, resolved_interactive)
+    launcher_cmd, launcher_args = resolve_launcher(repo_root)
+
+    preview_results: list[WriteResult] = []
+    for item in selected_clients:
+        preview_results.append(
+            WriteResult(
+                client_id=item.spec.id,
+                path=item.path,
+                action="added" if item.status != ClientStatus.CONFIGURED else "updated",
+            )
+        )
+    _render_review(console, selected_clients, preview_results)
+    if resolved_interactive and not typer.confirm("Proceed?", default=True):
+        console.print("Cancelled. No files modified.")
+        return 0
+
+    write_results: list[WriteResult] = []
+    for item in selected_clients:
+        server_key = "vaner"
+        if item.spec.id == "claude-desktop":
+            server_key = f"vaner-{repo_root.name}"
+        result = write_client(
+            item,
+            launcher_cmd=launcher_cmd,
+            launcher_args=launcher_args,
+            server_key=server_key,
+            dry_run=dry_run,
+            force=force,
+        )
+        write_results.append(result)
+    _summarize_results(console, write_results)
+    if dry_run:
+        console.print("No files modified (dry-run).")
+
+    footer = "Using a different MCP client? See https://docs.vaner.ai/mcp for copy-paste snippets."
+    console.print(footer)
+    if show_other:
+        console.print("")
+        console.print(print_other_client_help(launcher_cmd, launcher_args))
+
+    failed = [item for item in write_results if item.action == "failed"]
+    if selected_clients and len(failed) == len(selected_clients):
+        return 1
+    return 0

@@ -7,12 +7,11 @@ import time
 import pytest
 
 from vaner.broker.selector import select_artefacts
+from vaner.cli.commands.config import set_config_value
+from vaner.cli.commands.init import init_repo
 from vaner.engine import VanerEngine
 from vaner.intent.adapter import CodeRepoAdapter
 from vaner.models.artefact import Artefact, ArtefactKind
-
-pytest.importorskip("sentence_transformers")
-pytestmark = pytest.mark.integration
 
 
 def _artefact(path: str) -> Artefact:
@@ -29,8 +28,14 @@ def _artefact(path: str) -> Artefact:
     )
 
 
+def _init_hermetic_config(repo_root) -> None:
+    init_repo(repo_root)
+    set_config_value(repo_root, "exploration", "embedding_model", "")
+
+
 @pytest.mark.asyncio
 async def test_prefer_source_pin_bumps_multiplier_by_point_one(temp_repo):
+    _init_hermetic_config(temp_repo)
     engine = VanerEngine(adapter=CodeRepoAdapter(temp_repo))
     await engine.initialize()
     baseline = float(engine._scoring_policy.source_multipliers.get("arc", 1.0))
@@ -50,6 +55,7 @@ async def test_prefer_source_pin_bumps_multiplier_by_point_one(temp_repo):
 
 @pytest.mark.asyncio
 async def test_focus_paths_pin_promotes_matching_paths(temp_repo):
+    _init_hermetic_config(temp_repo)
     engine = VanerEngine(adapter=CodeRepoAdapter(temp_repo))
     await engine.initialize()
     await engine.store.upsert_pinned_fact(
@@ -74,6 +80,7 @@ async def test_focus_paths_pin_promotes_matching_paths(temp_repo):
 
 @pytest.mark.asyncio
 async def test_avoid_paths_pin_drops_matching_paths(temp_repo):
+    _init_hermetic_config(temp_repo)
     engine = VanerEngine(adapter=CodeRepoAdapter(temp_repo))
     await engine.initialize()
     await engine.store.upsert_pinned_fact(

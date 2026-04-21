@@ -1,0 +1,6 @@
+Step 3 of 4 — Connect MCP clients
+Detected on this system (pre-selected):
+  [x] 1  cursor             /tmp/cursor.json                                 (installed)
+  [x] 2  claude-code        /tmp/claude-code.json                            (installed)
+  [ ] 3  codex-cli          /tmp/codex-cli.json                              (missing)
+  [ ] o  Other / not listed (prints a generic snippet + docs link)

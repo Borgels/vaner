@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from vaner.models.config import BackendConfig, GatewayConfig, ProxyConfig, VanerConfig
@@ -151,9 +153,13 @@ model = "test-model"
     assert status.status_code == 200
     assert status.json()["health"] == "ok"
 
-    html = client.get("/ui")
+    html = client.get("/")
     assert html.status_code == 200
     assert "Vaner Cockpit" in html.text
+    assert 'data-mode="proxy"' in html.text
+    redirect = client.get("/ui", follow_redirects=False)
+    assert redirect.status_code == 307
+    assert redirect.headers["location"] == "/"
 
     updated = client.post("/compute", json={"cpu_fraction": 0.3})
     assert updated.status_code == 200
@@ -162,3 +168,82 @@ model = "test-model"
     toggled = client.post("/gateway/toggle", json={"enabled": False})
     assert toggled.status_code == 200
     assert toggled.json()["gateway_enabled"] is False
+
+
+def test_proxy_retrieval_prompt_includes_assistant_follow_up_action(temp_repo, monkeypatch):
+    class _Package:
+        injected_context = "context"
+        cache_tier = "miss"
+        partial_similarity = 0.0
+        token_used = 0
+
+    captured: dict[str, str] = {}
+
+    async def _fake_aquery(prompt, repo_root, config=None, top_n=6):
+        captured["prompt"] = prompt
+        return _Package()
+
+    async def _fake_forward_chat_completion(config, payload, *, authorization_header=None):
+        return {"id": "ok", "choices": [{"message": {"content": "done"}}]}
+
+    monkeypatch.setattr(proxy_module, "aquery", _fake_aquery)
+    monkeypatch.setattr(proxy_module, "forward_chat_completion_with_request", _fake_forward_chat_completion)
+    store = ArtefactStore(temp_repo / ".vaner" / "store.db")
+    app = create_app(
+        _make_config(temp_repo, gateway=GatewayConfig(passthrough_enabled=True)),
+        store,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [
+                {"role": "assistant", "content": "I can run the tests and patch failures. Would you like me to do that next?"},
+                {"role": "user", "content": "yes please"},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    assert captured["prompt"] == "yes please\n\nfollow_up_request: do that next"
+    events = asyncio.run(store.list_signal_events(limit=10))
+    kinds = [event.kind for event in events]
+    assert "follow_up_offer_detected" in kinds
+    assert "follow_up_offer_accepted" in kinds
+
+
+def test_proxy_retrieval_prompt_stays_plain_without_follow_up_pattern(temp_repo, monkeypatch):
+    class _Package:
+        injected_context = "context"
+        cache_tier = "miss"
+        partial_similarity = 0.0
+        token_used = 0
+
+    captured: dict[str, str] = {}
+
+    async def _fake_aquery(prompt, repo_root, config=None, top_n=6):
+        captured["prompt"] = prompt
+        return _Package()
+
+    async def _fake_forward_chat_completion(config, payload, *, authorization_header=None):
+        return {"id": "ok", "choices": [{"message": {"content": "done"}}]}
+
+    monkeypatch.setattr(proxy_module, "aquery", _fake_aquery)
+    monkeypatch.setattr(proxy_module, "forward_chat_completion_with_request", _fake_forward_chat_completion)
+    app = create_app(
+        _make_config(temp_repo, gateway=GatewayConfig(passthrough_enabled=True)),
+        ArtefactStore(temp_repo / ".vaner" / "store.db"),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [
+                {"role": "assistant", "content": "Here is what I found in the logs."},
+                {"role": "user", "content": "yes please"},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    assert captured["prompt"] == "yes please"

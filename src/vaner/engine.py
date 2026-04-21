@@ -120,6 +120,7 @@ class VanerEngine:
         self._pinned_facts_dirty = False
         self._pinned_focus_paths: list[str] = []
         self._pinned_avoid_paths: list[str] = []
+        self._trusted_follow_up_patterns: list[str] = []
         self._applied_prefer_source_deltas: dict[str, float] = {}
         self._last_heuristic_paths: set[str] = set()
         self._last_explored_scenarios: list[ExploredScenario] = []
@@ -1261,6 +1262,24 @@ class VanerEngine:
         rows = await self.store.list_pinned_facts()
         self._pinned_focus_paths = [str(row.get("value", "")) for row in rows if str(row.get("key", "")) == "focus_paths"]
         self._pinned_avoid_paths = [str(row.get("value", "")) for row in rows if str(row.get("key", "")) == "avoid_paths"]
+        adapter_corpus_id = getattr(self.adapter, "corpus_id", "default")
+        trusted_follow_ups: list[str] = []
+        for row in rows:
+            key = str(row.get("key", ""))
+            if not key.startswith("follow_up_pattern:"):
+                continue
+            scoring_hint = row.get("scoring_hint")
+            if not isinstance(scoring_hint, dict):
+                continue
+            if str(scoring_hint.get("state", "candidate")) != "trusted":
+                continue
+            scoped_corpus = str(scoring_hint.get("corpus_id", adapter_corpus_id))
+            if scoped_corpus != adapter_corpus_id:
+                continue
+            value = str(row.get("value", "")).strip()
+            if value:
+                trusted_follow_ups.append(value)
+        self._trusted_follow_up_patterns = trusted_follow_ups[:5]
 
         # Remove previously applied prefer-source boosts before re-applying.
         for source, delta in self._applied_prefer_source_deltas.items():
@@ -1830,14 +1849,19 @@ class VanerEngine:
             api_key = os.environ.get(self.config.backend.api_key_env, "")
             if not api_key:
                 return None
-            return openai_llm(model=model, api_key=api_key, base_url=self.config.backend.base_url)
+            return openai_llm(
+                model=model,
+                api_key=api_key,
+                base_url=self.config.backend.base_url,
+                timeout=float(self.config.backend.request_timeout_seconds),
+            )
         if llm.startswith("ollama:"):
             from vaner.clients.ollama import ollama_llm
 
             model = llm.split(":", 1)[1]
             if not model:
                 return None
-            return ollama_llm(model=model)
+            return ollama_llm(model=model, timeout=float(self.config.backend.request_timeout_seconds))
         if llm.startswith("vllm:"):
             # vllm:<model>  or  vllm:<model>@<host>:<port>
             from vaner.clients.openai import openai_llm
@@ -1850,11 +1874,107 @@ class VanerEngine:
                 model = rest
                 base_url = "http://127.0.0.1:8000/v1"
             api_key = os.environ.get("VANER_EXPLORATION_API_KEY", "EMPTY")
-            return openai_llm(model=model, api_key=api_key, base_url=base_url)
+            return openai_llm(model=model, api_key=api_key, base_url=base_url, timeout=float(self.config.backend.request_timeout_seconds))
         return None
+
+    async def _refresh_follow_up_pattern_memory(self) -> None:
+        adapter_corpus_id = getattr(self.adapter, "corpus_id", "default")
+        now = time.time()
+        window_seconds = 6 * 3600.0
+        accepted_threshold = 3
+
+        events = await self.store.list_signal_events(corpus_id=adapter_corpus_id, limit=400)
+        recent_events = [event for event in events if now - float(event.timestamp) <= window_seconds]
+
+        detected: dict[tuple[str, str, str], int] = {}
+        accepted: dict[tuple[str, str, str], int] = {}
+        last_action: dict[tuple[str, str, str], str] = {}
+        last_seen: dict[tuple[str, str, str], float] = {}
+        for event in recent_events:
+            if event.kind not in {"follow_up_offer_detected", "follow_up_offer_accepted"}:
+                continue
+            payload = event.payload
+            pattern_id = str(payload.get("phrase_pattern_id", "")).strip()
+            if not pattern_id:
+                continue
+            prompt_macro = str(payload.get("prompt_macro", "")).strip() or "general"
+            phrase_family = str(payload.get("phrase_family", "")).strip() or "offer"
+            key = (pattern_id, prompt_macro, phrase_family)
+            if event.kind == "follow_up_offer_detected":
+                detected[key] = detected.get(key, 0) + 1
+            else:
+                accepted[key] = accepted.get(key, 0) + 1
+            action = str(payload.get("action", "")).strip()
+            if action:
+                last_action[key] = action
+            last_seen[key] = max(last_seen.get(key, 0.0), float(event.timestamp))
+
+        trusted_by_scope: dict[tuple[str, str], tuple[str, float, int, int]] = {}
+        for key, detected_count in detected.items():
+            pattern_id, prompt_macro, phrase_family = key
+            accepted_count = accepted.get(key, 0)
+            if accepted_count < accepted_threshold:
+                continue
+            acceptance_rate = accepted_count / max(1, detected_count)
+            scope = (prompt_macro, phrase_family)
+            existing = trusted_by_scope.get(scope)
+            if existing is None or acceptance_rate > existing[1]:
+                trusted_by_scope[scope] = (pattern_id, acceptance_rate, detected_count, accepted_count)
+
+        workflow_facts = [
+            row for row in await self.store.list_pinned_facts(scope="workflow") if str(row.get("key", "")).startswith("follow_up_pattern:")
+        ]
+        active_keys: set[str] = set()
+        for (prompt_macro, phrase_family), (pattern_id, acceptance_rate, detected_count, accepted_count) in trusted_by_scope.items():
+            key = f"follow_up_pattern:{pattern_id}:{prompt_macro}"
+            active_keys.add(key)
+            fact_value = last_action.get((pattern_id, prompt_macro, phrase_family), "")
+            if not fact_value:
+                continue
+            await self.store.upsert_pinned_fact(
+                scope="workflow",
+                key=key,
+                value=fact_value,
+                scoring_hint={
+                    "state": "trusted",
+                    "phrase_pattern_id": pattern_id,
+                    "phrase_family": phrase_family,
+                    "prompt_macro": prompt_macro,
+                    "acceptance_rate": acceptance_rate,
+                    "detected_count": detected_count,
+                    "accepted_count": accepted_count,
+                    "last_seen": last_seen.get((pattern_id, prompt_macro, phrase_family), now),
+                    "corpus_id": adapter_corpus_id,
+                },
+            )
+
+        for row in workflow_facts:
+            key = str(row.get("key", ""))
+            if key in active_keys:
+                continue
+            scoring_hint = row.get("scoring_hint")
+            if not isinstance(scoring_hint, dict):
+                scoring_hint = {}
+            if str(scoring_hint.get("state", "")) == "stale":
+                continue
+            stale_hint = dict(scoring_hint)
+            stale_hint["state"] = "stale"
+            stale_hint["stale_reason"] = "insufficient_signal_or_superseded"
+            stale_hint["stale_at"] = now
+            stale_hint.setdefault("corpus_id", adapter_corpus_id)
+            await self.store.upsert_pinned_fact(
+                scope="workflow",
+                key=key,
+                value=str(row.get("value", "")),
+                scoring_hint=stale_hint,
+            )
+
+        self._pinned_facts_dirty = True
+        await self._sync_pinned_facts()
 
     async def _run_reasoner(self) -> None:
         target_hypotheses = 5
+        await self._refresh_follow_up_pattern_memory()
         artefacts = await self.store.list(limit=1000)
         valid_keys = {artefact.key for artefact in artefacts}
         await self.store.invalidate_stale_hypotheses(valid_keys)
@@ -1883,6 +2003,7 @@ class VanerEngine:
             fallback_items=[item.key for item in (await self.adapter.list_items())[:10]],
             existing_questions=existing_questions,
             limit=missing,
+            preferred_follow_ups=self._trusted_follow_up_patterns,
         )
         for hypothesis in hypotheses:
             await self.store.insert_hypothesis(

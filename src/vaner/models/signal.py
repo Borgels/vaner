@@ -10,4 +10,4 @@ class SignalEvent(BaseModel):
     source: str
     kind: str
     timestamp: float
-    payload: dict[str, str] = Field(default_factory=dict)
+    payload: dict[str, object] = Field(default_factory=dict)

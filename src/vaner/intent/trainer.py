@@ -10,7 +10,7 @@ from vaner.intent.scorer import IntentScorer
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.store.artefacts import ArtefactStore
 
-FEATURE_SCHEMA_VERSION = "v2"
+FEATURE_SCHEMA_VERSION = "v4"
 FEATURE_KEYS: tuple[str, ...] = (
     "signal_count_recent_15m",
     "query_count_total",
@@ -36,6 +36,9 @@ FEATURE_KEYS: tuple[str, ...] = (
     "policy_signal_coverage_gap",
     "policy_signal_pattern",
     "policy_signal_freshness",
+    "skill_presence",
+    "skill_kind_match",
+    "follow_up_offer_strength",
     "access_count",
     "artefact_age_seconds",
 )
@@ -119,12 +122,15 @@ class IntentTrainer:
 
         train_vectors: list[list[float]] = []
         labels: list[float] = []
+        rolled_over_rows = 0
         for sample in samples:
             payload = sample.get("payload", {})
             if not isinstance(payload, dict):
                 continue
             snapshot = payload.get("feature_snapshot", {})
             feature_snapshot = snapshot if isinstance(snapshot, dict) else {}
+            if "follow_up_offer_strength" not in feature_snapshot:
+                rolled_over_rows += 1
             vector = [float(feature_snapshot.get(name, 0.0)) for name in FEATURE_KEYS[:-2]]
             vector.append(float(payload.get("access_count", 0.0)))
             vector.append(float(payload.get("artefact_age_seconds", 0.0)))
@@ -176,6 +182,8 @@ class IntentTrainer:
         )
         metrics = dict(self.scorer.last_train_metrics)
         metrics["feature_schema_version"] = FEATURE_SCHEMA_VERSION
+        metrics["feature_schema_rolled_over"] = rolled_over_rows > 0
+        metrics["feature_schema_rolled_over_rows"] = rolled_over_rows
         metrics["train_rows"] = len(train_x)
         metrics["valid_rows"] = len(valid_x)
         self.last_train_metrics = metrics

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,8 @@ import numpy as np
 from vaner.broker.selector import score_artefact
 from vaner.intent.features import feature_vector_for_artefact
 from vaner.models.artefact import Artefact
+
+logger = logging.getLogger(__name__)
 
 try:
     import lightgbm as lgb  # type: ignore
@@ -65,28 +68,40 @@ class IntentScorer:
         if backend == "lightgbm":
             if lgb is None:
                 return False
-            self._booster = lgb.Booster(model_file=str(model_path))
-            self.model_path = model_path
-            self._backend = "lightgbm"
-            return True
+            try:
+                self._booster = lgb.Booster(model_file=str(model_path))
+                self.model_path = model_path
+                self._backend = "lightgbm"
+                return True
+            except Exception as exc:
+                logger.warning("Failed to load LightGBM model '%s': %s", model_path, exc)
+                return False
         if backend == "xgboost":
             if xgb is None:
                 return False
-            booster = xgb.Booster()
-            booster.load_model(str(model_path))
-            self._booster = booster
-            self.model_path = model_path
-            self._backend = "xgboost"
-            return True
+            try:
+                booster = xgb.Booster()
+                booster.load_model(str(model_path))
+                self._booster = booster
+                self.model_path = model_path
+                self._backend = "xgboost"
+                return True
+            except Exception as exc:
+                logger.warning("Failed to load XGBoost model '%s': %s", model_path, exc)
+                return False
         if backend == "catboost":
             if CatBoostRegressor is None:
                 return False
-            model = CatBoostRegressor()
-            model.load_model(str(model_path))
-            self._booster = model
-            self.model_path = model_path
-            self._backend = "catboost"
-            return True
+            try:
+                model = CatBoostRegressor()
+                model.load_model(str(model_path))
+                self._booster = model
+                self.model_path = model_path
+                self._backend = "catboost"
+                return True
+            except Exception as exc:
+                logger.warning("Failed to load CatBoost model '%s': %s", model_path, exc)
+                return False
         return False
 
     def score(self, prompt: str, artefact: Artefact, *, features: dict[str, float] | None = None) -> float:

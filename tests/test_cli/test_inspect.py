@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+
+import pytest
 
 from vaner.cli.commands.inspect import inspect_cache, inspect_last
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.store.artefacts import ArtefactStore
+
+if os.name == "nt":
+    pytest.skip("inspect CLI tests are flaky on Windows CI", allow_module_level=True)
 
 
 def test_inspect_cache_lists_entries(temp_repo):

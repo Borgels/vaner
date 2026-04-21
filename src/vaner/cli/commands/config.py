@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ from vaner.models.config import (
     ExplorationConfig,
     GatewayConfig,
     GenerationConfig,
+    IntentConfig,
     MCPConfig,
     PrivacyConfig,
     ProxyConfig,
@@ -19,11 +22,34 @@ from vaner.models.config import (
 )
 
 
+def global_config_path() -> Path:
+    env_override = os.environ.get("VANER_GLOBAL_CONFIG", "").strip()
+    if env_override:
+        return Path(env_override).expanduser().resolve()
+    return Path.home() / ".config" / "vaner" / "config.toml"
+
+
+def _load_toml_if_exists(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def load_config(repo_root: Path) -> VanerConfig:
     config_path = repo_root / ".vaner" / "config.toml"
-    parsed: dict[str, object] = {}
-    if config_path.exists():
-        parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    parsed_global = _load_toml_if_exists(global_config_path())
+    parsed_local = _load_toml_if_exists(config_path)
+    parsed: dict[str, object] = dict(parsed_global)
+    for key, value in parsed_local.items():
+        if isinstance(value, dict) and isinstance(parsed.get(key), dict):
+            merged = dict(parsed.get(key, {}))
+            merged.update(value)
+            parsed[key] = merged
+        else:
+            parsed[key] = value
 
     backend_section = parsed.get("backend", {})
     generation_section = parsed.get("generation", {})
@@ -31,6 +57,7 @@ def load_config(repo_root: Path) -> VanerConfig:
     proxy_section = parsed.get("proxy", {})
     gateway_section = parsed.get("gateway", {})
     mcp_section = parsed.get("mcp", {})
+    intent_section = parsed.get("intent", {})
     compute_section = parsed.get("compute", {})
     exploration_section = parsed.get("exploration", {})
     limits_section = parsed.get("limits", {})
@@ -59,6 +86,28 @@ def load_config(repo_root: Path) -> VanerConfig:
     else:
         gateway = GatewayConfig()
     mcp = MCPConfig(**mcp_section) if isinstance(mcp_section, dict) else MCPConfig()
+    if isinstance(intent_section, dict):
+        skills_loop_section = intent_section.get("skills_loop", {})
+        skill_roots = intent_section.get("skill_roots", [".cursor/skills", ".claude/skills", "skills"])
+        intent = IntentConfig(
+            enabled=bool(intent_section.get("enabled", True)),
+            include_global_skills=bool(intent_section.get("include_global_skills", True)),
+            skill_roots=[str(item) for item in skill_roots]
+            if isinstance(skill_roots, list)
+            else [".cursor/skills", ".claude/skills", "skills"],
+            lookback_turns=int(intent_section.get("lookback_turns", 8)),
+            skills_loop_enabled=bool(skills_loop_section.get("enabled", True)) if isinstance(skills_loop_section, dict) else True,
+            max_feedback_events_per_cycle=int(
+                skills_loop_section.get(
+                    "max_feedback_events_per_cycle",
+                    skills_loop_section.get("max_candidates", 5),
+                )
+            )
+            if isinstance(skills_loop_section, dict)
+            else 5,
+        )
+    else:
+        intent = IntentConfig()
     compute = ComputeConfig(**compute_section) if isinstance(compute_section, dict) else ComputeConfig()
     if isinstance(exploration_section, dict):
         mapped_exploration = {
@@ -89,6 +138,7 @@ def load_config(repo_root: Path) -> VanerConfig:
         proxy=proxy,
         gateway=gateway,
         mcp=mcp,
+        intent=intent,
         compute=compute,
         exploration=exploration,
     )
@@ -99,6 +149,8 @@ def _toml_literal(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, (list, dict)):
+        return json.dumps(value)
     escaped = str(value).replace('"', '\\"')
     return f'"{escaped}"'
 

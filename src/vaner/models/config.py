@@ -55,6 +55,7 @@ class BackendConfig(BaseModel):
     fallback_model: str | None = None
     fallback_api_key_env: str = "OPENAI_API_KEY"
     remote_budget_per_hour: int = 60
+    request_timeout_seconds: float = 30.0
 
 
 class GenerationConfig(BaseModel):
@@ -62,6 +63,7 @@ class GenerationConfig(BaseModel):
     generation_model: str | None = None
     max_file_chars: int = 8000
     summary_max_tokens: int = 400
+    llm_timeout_seconds: float = 30.0
     max_concurrent_generations: int = 4
     max_generations_per_cycle: int = 4000
 
@@ -114,6 +116,15 @@ class ComputeConfig(BaseModel):
     ``daemon start`` exceeds this many minutes. Users who want Vaner to
     never ponder for more than, say, 30 minutes can set ``30`` here.
     """
+
+
+class IntentConfig(BaseModel):
+    enabled: bool = True
+    include_global_skills: bool = True
+    skill_roots: list[str] = Field(default_factory=lambda: [".cursor/skills", ".claude/skills", "skills"])
+    lookback_turns: int = 8
+    skills_loop_enabled: bool = True
+    max_feedback_events_per_cycle: int = 5
 
 
 class ExplorationConfig(BaseModel):
@@ -216,6 +227,18 @@ class ExplorationConfig(BaseModel):
     embedding_device: str = "cpu"
     """Torch device for the embedding model (``"cpu"`` or ``"cuda"``)."""
 
+    @property
+    def endpoint(self) -> str:
+        return self.exploration_endpoint
+
+    @property
+    def model(self) -> str:
+        return self.exploration_model
+
+    @property
+    def backend(self) -> str:
+        return self.exploration_backend
+
     @classmethod
     def conservative(cls) -> ExplorationConfig:
         """Graph-walk only, no LLM, shallow depth."""
@@ -260,5 +283,6 @@ class VanerConfig(BaseModel):
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    intent: IntentConfig = Field(default_factory=IntentConfig)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)
