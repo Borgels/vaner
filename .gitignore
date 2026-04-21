@@ -28,5 +28,7 @@ eval/
 !src/vaner/eval/**
 scripts/*
 !scripts/install.sh
+!scripts/sync-plugin-skill.sh
+!scripts/bump-plugin-version.sh
 infra/
 apps/vaner-daemon/

@@ -159,9 +159,12 @@ Vaner exposes context to your agent over [MCP](https://modelcontextprotocol.io/)
 
 | Client | One command |
 | --- | --- |
-| Claude Code | `claude mcp add --transport stdio --scope user vaner -- vaner mcp --path .` |
+| Claude Code (plugin, recommended) | `/plugin marketplace add Borgels/Vaner` then `/plugin install vaner@vaner` |
+| Claude Code (manual MCP) | `claude mcp add --transport stdio --scope user vaner -- vaner mcp --path .` |
 | Codex CLI   | `codex mcp add vaner -- vaner mcp --path .` |
 | Cursor / VS Code / Zed / Windsurf / Continue / Claude Desktop / Cline / Roo | see [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp) |
+
+The Claude Code plugin bundles the MCP server, the `vaner-feedback` skill (namespaced as `/vaner:vaner-feedback`), and a SessionStart hook that detects whether the `vaner` CLI is installed. See [docs/claude-plugin.md](docs/claude-plugin.md) for details.
 
 Or let Vaner write the config file for you:
 

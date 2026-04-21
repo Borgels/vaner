@@ -1,0 +1,28 @@
+{
+  "name": "vaner",
+  "owner": {
+    "name": "Borgels Olsen Holding ApS",
+    "email": "support@vaner.ai"
+  },
+  "metadata": {
+    "description": "Vaner — predictive context middleware for AI coding workflows.",
+    "version": "0.6.2"
+  },
+  "plugins": [
+    {
+      "name": "vaner",
+      "source": "./plugins/vaner",
+      "description": "MCP server, feedback skill, and bootstrap hook for Vaner.",
+      "version": "0.6.2",
+      "category": "developer-tools",
+      "tags": ["mcp", "context", "retrieval", "scenarios", "vaner"],
+      "homepage": "https://vaner.ai",
+      "repository": "https://github.com/Borgels/Vaner",
+      "license": "Apache-2.0",
+      "author": {
+        "name": "Borgels Olsen Holding ApS",
+        "email": "support@vaner.ai"
+      }
+    }
+  ]
+}

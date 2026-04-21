@@ -42,6 +42,15 @@ CI checks on pull requests and pushes:
 
 Pull requests are expected to pass required CI checks before merge.
 
+## Claude Code Plugin
+
+The Claude Code plugin lives under `plugins/vaner/` and is catalogued by `.claude-plugin/marketplace.json`. Two parity rules are enforced in pre-commit and CI:
+
+1. **Skill content parity.** `plugins/vaner/skills/vaner-feedback/SKILL.md` must be byte-identical to `src/vaner/defaults/skills/vaner-feedback/SKILL.md`. Run `scripts/sync-plugin-skill.sh --write` after editing either.
+2. **Version parity.** `pyproject.toml::project.version`, `plugins/vaner/.claude-plugin/plugin.json::version`, and `.claude-plugin/marketplace.json::plugins[0].version` must match. After bumping `pyproject.toml`, run `scripts/bump-plugin-version.sh --write`.
+
+Claude Code uses `plugin.json::version` to decide whether to propagate updates to installed users, so a missed bump strands everyone on the previous version. CI fails the PR if either parity check fails.
+
 ## Dependency and Supply-Chain Hygiene
 
 Direct dependencies are declared in `pyproject.toml`.
