@@ -1,0 +1,73 @@
+name: Validate Claude Plugin
+
+on:
+  pull_request:
+    paths:
+      - "plugins/**"
+      - ".claude-plugin/**"
+      - "src/vaner/defaults/skills/vaner-feedback/**"
+      - "pyproject.toml"
+      - "scripts/sync-plugin-skill.sh"
+      - "scripts/bump-plugin-version.sh"
+      - ".github/workflows/validate-claude-plugin.yml"
+  push:
+    branches: [main]
+    paths:
+      - "plugins/**"
+      - ".claude-plugin/**"
+      - "src/vaner/defaults/skills/vaner-feedback/**"
+      - "pyproject.toml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Skill parity (defaults ↔ plugin)
+        run: bash scripts/sync-plugin-skill.sh --check
+
+      - name: Version parity (pyproject ↔ plugin.json ↔ marketplace.json)
+        run: bash scripts/bump-plugin-version.sh --check
+
+      - name: Shell syntax check (hook script)
+        run: bash -n plugins/vaner/scripts/check-vaner.sh
+
+      - name: JSON well-formedness
+        run: |
+          set -euo pipefail
+          for f in \
+            .claude-plugin/marketplace.json \
+            plugins/vaner/.claude-plugin/plugin.json \
+            plugins/vaner/.mcp.json \
+            plugins/vaner/hooks/hooks.json; do
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f"
+          done
+
+      - name: Hook produces valid JSON when vaner is absent
+        run: |
+          set -euo pipefail
+          out=$(PATH=/tmp:/usr/bin:/bin bash plugins/vaner/scripts/check-vaner.sh)
+          printf '%s' "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['hookSpecificOutput']['hookEventName']=='SessionStart'; assert 'additionalContext' in d['hookSpecificOutput']"
+
+      - name: claude plugin validate
+        run: claude plugin validate ./plugins/vaner

@@ -9,7 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- _TBD_
+- Added a supported Claude Code plugin (`plugins/vaner/`) distributed via a same-repo marketplace at `.claude-plugin/marketplace.json`. Claude Code users can now install Vaner with `/plugin marketplace add Borgels/Vaner` followed by `/plugin install vaner@vaner`. The plugin bundles the Vaner MCP server, the `vaner-feedback` skill (now namespaced as `/vaner:vaner-feedback`), a `/vaner:install` skill that wraps the canonical installer behind a Bash-tool permission prompt, and a SessionStart hook that reports when the `vaner` CLI is missing from PATH.
 
 ## [0.6.2] - 2026-04-21
 

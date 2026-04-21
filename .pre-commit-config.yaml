@@ -15,3 +15,17 @@ repos:
     rev: v8.30.1
     hooks:
       - id: gitleaks
+  - repo: local
+    hooks:
+      - id: vaner-plugin-skill-parity
+        name: vaner plugin feedback-skill parity
+        entry: scripts/sync-plugin-skill.sh --check
+        language: system
+        pass_filenames: false
+        files: ^(src/vaner/defaults/skills/vaner-feedback/SKILL\.md|plugins/vaner/skills/vaner-feedback/SKILL\.md)$
+      - id: vaner-plugin-version-parity
+        name: vaner plugin version parity
+        entry: scripts/bump-plugin-version.sh --check
+        language: system
+        pass_filenames: false
+        files: ^(pyproject\.toml|plugins/vaner/\.claude-plugin/plugin\.json|\.claude-plugin/marketplace\.json)$
