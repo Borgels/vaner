@@ -22,11 +22,14 @@ import {
 } from './api/client'
 import { useBootstrap } from './api/useBootstrap'
 import { useEvents } from './api/useEvents'
+import { usePipelineEvents } from './api/usePipelineEvents'
 import { useScenarios } from './api/useScenarios'
 import type { ScoreComponent } from './components/Inspector'
-import { FrontierGraph } from './components/FrontierGraph'
-import { CommandPalette, LeftRail, MismatchBanner, SettingsDrawer, StreamPanel, TopBar, type CommandItem } from './components/chrome'
+import { CommandPalette, LeftRail, MismatchBanner, SettingsDrawer, TopBar, type CommandItem } from './components/chrome'
+import { EventStreamPanel } from './components/EventStreamPanel'
 import { Inspector } from './components/Inspector'
+import { PipelineCanvas } from './components/PipelineCanvas'
+import { SystemVitals } from './components/SystemVitals'
 import { ACCENT_MAP, DEFAULT_COCKPIT_SETTINGS, KIND_COLOR } from './lib/constants'
 import type {
   BackendPreset,
@@ -81,9 +84,9 @@ function proxyPackageFromDecision(decision: DecisionRecordPayload | null): UIPac
 
 function App() {
   const bootstrap = useBootstrap()
-  const daemonEvents = useEvents({ path: '/events/stream' })
+  const pipeline = usePipelineEvents({ path: '/events/stream' })
   const [cockpit, setCockpit] = useState<CockpitSettings>(DEFAULT_COCKPIT_SETTINGS)
-  const { scenarios, setScenarios, scenarioMap, setScenarioMap } = useScenarios(cockpit.topK, daemonEvents.events)
+  const { scenarios, setScenarios, scenarioMap, setScenarioMap } = useScenarios(cockpit.topK, pipeline.events)
   const [backend, setBackend] = useState<BackendSettings | null>(null)
   const [compute, setCompute] = useState<ComputeSettings | null>(null)
   const [mcp, setMcp] = useState<MCPSettings | null>(null)
@@ -130,7 +133,7 @@ function App() {
   }, [cockpit.accent])
 
   useEffect(() => {
-    const pulseTarget = daemonEvents.events[0]?.scn
+    const pulseTarget = pipeline.events[0]?.scn
     if (!pulseTarget) {
       return
     }
@@ -143,7 +146,7 @@ function App() {
       })
     }, 1400)
     return () => window.clearTimeout(timeout)
-  }, [daemonEvents.events])
+  }, [pipeline.events])
 
   useEffect(() => {
     if (!scenarios.length || selectedId) {
@@ -456,7 +459,7 @@ function App() {
         id: 'clear-events',
         kind: 'action',
         label: 'Clear event stream',
-        run: () => (mode === 'proxy' ? proxyStream.setEvents([]) : daemonEvents.setEvents([])),
+        run: () => (mode === 'proxy' ? proxyStream.setEvents([]) : pipeline.reset()),
       },
     ]
 
@@ -499,10 +502,10 @@ function App() {
     // handleExpand is stable and only used inside a closure captured once
     // per command-palette render; including it would cause a render loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [daemonEvents, decisions, mode, proxyStream, refreshAll, scenarios, selectedId])
+  }, [decisions, mode, pipeline, proxyStream, refreshAll, scenarios, selectedId])
 
-  const streamEvents = mode === 'proxy' ? proxyStream.events : daemonEvents.events
-  const streamLive = mode === 'proxy' ? proxyStream.live : daemonEvents.live
+  const streamEvents = mode === 'proxy' ? proxyStream.events : pipeline.events
+  const streamLive = mode === 'proxy' ? proxyStream.live : pipeline.live
 
   const showScenarioPane = mode !== 'proxy'
 
@@ -526,18 +529,20 @@ function App() {
         onSkillNudge={(name, delta) => void handleSkillNudge(name, delta)}
         scenarioCount={scenarios.length}
         impact={impact}
+        header={
+          <SystemVitals
+            live={streamLive}
+            mode={mode}
+            cycle={pipeline.cycle}
+            model={pipeline.model}
+            scenarioCount={scenarios.length}
+            pendingLlm={pipeline.model.pending.size}
+          />
+        }
       />
 
       {showScenarioPane ? (
         <div style={{ gridArea: 'graph', position: 'relative', background: 'var(--bg-0)', overflow: 'hidden' }}>
-          <div style={{ position: 'absolute', top: 16, left: 20, zIndex: 3 }}>
-            <div className="mono" style={{ fontSize: 10, letterSpacing: 1.2, color: 'var(--fg-4)' }}>
-              FRONTIER · SCENARIO GRAPH
-            </div>
-            <div style={{ fontSize: 15, color: 'var(--fg-1)', fontFamily: 'var(--font-display)', marginTop: 2 }}>
-              {scenarios.length} scenarios · drag nodes · scroll to zoom
-            </div>
-          </div>
           <div
             style={{
               position: 'absolute',
@@ -561,12 +566,19 @@ function App() {
               </span>
             ))}
           </div>
-          <FrontierGraph
+          <PipelineCanvas
             scenarios={scenarios}
             selectedId={selectedId}
             onSelect={setSelectedId}
             activePulses={activePulses}
             pinnedIds={new Set(scenarios.filter((scenario) => scenario.pinned).map((scenario) => scenario.id))}
+            signals={pipeline.signals}
+            targets={pipeline.targets}
+            artefacts={pipeline.artefacts}
+            decisions={pipeline.decisions}
+            model={pipeline.model}
+            cycle={pipeline.cycle}
+            events={pipeline.events}
           />
           {toast ? (
             <div
@@ -681,12 +693,13 @@ function App() {
           )}
         </div>
         <div style={{ minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          <StreamPanel
+          <EventStreamPanel
             title={mode === 'proxy' ? 'DECISION STREAM' : 'EVENT STREAM'}
-            subtitle={mode === 'proxy' ? 'Live proxy decisions' : 'Live ponder loop'}
+            subtitle={mode === 'proxy' ? 'Live proxy decisions' : 'Live daemon activity'}
             events={streamEvents}
             onSelect={mode === 'proxy' ? setSelectedDecisionId : setSelectedId}
             live={streamLive}
+            pendingLlm={mode === 'proxy' ? 0 : pipeline.model.pending.size}
           />
         </div>
       </div>

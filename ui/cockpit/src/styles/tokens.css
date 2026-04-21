@@ -148,6 +148,41 @@ textarea {
   }
 }
 
+@keyframes dc-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes dc-flow-particle {
+  0% {
+    offset-distance: 0%;
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    offset-distance: 100%;
+    opacity: 0;
+  }
+}
+
+@keyframes dc-lane-flash {
+  0% {
+    background: color-mix(in oklch, var(--accent) 24%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
 @keyframes dc-fadein {
   from {
     opacity: 0;

@@ -77,6 +77,37 @@ vaner inspect --last --path .
 
 Asciinema demo: coming soon.
 
+## Cockpit live pipeline view
+
+Vaner ships a cockpit UI that doubles as a real-time control surface for the
+daemon. Open it at `http://127.0.0.1:8473/` (after `vaner daemon start`) or
+co-mounted at `/cockpit/` when serving MCP over SSE.
+
+The cockpit view is organised around the actual daemon control flow:
+
+```
+Signals → Targets → Model → Artefacts → Scenarios → Decisions
+```
+
+- **Pipeline ribbon** at the top shows per-stage activity with animated
+  particles flowing left-to-right as the daemon processes each cycle. Model
+  lane surfaces a spinner while LLM requests are in flight, plus the last
+  latency.
+- **Scenario cluster** is the main canvas. Scenarios are laid out by
+  kind-bucketed force-directed layout and connected by **shared-path Jaccard
+  edges** — so even scenarios without an explicit parent/child form a visible
+  constellation when they touch the same files. Drag nodes, scroll to zoom.
+- **System vitals** (left rail) tracks mode, current cycle duration, model
+  busy state, recent LLM latency EMA, total cycles, artefacts written, and
+  error count. All values are derived from the event bus — no polling.
+- **Event stream** (right rail) is colour-coded by stage with per-stage
+  filter chips, heartbeat collapsing, and an in-flight LLM counter.
+
+Everything is driven by the unified event bus in `src/vaner/events/bus.py`,
+which the daemon runner, LLM helpers, proxy, and scenario store publish to.
+The SSE endpoint `/events/stream` accepts a `?stages=model,artefacts` filter
+for scripted consumers.
+
 ## Documentation
 
 Most documentation lives at [docs.vaner.ai](https://docs.vaner.ai):

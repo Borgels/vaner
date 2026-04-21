@@ -144,7 +144,49 @@ Each `ALTER TABLE` opens a fresh `aiosqlite.connect`. Consolidate migrations int
 | [src/vaner/mcp/server.py](src/vaner/mcp/server.py) | Import `NotificationOptions`, pass `NotificationOptions()` in both `run_stdio` and `run_sse` (fixes D1). |
 | [src/vaner/mcp/server.py](src/vaner/mcp/server.py) | SSE Starlette wrapper now mounts `build_cockpit(...)` at `/` instead of `/cockpit/` and drops the redirect; fixes D2. Docstring updated. |
 
-Neither change is committed yet; the working tree on `cockpit-hardening-wiring` carries them as unstaged diffs so you can review before folding into a PR. Run `make verify` before committing.
+### Pipeline view refactor (D7 + U1 + U2-adjacent + U5)
+
+Landed on branch `cockpit-pipeline-view` (see the "Cockpit live pipeline view"
+section of the README):
+
+- **Backend** introduces `src/vaner/events/bus.py` — a unified `EventBus` with a
+  structured `VanerEvent` dataclass (`stage`, `kind`, `payload`, `scn`, `path`,
+  `cycle_id`) plus a `cycle_scope` context var. The daemon runner, LLM helpers,
+  proxy chat completion, and `ScenarioStore._publish` all emit through it.
+  `/events/stream` now reads from the bus and supports a `?stages=` filter.
+  Closes **D7** (scenario mutations are broadcast live) and **O2** (event stream
+  covers every stage of the pipeline, not just the ponder loop).
+- **Frontend** replaces `FrontierGraph` with a two-layer view:
+  - `PipelineCanvas` renders a six-lane ribbon (Signals → Targets → Model →
+    Artefacts → Scenarios → Decisions) with live read-outs per lane and
+    particle flow between them. Closes **U1** — even a small frontier now
+    reads as a connected pipeline rather than a vertical stack.
+  - `ScenarioCluster` uses a kind-bucketed force-directed layout and adds
+    **shared-path Jaccard edges** between scenarios so scenarios without an
+    explicit parent still form a visible constellation when they touch the
+    same files. This is the "edge semantics that brings users value" — the
+    graph now mirrors the real overlap structure of the work.
+- `SystemVitals` (left-rail header) surfaces mode, cycle, model busy-state,
+  last LLM latency, model id, total cycles, artefacts written, scenarios, and
+  error count — all derived from the event bus (no polling). Together with the
+  pipeline ribbon this makes "is the model working in the background?" a
+  single-glance answer.
+- `EventStreamPanel` replaces the old `StreamPanel`: colour-coded by stage,
+  per-stage filter chips, collapsed heartbeats, and a header LLM spinner
+  counting in-flight requests.
+- **U5** ("Pin scenarios does nothing") remains tracked as D6; the pipeline
+  refactor doesn't change pinning semantics but the new cluster does visibly
+  flag pinned scenarios via the amber dot and keeps them highlighted in the
+  shared-path constellation.
+
+The backend event bus is covered by `tests/test_events/test_bus.py`,
+`tests/test_daemon/test_runner_events.py`,
+`tests/test_daemon/test_generator_events.py`,
+`tests/test_router/test_proxy_events.py`, and the updated
+`tests/test_daemon/test_http.py` (stage filter + structured envelope). The new
+frontend components are covered by `SystemVitals.test.tsx`,
+`EventStreamPanel.test.tsx`, `PipelineCanvas.test.tsx`, and
+`ScenarioCluster.test.ts` (Jaccard + layout + force tick).
 
 ## Recommended priority order
 

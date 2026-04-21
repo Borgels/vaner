@@ -62,14 +62,45 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mcp.server import NotificationOptions, Server
-from mcp.server.models import InitializationOptions
-from mcp.types import (
-    CallToolResult,
-    ListToolsResult,
-    TextContent,
-    Tool,
-)
+try:
+    from mcp.server import NotificationOptions, Server
+    from mcp.server.models import InitializationOptions
+    from mcp.types import (
+        CallToolResult,
+        ListToolsResult,
+        TextContent,
+        Tool,
+    )
+
+    _MCP_IMPORT_ERROR: ModuleNotFoundError | None = None
+except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency path
+    _MCP_IMPORT_ERROR = exc
+
+    class NotificationOptions:  # type: ignore[no-redef]
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+    class Server:  # type: ignore[no-redef]
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise ImportError("import error in vaner.mcp.server: No module named 'mcp'") from _MCP_IMPORT_ERROR
+
+    class InitializationOptions(dict):  # type: ignore[no-redef]
+        pass
+
+    class CallToolResult:  # type: ignore[no-redef]
+        pass
+
+    class ListToolsResult:  # type: ignore[no-redef]
+        pass
+
+    class TextContent:  # type: ignore[no-redef]
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+    class Tool:  # type: ignore[no-redef]
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
 
 from vaner.api import aprecompute
 from vaner.cli.commands.config import load_config

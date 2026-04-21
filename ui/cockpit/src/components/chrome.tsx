@@ -143,6 +143,7 @@ interface LeftRailProps {
   onSkillNudge: (name: string, delta: number) => void
   scenarioCount: number
   impact?: ImpactSummary
+  header?: React.ReactNode
 }
 
 export function LeftRail({
@@ -154,6 +155,7 @@ export function LeftRail({
   onSkillNudge,
   scenarioCount,
   impact,
+  header,
 }: LeftRailProps) {
   return (
     <div
@@ -163,9 +165,10 @@ export function LeftRail({
         background: 'var(--bg-1)',
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
+        overflow: 'hidden auto',
       }}
     >
+      {header}
       <div style={{ padding: '16px 16px 10px' }}>
         <div className="mono" style={{ fontSize: 9.5, letterSpacing: 1.2, color: 'var(--fg-4)', marginBottom: 10 }}>
           {mode === 'proxy' ? 'PROXY' : 'FRONTIER'}

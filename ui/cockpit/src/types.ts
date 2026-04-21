@@ -39,6 +39,15 @@ export interface UIPinnedFact {
   text: string
 }
 
+export type PipelineStage =
+  | 'signals'
+  | 'targets'
+  | 'model'
+  | 'artefacts'
+  | 'scenarios'
+  | 'decisions'
+  | 'system'
+
 export interface UIEvent {
   id: string
   t: string
@@ -46,6 +55,12 @@ export interface UIEvent {
   color: string
   msg: string
   scn: string | null
+  stage?: PipelineStage
+  kind?: string
+  ts?: number
+  path?: string | null
+  cycleId?: string | null
+  payload?: Record<string, unknown>
 }
 
 export interface UIPackageState {
