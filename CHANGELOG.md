@@ -7,12 +7,42 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-22
+
 ### Added
 
+#### Claude Code plugin surface (supersedes manual MCP wiring for Claude Code)
+
+- Added a supported Claude Code plugin (`plugins/vaner/`) distributed via a same-repo marketplace at `.claude-plugin/marketplace.json`. Claude Code users can now install with `/plugin marketplace add Borgels/Vaner` followed by `/plugin install vaner@vaner`. Bundles the Vaner MCP server, the `vaner-feedback` skill (now namespaced as `/vaner:vaner-feedback`), a `/vaner:install` skill that wraps the canonical installer behind a Bash-tool permission prompt, and a SessionStart hook that reports when the `vaner` CLI is missing from PATH — otherwise injects the canonical Vaner usage primer on every session.
+- Added a `/vaner:next` skill in the plugin that calls `mcp__vaner__suggest` and renders top-N candidate next moves as structured numbered cards (label, why-now, confidence/readiness hint) rather than raw predictions. When Vaner's daemon is live the SessionStart hook also surfaces the cockpit URL (`http://127.0.0.1:8473/`) so the model can point the user at the live pipeline view.
+- Added a plugin monitor that tails `.vaner/memory/log.md` on first `/vaner:next` invocation, so the model stays aware of scenario events (resolve, feedback, promotion) mid-session.
+
+#### Canonical usage primer
+
 - Added per-client usage primers to `vaner init`. MCP wiring alone does not teach a model when and how to use Vaner; `init` now also installs a short guidance block into each detected client's native rules surface: `.claude/CLAUDE.md` (Claude Code), `.cursor/rules/vaner.mdc` (Cursor), `.github/copilot-instructions.md` (VS Code Copilot), `AGENTS.md` (Codex CLI), `.clinerules` (Cline), and `.continue/rules/vaner.md` (Continue). The primer is sourced from a single canonical file at `src/vaner/defaults/prompts/agent-primer.md` and wrapped client-specifically. Non-destructive: existing files get the primer appended in a delimited `<!-- vaner-primer:start … -->…<!-- vaner-primer:end -->` block that re-runs replace in place without touching surrounding content. Opt-out via `--no-primer`; `--user-primer` additionally writes the Claude Code primer at `~/.claude/CLAUDE.md` for always-on global guidance. Clients without a well-defined primer surface (Claude Desktop, Windsurf, Zed, Roo) are left as-is for this release.
+
+#### Ponder parallelism
+
 - Wired `compute.exploration_concurrency` (default 4) into the daemon's exploration loop. Previously a dead config — exposed by the cockpit UI and HTTP API but ignored by the engine. The scenario loop now runs up to `exploration_concurrency` LLM calls in parallel via an `asyncio.Semaphore`, with an `asyncio.Lock` guarding frontier mutations, follow-on branch pushes, and the covered-paths accumulator. Live benchmark on a single-GPU box with ollama 0.20.7 + `qwen2.5-coder:7b`: 9 scenarios in **140s at `exploration_concurrency=1` → 77s at `exploration_concurrency=4` (1.8× speedup)**. Server-side concurrency (vLLM natively, ollama with `OLLAMA_NUM_PARALLEL≥4`) determines the ceiling; a server that truly serializes requests will *degrade* below serial — a direct curl test against a single-slot backend measured 8 parallel calls as ~3× slower than 8 serial calls. The daemon emits a one-time `WARNING` log line whenever `exploration_concurrency > 1` reminding the operator to tune the server side. Individual scenario LLM failures no longer kill the whole cycle — they're logged and skipped. See `docs/performance.md` for the tuning ladder.
 - Added an idle-aware concurrency ramp. When `compute.idle_only = true`, the effective per-cycle concurrency now scales smoothly with current load (`max(1, int(exploration_concurrency × (1 − load)))`), so Vaner shares the machine gracefully under light foreground load instead of the previous binary "run at full speed or skip the cycle" behaviour. The hard idle-skip cutoff still applies above `idle_cpu_threshold` / `idle_gpu_threshold`.
 - Added multi-endpoint exploration routing. Set `exploration.endpoints = [...]` in `.vaner/config.toml` to dispatch exploration LLM calls across a pool of OpenAI-compatible endpoints (vLLM, remote ollama, LM Studio, etc.) via weighted round-robin. The pool tracks per-endpoint health (consecutive failures, total calls) and skips endpoints that have failed three or more times in a row for a 60-second cooldown before trying them half-open again. When `exploration.endpoints` is empty, behaviour is unchanged and Vaner uses the existing single-endpoint path.
+
+### Fixed
+
+- Fixed primer grammar: step 1 of the canonical primer now reads "Prepare context early" (imperative, parallel with steps 2 and 3) instead of "Prepared context early" — caught by Vaner's own `/vaner:next` card-pick flow during live testing.
+- Fixed the plugin's SessionStart hook preview of missing-binary tool names: now advertises the real Claude Code namespacing (`mcp__plugin_vaner_vaner__vaner.resolve`, etc.) instead of the pre-namespace form.
+- Fixed dogfood skill drift: `.cursor/skills/vaner/vaner-feedback/SKILL.md` in this repo was stuck on the v0.2.0 tool names (`list_scenarios`, `report_outcome`); now matches the canonical v0.6.x template.
+
+### Docs
+
+- Added `docs/performance.md` with the full ponder-throughput tuning ladder (`exploration_concurrency` → `OLLAMA_NUM_PARALLEL` → `CUDA_VISIBLE_DEVICES` multi-GPU → multi-endpoint pool) and an emphatic warning about raising concurrency without a concurrent backend.
+- Added a scripted / non-interactive mode section to `docs/claude-plugin.md` covering `--permission-mode bypassPermissions`, `--allowedTools`, the MCP tool naming convention, and the minimum CLI version (v0.6.0) required for the primer's tool references to resolve.
+- Added a CLI-version parity note to `CONTRIBUTING.md` for the plugin distribution.
+
+### CI
+
+- Added `.github/workflows/validate-claude-plugin.yml`: parity scripts (skill, primer, version), JSON well-formedness, hook smoke tests (both missing-binary and vaner-present branches), and `claude plugin validate`.
+- Added `.github/workflows/creds-tripwire.yml`: narrow `git grep` for known test-only credentials and private-infrastructure hostnames on every PR and push.
 
 ## [0.6.2] - 2026-04-21
 
