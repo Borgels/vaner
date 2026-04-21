@@ -123,7 +123,7 @@ jobs:
           pipx install --force "${wheel_path}[all]"
       - name: End-to-end smoke
         run: |
-          vaner init --path "$GITHUB_WORKSPACE" --no-interactive --clients none
+          vaner init --path "$GITHUB_WORKSPACE" --no-interactive
           vaner doctor --path "$GITHUB_WORKSPACE" --json || true
           vaner mcp --path "$GITHUB_WORKSPACE" --smoke
           vaner precompute --path "$GITHUB_WORKSPACE"
