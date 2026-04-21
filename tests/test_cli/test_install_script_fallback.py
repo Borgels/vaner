@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shlex
 import subprocess
 from pathlib import Path
 
@@ -8,7 +7,10 @@ from pathlib import Path
 def _run_install_shell(body: str) -> subprocess.CompletedProcess[str]:
     repo_root = Path(__file__).resolve().parents[2]
     script_path = repo_root / "scripts" / "install.sh"
-    command = f"source <(sed '$d' {shlex.quote(str(script_path))}); {body}"
+    script_text = script_path.read_text(encoding="utf-8")
+    prefix, marker, _ = script_text.rpartition('\nmain "$@"\n')
+    assert marker, "expected install.sh to end with main invocation"
+    command = f"{prefix}\n{body}\n"
     return subprocess.run(
         ["bash", "-lc", command],
         cwd=repo_root,
