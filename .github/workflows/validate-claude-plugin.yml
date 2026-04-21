@@ -6,8 +6,10 @@ on:
       - "plugins/**"
       - ".claude-plugin/**"
       - "src/vaner/defaults/skills/vaner-feedback/**"
+      - "src/vaner/defaults/prompts/agent-primer.md"
       - "pyproject.toml"
       - "scripts/sync-plugin-skill.sh"
+      - "scripts/sync-plugin-primer.sh"
       - "scripts/bump-plugin-version.sh"
       - ".github/workflows/validate-claude-plugin.yml"
   push:
@@ -16,6 +18,7 @@ on:
       - "plugins/**"
       - ".claude-plugin/**"
       - "src/vaner/defaults/skills/vaner-feedback/**"
+      - "src/vaner/defaults/prompts/agent-primer.md"
       - "pyproject.toml"
 
 permissions:
@@ -46,6 +49,9 @@ jobs:
       - name: Skill parity (defaults ↔ plugin)
         run: bash scripts/sync-plugin-skill.sh --check
 
+      - name: Primer parity (defaults ↔ plugin)
+        run: bash scripts/sync-plugin-primer.sh --check
+
       - name: Version parity (pyproject ↔ plugin.json ↔ marketplace.json)
         run: bash scripts/bump-plugin-version.sh --check
 
@@ -67,7 +73,18 @@ jobs:
         run: |
           set -euo pipefail
           out=$(PATH=/tmp:/usr/bin:/bin bash plugins/vaner/scripts/check-vaner.sh)
-          printf '%s' "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['hookSpecificOutput']['hookEventName']=='SessionStart'; assert 'additionalContext' in d['hookSpecificOutput']"
+          printf '%s' "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['hookSpecificOutput']['hookEventName']=='SessionStart'; assert 'additionalContext' in d['hookSpecificOutput']; assert 'install.sh' in d['hookSpecificOutput']['additionalContext']"
+
+      - name: Hook produces valid JSON with canonical primer when vaner is present
+        run: |
+          set -euo pipefail
+          # Simulate the plugin's runtime environment: fake a `vaner` on PATH
+          # and set CLAUDE_PLUGIN_ROOT so the hook finds the vendored primer.
+          tmpdir=$(mktemp -d)
+          printf '#!/usr/bin/env bash\nexit 0\n' > "$tmpdir/vaner"
+          chmod +x "$tmpdir/vaner"
+          out=$(CLAUDE_PLUGIN_ROOT="$PWD/plugins/vaner" PATH="$tmpdir:$PATH" bash plugins/vaner/scripts/check-vaner.sh)
+          printf '%s' "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); ctx=d['hookSpecificOutput']['additionalContext']; assert 'Using Vaner' in ctx; assert 'vaner.resolve' in ctx; assert 'vaner.feedback' in ctx"
 
       - name: claude plugin validate
         run: claude plugin validate ./plugins/vaner
