@@ -1010,7 +1010,11 @@ async def run_smoke_probe(repo_root: Path) -> dict[str, Any]:
 
 
 async def run_stdio(repo_root: Path) -> None:
-    from mcp.server.stdio import stdio_server
+    """Run the MCP server on stdio (for Claude Desktop / Cursor local config)."""
+    try:
+        from mcp.server.stdio import stdio_server
+    except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency path
+        raise RuntimeError("MCP transport requires 'mcp[cli]>=1.0'. Install with: pip install 'mcp[cli]>=1.0'.") from exc
 
     server = build_server(repo_root)
     async with stdio_server() as (read_stream, write_stream):
@@ -1030,7 +1034,12 @@ async def run_stdio(repo_root: Path) -> None:
 
 async def run_sse(repo_root: Path, host: str, port: int) -> None:
     import uvicorn
-    from mcp.server.sse import SseServerTransport
+
+    try:
+        from mcp.server.sse import SseServerTransport
+    except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency path
+        raise RuntimeError("MCP transport requires 'mcp[cli]>=1.0'. Install with: pip install 'mcp[cli]>=1.0'.") from exc
+
     from starlette.applications import Starlette
     from starlette.routing import Mount, Route
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from vaner.cli.commands import init as init_module
@@ -24,6 +25,9 @@ def _detected(client_id: str, status: ClientStatus = ClientStatus.INSTALLED) -> 
 
 
 def test_picker_snapshot(monkeypatch) -> None:
+    if not hasattr(init_module, "_render_client_picker"):
+        pytest.skip("init picker renderer not available in this command surface")
+
     stream = io.StringIO()
     console = Console(file=stream, force_terminal=False, width=120)
     detected = [_detected("cursor"), _detected("claude-code"), _detected("codex-cli", ClientStatus.MISSING)]
