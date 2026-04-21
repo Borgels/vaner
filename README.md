@@ -15,10 +15,9 @@ Vaner is a local-first context engine for coding agents that turns idle compute 
 Instead of waiting for a prompt and then starting retrieval from cold, Vaner continuously prepares likely
 next-context packages, scores them, and serves the best fit quickly when the real question arrives.
 
-Mem0-style systems and Vaner can complement each other, but they solve different core problems. Memory
-systems focus on storing and retrieving durable facts across sessions. Vaner focuses on predicting what the
-user will likely ask next and preparing evidence-backed context packages in advance. In short: memory systems
-help agents remember; Vaner helps agents arrive prepared.
+Vaner predicts what the user will likely ask next and prepares evidence-backed context packages in advance.
+Instead of reacting from a cold start, it continuously turns idle compute into prepared context that can be
+served quickly when the real prompt arrives.
 
 It is built around evidence-backed scenario memory, not chat-log accumulation:
 
