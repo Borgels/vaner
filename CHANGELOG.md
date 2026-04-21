@@ -9,7 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- Added a supported Claude Code plugin (`plugins/vaner/`) distributed via a same-repo marketplace at `.claude-plugin/marketplace.json`. Claude Code users can now install Vaner with `/plugin marketplace add Borgels/Vaner` followed by `/plugin install vaner@vaner`. The plugin bundles the Vaner MCP server, the `vaner-feedback` skill (now namespaced as `/vaner:vaner-feedback`), a `/vaner:install` skill that wraps the canonical installer behind a Bash-tool permission prompt, and a SessionStart hook that reports when the `vaner` CLI is missing from PATH.
+- Added per-client usage primers to `vaner init`. MCP wiring alone does not teach a model when and how to use Vaner; `init` now also installs a short guidance block into each detected client's native rules surface: `.claude/CLAUDE.md` (Claude Code), `.cursor/rules/vaner.mdc` (Cursor), `.github/copilot-instructions.md` (VS Code Copilot), `AGENTS.md` (Codex CLI), `.clinerules` (Cline), and `.continue/rules/vaner.md` (Continue). The primer is sourced from a single canonical file at `src/vaner/defaults/prompts/agent-primer.md` and wrapped client-specifically. Non-destructive: existing files get the primer appended in a delimited `<!-- vaner-primer:start … -->…<!-- vaner-primer:end -->` block that re-runs replace in place without touching surrounding content. Opt-out via `--no-primer`; `--user-primer` additionally writes the Claude Code primer at `~/.claude/CLAUDE.md` for always-on global guidance. Clients without a well-defined primer surface (Claude Desktop, Windsurf, Zed, Roo) are left as-is for this release.
 
 ## [0.6.2] - 2026-04-21
 

@@ -98,9 +98,12 @@ What `vaner init` does by default:
 - writes repo-local config to `.vaner/config.toml`
 - writes repo-local Cursor MCP wiring to `.cursor/mcp.json`
 - writes managed feedback skills to `.cursor/skills/vaner/vaner-feedback/SKILL.md` and `~/.claude/skills/vaner/vaner-feedback/SKILL.md`
+- installs per-client usage primers (short guidance about when and how to use Vaner) into each detected client's rules surface: `.claude/CLAUDE.md` (Claude Code), `.cursor/rules/vaner.mdc` (Cursor), `.github/copilot-instructions.md` (Copilot), `AGENTS.md` (Codex CLI), `.clinerules` (Cline), `.continue/rules/vaner.md` (Continue). Primers are non-destructive: existing files get a delimited `<!-- vaner-primer:start v=… -->…<!-- vaner-primer:end -->` block that re-runs replace in place without touching content outside it.
 
 Use `vaner init --no-mcp --path .` if you want config only and do not want Vaner to wire MCP clients or managed
-skills. If Cursor is already open, reload the window after `vaner init` so the new MCP server is picked up.
+skills. Use `--no-primer` to skip the client-level guidance. Use `--user-primer` to also install the Claude Code
+primer at `~/.claude/CLAUDE.md` (always-on across every session) in addition to the repo-level `.claude/CLAUDE.md`.
+If Cursor is already open, reload the window after `vaner init` so the new MCP server is picked up.
 
 Start / verify runtime:
 
