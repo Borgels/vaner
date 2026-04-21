@@ -29,3 +29,9 @@ repos:
         language: system
         pass_filenames: false
         files: ^(pyproject\.toml|plugins/vaner/\.claude-plugin/plugin\.json|\.claude-plugin/marketplace\.json)$
+      - id: vaner-plugin-primer-parity
+        name: vaner plugin primer parity
+        entry: scripts/sync-plugin-primer.sh --check
+        language: system
+        pass_filenames: false
+        files: ^(src/vaner/defaults/prompts/agent-primer\.md|plugins/vaner/prompts/agent-primer\.md)$
