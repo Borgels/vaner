@@ -13,9 +13,15 @@
       "name": "vaner",
       "source": "./plugins/vaner",
       "description": "MCP server, feedback skill, and bootstrap hook for Vaner.",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "category": "developer-tools",
-      "tags": ["mcp", "context", "retrieval", "scenarios", "vaner"],
+      "tags": [
+        "mcp",
+        "context",
+        "retrieval",
+        "scenarios",
+        "vaner"
+      ],
       "homepage": "https://vaner.ai",
       "repository": "https://github.com/Borgels/Vaner",
       "license": "Apache-2.0",
