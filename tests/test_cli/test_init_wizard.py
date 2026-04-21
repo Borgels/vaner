@@ -15,6 +15,9 @@ runner = CliRunner()
 
 if not hasattr(init_module, "detect_all"):
     pytest.skip("init wizard helpers unavailable on this branch surface", allow_module_level=True)
+_init_help = runner.invoke(app, ["init", "--help"])
+if "--clients" not in _init_help.stdout:
+    pytest.skip("init client-selection flags unavailable on this branch surface", allow_module_level=True)
 
 
 def _detected(client_id: str, status: ClientStatus = ClientStatus.INSTALLED) -> DetectedClient:

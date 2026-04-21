@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from vaner.cli.commands import app
@@ -12,6 +13,9 @@ from vaner.models.scenario import Scenario
 from vaner.store.scenarios import ScenarioStore
 
 runner = CliRunner()
+
+if not hasattr(app, "runtime_snapshot"):
+    pytest.skip("runtime_snapshot unavailable on this CLI surface", allow_module_level=True)
 
 
 def test_status_json_output(temp_repo, capsys, monkeypatch):

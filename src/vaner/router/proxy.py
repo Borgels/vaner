@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 import signal
 import time
+import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,12 +17,13 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
-from vaner import __version__ as _vaner_version
 from vaner.api import aquery
 from vaner.cli.commands.config import load_config, set_compute_value
 from vaner.daemon.cockpit_html import build_cockpit_html
+from vaner.intent.arcs import derive_prompt_macro
 from vaner.models.config import VanerConfig
 from vaner.models.decision import DecisionRecord
+from vaner.models.signal import SignalEvent
 from vaner.router.backends import (
     forward_chat_completion_with_request,
     stream_chat_completion_with_request,
@@ -51,6 +54,60 @@ def _normalize_message_content(content: Any) -> str:
                     parts.append(text)
         return "\n".join(parts)
     return ""
+
+
+_FOLLOW_UP_ACTION_PATTERNS = (
+    ("would_you_like_me_to", "offer", re.compile(r"\bwould you like me to\s+(.+?)(?:\?|\.|$)", re.IGNORECASE | re.DOTALL)),
+    ("do_you_want_me_to", "offer", re.compile(r"\bdo you want me to\s+(.+?)(?:\?|\.|$)", re.IGNORECASE | re.DOTALL)),
+    ("want_me_to", "offer", re.compile(r"\bwant me to\s+(.+?)(?:\?|\.|$)", re.IGNORECASE | re.DOTALL)),
+    ("shall_i", "proposal", re.compile(r"\bshall i\s+(.+?)(?:\?|\.|$)", re.IGNORECASE | re.DOTALL)),
+    ("i_can_next", "can_do_next", re.compile(r"\bi can\s+(.+?)\s+next(?:\?|\.|$)", re.IGNORECASE | re.DOTALL)),
+)
+_AFFIRMATIVE_PROMPT_RE = re.compile(
+    r"^(?:yes|yep|yeah|sure|ok|okay|go ahead|please do|do it|sounds good|that works|let'?s do it)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_follow_up_offer(assistant_text: str) -> dict[str, str]:
+    normalized = " ".join(assistant_text.split())
+    if not normalized:
+        return {}
+    for pattern_id, phrase_family, pattern in _FOLLOW_UP_ACTION_PATTERNS:
+        match = pattern.search(normalized)
+        if not match:
+            continue
+        action = " ".join(match.group(1).split()).strip(" .")
+        if action:
+            return {
+                "action": action,
+                "phrase_pattern_id": pattern_id,
+                "phrase_family": phrase_family,
+            }
+    return {}
+
+
+def _extract_follow_up_action(assistant_text: str) -> str:
+    offer = _extract_follow_up_offer(assistant_text)
+    return str(offer.get("action", ""))
+
+
+def _build_retrieval_prompt(messages: list[dict[str, Any]], user_prompt: str, *, follow_up_action: str = "") -> str:
+    prompt = user_prompt.strip()
+    if not prompt:
+        return ""
+    if not _AFFIRMATIVE_PROMPT_RE.match(prompt):
+        return prompt
+    action = follow_up_action.strip()
+    if not action:
+        assistant_messages = [msg for msg in messages if msg.get("role") == "assistant"]
+        if not assistant_messages:
+            return prompt
+        last_assistant = _normalize_message_content(assistant_messages[-1].get("content"))
+        action = _extract_follow_up_action(last_assistant)
+    if not action:
+        return prompt
+    return f"{prompt}\n\nfollow_up_request: {action}"
 
 
 def _metrics_db_path(repo_root: Path) -> Path:
@@ -154,7 +211,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         except (NotImplementedError, RuntimeError):
             pass
 
-    app = FastAPI(title="Vaner Proxy", version=_vaner_version, lifespan=lifespan)
+    app = FastAPI(title="Vaner Proxy", version="0.2.0", lifespan=lifespan)
     limiter = _RateLimiter(config.proxy.max_requests_per_minute)
     required_token = (config.proxy.proxy_token or "").strip()
     shadow_rate = max(0.0, min(config.gateway.shadow_rate, 1.0))
@@ -362,11 +419,59 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         metrics.is_stream = payload.get("stream") is True
 
         repo_root = _resolve_repo_root(request)
-        user_messages = [msg for msg in payload.get("messages", []) if msg.get("role") == "user"]
+        messages = payload.get("messages", [])
+        assistant_messages = [msg for msg in messages if msg.get("role") == "assistant"]
+        user_messages = [msg for msg in messages if msg.get("role") == "user"]
         prompt = _normalize_message_content(user_messages[-1].get("content")) if user_messages else ""
+        prompt_macro = derive_prompt_macro(prompt) if prompt else "general"
+        corpus_id = "repo"
+        await store.initialize()
+        if assistant_messages:
+            last_assistant = _normalize_message_content(assistant_messages[-1].get("content"))
+            offer = _extract_follow_up_offer(last_assistant)
+            if offer:
+                action = str(offer.get("action", ""))
+                phrase_pattern_id = str(offer.get("phrase_pattern_id", ""))
+                phrase_family = str(offer.get("phrase_family", ""))
+                await store.insert_signal_event(
+                    SignalEvent(
+                        id=str(uuid.uuid4()),
+                        source="proxy",
+                        kind="follow_up_offer_detected",
+                        timestamp=time.time(),
+                        payload={
+                            "action": action,
+                            "phrase_pattern_id": phrase_pattern_id,
+                            "phrase_family": phrase_family,
+                            "prompt_macro": prompt_macro,
+                            "corpus_id": corpus_id,
+                            "privacy_zone": "local",
+                        },
+                    )
+                )
+                if prompt and _AFFIRMATIVE_PROMPT_RE.match(prompt):
+                    await store.insert_signal_event(
+                        SignalEvent(
+                            id=str(uuid.uuid4()),
+                            source="proxy",
+                            kind="follow_up_offer_accepted",
+                            timestamp=time.time(),
+                            payload={
+                                "action": action,
+                                "phrase_pattern_id": phrase_pattern_id,
+                                "phrase_family": phrase_family,
+                                "prompt_macro": prompt_macro,
+                                "corpus_id": corpus_id,
+                                "privacy_zone": "local",
+                            },
+                        )
+                    )
+        else:
+            offer = {}
+        retrieval_prompt = _build_retrieval_prompt(messages, prompt, follow_up_action=str(offer.get("action", "")))
         metrics.prompt_tokens = len(prompt.split())
         if gateway_enabled:
-            context_package = await aquery(prompt, repo_root, config=config, top_n=6)
+            context_package = await aquery(retrieval_prompt, repo_root, config=config, top_n=6)
             metrics.t1_context_ready = time.monotonic()
             metrics.cache_tier = context_package.cache_tier
             metrics.partial_similarity = context_package.partial_similarity

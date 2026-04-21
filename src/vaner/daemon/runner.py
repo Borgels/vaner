@@ -17,7 +17,6 @@ from vaner.daemon.engine.scenario_builder import build_scenarios
 from vaner.daemon.engine.scorer import score_paths
 from vaner.daemon.signals.fs_watcher import RepoChangeWatcher, scan_repo_files
 from vaner.daemon.signals.git_reader import read_git_diff, read_git_state
-from vaner.intent.skills_discovery import discover_skills
 from vaner.models.artefact import Artefact
 from vaner.models.config import VanerConfig
 from vaner.models.session import WorkingSet
@@ -43,8 +42,14 @@ class VanerDaemon:
         await self.telemetry.initialize()
 
     async def run_once(self, changed_files: list[Path] | None = None) -> int:
+        cycle_started = time.monotonic()
         await self.initialize()
         repo_root = self.config.repo_root
+        logger.info(
+            "Daemon cycle start repo=%s changed_files=%s",
+            repo_root,
+            len(changed_files) if changed_files is not None else "scan",
+        )
         include = self.config.privacy.allowed_paths or None
         files = changed_files if changed_files is not None else scan_repo_files(repo_root, include_paths=include)
         git_state = read_git_state(repo_root)
@@ -79,22 +84,6 @@ class VanerDaemon:
             )
             for rel_path in git_paths
         )
-        if self.config.intent.enabled:
-            skills = discover_skills(
-                repo_root,
-                include_global=self.config.intent.include_global_skills,
-                skill_roots=self.config.intent.skill_roots,
-            )
-            signals.extend(
-                SignalEvent(
-                    id=str(uuid.uuid4()),
-                    source="skill_scan",
-                    kind="skill_loaded",
-                    timestamp=time.time(),
-                    payload=skill.as_signal_payload(repo_root),
-                )
-                for skill in skills
-            )
         for signal in signals:
             await self.store.insert_signal_event(signal)
         targets = plan_targets(
@@ -166,6 +155,14 @@ class VanerDaemon:
             await self.scenarios.upsert(scenario)
         await self.scenarios.mark_stale()
         await self.telemetry.record("artefacts_written", float(written))
+        logger.info(
+            "Daemon cycle end repo=%s artefacts_written=%d signals=%d scenarios=%d elapsed_ms=%.1f",
+            repo_root,
+            written,
+            len(signals),
+            len(scenarios),
+            (time.monotonic() - cycle_started) * 1000.0,
+        )
         return written
 
     async def run_forever(self, interval_seconds: int = 15) -> None:
@@ -187,8 +184,10 @@ class VanerDaemon:
                     break
                 changed_files = watcher.drain_changes()
                 if changed_files:
+                    logger.info("Daemon processing %d watched file changes", len(changed_files))
                     await self.run_once(changed_files=changed_files)
                 else:
+                    logger.info("Daemon running periodic cycle (no watched changes)")
                     await self.run_once()
                 await asyncio.sleep(interval_seconds)
         finally:

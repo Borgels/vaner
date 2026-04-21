@@ -9,95 +9,99 @@
 
 > Status: alpha (pre-1.0). Interfaces may evolve quickly while we stabilize core behavior.
 
-Vaner is a local-first predictive context engine for AI coding workflows. It
-uses idle time to anticipate likely next prompts, pre-build useful context, and
-serve the best context package quickly when the real prompt arrives.
+## What is Vaner?
+
+Vaner is a local-first context engine for coding agents that turns idle compute into useful future context.
+Instead of waiting for a prompt and then starting retrieval from cold, Vaner continuously prepares likely
+next-context packages, scores them, and serves the best fit quickly when the real question arrives.
+
+Mem0-style systems and Vaner can complement each other, but they solve different core problems. Memory
+systems focus on storing and retrieving durable facts across sessions. Vaner focuses on predicting what the
+user will likely ask next and preparing evidence-backed context packages in advance. In short: memory systems
+help agents remember; Vaner helps agents arrive prepared.
+
+It is built around evidence-backed scenario memory, not chat-log accumulation:
+
+- context is compiled from repo evidence and stored as reusable scenarios
+- memory has explicit lifecycle states (`candidate`, `trusted`, `stale`, `demoted`)
+- fingerprints tie memory to concrete sources so drift is detected automatically
+- conflict handling can abstain instead of blending contradictory evidence
+
+## Install
+
+### One-line installer (Linux/macOS)
+
+```bash
+curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash
+```
+
+Common installer flags:
+
+- `--yes` (non-interactive), `--dry-run`, `--verify`
+- `--backend uv|pipx`
+- `--version <tag>`
+- `--with-ollama`
+- `--minimal` (legacy minimal extras; pairs with `--no-mcp` when needed)
+- `--backend-preset ollama|lmstudio|vllm|openai|anthropic|openrouter|skip`
+- `--compute-preset background|balanced|dedicated`
+- `--max-session-minutes <n>`
+- `--no-mcp` (skip MCP extras)
+
+### pipx / uv tool install
+
+```bash
+pipx install 'vaner[mcp]'
+# or
+uv tool install 'vaner[mcp]'
+```
+
+### Upgrade
+
+```bash
+vaner upgrade
+vaner version
+```
+
+## Configure
+
+Run the setup wizard per repo:
+
+```bash
+vaner init --path .
+```
+
+Key non-interactive flags:
+
+- `--backend-preset`
+- `--backend-model` and `--backend-api-key-env`
+- `--compute-preset background|balanced|dedicated`
+- `--max-session-minutes <n>`
+- `--clients auto|all|none|other|<csv>`
+- `--force`
+- `--dry-run`
+- `--accept-cloud-costs`
+
+Start / verify runtime:
+
+```bash
+vaner up --path .
+vaner status
+vaner logs --daemon
+vaner down
+```
+
+### Supported MCP clients
+
+From the client registry IDs:
+
+`cursor`, `claude-desktop`, `claude-code`, `vscode-copilot`, `codex-cli`, `windsurf`, `zed`, `continue`, `cline`, `roo`
 
 ## Quickstart
 
-### 1. Install
-
 ```bash
-curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash
-```
-
-The installer:
-
-- Detects `uv` or `pipx` and installs `vaner[mcp]` (MCP client support included by default; pass `--no-mcp` to skip).
-- Falls back to `git+https://github.com/Borgels/vaner.git` if the PyPI package isn't available yet.
-- Asks you to pick a model backend (Ollama, LM Studio, vLLM, OpenAI, Anthropic, OpenRouter, or skip).
-- Offers a compute budget (`background` / `balanced` / `dedicated`) and an optional wall-clock cap on ponder time (`--max-session-minutes`).
-
-Non-interactive example (CI, Dockerfile):
-
-```bash
-VANER_YES=1 \
-VANER_BACKEND_PRESET=openai \
-VANER_BACKEND_API_KEY_ENV=OPENAI_API_KEY \
-VANER_BACKEND_MODEL=gpt-4o \
-VANER_COMPUTE_PRESET=background \
-VANER_MAX_SESSION_MINUTES=30 \
-curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash
-```
-
-From source (no installer):
-
-```bash
-git clone https://github.com/Borgels/vaner.git
-cd vaner
-pip install '.[mcp]'
-```
-
-Installer source for review: [`scripts/install.sh`](scripts/install.sh).
-
-### 2. Connect your AI client
-
-Vaner exposes context to your agent over [MCP](https://modelcontextprotocol.io/). Pick your client and paste the one-liner:
-
-| Client | One command |
-| --- | --- |
-| Claude Code | `claude mcp add --transport stdio --scope user vaner -- vaner mcp --path .` |
-| Codex CLI   | `codex mcp add vaner -- vaner mcp --path .` |
-| Cursor / VS Code / Zed / Windsurf / Continue / Claude Desktop / Cline / Roo | see [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp) (client setup guides) |
-
-Or let Vaner write the config file for you:
-
-```bash
-vaner init --path .                 # initialize this repo + pick backend interactively
-vaner mcp --path .                  # smoke-test the MCP server in stdio mode
-```
-
-### 3. Start Vaner
-
-```bash
-# in your project repo
+vaner init --path .
 vaner up --path .
 ```
-
-`vaner up` starts both the background daemon and cockpit, opens `http://127.0.0.1:8473/`,
-and keeps them supervised in one command. Press `Ctrl+C` (or run `vaner down`) to stop.
-
-If nothing seems to happen, run:
-
-```bash
-vaner doctor --path .
-```
-
-Advanced (manual mode):
-
-```bash
-vaner daemon start --no-once --path .
-vaner daemon serve-http --path .
-```
-
-Optional local debugging:
-
-```bash
-vaner query "where is auth enforced?" --explain --path .
-vaner inspect --last --path .
-```
-
-Asciinema demo: coming soon.
 
 ## Documentation
 
@@ -109,8 +113,34 @@ Most documentation lives at [docs.vaner.ai](https://docs.vaner.ai):
 - Architecture: [docs.vaner.ai/architecture](https://docs.vaner.ai/architecture)
 - Security: [docs.vaner.ai/security](https://docs.vaner.ai/security)
 - CLI reference: [docs.vaner.ai/cli](https://docs.vaner.ai/cli)
+- MCP tools: [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp)
 - Examples: [docs.vaner.ai/examples](https://docs.vaner.ai/examples)
-- Agent skills loop (repo docs): [`docs/skills-integration.md`](docs/skills-integration.md)
+
+## MCP (v1.0)
+
+Vaner exposes the following MCP tools:
+
+- `vaner.status`
+- `vaner.suggest`
+- `vaner.resolve`
+- `vaner.expand`
+- `vaner.search`
+- `vaner.explain`
+- `vaner.feedback`
+- `vaner.warm`
+- `vaner.inspect`
+- `vaner.debug.trace`
+
+Memory behavior details: `docs/memory-semantics.md`.
+
+### Minimal agent loop (MCP pseudo)
+
+```python
+state = client.call("vaner.status", {})
+resolution = client.call("vaner.resolve", {"query": prompt, "budget": {"tokens": 6000}})
+reply = llm.respond(resolution["summary"], prompt)
+client.call("vaner.feedback", {"resolution_id": resolution["resolution_id"], "rating": "useful"})
+```
 
 ## Community
 

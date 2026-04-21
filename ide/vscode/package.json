@@ -2,7 +2,7 @@
   "name": "vaner-cockpit",
   "displayName": "Vaner Cockpit",
   "description": "Local Vaner cockpit for VS Code and Cursor.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "borgels",
   "engines": {
     "vscode": "^1.92.0"

@@ -45,8 +45,10 @@ class CorpusReasoner:
         fallback_items: list[str] | None = None,
         existing_questions: list[str] | None = None,
         limit: int | None = None,
+        preferred_follow_ups: list[str] | None = None,
     ) -> list[Hypothesis]:
         existing = {question.strip().lower() for question in (existing_questions or []) if question.strip()}
+        preferred = [item for item in (preferred_follow_ups or []) if str(item).strip()]
         if llm_output:
             parsed = self._try_parse_json_list(llm_output)
             if parsed:
@@ -63,7 +65,7 @@ class CorpusReasoner:
                             relevant_keys=_as_str_list(item.get("relevant_keys", [])),
                             category=str(item.get("category", "understanding")),
                             response_format=str(item.get("response_format", "explanation")),
-                            follow_ups=_as_str_list(item.get("follow_ups", [])),
+                            follow_ups=_merge_follow_ups(_as_str_list(item.get("follow_ups", [])), preferred),
                         )
                     )
                 if hypotheses:
@@ -89,7 +91,7 @@ class CorpusReasoner:
                     relevant_keys=fallback_items[:4],
                     category="implementation" if idx == 1 else "understanding",
                     response_format="explanation",
-                    follow_ups=["What edge cases are still uncovered?"] if idx == 1 else [],
+                    follow_ups=_merge_follow_ups(["What edge cases are still uncovered?"] if idx == 1 else [], preferred),
                 )
             )
             if limit is not None and len(hypotheses) >= limit:
@@ -187,3 +189,18 @@ def _safe_float(value: object, *, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _merge_follow_ups(base: list[str], preferred: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for item in [*base, *preferred]:
+        text = str(item).strip()
+        if not text:
+            continue
+        normalized = text.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(text)
+    return merged[:6]

@@ -201,7 +201,8 @@ async def _llm_summarize(text: str, prompt_template: str, config: VanerConfig, s
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        async with httpx.AsyncClient(timeout=45) as client:
+        timeout_seconds = max(1.0, float(getattr(config.generation, "llm_timeout_seconds", 30.0)))
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.post(f"{config.backend.base_url.rstrip('/')}/chat/completions", json=payload, headers=headers)
             response.raise_for_status()
         content = _extract_message_text(response.json()).strip()

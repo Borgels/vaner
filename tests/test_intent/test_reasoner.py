@@ -88,3 +88,26 @@ async def test_reasoner_normalizes_string_fields_from_llm():
     assert hypotheses[0].evidence == ["recent timeout failures"]
     assert hypotheses[0].relevant_keys == ["file:network.py"]
     assert hypotheses[0].follow_ups == ["Should we add jitter?"]
+
+
+@pytest.mark.asyncio
+async def test_reasoner_appends_preferred_follow_ups() -> None:
+    reasoner = CorpusReasoner()
+    context = ReasonerContext(corpus_type="code_repo", summary="context")
+    llm_output = """
+[
+  {
+    "question": "Where should retries be added?",
+    "confidence": 0.8,
+    "follow_ups": ["Should we add jitter?"]
+  }
+]
+"""
+    hypotheses = await reasoner.generate(
+        context=context,
+        llm_output=llm_output,
+        fallback_items=[],
+        preferred_follow_ups=["Run tests and patch failures"],
+    )
+    assert len(hypotheses) == 1
+    assert hypotheses[0].follow_ups == ["Should we add jitter?", "Run tests and patch failures"]
