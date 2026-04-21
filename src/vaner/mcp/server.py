@@ -12,13 +12,17 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from mcp.server import Server
+    from mcp.server import NotificationOptions, Server
     from mcp.server.models import InitializationOptions
     from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
     _MCP_IMPORT_ERROR: ModuleNotFoundError | None = None
 except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency path
     _MCP_IMPORT_ERROR = exc
+
+    class NotificationOptions:  # type: ignore[no-redef]
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
 
     class Server:  # type: ignore[no-redef]
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
