@@ -127,6 +127,38 @@ class IntentConfig(BaseModel):
     max_feedback_events_per_cycle: int = 5
 
 
+class ExplorationEndpoint(BaseModel):
+    """One endpoint in a multi-endpoint exploration pool.
+
+    Each entry points at an OpenAI-compatible chat-completions server (vLLM,
+    Ollama's ``/v1`` shim, LM Studio, OpenAI proper, …) with its own model and
+    weight. The pool distributes LLM calls across entries via weighted
+    round-robin, skipping endpoints that have failed repeatedly.
+    """
+
+    url: str
+    """Base URL for the endpoint, e.g. ``http://gpu-host-01.example:8000/v1``."""
+
+    model: str
+    """Model name to request at this endpoint."""
+
+    weight: float = 1.0
+    """Relative share of traffic. Endpoints with weight 0 are disabled; a weight
+    of 2.0 receives twice the load of a weight-1.0 endpoint in the same pool.
+    """
+
+    api_key_env: str = ""
+    """Name of an environment variable holding the endpoint's API key. Empty =
+    no auth header (e.g. local vLLM with ``--api-key disabled``).
+    """
+
+    backend: Literal["openai", "ollama"] = "openai"
+    """Protocol the endpoint speaks. Default ``openai`` covers vLLM and any
+    OpenAI-compatible server; ``ollama`` uses the native ``/api/generate``
+    protocol.
+    """
+
+
 class ExplorationConfig(BaseModel):
     """Controls how aggressively Vaner explores the scenario space.
 
@@ -212,6 +244,36 @@ class ExplorationConfig(BaseModel):
     vLLM which requires a non-empty but unauthenticated token.  Leave empty
     to read from the ``VANER_EXPLORATION_API_KEY`` environment variable or
     fall back to ``"EMPTY"`` for local endpoints.
+    """
+
+    endpoints: list[ExplorationEndpoint] = Field(default_factory=list)
+    """Optional pool of exploration endpoints for multi-endpoint routing.
+
+    When non-empty, Vaner builds an ``ExplorationEndpointPool`` that dispatches
+    each LLM call via weighted round-robin across the pool. Per-endpoint health
+    tracking skips any endpoint that has failed 3+ times in a row until a
+    60-second cooldown elapses.
+
+    When empty, Vaner falls back to the single-endpoint path using
+    ``exploration_endpoint`` / ``exploration_model`` / ``exploration_backend``
+    above — existing behaviour, unchanged.
+
+    Example:
+
+    .. code-block:: toml
+
+        [[exploration.endpoints]]
+        url = "http://gpu-host-01.example:8000/v1"
+        model = "Qwen/Qwen2.5-Coder-32B"
+        weight = 1.0
+
+        [[exploration.endpoints]]
+        url = "http://gpu-host-02.example:8000/v1"
+        model = "Qwen/Qwen2.5-Coder-32B"
+        weight = 1.0
+
+    API keys, when needed, are read from the environment variable named by
+    ``api_key_env`` on each entry.
     """
 
     # ------------------------------------------------------------------

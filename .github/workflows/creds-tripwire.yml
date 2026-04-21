@@ -1,0 +1,41 @@
+name: Credentials tripwire
+
+# Belt-and-suspenders guard against committing dev credentials that the team
+# uses for benchmarking private test infrastructure. Fails the PR if any of
+# the known test creds or hostnames appear in tracked files, which catches
+# accidental pastes into fixtures, docs, or CI configs. Gitleaks runs in
+# pre-commit already; this adds a repo-wide check with a short, curated list
+# that team members are most likely to paste by mistake.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tripwire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          persist-credentials: false
+
+      - name: Scan tracked files for known-test-only credentials
+        run: |
+          set -euo pipefail
+          # Patterns must appear nowhere under version control. Kept deliberately
+          # narrow: the real-world likelihood of these exact bytes appearing in
+          # legitimate code is essentially zero.
+          patterns='abc1234|spark0[12]\.local'
+          if git grep -nE "$patterns" -- ':!*.github/workflows/creds-tripwire.yml' ; then
+            echo "::error::Found test-only credentials or private hostnames in tracked files."
+            echo "::error::These belong in ~/.netrc (mode 0600) or env vars at test time, never in the repo."
+            exit 1
+          fi
+          echo "tripwire clean"

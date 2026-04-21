@@ -138,6 +138,7 @@ class VanerEngine:
         self._policy_persist_interval_seconds = 2.0
         self._learning_state_loaded = False
         self._last_decision_record: DecisionRecord | None = None
+        self._concurrency_banner_emitted = False
 
     async def initialize(self) -> None:
         await self.store.initialize()
@@ -644,6 +645,10 @@ class VanerEngine:
         cycle_started = time.monotonic()
         await self.initialize()
         compute = self.config.compute
+        # Keep the binary idle-only gate as an escape hatch: if the load is
+        # genuinely saturating, skip the cycle entirely. Between idle and
+        # saturation, _compute_effective_concurrency (invoked below) scales
+        # parallelism smoothly so we still make progress under light load.
         if compute.idle_only:
             cpu_load = _cpu_load_fraction()
             gpu_load = _gpu_load_fraction()
@@ -753,99 +758,195 @@ class VanerEngine:
         # Phase 2 — depth: once shallow coverage is adequate (>= 40%), open the
         # frontier to full depth so high-value LLM branches can be explored.
         _BREADTH_COVERAGE_THRESHOLD = 0.40
-        _phase_breadth_done = frontier.coverage_ratio >= _BREADTH_COVERAGE_THRESHOLD
-        frontier.set_effective_max_depth(ecfg.max_exploration_depth if _phase_breadth_done else min(1, ecfg.max_exploration_depth))
+        phase_breadth_done = [frontier.coverage_ratio >= _BREADTH_COVERAGE_THRESHOLD]
+        frontier.set_effective_max_depth(ecfg.max_exploration_depth if phase_breadth_done[0] else min(1, ecfg.max_exploration_depth))
 
-        # ── Exploration loop ─────────────────────────────────────────────────
+        # ── Exploration loop (bounded-parallel) ──────────────────────────────
+        # Pre-#135 this loop was strictly serial: pop → await LLM → push follow-ons.
+        # The `exploration_concurrency` config field (default 4) was defined but
+        # never consulted. Now we fan out LLM calls up to that bound via a
+        # semaphore, with an asyncio.Lock guarding the shared state the loop
+        # mutates (frontier, covered_paths, governor, and the explored-scenarios
+        # accumulator). The LLM call itself runs outside the lock — that's the
+        # point: concurrent LLM requests go to concurrent endpoint workers.
+        #
+        # P3 (idle-aware ramp): effective concurrency scales with current load.
+        # At idle it runs at the full config value; under load it clamps down to
+        # 1 rather than skipping the cycle entirely (which was the pre-P3 behavior
+        # for idle_only=true).
+        effective_concurrency = self._compute_effective_concurrency(ecfg, compute)
+
+        # One-time warning: raising `exploration_concurrency` without matching
+        # server-side concurrency (e.g. OLLAMA_NUM_PARALLEL) actively hurts
+        # throughput. Live benchmarks on default ollama confirmed that 8
+        # parallel generate requests took ~3x the wall time of the same 8
+        # serial requests. Warn the operator exactly once per engine instance
+        # so the footgun is surfaced in the daemon log.
+        if compute.exploration_concurrency > 1 and not self._concurrency_banner_emitted:
+            import logging as _logging
+
+            _log = _logging.getLogger(__name__)
+            _log.warning(
+                "Vaner: compute.exploration_concurrency=%d. The exploration LLM "
+                "endpoint must serve concurrent requests or throughput will *degrade* "
+                "below serial. For ollama, set OLLAMA_NUM_PARALLEL=%d on the server. "
+                "vLLM / OpenAI-compatible servers typically serve concurrency natively. "
+                "See docs/performance.md for the full tuning ladder.",
+                compute.exploration_concurrency,
+                compute.exploration_concurrency,
+            )
+            self._concurrency_banner_emitted = True
+        cycle_sem = asyncio.Semaphore(effective_concurrency)
+        state_lock = asyncio.Lock()
+        in_flight: list[asyncio.Task[None]] = []
+        full_packages_box = [0]
+
+        async def _process_scenario(scenario: ExplorationScenario) -> None:
+            """Explore one scenario; mutate shared state under state_lock."""
+            async with cycle_sem:
+                if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
+                    return
+
+                use_llm = self._should_use_llm(scenario, ecfg)
+                llm_semantic_intent = ""
+                follow_on: list[dict[str, object]] = []
+                llm_confidence = 0.0
+                effective_paths: list[str] = list(scenario.file_paths)
+
+                if use_llm and callable(self.llm):
+                    try:
+                        ranked_files, follow_on, llm_semantic_intent, llm_confidence = await self._explore_scenario_with_llm(
+                            scenario=scenario,
+                            available_paths=available_paths,
+                            recent_queries=recent_query_text,
+                            covered_paths=covered_paths,
+                            artefacts_by_key=artefacts_by_key,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # Individual scenario failure must not kill the cycle.
+                        ranked_files, follow_on, llm_semantic_intent, llm_confidence = [], [], "", 0.0
+                    if ranked_files:
+                        effective_paths = list(ranked_files)
+
+                pred_scenario = PredictionScenario(
+                    question=f"context:{scenario.anchor}",
+                    unit_ids=effective_paths,
+                    confidence=scenario.priority,
+                    rationale=scenario.reason,
+                )
+                combined_intent = " ".join(part for part in [scenario.reason, llm_semantic_intent] if part)
+                try:
+                    cached = await self._cache_context_for_scenario(
+                        pred_scenario,
+                        exploration_source=scenario.source,
+                        semantic_intent=combined_intent,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    cached = None
+
+                async with state_lock:
+                    # Push follow-on branches (LLM confidence gates priority).
+                    for branch in follow_on:
+                        branch_files_raw = branch.get("files", [])
+                        if not isinstance(branch_files_raw, list):
+                            continue
+                        branch_files: list[str] = [str(f) for f in branch_files_raw if f]
+                        if not branch_files:
+                            continue
+                        branch_conf = float(branch.get("confidence", llm_confidence or 0.5))
+                        branch_conf = max(0.1, min(1.0, branch_conf))
+                        branch_priority = scenario.priority * self._scoring_policy.branch_priority_decay * branch_conf
+                        branch_scenario = ExplorationScenario(
+                            id=file_set_fingerprint(branch_files),
+                            file_paths=branch_files,
+                            anchor=scenario.id,
+                            source="llm_branch",
+                            priority=branch_priority,
+                            depth=scenario.depth + 1,
+                            parent_id=scenario.id,
+                            reason=str(branch.get("reason", "")),
+                            layer="operational",
+                        )
+                        frontier.push(branch_scenario)
+
+                    self._last_explored_scenarios.append(
+                        ExploredScenario(
+                            source=scenario.source,
+                            anchor=scenario.anchor,
+                            reason=scenario.reason,
+                            priority=scenario.priority,
+                            depth=scenario.depth,
+                            unit_ids=list(effective_paths),
+                            cached=bool(cached),
+                        )
+                    )
+                    if cached:
+                        full_packages_box[0] += 1
+                        covered_paths.update(effective_paths)
+
+                    frontier.mark_explored(scenario.id, covered_files=effective_paths)
+                    governor.iteration_done(1)
+
+                    if not phase_breadth_done[0] and frontier.coverage_ratio >= _BREADTH_COVERAGE_THRESHOLD:
+                        phase_breadth_done[0] = True
+                        frontier.set_effective_max_depth(ecfg.max_exploration_depth)
+
+        # Bounded-parallel dispatcher. We pop one scenario at a time under the
+        # state lock (cheap), spawn a task for it, and maintain backpressure so
+        # the pending-task pool never balloons past 2× concurrency. When the
+        # frontier empties we still drain in-flight tasks in case LLM branches
+        # push new work back onto the queue.
+        max_inflight = max(2, effective_concurrency * 2)
         while governor.should_continue() and not frontier.is_saturated():
             if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
                 break
-            scenario = frontier.pop()
+
+            async with state_lock:
+                scenario = frontier.pop()
+
             if scenario is None:
-                break
+                # No pending work right now. If tasks are in flight they may
+                # push follow-ons on completion, so wait for one to finish and
+                # check again. Otherwise we're done.
+                if not in_flight:
+                    break
+                done, pending = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                in_flight = [t for t in pending]
+                # Surface the earliest exception (tasks swallow their own).
+                for task in done:
+                    exc = task.exception()
+                    if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                        raise exc
+                continue
 
-            # Decide: trivial (graph-only, depth 0) → cache directly without LLM
-            use_llm = self._should_use_llm(scenario, ecfg)
+            task = asyncio.create_task(_process_scenario(scenario))
+            in_flight.append(task)
 
-            llm_semantic_intent = ""
-            if use_llm and callable(self.llm):
-                ranked_files, follow_on, llm_semantic_intent, llm_confidence = await self._explore_scenario_with_llm(
-                    scenario=scenario,
-                    available_paths=available_paths,
-                    recent_queries=recent_query_text,
-                    covered_paths=covered_paths,
-                    artefacts_by_key=artefacts_by_key,
-                )
-                # Use the LLM-ranked file list if it narrowed the scenario
-                effective_paths = ranked_files if ranked_files else scenario.file_paths
+            if len(in_flight) >= max_inflight:
+                done, pending = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                in_flight = [t for t in pending]
+                for task in done:
+                    exc = task.exception()
+                    if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                        raise exc
 
-                # Push follow-on branches; scale priority by LLM confidence
-                for branch in follow_on:
-                    branch_files_raw = branch.get("files", [])
-                    if not isinstance(branch_files_raw, list):
-                        continue
-                    branch_files: list[str] = [str(f) for f in branch_files_raw if f]
-                    if not branch_files:
-                        continue
-                    # LLM confidence gates branch priority: high-confidence
-                    # follow-ons get full decay; low-confidence get extra penalty.
-                    branch_conf = float(branch.get("confidence", llm_confidence or 0.5))
-                    branch_conf = max(0.1, min(1.0, branch_conf))
-                    branch_priority = scenario.priority * self._scoring_policy.branch_priority_decay * branch_conf
-                    branch_scenario = ExplorationScenario(
-                        id=file_set_fingerprint(branch_files),
-                        file_paths=branch_files,
-                        anchor=scenario.id,
-                        source="llm_branch",
-                        priority=branch_priority,
-                        depth=scenario.depth + 1,
-                        parent_id=scenario.id,
-                        reason=str(branch.get("reason", "")),
-                        layer="operational",
-                    )
-                    frontier.push(branch_scenario)
-            else:
-                effective_paths = scenario.file_paths
-
-            pred_scenario = PredictionScenario(
-                question=f"context:{scenario.anchor}",
-                unit_ids=effective_paths,
-                confidence=scenario.priority,
-                rationale=scenario.reason,
-            )
-            # Build semantic_intent for cache: combine scenario reason + LLM's intent
-            combined_intent = " ".join(part for part in [scenario.reason, llm_semantic_intent] if part)
-            cached = await self._cache_context_for_scenario(
-                pred_scenario,
-                exploration_source=scenario.source,
-                semantic_intent=combined_intent,
-            )
-            self._last_explored_scenarios.append(
-                ExploredScenario(
-                    source=scenario.source,
-                    anchor=scenario.anchor,
-                    reason=scenario.reason,
-                    priority=scenario.priority,
-                    depth=scenario.depth,
-                    unit_ids=list(effective_paths),
-                    cached=bool(cached),
-                )
-            )
-            if cached:
-                full_packages += 1
-                covered_paths.update(effective_paths)
-
-            frontier.mark_explored(scenario.id, covered_files=effective_paths)
-            governor.iteration_done(1)
-
-            # Transition from breadth-first to depth phase when coverage improves
-            if not _phase_breadth_done and frontier.coverage_ratio >= _BREADTH_COVERAGE_THRESHOLD:
-                _phase_breadth_done = True
-                frontier.set_effective_max_depth(ecfg.max_exploration_depth)
-
-            # Short adaptive sleep: none if frontier has items, brief pause if empty
-            if frontier.pending_count == 0 and governor.mode != PredictionGovernor.Mode.BUDGET:
+            # Short adaptive sleep when both frontier and in-flight are empty.
+            if frontier.pending_count == 0 and not in_flight and governor.mode != PredictionGovernor.Mode.BUDGET:
                 await asyncio.sleep(governor.inter_iteration_delay)
+
+        # Drain any remaining in-flight tasks so their state mutations finish
+        # before we tear down the cycle. Cancelled tasks surface cleanly.
+        if in_flight:
+            results = await asyncio.gather(*in_flight, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                    raise result
+
+        full_packages = full_packages_box[0]
 
         retention_seconds = max(3600, int(self.config.max_age_seconds))
         await self.store.purge_old_signal_events(max_age_seconds=retention_seconds)
@@ -863,6 +964,37 @@ class VanerEngine:
 
     def get_last_decision_record(self) -> DecisionRecord | None:
         return self._last_decision_record
+
+    @staticmethod
+    def _compute_effective_concurrency(ecfg: ExplorationConfig, compute: ComputeConfig) -> int:
+        """Decide how many exploration LLM calls to run in parallel this cycle.
+
+        Returns a value in ``[1, compute.exploration_concurrency]``. When
+        ``idle_only=False`` (always-on compute) returns the configured value.
+        When ``idle_only=True`` (the default) scales inversely with current
+        load so the daemon shares the machine with foreground work.
+
+        At load 0.0 returns the full configured concurrency; at load 0.9 returns
+        approximately 10% of configured (floor 1). The binary `idle_only` cutoff
+        already ran above this — so by the time we get here we're below the
+        threshold and can always make at least serial progress.
+
+        The ``ecfg`` argument is accepted but currently unused; kept in the
+        signature for symmetry with other helpers that take both configs and to
+        leave room for an exploration-side override (e.g., per-endpoint parallel
+        budgets once multi-endpoint routing lands).
+        """
+        del ecfg  # reserved for future per-exploration overrides
+        base = max(1, int(compute.exploration_concurrency))
+        if not compute.idle_only:
+            return base
+        cpu_load = _cpu_load_fraction()
+        gpu_load = _gpu_load_fraction()
+        load = max(cpu_load, gpu_load)
+        # Clamp load to [0, 1] before scaling.
+        load = max(0.0, min(1.0, load))
+        scaled = int(round(base * (1.0 - load)))
+        return max(1, min(base, scaled))
 
     @staticmethod
     def _should_use_llm(scenario: ExplorationScenario, ecfg: ExplorationConfig) -> bool:
@@ -2321,6 +2453,28 @@ def _build_exploration_llm(ecfg: ExplorationConfig) -> LLMCallable | None:
     import logging as _logging
 
     _log = _logging.getLogger(__name__)
+
+    # Multi-endpoint pool path (PR #135 P5). When the config provides a list
+    # of endpoints, build an ExplorationEndpointPool that round-robins across
+    # them with per-endpoint health tracking. The pool implements the same
+    # LLMCallable protocol the engine already consumes — the rest of the
+    # pipeline is unchanged.
+    if ecfg.endpoints:
+        try:
+            from vaner.clients.endpoint_pool import ExplorationEndpointPool
+
+            pool = ExplorationEndpointPool.from_endpoints(list(ecfg.endpoints))
+            _log.info(
+                "Vaner exploration LLM: multi-endpoint pool size=%d entries=%s",
+                len(ecfg.endpoints),
+                [f"{e.url} ({e.model}, w={e.weight})" for e in ecfg.endpoints],
+            )
+            return pool
+        except ValueError as exc:
+            _log.warning(
+                "Vaner: failed to build exploration endpoint pool (%s); falling back to single-endpoint config.",
+                exc,
+            )
 
     backend = ecfg.exploration_backend  # "auto", "ollama", "openai"
     endpoint = ecfg.exploration_endpoint.strip()

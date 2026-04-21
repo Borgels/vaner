@@ -92,6 +92,10 @@ The plugin targets the v1.0 MCP tool surface introduced in Vaner **0.6.0**. Olde
 curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash -s -- --yes
 ```
 
+## Ponder throughput
+
+The daemon's exploration loop runs scenarios in parallel up to `compute.exploration_concurrency` (default `4`). For guidance on tuning ponder throughput — ollama `OLLAMA_NUM_PARALLEL`, multi-GPU setups, multi-endpoint pools — see [docs/performance.md](performance.md).
+
 ## Troubleshooting
 
 - **`/mcp` does not show a `vaner` server.** Confirm `command -v vaner` works in the same shell you launched Claude Code from. The plugin's `.mcp.json` calls `vaner` directly; if it isn't on PATH, the server cannot start and the SessionStart hook will have told you so at session start.
