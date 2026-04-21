@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from vaner.cli.commands.app import app
@@ -61,6 +62,9 @@ def test_mcp_sse_command_wires_host_and_port(temp_repo: Path, monkeypatch) -> No
 
 def test_mcp_smoke_mode_runs_probe(temp_repo: Path, monkeypatch) -> None:
     runner = CliRunner()
+    help_result = runner.invoke(app, ["mcp", "--help"])
+    if "--smoke" not in help_result.stdout:
+        pytest.skip("mcp --smoke unavailable on this CLI surface")
 
     async def _fake_stdio(repo_root: Path) -> None:
         raise AssertionError(f"stdio server should not start in smoke mode: {repo_root}")

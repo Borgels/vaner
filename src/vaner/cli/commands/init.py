@@ -418,6 +418,16 @@ def _prompt_compute() -> str:
     return {"1": "background", "2": "balanced", "3": "dedicated"}.get(choice, "background")
 
 
+def interactive_backend_choice() -> str:
+    """Compatibility wrapper consumed by the CLI app module."""
+    return _prompt_backend()
+
+
+def interactive_compute_choice() -> str:
+    """Compatibility wrapper consumed by the CLI app module."""
+    return _prompt_compute()
+
+
 def _client_id_to_detected(detected: list[DetectedClient]) -> dict[str, DetectedClient]:
     return {item.spec.id: item for item in detected}
 
