@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -148,6 +149,8 @@ def _toml_literal(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, (list, dict)):
+        return json.dumps(value)
     escaped = str(value).replace('"', '\\"')
     return f'"{escaped}"'
 
