@@ -11,3 +11,5 @@ Operational patterns:
 3. **Feedback at the end.** When the task is done (or abandoned), call `vaner.feedback` with the `resolution_id` and one of `useful` / `partial` / `wrong` / `irrelevant`, optionally with `correction`, `preferred_items`, `rejected_items`, and the `skill` label. This reinforces Vaner's scenario ranking for future work.
 
 Treat Vaner as a supplement, not a replacement for reading code. Skip it entirely for one-line changes, pure reformatting, or questions already answered in the open conversation.
+
+Your MCP client may prefix these tool names. For example, Claude Code exposes plugin MCP tools as `mcp__plugin_<plugin>_<server>__<tool>` — so `vaner.resolve` appears as `mcp__plugin_vaner_vaner__vaner.resolve`. The conceptual names in this document map directly to whatever prefix your client uses; no translation is needed when you reason about them, only when you call them.
