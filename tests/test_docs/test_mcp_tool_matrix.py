@@ -84,3 +84,13 @@ def test_source_and_docs_do_not_reference_removed_tools() -> None:
             if pattern.search(text):
                 violations.append(f"{path}: {pattern.pattern}")
     assert violations == []
+
+
+def test_readme_init_flags_match_current_cli_surface() -> None:
+    root = Path(__file__).resolve().parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+
+    assert "--clients" not in readme
+    assert "--accept-cloud-costs" not in readme
+    assert "--no-mcp" in readme
+    assert "--interactive/--no-interactive" in readme

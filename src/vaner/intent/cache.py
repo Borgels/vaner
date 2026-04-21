@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from pydantic import ValidationError
 from vaner.intent.scoring_policy import ScoringPolicy
 from vaner.models.context import ContextPackage
 from vaner.store.artefacts import ArtefactStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -63,7 +66,12 @@ class TieredPredictionCache:
     async def _embed_prompt(self, prompt: str) -> list[float] | None:
         if self.embed is None:
             return None
-        vectors = await self.embed([prompt])
+        try:
+            vectors = await self.embed([prompt])
+        except Exception as exc:
+            logger.warning("Vaner cache embeddings unavailable (%s); falling back to lexical matching.", exc)
+            self.embed = None
+            return None
         if not vectors:
             return None
         vector = vectors[0]

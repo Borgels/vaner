@@ -74,6 +74,12 @@ BACKEND_NOT_CONFIGURED_MESSAGE = (
 )
 
 _SUGGESTION_CACHE_CAPACITY = 128
+_MANAGED_PATH_MARKERS = (
+    ".cursor/mcp.json",
+    ".cursor/skills/vaner/vaner-feedback/skill.md",
+    ".claude/skills/vaner/vaner-feedback/skill.md",
+)
+_MANAGED_QUERY_HINTS = {"mcp", "cursor", "claude", "skill", "skills", "feedback", "config", "prompt"}
 
 
 def _make_text(content: str) -> list[TextContent]:
@@ -132,6 +138,33 @@ def _scenario_to_summary(scenario: Scenario) -> dict[str, Any]:
 def _build_decision_id(prompt: str) -> str:
     digest = hashlib.sha256(f"{prompt}-{time.time_ns()}".encode()).hexdigest()[:16]
     return f"dec_{digest}"
+
+
+def _normalize_path(value: str) -> str:
+    return value.replace("\\", "/").strip().lower()
+
+
+def _scenario_paths(scenario: Scenario) -> set[str]:
+    paths = {_normalize_path(entity) for entity in scenario.entities if entity}
+    paths.update(_normalize_path(ref.source_path) for ref in scenario.evidence if ref.source_path)
+    return {path for path in paths if path}
+
+
+def _query_targets_managed_files(query_tokens: set[str]) -> bool:
+    return bool(query_tokens & _MANAGED_QUERY_HINTS)
+
+
+def _is_managed_path(path: str) -> bool:
+    normalized = _normalize_path(path)
+    return any(normalized.endswith(marker) for marker in _MANAGED_PATH_MARKERS)
+
+
+def _scenario_penalty(scenario: Scenario, query_tokens: set[str]) -> float:
+    if _query_targets_managed_files(query_tokens):
+        return 0.0
+    if any(_is_managed_path(path) for path in _scenario_paths(scenario)):
+        return 0.35
+    return 0.0
 
 
 def build_server(repo_root: Path) -> Server:
@@ -350,7 +383,10 @@ def build_server(repo_root: Path) -> Server:
             ranked: list[dict[str, Any]] = []
             for scenario in scenarios:
                 overlap = len(query_tokens & set(tok.lower() for tok in scenario.entities))
-                confidence = min(0.98, 0.25 + (overlap * 0.15) + (scenario.score * 0.45))
+                confidence = min(
+                    0.98,
+                    max(0.0, 0.25 + (overlap * 0.15) + (scenario.score * 0.45) - _scenario_penalty(scenario, query_tokens)),
+                )
                 label = f"{scenario.kind} / {' '.join(scenario.entities[:4]) or scenario.id}"
                 suggestion_id = f"sug_{hashlib.sha1((query + scenario.id).encode('utf-8')).hexdigest()[:8]}"
                 item = {
@@ -388,11 +424,14 @@ def build_server(repo_root: Path) -> Server:
             scenarios = await scenario_store.list_top(limit=25)
             candidate: Scenario | None = None
             best_overlap = -1
+            best_rank = float("-inf")
             for scenario in scenarios:
                 overlap = len(query_tokens & set(tok.lower() for tok in scenario.entities))
-                if overlap > best_overlap or (overlap == best_overlap and candidate and scenario.score > candidate.score):
+                rank = scenario.score - _scenario_penalty(scenario, query_tokens)
+                if overlap > best_overlap or (overlap == best_overlap and rank > best_rank):
                     candidate = scenario
                     best_overlap = overlap
+                    best_rank = rank
             if candidate is None:
                 await aprecompute(repo_root, config=config)
                 scenarios = await scenario_store.list_top(limit=25)
@@ -715,13 +754,17 @@ def build_server(repo_root: Path) -> Server:
                 score = len(query_tokens & set(tok.lower() for tok in scenario.entities))
                 if score <= 0 and mode == "lexical":
                     continue
+                final_score = round(
+                    max(0.0, min(1.0, 0.2 + score * 0.2 + scenario.score * 0.5 - _scenario_penalty(scenario, query_tokens))),
+                    4,
+                )
                 results.append(
                     {
                         "id": f"res_{idx}",
                         "source": scenario.id,
                         "kind": "file",
                         "snippet": scenario.prepared_context[:160],
-                        "score": round(min(1.0, 0.2 + score * 0.2 + scenario.score * 0.5), 4),
+                        "score": final_score,
                     }
                 )
             results.sort(key=lambda item: float(item["score"]), reverse=True)

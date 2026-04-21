@@ -11,6 +11,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - _TBD_
 
+## [0.6.2] - 2026-04-21
+
+### Fixed
+
+- Fixed version-pinned installer fallback so `VANER_VERSION=<tag>` can fall back to the matching GitHub tag when PyPI does not have that release yet.
+- Fixed the default install/query path to degrade gracefully when `sentence-transformers` is unavailable instead of crashing at first query-time embedding use.
+- Fixed `vaner uninstall` so repo-local Cursor MCP wiring is removed correctly when `vaner init` created `.cursor/mcp.json`.
+- Fixed managed feedback skill content drift by shipping a single current `vaner.feedback`-based skill template instead of duplicated legacy tool instructions.
+- Improved MCP v1 `suggest` / `search` ranking in fresh repos so Vaner-managed config/skill files are downranked unless the query explicitly targets them.
+
+### Added
+
+- Added regression tests for pinned installer fallback, uninstall symmetry, managed skill content, graceful missing-embedding fallback, and MCP ranking around Vaner-managed files.
+
 ## [0.6.1] - 2026-04-21
 
 ### Fixed
