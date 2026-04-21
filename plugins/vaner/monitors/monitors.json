@@ -1,0 +1,8 @@
+[
+  {
+    "name": "vaner-memory-log",
+    "command": "if [ -f .vaner/memory/log.md ]; then tail -n 0 -F .vaner/memory/log.md; else echo 'vaner-monitor: .vaner/memory/log.md not present yet; monitor will idle until daemon starts'; tail -f /dev/null; fi",
+    "description": "Vaner scenario events (resolve, expand, feedback, promotion/demotion) — one line per MCP call, surfaced as session notifications so the model stays aware of fresh scenario state.",
+    "when": "on-skill-invoke:next"
+  }
+]

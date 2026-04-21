@@ -27,19 +27,30 @@ if command -v vaner >/dev/null 2>&1; then
     # Exit silently rather than disrupting the session.
     exit 0
   fi
-  PRIMER_FILE="${PRIMER_FILE}" python3 - <<'PY'
+
+  # Probe the cockpit. If the daemon is up, the model can point the user at the
+  # live pipeline view and reference scenario counts without extra tool calls.
+  # 1s timeout keeps SessionStart snappy even when the daemon is down.
+  cockpit_hint=""
+  if command -v curl >/dev/null 2>&1 && curl -sf -m 1 -o /dev/null http://127.0.0.1:8473/status 2>/dev/null; then
+    cockpit_hint=$'\n\nLive Vaner state is available at http://127.0.0.1:8473/ (cockpit is up). Mention this to the user if they ask about prediction state, scenario queue depth, or want to see the live pipeline view.'
+  fi
+
+  PRIMER_FILE="${PRIMER_FILE}" COCKPIT_HINT="${cockpit_hint}" python3 - <<'PY'
 import json
 import os
 import sys
 
 primer = open(os.environ["PRIMER_FILE"], encoding="utf-8").read().strip()
+cockpit_hint = os.environ.get("COCKPIT_HINT", "")
+additional_context = primer + cockpit_hint
 
 payload = {
     "continue": True,
     "suppressOutput": True,
     "hookSpecificOutput": {
         "hookEventName": "SessionStart",
-        "additionalContext": primer,
+        "additionalContext": additional_context,
     },
 }
 
