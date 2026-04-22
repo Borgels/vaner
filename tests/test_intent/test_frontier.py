@@ -165,6 +165,67 @@ def test_max_depth_rejection() -> None:
     assert not f.push(deep)
 
 
+def test_depth_bonus_allows_exceeding_base_depth_cap() -> None:
+    """High-priority lineages can exceed max_depth by their depth_bonus."""
+    f = ExplorationFrontier(max_depth=2, min_priority=0.01)
+    # depth=3 exceeds max_depth=2, but depth_bonus=2 raises the admission
+    # cap to 4, so this one is admitted.
+    deep = ExplorationScenario(
+        id=file_set_fingerprint(["deep.py"]),
+        file_paths=["deep.py"],
+        anchor="anc",
+        source="llm_branch",
+        priority=0.8,
+        depth=3,
+        reason="drill",
+        depth_bonus=2,
+    )
+    assert f.push(deep)
+    # depth=5 with bonus=2 (cap=4) should still be rejected — bonus is bounded.
+    too_deep = ExplorationScenario(
+        id=file_set_fingerprint(["toodeep.py"]),
+        file_paths=["toodeep.py"],
+        anchor="anc",
+        source="llm_branch",
+        priority=0.8,
+        depth=5,
+        reason="drill",
+        depth_bonus=2,
+    )
+    assert not f.push(too_deep)
+
+
+def test_depth_bonus_preserved_on_priority_upgrade() -> None:
+    """Pushing a higher-priority variant must not erase an existing bonus."""
+    f = ExplorationFrontier(max_depth=2, min_priority=0.01)
+    original = ExplorationScenario(
+        id=file_set_fingerprint(["same.py"]),
+        file_paths=["same.py"],
+        anchor="anc",
+        source="llm_branch",
+        priority=0.4,
+        depth=1,
+        reason="first",
+        depth_bonus=2,
+    )
+    assert f.push(original)
+    upgrade = ExplorationScenario(
+        id=file_set_fingerprint(["same.py"]),
+        file_paths=["same.py"],
+        anchor="anc",
+        source="llm_branch",
+        priority=0.9,
+        depth=1,
+        reason="second",
+        depth_bonus=0,  # deliberately lower
+    )
+    f.push(upgrade)
+    popped = f.pop()
+    assert popped is not None
+    # Pending entry should have retained the larger bonus.
+    assert popped.depth_bonus == 2
+
+
 def test_min_priority_rejection() -> None:
     f = ExplorationFrontier(min_priority=0.5)
     low = _scenario(["a.py"], priority=0.1)

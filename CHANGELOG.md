@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+#### Deep-drill on high-priority predictions
+
+- Added a high-priority deep-drill pathway to the exploration frontier. Scenarios whose *effective* priority clears `exploration.deep_drill_priority_threshold` (default `0.60`) are now treated as high-confidence next-prompt predictions and get more compute invested:
+  - `_explore_scenario_with_llm()` receives a `high_priority` flag and widens the LLM prompt to accept up to `exploration.deep_drill_max_followons` follow-on branches (default `5` vs. the original hard-coded `3`). The prompt is also tagged `[HIGH-PRIORITY]` so the model knows to invest effort in surfacing second-order context (callers, callees, tests, configuration) rather than stopping at breadth.
+  - Children of high-priority parents inherit a decrementing `depth_bonus` budget (default `2`). The frontier's admission gate now allows `depth > max_exploration_depth` by up to `depth_bonus` hops, so a promising lineage can drill past the base depth cap without raising the cap for the whole frontier. The bonus shrinks by 1 per LLM hop so the drill-down is bounded.
+  - High-priority branches use a softer `deep_drill_branch_decay` (default `0.88`) instead of the general `branch_priority_decay` (default `0.70`), so the deep line keeps ranking near the top of the heap instead of getting crowded out by fresh shallow seeds.
+- Fixed a latent bug in `_explore_scenario_with_llm`: the `if not callable(self.llm)` guard previously returned a 2-tuple where the declared return type expected a 4-tuple, which would have raised at the call site. Now returns `([], [], "", 0.0)`.
+
 ## [0.7.0] - 2026-04-22
 
 ### Added
