@@ -209,6 +209,43 @@ class ExplorationConfig(BaseModel):
     """
 
     # ------------------------------------------------------------------
+    # Deep-drill on high-priority predictions
+    # ------------------------------------------------------------------
+    # When a scenario's *effective* priority exceeds ``deep_drill_priority_threshold``
+    # Vaner treats it as a high-confidence next-prompt prediction and invests
+    # extra compute: more LLM follow-on branches, a depth-cap bonus that lets
+    # the lineage exceed ``max_exploration_depth``, and a softer per-hop decay
+    # so the deep line stays competitive in the frontier. Children inherit a
+    # decrementing bonus budget, so the drill-down is bounded.
+
+    deep_drill_priority_threshold: float = 0.60
+    """Effective-priority threshold (post source/layer multipliers) above
+    which a scenario is treated as a high-priority prediction worth deeper
+    exploration. ``1.01`` effectively disables deep-drill.
+    """
+
+    deep_drill_depth_bonus: int = 2
+    """Extra depth a high-priority lineage may explore beyond
+    ``max_exploration_depth``. The bonus decrements by 1 each LLM hop, so a
+    value of 2 lets one extra generation branch at full budget and one at
+    half budget before the frontier's regular depth cap reasserts.
+    """
+
+    deep_drill_max_followons: int = 5
+    """Max follow-on branches the LLM is allowed to propose for a
+    high-priority scenario (vs. the default 3 for normal scenarios). The LLM
+    prompt is widened accordingly; the frontier's admission gate still
+    dedups and filters.
+    """
+
+    deep_drill_branch_decay: float = 0.88
+    """Priority decay applied when pushing a follow-on branch from a
+    high-priority parent. The default (``0.88``) is gentler than the general
+    ``branch_priority_decay`` (``0.70``), so deep-drill lineages stay near
+    the top of the frontier instead of getting crowded out by fresh seeds.
+    """
+
+    # ------------------------------------------------------------------
     # Exploration LLM endpoint (separate from the user-facing backend)
     # ------------------------------------------------------------------
 
