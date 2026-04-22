@@ -449,7 +449,6 @@ class ArtefactStore:
                 if "last_accessed_at" not in prediction_columns:
                     await db.execute("ALTER TABLE prediction_cache ADD COLUMN last_accessed_at REAL NOT NULL DEFAULT 0")
                 await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (7)")
-                current_schema_version = 7
 
             # FTS5 index on artefact source_path + content for sub-millisecond
             # candidate retrieval; the full scorer then re-ranks the top-N hits.
