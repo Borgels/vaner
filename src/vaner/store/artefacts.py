@@ -435,6 +435,26 @@ class ArtefactStore:
                 await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (6)")
                 current_schema_version = 6
 
+            # v7: add access tracking to prediction_cache so unused entries
+            # can be decayed out of the store before they expire naturally.
+            # ``access_count`` counts successful cache matches (any tier); a
+            # value of 0 at prune time means Vaner spent compute precomputing
+            # this entry and the developer never benefitted from it, so it
+            # is a prime candidate for removal.
+            if current_schema_version < 7:
+                async with db.execute("PRAGMA table_info(prediction_cache)") as cursor:
+                    prediction_columns = [row[1] for row in await cursor.fetchall()]
+                if "access_count" not in prediction_columns:
+                    await db.execute(
+                        "ALTER TABLE prediction_cache ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "last_accessed_at" not in prediction_columns:
+                    await db.execute(
+                        "ALTER TABLE prediction_cache ADD COLUMN last_accessed_at REAL NOT NULL DEFAULT 0"
+                    )
+                await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (7)")
+                current_schema_version = 7
+
             # FTS5 index on artefact source_path + content for sub-millisecond
             # candidate retrieval; the full scorer then re-ranks the top-N hits.
             await db.execute(
@@ -1068,8 +1088,11 @@ class ArtefactStore:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO prediction_cache(cache_key, prompt_hint, package_json, enrichment_json, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO prediction_cache(
+                    cache_key, prompt_hint, package_json, enrichment_json,
+                    created_at, expires_at, access_count, last_accessed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
                 ON CONFLICT(cache_key) DO UPDATE SET
                     prompt_hint=excluded.prompt_hint,
                     package_json=excluded.package_json,
@@ -1088,13 +1111,74 @@ class ArtefactStore:
             )
             await db.commit()
 
+    async def touch_prediction_cache(self, cache_key: str) -> None:
+        """Bump access_count + last_accessed_at for a cache entry.
+
+        Called from ``TieredPredictionCache.match`` whenever an entry is
+        selected as the best match. Access tracking is what lets the unused-
+        decay prune distinguish "never consulted" entries (candidates for
+        removal) from "actively useful" entries (worth extending).
+        """
+        if not cache_key:
+            return
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE prediction_cache
+                   SET access_count = access_count + 1,
+                       last_accessed_at = ?
+                 WHERE cache_key = ?
+                """,
+                (now, cache_key),
+            )
+            await db.commit()
+
+    async def purge_unused_prediction_cache(
+        self,
+        *,
+        max_age_seconds_without_access: float,
+        min_access_count_to_protect: int = 1,
+    ) -> int:
+        """Delete cache entries that look unlikely to be needed.
+
+        An entry is considered unused when:
+
+        - its ``access_count`` is strictly below ``min_access_count_to_protect``
+          (so Vaner precomputed it and the developer never consumed it), **and**
+        - it has been sitting idle — defined as the larger of ``created_at`` and
+          ``last_accessed_at`` — for longer than ``max_age_seconds_without_access``.
+
+        This is a *decay* pass complementary to
+        ``purge_expired_prediction_cache``: expired entries are dropped because
+        their TTL elapsed, these are dropped because nothing asked for them,
+        which usually means the prediction got unlikely over time and Vaner
+        should reclaim the slot for something more promising.
+        """
+        if max_age_seconds_without_access <= 0.0:
+            return 0
+        now = time.time()
+        cutoff = now - float(max_age_seconds_without_access)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                DELETE FROM prediction_cache
+                 WHERE access_count < ?
+                   AND MAX(COALESCE(last_accessed_at, 0), created_at) < ?
+                """,
+                (int(min_access_count_to_protect), cutoff),
+            )
+            await db.commit()
+            return cursor.rowcount
+
     async def list_prediction_cache(self, *, include_expired: bool = False, limit: int = 200) -> list[dict[str, object]]:
         now = time.time()
         async with aiosqlite.connect(self.db_path) as db:
             if include_expired:
                 cursor = await db.execute(
                     """
-                    SELECT cache_key, prompt_hint, package_json, enrichment_json, created_at, expires_at
+                    SELECT cache_key, prompt_hint, package_json, enrichment_json,
+                           created_at, expires_at, access_count, last_accessed_at
                     FROM prediction_cache
                     ORDER BY created_at DESC
                     LIMIT ?
@@ -1104,7 +1188,8 @@ class ArtefactStore:
             else:
                 cursor = await db.execute(
                     """
-                    SELECT cache_key, prompt_hint, package_json, enrichment_json, created_at, expires_at
+                    SELECT cache_key, prompt_hint, package_json, enrichment_json,
+                           created_at, expires_at, access_count, last_accessed_at
                     FROM prediction_cache
                     WHERE expires_at >= ?
                     ORDER BY created_at DESC
@@ -1121,6 +1206,8 @@ class ArtefactStore:
                 "enrichment": json.loads(row[3]),
                 "created_at": row[4],
                 "expires_at": row[5],
+                "access_count": int(row[6] or 0),
+                "last_accessed_at": float(row[7] or 0.0),
             }
             for row in rows
         ]

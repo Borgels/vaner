@@ -216,12 +216,23 @@ class TieredPredictionCache:
             tier = "warm_start"
         else:
             tier = "cold_miss" if package is None else "warm_start"
+        cache_key = str(best_record.get("cache_key") or "")
+        # Bump access_count + last_accessed_at for anything that counts as a
+        # real consumption (warm_start or better). A pure cold_miss on a
+        # non-matching candidate shouldn't revive it; only entries Vaner
+        # actually returned to the caller should be protected from the
+        # unused-decay prune.
+        if cache_key and tier != "cold_miss":
+            try:
+                await self.store.touch_prediction_cache(cache_key)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Vaner cache touch failed (%s); skipping access bump.", exc)
         return CacheMatchResult(
             tier=tier,
             similarity=best_similarity,
             package=package,
             enrichment=dict(best_record.get("enrichment") or {}),
-            cache_key=str(best_record.get("cache_key") or ""),
+            cache_key=cache_key,
         )
 
     async def store_entry(

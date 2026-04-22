@@ -7,6 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+#### Activity-timing aware cycle budget
+
+- Added `ActivityTimingModel` (`src/vaner/intent/timing.py`) — an EMA-based estimator of inter-prompt cadence seeded from `query_history` timestamps and live-updated every time `VanerEngine.query()` is called. The model distinguishes "active session" cadence from session boundaries (gaps longer than `active_session_gap_seconds`, default 3 min, are treated as AFK and excluded from the EMA so one overnight break doesn't poison the estimate).
+- Wired the timing model into `VanerEngine.precompute_cycle`: when `compute.adaptive_cycle_budget = true` (default), the cycle deadline now shrinks to roughly `adaptive_cycle_utilisation × estimated_seconds_until_next_prompt` during active sessions. When the user is idle the budget expands back up to `compute.max_cycle_seconds`. The static `max_cycle_seconds` cap remains the hard upper bound — the adaptive model only ever *shortens* the cycle, so existing operators retain their safety net.
+- New config knobs: `ComputeConfig.adaptive_cycle_budget`, `adaptive_cycle_min_seconds`, `adaptive_cycle_utilisation`.
+
+#### Unused-prediction decay
+
+- Added access tracking to `prediction_cache` (schema v7): new `access_count` + `last_accessed_at` columns updated by `ArtefactStore.touch_prediction_cache()` whenever `TieredPredictionCache.match()` returns an entry above cold-miss tier.
+- Added `ArtefactStore.purge_unused_prediction_cache(max_age_seconds_without_access, min_access_count_to_protect)` and wired it into the end-of-cycle cleanup. Entries that Vaner precomputed but the developer never consumed within `exploration.unused_cache_max_age_seconds` (default 30 min) are now removed independently of TTL. Entries with at least one real cache hit are protected regardless of age. Set the config field to `0.0` to fall back to TTL-only behavior.
+
+#### Predicted-response precompute (opt-in)
+
+- Added `VanerEngine._precompute_predicted_responses()` and an opt-in gate (`exploration.predicted_response_enabled`, default `false`). When enabled and the cycle has budget remaining, Vaner picks the top validated prompt macros (`use_count ≥ exploration.predicted_response_min_macro_use_count`, default 3) and spends dedicated LLM calls to draft a short response per macro. The draft is stashed in the cache enrichment as `predicted_response` alongside the normal context package, so agents consuming Vaner can surface a ready-made answer the moment the expected prompt arrives.
+- New config knobs: `exploration.predicted_response_enabled`, `predicted_response_min_macro_use_count`, `predicted_response_max_per_cycle` (default 1) — the per-cycle cap keeps the feature from starving the exploration loop.
+
 ## [0.7.0] - 2026-04-22
 
 ### Added

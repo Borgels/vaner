@@ -117,6 +117,31 @@ class ComputeConfig(BaseModel):
     never ponder for more than, say, 30 minutes can set ``30`` here.
     """
 
+    adaptive_cycle_budget: bool = True
+    """Let Vaner sub-cap each precompute cycle by the estimated time until
+    the next user prompt.
+
+    When enabled (default) the engine consults an EMA of inter-prompt gaps
+    and shrinks the effective cycle deadline so one exploration phase
+    finishes before the next prompt arrives. During long idle periods the
+    budget expands back up to ``max_cycle_seconds``. The static cap still
+    applies as a hard upper bound — the adaptive model only ever *shortens*
+    the cycle during active sessions.
+    """
+
+    adaptive_cycle_min_seconds: float = 5.0
+    """Floor for the adaptive cycle budget. A value of 5.0 guarantees at
+    least one LLM round-trip and a cache write even when the user is
+    prompting very rapidly.
+    """
+
+    adaptive_cycle_utilisation: float = 0.8
+    """Fraction of the estimated next-prompt ETA that Vaner is willing to
+    spend pondering. ``0.8`` leaves headroom to finish writing artefacts /
+    cache entries before the user arrives. Raise toward ``1.0`` for more
+    aggressive speculation; lower for safer margins.
+    """
+
 
 class IntentConfig(BaseModel):
     enabled: bool = True
@@ -288,6 +313,48 @@ class ExplorationConfig(BaseModel):
 
     embedding_device: str = "cpu"
     """Torch device for the embedding model (``"cpu"`` or ``"cuda"``)."""
+
+    # ------------------------------------------------------------------
+    # Unused-cache decay (cleanup of unlikely predictions)
+    # ------------------------------------------------------------------
+
+    unused_cache_max_age_seconds: float = 1800.0
+    """How long a precomputed cache entry is allowed to sit untouched before
+    it is purged, independent of its TTL.
+
+    Vaner precomputes a lot of speculative context. Some predictions get
+    *unlikely* over time — the developer never issued anything close, or
+    the cache entry competed with a sibling that matched first. Keeping
+    unused entries around pollutes future cache matching with stale prompt
+    hints and wastes store space. After this many seconds without a single
+    cache hit the entry is dropped regardless of TTL.
+
+    Set to ``0.0`` to disable the decay pass and rely solely on TTL
+    expiration. The default (30 minutes) leaves enough headroom for a user
+    who steps away briefly while still reclaiming slots aggressively in
+    long-lived daemons.
+    """
+
+    predicted_response_enabled: bool = False
+    """Experimental: when the top prompt-macro is validated (high
+    ``use_count`` and confidence) invest a dedicated LLM call to generate a
+    *draft response* for that macro and stash it in the cache enrichment as
+    ``predicted_response``. Agents consuming Vaner's context package may
+    surface the draft to the user the moment the expected prompt arrives.
+
+    Off by default because it amplifies LLM spend; opt in only on operators
+    who want Vaner to ponder *answers*, not just context.
+    """
+
+    predicted_response_min_macro_use_count: int = 3
+    """Minimum ``use_count`` on a prompt macro before Vaner is willing to
+    spend a predicted-response LLM call on it.
+    """
+
+    predicted_response_max_per_cycle: int = 1
+    """How many predicted-response drafts Vaner may generate per cycle.
+    Kept low by default — an opt-in budget rather than a free-for-all.
+    """
 
     @property
     def endpoint(self) -> str:
