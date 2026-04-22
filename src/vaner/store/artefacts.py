@@ -445,13 +445,9 @@ class ArtefactStore:
                 async with db.execute("PRAGMA table_info(prediction_cache)") as cursor:
                     prediction_columns = [row[1] for row in await cursor.fetchall()]
                 if "access_count" not in prediction_columns:
-                    await db.execute(
-                        "ALTER TABLE prediction_cache ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0"
-                    )
+                    await db.execute("ALTER TABLE prediction_cache ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0")
                 if "last_accessed_at" not in prediction_columns:
-                    await db.execute(
-                        "ALTER TABLE prediction_cache ADD COLUMN last_accessed_at REAL NOT NULL DEFAULT 0"
-                    )
+                    await db.execute("ALTER TABLE prediction_cache ADD COLUMN last_accessed_at REAL NOT NULL DEFAULT 0")
                 await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (7)")
                 current_schema_version = 7
 
