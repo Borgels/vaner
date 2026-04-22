@@ -162,7 +162,7 @@ Vaner exposes context to your agent over [MCP](https://modelcontextprotocol.io/)
 
 | Client | One command |
 | --- | --- |
-| Claude Code (plugin, recommended) | `/plugin marketplace add Borgels/Vaner` then `/plugin install vaner@vaner` |
+| Claude Code (plugin, recommended) | `/plugin marketplace add Borgels/vaner` then `/plugin install vaner@vaner` |
 | Claude Code (manual MCP) | `claude mcp add --transport stdio --scope user vaner -- vaner mcp --path .` |
 | Codex CLI   | `codex mcp add vaner -- vaner mcp --path .` |
 | Cursor / VS Code / Zed / Windsurf / Continue / Claude Desktop / Cline / Roo | see [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp) |

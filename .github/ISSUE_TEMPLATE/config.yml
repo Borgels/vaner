@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Questions and usage help
-    url: https://github.com/Borgels/Vaner/discussions
+    url: https://github.com/Borgels/vaner/discussions
     about: Please use GitHub Discussions for questions and open-ended ideas.
   - name: Security disclosures
-    url: https://github.com/Borgels/Vaner/security/policy
+    url: https://github.com/Borgels/vaner/security/policy
     about: Please report vulnerabilities privately through our security policy.

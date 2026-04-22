@@ -22,7 +22,7 @@ Support scope by release phase:
 
 ## Questions and feature ideas
 
-- Open a GitHub Discussion in the `Borgels/Vaner` repository.
+- Open a GitHub Discussion in the `Borgels/vaner` repository.
 
 ## Bug reports
 

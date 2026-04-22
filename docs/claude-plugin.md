@@ -14,7 +14,7 @@ Vaner ships a supported [Claude Code plugin](https://code.claude.com/docs/en/plu
 ## Install
 
 ```text
-/plugin marketplace add Borgels/Vaner
+/plugin marketplace add Borgels/vaner
 /plugin install vaner@vaner
 ```
 

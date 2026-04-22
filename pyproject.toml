@@ -64,9 +64,9 @@ all = [
 vaner = "vaner.cli.main:run"
 
 [project.urls]
-Homepage = "https://github.com/Borgels/Vaner"
-Repository = "https://github.com/Borgels/Vaner"
-Issues = "https://github.com/Borgels/Vaner/issues"
+Homepage = "https://github.com/Borgels/vaner"
+Repository = "https://github.com/Borgels/vaner"
+Issues = "https://github.com/Borgels/vaner/issues"
 Documentation = "https://docs.vaner.ai"
 
 [tool.hatch.build.targets.wheel]

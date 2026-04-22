@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Vaner installer for macOS and Linux.
-# Canonical source: https://github.com/Borgels/Vaner/blob/main/scripts/install.sh
+# Canonical source: https://github.com/Borgels/vaner/blob/main/scripts/install.sh
 # Docs: https://docs.vaner.ai/getting-started
 #
 # Usage:
