@@ -808,6 +808,11 @@ class VanerEngine:
                     return
 
                 use_llm = self._should_use_llm(scenario, ecfg)
+                # High-priority scenarios (and anything already carrying a
+                # depth bonus from a high-priority ancestor) get wider LLM
+                # fan-out and softer per-hop decay so Vaner can invest more
+                # cycles on predictions it already scored as likely.
+                is_high_priority = scenario.priority >= ecfg.deep_drill_priority_threshold or scenario.depth_bonus > 0
                 llm_semantic_intent = ""
                 follow_on: list[dict[str, object]] = []
                 llm_confidence = 0.0
@@ -821,6 +826,7 @@ class VanerEngine:
                             recent_queries=recent_query_text,
                             covered_paths=covered_paths,
                             artefacts_by_key=artefacts_by_key,
+                            high_priority=is_high_priority,
                         )
                     except asyncio.CancelledError:
                         raise
@@ -850,6 +856,20 @@ class VanerEngine:
 
                 async with state_lock:
                     # Push follow-on branches (LLM confidence gates priority).
+                    # High-priority lineages use a softer decay and carry a
+                    # decrementing depth bonus so the deep line keeps ranking
+                    # near the top of the frontier instead of being crowded
+                    # out by fresh shallow seeds.
+                    if is_high_priority:
+                        branch_decay = ecfg.deep_drill_branch_decay
+                    else:
+                        branch_decay = self._scoring_policy.branch_priority_decay
+                    if scenario.priority >= ecfg.deep_drill_priority_threshold:
+                        # Fresh high-priority lineage: grant full bonus budget.
+                        child_depth_bonus = max(scenario.depth_bonus, ecfg.deep_drill_depth_bonus)
+                    else:
+                        # Inherited lineage: decrement the bonus each hop.
+                        child_depth_bonus = max(0, scenario.depth_bonus - 1)
                     for branch in follow_on:
                         branch_files_raw = branch.get("files", [])
                         if not isinstance(branch_files_raw, list):
@@ -859,7 +879,7 @@ class VanerEngine:
                             continue
                         branch_conf = float(branch.get("confidence", llm_confidence or 0.5))
                         branch_conf = max(0.1, min(1.0, branch_conf))
-                        branch_priority = scenario.priority * self._scoring_policy.branch_priority_decay * branch_conf
+                        branch_priority = scenario.priority * branch_decay * branch_conf
                         branch_scenario = ExplorationScenario(
                             id=file_set_fingerprint(branch_files),
                             file_paths=branch_files,
@@ -870,6 +890,7 @@ class VanerEngine:
                             parent_id=scenario.id,
                             reason=str(branch.get("reason", "")),
                             layer="operational",
+                            depth_bonus=child_depth_bonus,
                         )
                         frontier.push(branch_scenario)
 
@@ -1014,6 +1035,7 @@ class VanerEngine:
         recent_queries: list[str],
         covered_paths: set[str],
         artefacts_by_key: dict[str, object],
+        high_priority: bool = False,
     ) -> tuple[list[str], list[dict[str, object]], str, float]:
         """Send a scenario to the LLM for enrichment and branch proposals.
 
@@ -1034,7 +1056,7 @@ class VanerEngine:
         from vaner.intent.reasoner import _as_str_list
 
         if not callable(self.llm):
-            return [], []
+            return [], [], "", 0.0
 
         # Build brief artefact summaries for the scenario's files
         file_summaries: list[str] = []
@@ -1055,8 +1077,28 @@ class VanerEngine:
         uncovered = [p for p in available_paths if p not in covered_paths]
         available_hint = "\n".join(uncovered[:50]) or "none"
 
+        ecfg = self.config.exploration
+        if high_priority:
+            max_follow_on = max(3, int(ecfg.deep_drill_max_followons))
+            follow_on_guidance = (
+                f"2. THIS IS A HIGH-CONFIDENCE NEXT-PROMPT PREDICTION. Invest effort and\n"
+                f"   suggest 0-{max_follow_on} ADJACENT scenarios worth exploring. Cover the\n"
+                "   second-order context the developer will likely need if this prediction\n"
+                "   lands (direct callers, callees, tests, configuration, cross-cutting\n"
+                "   concerns). Prefer higher-confidence branches over breadth-for-its-own-sake.\n"
+            )
+            priority_tag = " [HIGH-PRIORITY]"
+        else:
+            max_follow_on = 3
+            follow_on_guidance = (
+                "2. Suggest 0-3 ADJACENT scenarios worth exploring: file sets NOT in this\n"
+                "   scenario that the developer might need as a consequence. Only suggest\n"
+                "   scenarios you are confident have high value.\n"
+            )
+            priority_tag = ""
+
         prompt = (
-            "You are a code-context exploration engine. Evaluate this scenario and decide "
+            f"You are a code-context exploration engine.{priority_tag} Evaluate this scenario and decide "
             "which files are most relevant and what adjacent scenarios are worth exploring next.\n\n"
             f"Developer context:\n"
             f"- Recent queries:\n{recent_hint}\n"
@@ -1070,9 +1112,7 @@ class VanerEngine:
             "Tasks:\n"
             "1. Rank these files by likely relevance to the developer's next interaction.\n"
             "   Drop any that seem irrelevant given the developer's trajectory.\n"
-            "2. Suggest 0-3 ADJACENT scenarios worth exploring: file sets NOT in this\n"
-            "   scenario that the developer might need as a consequence. Only suggest\n"
-            "   scenarios you are confident have high value.\n"
+            f"{follow_on_guidance}"
             "3. Write a short semantic_intent (1-2 sentences) describing what developer\n"
             "   need this scenario addresses (e.g. 'authentication middleware, JWT validation').\n"
             "   This is used for matching future queries to this cached context.\n"
@@ -1132,7 +1172,7 @@ class VanerEngine:
         raw_follow_on = obj.get("follow_on", [])
         if not isinstance(raw_follow_on, list):
             raw_follow_on = []
-        for item in raw_follow_on[:3]:
+        for item in raw_follow_on[:max_follow_on]:
             if not isinstance(item, dict):
                 continue
             files = [p for p in _as_str_list(item.get("files", [])) if p in available_set]

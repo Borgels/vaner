@@ -106,6 +106,11 @@ class ExplorationScenario:
     parent_id: str | None = None  # which scenario spawned this one
     reason: str = ""  # why this scenario was proposed
     layer: str = "operational"  # strategic | tactical | operational
+    # Deep-drill support: extra depth budget inherited from a high-priority
+    # ancestor. When >0 the admission gate allows ``depth`` to exceed the
+    # frontier's configured ``max_depth`` by up to this many hops. Children
+    # decrement the bonus by 1 per LLM hop, so the drill-down is bounded.
+    depth_bonus: int = 0
 
     def is_trivial(self) -> bool:
         """True for cheap, structural graph-walk scenarios that skip the LLM."""
@@ -536,6 +541,7 @@ class ExplorationFrontier:
                     parent_id=scenario.parent_id,
                     reason=scenario.reason,
                     layer=scenario.layer,
+                    depth_bonus=max(existing.depth_bonus, scenario.depth_bonus),
                 )
                 self._pending[scenario.id] = upgraded
                 self._push_counter += 1
@@ -547,7 +553,11 @@ class ExplorationFrontier:
             return False  # was already pending
 
         effective_depth = getattr(self, "_effective_max_depth", self.max_depth)
-        if scenario.depth > effective_depth:
+        # High-priority lineages carry a bonus budget that raises the depth
+        # cap for that specific branch only. Admission still fails if the
+        # scenario depth exceeds cap + bonus, so the extension is bounded.
+        allowed_depth = effective_depth + max(0, scenario.depth_bonus)
+        if scenario.depth > allowed_depth:
             return False
 
         if effective_priority < self.min_priority:
@@ -573,6 +583,7 @@ class ExplorationFrontier:
             parent_id=scenario.parent_id,
             reason=scenario.reason,
             layer=scenario.layer,
+            depth_bonus=max(0, scenario.depth_bonus),
         )
         self._pending[scenario.id] = admitted_scenario
         self._pending_file_sets.append(file_set)
