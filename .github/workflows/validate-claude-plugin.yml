@@ -44,7 +44,7 @@ jobs:
           node-version: "20"
 
       - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code@latest
+        run: npm install -g @anthropic-ai/claude-code@2.1.117
 
       - name: Skill parity (defaults ↔ plugin)
         run: bash scripts/sync-plugin-skill.sh --check
