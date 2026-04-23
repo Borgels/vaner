@@ -1,0 +1,6 @@
+{
+  "next_prompt_top1_rate": 0.20,
+  "next_prompt_brier": 0.65,
+  "predictive_lead_seconds_avg": 0.50,
+  "budget_utilization": 0.50
+}

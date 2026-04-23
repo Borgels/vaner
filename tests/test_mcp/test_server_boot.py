@@ -18,8 +18,10 @@ def test_server_boot_initialize_lists_tools_and_status(temp_repo) -> None:
             await session.initialize()
             listed = await session.list_tools()
             names = [tool.name for tool in listed.tools]
-            assert len(names) == 10
+            assert len(names) == 12
             assert "vaner.status" in names
+            assert "vaner.predictions.active" in names
+            assert "vaner.predictions.adopt" in names
             status = await session.call_tool("vaner.status", {})
             assert json.loads(status.content[0].text)["ready"] is True
 

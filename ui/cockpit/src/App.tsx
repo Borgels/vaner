@@ -42,6 +42,7 @@ import type {
   LimitSettings,
   MCPSettings,
   ScenarioApiPayload,
+  StatusPayload,
   UIEvent,
   UIPackageState,
   UIPinnedFact,
@@ -106,6 +107,8 @@ function App() {
   const [decisions, setDecisions] = useState<DecisionRecordPayload[]>([])
   const [activePulses, setActivePulses] = useState<Set<string>>(new Set())
   const [bundleMismatch, setBundleMismatch] = useState(false)
+  const [predictionMetrics, setPredictionMetrics] = useState<StatusPayload['prediction_metrics'] | null>(null)
+  const [predictionCalibration, setPredictionCalibration] = useState<StatusPayload['prediction_calibration'] | null>(null)
 
   const mode = bootstrap.mode
 
@@ -178,6 +181,12 @@ function App() {
     }
     if (typeof payload.gateway_enabled === 'boolean') {
       setGatewayEnabled(payload.gateway_enabled)
+    }
+    if (payload.prediction_metrics) {
+      setPredictionMetrics(payload.prediction_metrics)
+    }
+    if (payload.prediction_calibration) {
+      setPredictionCalibration(payload.prediction_calibration)
     }
   }, [])
 
@@ -537,6 +546,8 @@ function App() {
             model={pipeline.model}
             scenarioCount={scenarios.length}
             pendingLlm={pipeline.model.pending.size}
+            predictionMetrics={predictionMetrics}
+            predictionCalibration={predictionCalibration}
           />
         }
       />

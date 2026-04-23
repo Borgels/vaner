@@ -46,6 +46,10 @@ export type PipelineStage =
   | 'artefacts'
   | 'scenarios'
   | 'decisions'
+  | 'prediction'
+  | 'calibration'
+  | 'draft'
+  | 'budget'
   | 'system'
 
 export interface UIEvent {
@@ -154,6 +158,35 @@ export interface StatusPayload {
     total: number
   }
   top_scenario?: string | null
+  prediction_metrics?: {
+    next_prompt_top1_rate?: number
+    next_prompt_top3_rate?: number
+    next_prompt_logloss?: number
+    next_prompt_brier?: number
+    draft_usefulness_rate?: number
+    budget_utilization?: number
+    predictive_lead_seconds_avg?: number
+    confidence_conditioned_utility?: number
+    bucket_budgets?: BucketBudgets
+  }
+  prediction_calibration?: Array<{
+    bucket: number
+    confidence_mid: number
+    count: number
+    accuracy: number
+  }>
+}
+
+export interface BucketBudgets {
+  exploit: BudgetBreakdown
+  hedge: BudgetBreakdown
+  invest: BudgetBreakdown
+  no_regret: BudgetBreakdown
+}
+
+export interface BudgetBreakdown {
+  allocated_ms: number
+  used_ms: number
 }
 
 export interface ImpactSummary {

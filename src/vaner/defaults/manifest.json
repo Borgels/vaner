@@ -1,1 +1,74 @@
-{}
+{
+  "schema_version": "1",
+  "min_reader_version": "0.7.0",
+  "groups": {
+    "behavior_priors": "behavior_priors/manifest.json",
+    "search_priors": "search_priors/manifest.json",
+    "policy_defaults": "policy_defaults/manifest.json"
+  },
+  "reasoning_models": {
+    "_doc": "Known-reasoning-model defaults consulted by the LLM adapters. Each entry lists a model-name prefix pattern (case-insensitive), the recommended reasoning_mode, and any provider-specific extra_body. User-supplied config always wins; this table is the fallback for first-run experience.",
+    "patterns": [
+      {
+        "match": "qwen3",
+        "reasoning_mode": "allowed",
+        "extra_body": {},
+        "notes": "Qwen3 emits 'Thinking Process:' preambles; the tolerant stripper handles them."
+      },
+      {
+        "match": "qwen3.5-",
+        "reasoning_mode": "allowed",
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": true}},
+        "notes": "Qwen3.5 base (dense) — thinking is opt-in via chat_template_kwargs."
+      },
+      {
+        "match": "qwen3.5-35b-a3b",
+        "reasoning_mode": "allowed",
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": true}},
+        "notes": "A3B reasoning MoE — thinking is enabled, engine captures the preamble via the structured client."
+      },
+      {
+        "match": "qwq",
+        "reasoning_mode": "allowed",
+        "extra_body": {},
+        "notes": "QwQ is reasoning-native; preambles show up verbatim."
+      },
+      {
+        "match": "deepseek-r1",
+        "reasoning_mode": "allowed",
+        "extra_body": {},
+        "notes": "DeepSeek R1 uses <think>…</think> blocks — stripper handles them."
+      },
+      {
+        "match": "deepseek-v3",
+        "reasoning_mode": "provider_default",
+        "extra_body": {},
+        "notes": "DeepSeek V3 is not a reasoning model by default; leave thinking off."
+      },
+      {
+        "match": "o1",
+        "reasoning_mode": "allowed",
+        "extra_body": {},
+        "notes": "OpenAI o1 hides thinking server-side; reasoning_mode=allowed is a no-op but honest."
+      },
+      {
+        "match": "gpt-5",
+        "reasoning_mode": "allowed",
+        "extra_body": {},
+        "notes": "gpt-5 reasoning is server-side; no stripping needed."
+      },
+      {
+        "match": "claude-opus",
+        "reasoning_mode": "allowed",
+        "extra_body": {},
+        "notes": "Claude can emit <thinking> blocks when configured; tolerant stripper handles them."
+      },
+      {
+        "match": "claude-sonnet",
+        "reasoning_mode": "allowed",
+        "extra_body": {},
+        "notes": "Claude Sonnet — same behaviour as Opus."
+      }
+    ]
+  }
+}

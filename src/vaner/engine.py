@@ -14,26 +14,38 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import Any
 
 from vaner.broker.assembler import assemble_context_package
 from vaner.broker.selector import select_artefacts, select_artefacts_fts
 from vaner.cli.commands.config import load_config
+from vaner.clients.llm_response import LLMResponse
 from vaner.daemon.runner import VanerDaemon
 from vaner.daemon.signals.git_reader import read_git_state
+from vaner.defaults.loader import load_defaults_bundle
+from vaner.intent.abstain import AbstentionPolicy
 from vaner.intent.adapter import CodeRepoAdapter, ContextSource, CorpusAdapter, RelationshipEdge, SignalSource
+from vaner.intent.allocator import PortfolioAllocator
 from vaner.intent.arcs import ArcObservation, ConversationArcModel, classify_query_category, derive_prompt_macro
 from vaner.intent.cache import TieredPredictionCache
+from vaner.intent.ev import jaccard_reuse
 from vaner.intent.features import extract_hybrid_features
 from vaner.intent.frontier import ExplorationFrontier, ExplorationScenario, file_set_fingerprint
 from vaner.intent.governor import PredictionGovernor
 from vaner.intent.graph import RelationshipGraph
 from vaner.intent.maturity import MaturityTracker
+from vaner.intent.prediction import PredictedPrompt, PredictionSpec, prediction_id
+from vaner.intent.prediction_registry import PredictionRegistry
+from vaner.intent.profile import UserProfile
 from vaner.intent.reasoner import CorpusReasoner, PredictionScenario
 from vaner.intent.scorer import IntentScorer
 from vaner.intent.scoring_policy import ScoringPolicy
+from vaner.intent.taxonomy import EmbeddingTaxonomyClassifier, classify_taxonomy
 from vaner.intent.timing import ActivityTimingModel
 from vaner.intent.trainer import IntentTrainer
 from vaner.intent.transfer import bootstrap_transfer_priors
+from vaner.intent.volatility import semantic_volatility_profile
+from vaner.learning.counterfactual import CounterfactualAnalyzer
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.models.config import ComputeConfig, ExplorationConfig, VanerConfig
@@ -41,9 +53,16 @@ from vaner.models.context import ContextPackage
 from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor
 from vaner.models.signal import SignalEvent
 from vaner.store.artefacts import ArtefactStore
+from vaner.store.profile_store import UserProfileStore
+from vaner.store.scenarios import ScenarioStore
+from vaner.telemetry.metrics import MetricsStore
 
 LLMCallable = Callable[[str], Awaitable[str]]
 EmbedCallable = Callable[[list[str]], Awaitable[list[list[float]]]]
+# Phase 4 / WS2: richer LLM callable that returns a structured
+# ``LLMResponse`` (thinking + content + raw). The engine prefers this when
+# available so reasoning-model preambles are captured rather than discarded.
+StructuredLLMCallable = Callable[[str], Awaitable["LLMResponse"]]
 
 
 @dataclass(slots=True)
@@ -90,6 +109,7 @@ class VanerEngine:
         config: VanerConfig | None = None,
         llm: LLMCallable | str | None = None,
         embed: EmbedCallable | None = None,
+        structured_llm: StructuredLLMCallable | None = None,
     ) -> None:
         self.adapter = adapter
         self._extra_signal_sources: list[SignalSource] = list(signals or [])
@@ -97,16 +117,33 @@ class VanerEngine:
         repo_root = getattr(adapter, "repo_root", Path.cwd())
         self.config = config if config is not None else load_config(Path(repo_root))
         self.store = ArtefactStore(self.config.store_path)
+        self._metrics_store = MetricsStore(self.config.repo_root / ".vaner" / "metrics.db")
         self.llm = self._resolve_llm(llm)
+        # Phase 4 / WS2: optional structured LLM. When provided, the engine
+        # prefers it in _explore_scenario_with_llm so reasoning-model
+        # thinking traces are captured rather than silently dropped. Legacy
+        # ``llm`` callers continue to work unchanged.
+        self.structured_llm: StructuredLLMCallable | None = structured_llm
         self.embed = embed
         self._background_task: asyncio.Task[None] | None = None
         self._running = False
         self._reasoner = CorpusReasoner()
-        self._arc_model = ConversationArcModel()
+        self._defaults_bundle = load_defaults_bundle()
+        self._arc_model = ConversationArcModel(
+            transition_priors=self._defaults_bundle.behavior.arc_transitions.transitions
+            if self._defaults_bundle.behavior.arc_transitions
+            else None,
+            phase_affinity_priors=self._defaults_bundle.behavior.phase_classifier.phase_affinity
+            if self._defaults_bundle.behavior.phase_classifier
+            else None,
+        )
         self._intent_scorer = IntentScorer()
         self._maturity = MaturityTracker()
         self._trainer = IntentTrainer(self.store, self._intent_scorer)
-        self._scoring_policy = ScoringPolicy()
+        policy_defaults = (
+            self._defaults_bundle.policy_defaults.model_dump(mode="python") if self._defaults_bundle.policy_defaults is not None else None
+        )
+        self._scoring_policy = ScoringPolicy.from_policy_defaults(policy_defaults)
         self._cache = TieredPredictionCache(self.store, embed=self.embed, scoring_policy=self._scoring_policy)
         self._scorer_model_path = self.store.db_path.parent / "intent_scorer.txt"
         self._active_session_id = self._make_session_id()
@@ -125,6 +162,10 @@ class VanerEngine:
         self._applied_prefer_source_deltas: dict[str, float] = {}
         self._last_heuristic_paths: set[str] = set()
         self._last_explored_scenarios: list[ExploredScenario] = []
+        # Phase 4: prediction registry for the active cycle. A fresh registry
+        # is built per cycle so stale predictions don't leak across turns.
+        # ``None`` before the first cycle runs.
+        self._prediction_registry: PredictionRegistry | None = None
         # Working set: maps source_path -> last interaction timestamp.
         # Seeded by every query() call; used as graph-walk anchor.
         self._working_set: dict[str, float] = {}
@@ -145,11 +186,45 @@ class VanerEngine:
         # ``precompute_cycle`` to size the adaptive cycle deadline.
         self._timing_model = ActivityTimingModel()
         self._timing_model_loaded = False
+        legacy_profile_json_path = (
+            Path.home() / ".vaner" / "user_profile.json"
+            if self.config.intent.cross_workspace_profile
+            else self.config.repo_root / ".vaner" / "user_profile.json"
+        )
+        profile_db_path = (
+            Path.home() / ".vaner" / "user_profile.db"
+            if self.config.intent.cross_workspace_profile
+            else self.config.repo_root / ".vaner" / "user_profile.db"
+        )
+        self._user_profile_json_path = legacy_profile_json_path
+        self._user_profile_store = UserProfileStore(profile_db_path)
+        # Start with an empty profile; ``initialize()`` hydrates from SQLite
+        # (and migrates the legacy JSON on first run).
+        self._user_profile = UserProfile()
+        self._user_profile_loaded = False
+        self._taxonomy_classifier = EmbeddingTaxonomyClassifier()
+        self._counterfactual_analyzer = CounterfactualAnalyzer(self.config.repo_root / ".vaner" / "decisions")
+        default_gates = self._defaults_bundle.draft_gates
+        self._cycle_policy_state: dict[str, float] = {
+            "breadth_coverage_threshold": 0.40,
+            "deep_drill_priority_threshold": float(self.config.exploration.deep_drill_priority_threshold),
+            "entropy_abstain_threshold": 0.95,
+            "draft_posterior_threshold": float(default_gates.get("draft_posterior_threshold", 0.55)),
+            "draft_evidence_threshold": float(default_gates.get("draft_evidence_threshold", 0.45)),
+            "draft_volatility_ceiling": float(default_gates.get("draft_volatility_ceiling", 0.40)),
+            "draft_budget_min_ms": float(default_gates.get("draft_budget_min_ms", 2000.0)),
+            "exploit_ratio": 0.50,
+            "hedge_ratio": 0.20,
+            "invest_ratio": 0.10,
+            "no_regret_ratio": 0.20,
+        }
 
     async def initialize(self) -> None:
         await self.store.initialize()
+        await self._metrics_store.initialize()
         await self._load_learning_state()
         self._try_load_trained_scorer()
+        await self._load_user_profile()
         if not self._arc_loaded:
             history = await self.store.list_query_history(limit=5000)
             ordered_queries = [str(entry["query_text"]) for entry in reversed(history)]
@@ -164,6 +239,24 @@ class VanerEngine:
             self._timing_model.rebuild_from_history(ordered_timestamps)
             self._timing_model_loaded = True
             await self._refresh_behavioral_memory_from_model()
+            # Bootstrap seeds run AFTER the arc-model refresh so they only
+            # fill the table when the user has no real history yet. The
+            # refresh calls replace_* which clears the table first; seeding
+            # before would mean the seeds are immediately overwritten.
+            if self._defaults_bundle.behavior.habit_transitions_seed:
+                await self.store.bootstrap_habit_transitions(self._defaults_bundle.behavior.habit_transitions_seed)
+            if self._defaults_bundle.behavior.prompt_macros_seed:
+                await self.store.bootstrap_prompt_macros(self._defaults_bundle.behavior.prompt_macros_seed)
+            if self.embed is not None and self._defaults_bundle.behavior.category_centroids:
+                _cc = self._defaults_bundle.behavior.category_centroids
+                _dc = _cc.get("domain_centroids") or {}
+                _mc = _cc.get("mode_centroids") or {}
+                _first = next(iter(_dc.values()), None)
+                if _first and isinstance(_first, list) and _first and isinstance(_first[0], float):
+                    self._taxonomy_classifier = EmbeddingTaxonomyClassifier(
+                        domain_centroids={k: [float(x) for x in v] for k, v in _dc.items() if isinstance(v, list)},
+                        mode_centroids={k: [float(x) for x in v] for k, v in _mc.items() if isinstance(v, list)},
+                    )
             self._arc_loaded = True
         await self._sync_extra_context_sources()
         await self._sync_pinned_facts()
@@ -296,6 +389,18 @@ class VanerEngine:
         # up-to-the-second cadence rather than a cached EMA.
         self._timing_model.record_prompt(started_at)
         try:
+            history_before = await self.store.list_query_history(limit=32)
+            prior_recent_queries = [str(entry["query_text"]) for entry in reversed(history_before)]
+            prior_prediction_probs: dict[str, float] = {}
+            if prior_recent_queries:
+                prior_current_category = classify_query_category(prior_recent_queries[-1])
+                prior_predictions = self._arc_model.rank_next(prior_current_category, top_k=3, recent_queries=prior_recent_queries)
+                if prior_predictions:
+                    total_conf = sum(max(0.0, float(item.confidence)) for item in prior_predictions)
+                    if total_conf > 0:
+                        prior_prediction_probs = {
+                            item.category: max(0.0, float(item.confidence)) / total_conf for item in prior_predictions
+                        }
             _quick_artefacts = await self.store.list(limit=2000)
             _quick_paths = {
                 artefact.source_path
@@ -309,9 +414,19 @@ class VanerEngine:
                 )
                 if artefact.source_path
             }
+            # Let precompute's speculative predictions participate in path-overlap
+            # scoring even when the heuristic selector disagrees. Without this
+            # union, the bench finds 96% of precompute entries never get consumed
+            # because their anchor_units don't overlap with the heuristic's picks.
+            _quick_paths = _quick_paths | await self._cache.candidate_anchor_units(prompt, top_k=3)
             cache_result = await self._cache.match(prompt, relevant_paths=_quick_paths)
             observation = self._arc_model.observe_detail(prompt)
             category = observation.category
+            if prior_prediction_probs:
+                await self._metrics_store.record_next_prompt_prediction(
+                    probabilities=prior_prediction_probs,
+                    actual_label=category,
+                )
             await self._persist_behavioral_observation(observation)
             if cache_result.tier == "full_hit" and cache_result.package is not None:
                 self._update_working_set([sel.source_path for sel in cache_result.package.selections])
@@ -365,6 +480,7 @@ class VanerEngine:
                     latency_ms=latency_ms,
                     metadata={
                         "source": "cache",
+                        "cache_key": cache_result.cache_key,
                         "exploration_source": exploration_source,
                         "host_outcome": host_outcome_raw if isinstance(host_outcome_raw, (int, float)) else None,
                         "judge_score": judge_score_raw if isinstance(judge_score_raw, (int, float)) else None,
@@ -400,6 +516,35 @@ class VanerEngine:
                     partial_similarity=cache_result.similarity,
                     enrichment=cache_result.enrichment,
                 )
+                generated_at = float(cache_result.enrichment.get("generated_at", 0.0)) if cache_result.enrichment else 0.0
+                if generated_at > 0:
+                    await self._metrics_store.record_predictive_lead_seconds(max(0.0, time.time() - generated_at))
+                if cache_result.enrichment and "predicted_response" in cache_result.enrichment:
+                    predicted_prompt = str(
+                        cache_result.enrichment.get("predicted_prompt") or cache_result.enrichment.get("prompt_hint") or ""
+                    )
+                    prompt_tokens = {token for token in prompt.lower().split() if token}
+                    predicted_tokens = {token for token in predicted_prompt.lower().split() if token}
+                    overlap = len(prompt_tokens & predicted_tokens) / max(1, len(prompt_tokens | predicted_tokens))
+                    evidence_paths = set(
+                        str(path) for path in cache_result.enrichment.get("source_units", []) if isinstance(path, str)
+                    ) or set(str(path) for path in cache_result.enrichment.get("anchor_units", []) if isinstance(path, str))
+                    served_path_set = set(_quick_paths)
+                    evidence_overlap = len(served_path_set & evidence_paths) / max(1, len(served_path_set | evidence_paths))
+                    reuse_ratio, directional = await self._grade_draft_at_serve(
+                        prompt=prompt,
+                        predicted_prompt=predicted_prompt,
+                        draft_referenced_paths=evidence_paths,
+                        served_paths=served_path_set,
+                    )
+                    await self._metrics_store.record_draft_event(
+                        status="served",
+                        predicted_prompt_similarity=overlap,
+                        evidence_overlap=evidence_overlap,
+                        answer_reuse_ratio=reuse_ratio,
+                        directional_correct=directional,
+                        metadata={"tier": cache_result.tier, "source": "cache_full_hit"},
+                    )
                 return cache_result.package
 
             if cache_result.tier == "partial_hit" and cache_result.package is not None:
@@ -467,6 +612,21 @@ class VanerEngine:
                         self._miss_recovery_paths.append(list(_quick_paths))
                         # Keep at most 10 recent miss contexts to avoid stale data
                         self._miss_recovery_paths = self._miss_recovery_paths[-10:]
+                    await self._metrics_store.record_counterfactual_miss(
+                        prompt=prompt,
+                        miss_type="retrieval",
+                        helpful_context=sorted(_quick_paths)[:20],
+                        wasted_branches=[],
+                        metadata={"stage": "query", "reason": "cold_miss"},
+                    )
+                    self._counterfactual_analyzer.analyze(
+                        prompt=prompt,
+                        miss_type="cold_miss",
+                        helpful_paths=sorted(_quick_paths)[:20],
+                        wasted_paths=[],
+                        abstain_was_active=bool(self._cycle_policy_state.get("abstain_mode", 0.0)),
+                        metadata={"stage": "query"},
+                    )
                 preferred_keys: set[str] = set()
                 working_set = await self.store.get_latest_working_set()
                 if working_set is not None:
@@ -491,6 +651,12 @@ class VanerEngine:
                 token_used=package.token_used,
                 corpus_id=getattr(self.adapter, "corpus_id", "default"),
             )
+            if self.config.intent.embedding_classifier_enabled:
+                taxonomy = await self._taxonomy_classifier.classify(prompt, self.embed if callable(self.embed) else None)
+            else:
+                taxonomy = classify_taxonomy(prompt)
+            self._user_profile.observe(mode=taxonomy.mode, depth=max(0, len(selected) // 2), ts=time.time())
+            await self._user_profile_store.save(self._user_profile)
             await self.store.insert_signal_event(
                 SignalEvent(
                     id=str(uuid.uuid4()),
@@ -499,6 +665,8 @@ class VanerEngine:
                     timestamp=time.time(),
                     payload={
                         "category": category,
+                        "domain": taxonomy.domain,
+                        "mode": taxonomy.mode,
                         "corpus_id": getattr(self.adapter, "corpus_id", "default"),
                         "privacy_zone": getattr(self.adapter, "privacy_zone", "local"),
                     },
@@ -516,6 +684,7 @@ class VanerEngine:
                 enrichment={
                     "relevant_keys": [artefact.key for artefact in selected[:5]],
                     "hypotheses": [hypothesis["question"] for hypothesis in hypotheses],
+                    "anchor_units": [a.source_path for a in selected if a.source_path],
                 },
             )
             quality_lift = 0.2 if cache_result.tier == "partial_hit" else (0.1 if cache_result.tier == "warm_start" else 0.0)
@@ -541,6 +710,7 @@ class VanerEngine:
                 latency_ms=latency_ms,
                 metadata={
                     "selected_count": len(selected),
+                    "cache_key": cache_result.cache_key,
                     "exploration_source": exploration_source,
                     "host_outcome": host_outcome_raw if isinstance(host_outcome_raw, (int, float)) else None,
                     "judge_score": judge_score_raw if isinstance(judge_score_raw, (int, float)) else None,
@@ -607,14 +777,61 @@ class VanerEngine:
             decision_record.partial_similarity = package.partial_similarity
             self._attach_prediction_links(decision_record, cache_result.enrichment)
             self._last_decision_record = decision_record
+            generated_at = float(cache_result.enrichment.get("generated_at", 0.0)) if cache_result.enrichment else 0.0
+            if generated_at > 0:
+                await self._metrics_store.record_predictive_lead_seconds(max(0.0, time.time() - generated_at))
+            if cache_result.enrichment and "predicted_response" in cache_result.enrichment:
+                predicted_prompt = str(cache_result.enrichment.get("predicted_prompt") or cache_result.enrichment.get("prompt_hint") or "")
+                prompt_tokens = {token for token in prompt.lower().split() if token}
+                predicted_tokens = {token for token in predicted_prompt.lower().split() if token}
+                overlap = len(prompt_tokens & predicted_tokens) / max(1, len(prompt_tokens | predicted_tokens))
+                evidence_paths = set(str(path) for path in cache_result.enrichment.get("source_units", []) if isinstance(path, str)) or set(
+                    str(path) for path in cache_result.enrichment.get("anchor_units", []) if isinstance(path, str)
+                )
+                served_path_set = set(_quick_paths)
+                evidence_overlap = len(served_path_set & evidence_paths) / max(1, len(served_path_set | evidence_paths))
+                reuse_ratio, directional = await self._grade_draft_at_serve(
+                    prompt=prompt,
+                    predicted_prompt=predicted_prompt,
+                    draft_referenced_paths=evidence_paths,
+                    served_paths=served_path_set,
+                )
+                await self._metrics_store.record_draft_event(
+                    status="served",
+                    predicted_prompt_similarity=overlap,
+                    evidence_overlap=evidence_overlap,
+                    answer_reuse_ratio=reuse_ratio,
+                    directional_correct=directional,
+                    metadata={"tier": cache_result.tier, "source": "cache_partial_or_warm"},
+                )
             return package
         finally:
             self._notify_user_request_end()
 
-    async def inject_history(self, queries: list[str], *, session_id: str = "external") -> int:
+    async def inject_history(
+        self,
+        queries: list[str] | list[tuple[str, float]],
+        *,
+        session_id: str = "external",
+    ) -> int:
+        """Inject prior queries into history.
+
+        Accepts either ``list[str]`` (legacy — all queries are stamped with
+        ``time.time()`` on insertion) or ``list[tuple[str, float]]`` where the
+        second element is the unix timestamp for the query. When timestamps
+        are provided they flow through to ``query_history``, the emitted
+        ``SignalEvent``, and the ``ActivityTimingModel`` so the inter-prompt
+        EMA reflects real session pacing rather than a compressed burst.
+        """
         await self.initialize()
         injected = 0
-        for query_text in queries:
+        for item in queries:
+            if isinstance(item, tuple):
+                query_text, ts_val = item
+                ts: float | None = float(ts_val)
+            else:
+                query_text = item
+                ts = None
             if not query_text.strip():
                 continue
             observation = self._arc_model.observe_detail(query_text)
@@ -627,13 +844,14 @@ class VanerEngine:
                 hit_precomputed=False,
                 token_used=0,
                 corpus_id=getattr(self.adapter, "corpus_id", "default"),
+                timestamp=ts,
             )
             await self.store.insert_signal_event(
                 SignalEvent(
                     id=str(uuid.uuid4()),
                     source="query",
                     kind="query_issued",
-                    timestamp=time.time(),
+                    timestamp=ts if ts is not None else time.time(),
                     payload={
                         "category": category,
                         "injected": "true",
@@ -642,6 +860,8 @@ class VanerEngine:
                     },
                 )
             )
+            if ts is not None:
+                self._timing_model.record_prompt(ts)
             injected += 1
         return injected
 
@@ -697,6 +917,84 @@ class VanerEngine:
         self._precompute_cycles += 1
         self._last_explored_scenarios = []
         full_packages = 0
+        total_budget_ms = (
+            max(0.0, (cycle_deadline - cycle_started) * 1000.0)
+            if cycle_deadline is not None
+            else max(0.0, float(self.config.compute.max_cycle_seconds) * 1000.0)
+        )
+        recent_entropy = 0.0
+        abstain_mode = False
+        if recent_query_text := [str(entry["query_text"]) for entry in await self.store.list_query_history(limit=10)]:
+            phase_summary = self._arc_model.summarize_workflow_phase(recent_query_text)
+            posterior = self._arc_model.rank_next(phase_summary.dominant_category, top_k=3, recent_queries=recent_query_text)
+            if posterior:
+                probs = [max(1e-9, float(item.confidence)) for item in posterior]
+                total_prob = sum(probs)
+                probs = [value / total_prob for value in probs]
+                recent_entropy = -sum(value * math.log(value) for value in probs)
+                _policy = AbstentionPolicy(
+                    entropy_threshold=float(self._cycle_policy_state.get("entropy_abstain_threshold", 0.95)),
+                    contradiction_threshold=1.0,
+                )
+                if _policy.should_abstain({str(i): p for i, p in enumerate(probs)}):
+                    await self._metrics_store.increment_counter("abstain_total")
+                    abstain_mode = True
+
+        changed_for_volatility: list[str] = []
+        volatility_score = 0.0
+        volatility_drift_fraction = 0.0
+        try:
+            git_state_for_volatility = read_git_state(self.config.repo_root)
+            changed_for_volatility = [
+                line.strip()
+                for line in (
+                    str(git_state_for_volatility.get("recent_diff", "")) + "\n" + str(git_state_for_volatility.get("staged", ""))
+                ).splitlines()
+                if line.strip()
+            ][:30]
+            volatility = semantic_volatility_profile(changed_for_volatility)
+            volatility_score = volatility.score
+            volatility_drift_fraction = volatility.drift_fraction
+        except Exception:
+            volatility_score = 0.0
+            volatility_drift_fraction = 0.0
+        profile_pivot = float(self._user_profile.pivot_rate)
+        exploit_ratio = max(0.2, min(0.7, float(self._cycle_policy_state.get("exploit_ratio", 0.5)) - (0.15 * volatility_score)))
+        hedge_ratio = max(0.1, min(0.45, float(self._cycle_policy_state.get("hedge_ratio", 0.2)) + (0.10 * recent_entropy)))
+        invest_ratio = max(0.05, min(0.35, float(self._cycle_policy_state.get("invest_ratio", 0.1)) + (0.10 * profile_pivot)))
+        no_regret_ratio = max(
+            0.05,
+            min(
+                0.45,
+                float(self._cycle_policy_state.get("no_regret_ratio", 0.2))
+                + (0.10 * volatility_score)
+                + (0.10 * max(0.0, recent_entropy - 0.8)),
+            ),
+        )
+        if volatility_drift_fraction > 0.5:
+            # High drift means stale confidence; reserve more no-regret budget.
+            no_regret_ratio = min(0.5, no_regret_ratio + 0.1)
+        if abstain_mode:
+            # Flat posterior: broaden exploration, skip committing to hypotheses.
+            exploit_ratio = 0.0
+            hedge_ratio = 0.0
+            invest_ratio = 0.2
+            no_regret_ratio = 0.8
+        self._cycle_policy_state["exploit_ratio"] = exploit_ratio
+        self._cycle_policy_state["hedge_ratio"] = hedge_ratio
+        self._cycle_policy_state["invest_ratio"] = invest_ratio
+        self._cycle_policy_state["no_regret_ratio"] = no_regret_ratio
+        self._cycle_policy_state["recent_entropy"] = recent_entropy
+        self._cycle_policy_state["volatility_score"] = volatility_score
+        self._cycle_policy_state["volatility_drift_fraction"] = volatility_drift_fraction
+        self._cycle_policy_state["abstain_mode"] = 1.0 if abstain_mode else 0.0
+        self._mark_policy_state_dirty()
+        allocation = PortfolioAllocator(
+            exploit_ratio=exploit_ratio,
+            hedge_ratio=hedge_ratio,
+            invest_ratio=invest_ratio,
+            no_regret_ratio=no_regret_ratio,
+        ).allocate(total_budget_ms)
 
         if not self._corpus_prepared:
             await self.store.replace_relationship_edges(await self._collect_relationship_edges())
@@ -752,13 +1050,40 @@ class VanerEngine:
 
         recent_queries = await self.store.list_query_history(limit=10)
         recent_query_text = [str(entry["query_text"]) for entry in recent_queries]
-        frontier.seed_from_workflow_phase(self._arc_model, recent_query_text, available_paths)
-        frontier.seed_from_arc(self._arc_model, recent_query_text, available_paths)
-
         prompt_macros = await self.store.list_prompt_macros(limit=25)
-        frontier.seed_from_prompt_macros(prompt_macros, available_paths)
-
         patterns = await self.store.list_validated_patterns(limit=50)
+
+        # Phase 4 / WS1.d: build the prediction registry BEFORE seeding the
+        # frontier so we can tag every admitted scenario with its parent
+        # prediction_id. The maps route category/macro-keyed scenarios back
+        # to the right PredictedPrompt during the LLM cycle.
+        (
+            self._prediction_registry,
+            _pid_by_category,
+            _pid_by_macro,
+        ) = self._merge_prediction_specs(
+            recent_query_text=recent_query_text,
+            prompt_macros=prompt_macros,
+            patterns=patterns,
+        )
+
+        # Order matters: Jaccard-dedup is first-admitted-wins, and
+        # seed_from_workflow_phase produces arc-sourced scenarios whose file
+        # sets overlap with seed_from_arc's. We seed the pid-tagged ones FIRST
+        # so prediction-tagging survives dedup; workflow-phase fills in the
+        # non-overlapping remainder.
+        frontier.seed_from_arc(
+            self._arc_model,
+            recent_query_text,
+            available_paths,
+            prediction_id_for_category=_pid_by_category.get if _pid_by_category else None,
+        )
+        frontier.seed_from_prompt_macros(
+            prompt_macros,
+            available_paths,
+            prediction_id_for_macro=_pid_by_macro.get if _pid_by_macro else None,
+        )
+        frontier.seed_from_workflow_phase(self._arc_model, recent_query_text, available_paths)
         frontier.seed_from_patterns(patterns)
 
         # Seed recovery scenarios for recent cold-miss queries.  These paths
@@ -766,6 +1091,27 @@ class VanerEngine:
         for miss_paths in self._miss_recovery_paths:
             frontier.seed_from_miss(miss_paths, available_paths)
         self._miss_recovery_paths.clear()
+        # No-regret context budget: prioritize recently changed files and their
+        # immediate neighborhoods regardless of next-prompt posterior.
+        try:
+            git_state = read_git_state(self.config.repo_root)
+            changed_paths = [
+                line.strip()
+                for line in (str(git_state.get("recent_diff", "")) + "\n" + str(git_state.get("staged", ""))).splitlines()
+                if line.strip()
+            ][:20]
+            no_regret_paths: set[str] = set(changed_paths)
+            # Expand the no-regret slice with one-hop graph neighbors.
+            for changed in changed_paths:
+                no_regret_paths.update(
+                    node.split(":", 1)[1]
+                    for node in graph.propagate(f"file:{changed}", depth=1)
+                    if isinstance(node, str) and node.startswith("file:")
+                )
+            for changed in sorted(no_regret_paths):
+                frontier.seed_from_miss([changed], available_paths)
+        except Exception:
+            changed_paths = []
 
         # Collect artefacts once for package building (avoid repeated DB reads)
         artefacts_by_key = {a.key: a for a in await self.store.list(limit=2000)}
@@ -791,7 +1137,7 @@ class VanerEngine:
         # with a fast "horizon" search before committing to deeper lines.
         # Phase 2 — depth: once shallow coverage is adequate (>= 40%), open the
         # frontier to full depth so high-value LLM branches can be explored.
-        _BREADTH_COVERAGE_THRESHOLD = 0.40
+        _BREADTH_COVERAGE_THRESHOLD = max(0.1, min(0.9, float(self._cycle_policy_state.get("breadth_coverage_threshold", 0.40))))
         phase_breadth_done = [frontier.coverage_ratio >= _BREADTH_COVERAGE_THRESHOLD]
         frontier.set_effective_max_depth(ecfg.max_exploration_depth if phase_breadth_done[0] else min(1, ecfg.max_exploration_depth))
 
@@ -834,6 +1180,29 @@ class VanerEngine:
         state_lock = asyncio.Lock()
         in_flight: list[asyncio.Task[None]] = []
         full_packages_box = [0]
+        # WS1.e: counter for registry rebalance cadence. Incremented each time
+        # a scenario with a prediction_id completes; when it crosses the
+        # threshold we call registry.rebalance() under the registry lock.
+        completed_with_pid_box = [0]
+        _REBALANCE_EVERY_N = 5
+        # Confidence threshold for the grounding→evidence_gathering transition.
+        # Below this, a scenario produced a file ranking but not enough signal
+        # to claim real evidence. Kept conservative so the registry doesn't
+        # over-claim readiness.
+        _EVIDENCE_CONFIDENCE_FLOOR = 0.3
+        registry = self._prediction_registry
+        deep_drill_threshold = float(self._cycle_policy_state.get("deep_drill_priority_threshold", ecfg.deep_drill_priority_threshold))
+        if recent_query_text:
+            phase_summary = self._arc_model.summarize_workflow_phase(recent_query_text)
+            ranked = self._arc_model.rank_next(phase_summary.dominant_category, top_k=2, recent_queries=recent_query_text)
+            if len(ranked) >= 2:
+                p1 = max(1e-9, float(ranked[0].confidence))
+                p2 = max(1e-9, float(ranked[1].confidence))
+                ratio = p1 / p2
+                deep_drill_threshold = max(0.1, min(0.95, deep_drill_threshold / max(1.0, ratio)))
+        if allocation.exploit_ms > 0:
+            exploit_share = allocation.exploit_ms / max(1.0, allocation.total_ms)
+            deep_drill_threshold = max(0.1, min(0.95, deep_drill_threshold * (1.0 - (exploit_share - 0.5))))
 
         async def _process_scenario(scenario: ExplorationScenario) -> None:
             """Explore one scenario; mutate shared state under state_lock."""
@@ -846,11 +1215,24 @@ class VanerEngine:
                 # depth bonus from a high-priority ancestor) get wider LLM
                 # fan-out and softer per-hop decay so Vaner can invest more
                 # cycles on predictions it already scored as likely.
-                is_high_priority = scenario.priority >= ecfg.deep_drill_priority_threshold or scenario.depth_bonus > 0
+                is_high_priority = scenario.priority >= deep_drill_threshold or scenario.depth_bonus > 0
                 llm_semantic_intent = ""
                 follow_on: list[dict[str, object]] = []
                 llm_confidence = 0.0
                 effective_paths: list[str] = list(scenario.file_paths)
+
+                # WS1.e: register the scenario against its parent prediction
+                # before the optional LLM call. This drives the queued →
+                # grounding transition regardless of LLM gate so the registry
+                # snapshot reflects admission-side activity even when the
+                # scenario is explored structurally (graph-walk, pattern hit).
+                pid = scenario.prediction_id
+                if pid is not None and registry is not None and pid in registry:
+                    async with registry.lock:
+                        try:
+                            registry.attach_scenario(pid, scenario.id)
+                        except (KeyError, ValueError):
+                            pass
 
                 if use_llm and callable(self.llm):
                     try:
@@ -869,6 +1251,90 @@ class VanerEngine:
                         ranked_files, follow_on, llm_semantic_intent, llm_confidence = [], [], "", 0.0
                     if ranked_files:
                         effective_paths = list(ranked_files)
+
+                    # Route LLM outcomes back to the parent prediction. Tokens
+                    # approximated by content length (real counts land in WS2
+                    # with structured clients). Confidence is the evidence
+                    # proxy; above _EVIDENCE_CONFIDENCE_FLOOR we transition to
+                    # evidence_gathering.
+                    if pid is not None and registry is not None and pid in registry:
+                        approx_tokens = max(
+                            1,
+                            (len(llm_semantic_intent) + sum(len(str(p)) for p in ranked_files)) // 4,
+                        )
+                        async with registry.lock:
+                            try:
+                                registry.record_call(pid, tokens_used=approx_tokens)
+                                registry.record_evidence(pid, delta_score=float(llm_confidence))
+                                prompt = registry.get(pid)
+                                if (
+                                    prompt is not None
+                                    and prompt.run.readiness == "grounding"
+                                    and llm_confidence >= _EVIDENCE_CONFIDENCE_FLOOR
+                                ):
+                                    registry.transition(
+                                        pid,
+                                        "evidence_gathering",
+                                        reason=f"confidence {llm_confidence:.2f} ≥ {_EVIDENCE_CONFIDENCE_FLOOR}",
+                                    )
+                            except (KeyError, ValueError):
+                                pass
+
+                # Mark scenario complete + bump rebalance cadence regardless
+                # of LLM path. Graph-walk and pattern-cached scenarios count
+                # toward progress too.
+                if pid is not None and registry is not None and pid in registry:
+                    async with registry.lock:
+                        try:
+                            registry.complete_scenario(pid, scenario.id)
+                        except (KeyError, ValueError):
+                            pass
+                        completed_with_pid_box[0] += 1
+                        if completed_with_pid_box[0] >= _REBALANCE_EVERY_N:
+                            registry.rebalance()
+                            completed_with_pid_box[0] = 0
+                        # WS1.f follow-up: evidence-threshold drafting.
+                        # The pattern path (via _precompute_predicted_responses)
+                        # only advances pattern-sourced predictions through
+                        # drafting→ready. Arc/history/etc. predictions would
+                        # otherwise stall at evidence_gathering forever. Here
+                        # we synthesise a lightweight briefing from the
+                        # completed scenarios' file paths so those predictions
+                        # can reach a usable adoption state.
+                        try:
+                            prompt_obj = registry.get(pid)
+                            # WS1.f follow-up: predictions are per-cycle state
+                            # (the registry is rebuilt each precompute_cycle),
+                            # so we must reach drafting within a single cycle
+                            # or the adoption surface is permanently empty.
+                            # Trigger the transition as soon as the parent has
+                            # at least one scenario complete and cleared the
+                            # evidence floor.
+                            if (
+                                prompt_obj is not None
+                                and prompt_obj.run.readiness == "evidence_gathering"
+                                and prompt_obj.run.scenarios_complete >= 1
+                                and prompt_obj.artifacts.evidence_score >= 0.5
+                                and prompt_obj.artifacts.prepared_briefing is None
+                            ):
+                                synthesised = _synthesise_briefing_from_scenarios(prompt_obj, effective_paths)
+                                registry.transition(
+                                    pid,
+                                    "drafting",
+                                    reason=(
+                                        f"evidence-threshold draft "
+                                        f"(scenarios={prompt_obj.run.scenarios_complete}, "
+                                        f"score={prompt_obj.artifacts.evidence_score:.2f})"
+                                    ),
+                                )
+                                registry.attach_artifact(pid, briefing=synthesised)
+                                registry.transition(
+                                    pid,
+                                    "ready",
+                                    reason="briefing synthesised; no critical contradictions",
+                                )
+                        except (KeyError, ValueError):
+                            pass
 
                 pred_scenario = PredictionScenario(
                     question=f"context:{scenario.anchor}",
@@ -898,7 +1364,7 @@ class VanerEngine:
                         branch_decay = ecfg.deep_drill_branch_decay
                     else:
                         branch_decay = self._scoring_policy.branch_priority_decay
-                    if scenario.priority >= ecfg.deep_drill_priority_threshold:
+                    if scenario.priority >= deep_drill_threshold:
                         # Fresh high-priority lineage: grant full bonus budget.
                         child_depth_bonus = max(scenario.depth_bonus, ecfg.deep_drill_depth_bonus)
                     else:
@@ -1008,7 +1474,8 @@ class VanerEngine:
         # implementation", and the cycle has budget remaining, actually draft
         # the response so the agent can surface it the instant the expected
         # prompt arrives. Opt-in because it amplifies LLM spend.
-        if ecfg.predicted_response_enabled and callable(self.llm):
+        # Skip in abstain mode: flat posterior means draft quality is too low.
+        if ecfg.predicted_response_enabled and callable(self.llm) and not abstain_mode:
             remaining_deadline = cycle_deadline
             await self._precompute_predicted_responses(
                 max_per_cycle=max(0, int(ecfg.predicted_response_max_per_cycle)),
@@ -1016,6 +1483,7 @@ class VanerEngine:
                 deadline=remaining_deadline,
                 available_paths=available_paths,
                 recent_queries=recent_query_text,
+                prediction_id_for_macro=_pid_by_macro,
             )
 
         retention_seconds = max(3600, int(self.config.max_age_seconds))
@@ -1036,15 +1504,191 @@ class VanerEngine:
             )
         await self.store.purge_stale_patterns(max_age_seconds=retention_seconds)
         await self._persist_learning_state()
-        _record_idle_usage_seconds(self.config, time.monotonic() - cycle_started)
+        cycle_elapsed_s = time.monotonic() - cycle_started
+        allocated_s = max(0.0, float(cycle_deadline - cycle_started)) if cycle_deadline is not None else cycle_elapsed_s
+        total_allocated_ms = allocated_s * 1000.0
+        total_used_ms = cycle_elapsed_s * 1000.0
+        await self._metrics_store.record_cycle_budget(allocated_ms=total_allocated_ms, used_ms=total_used_ms, bucket="overall")
+        allocation_scale = (total_used_ms / max(1.0, allocation.total_ms)) if allocation.total_ms > 0 else 0.0
+        await self._metrics_store.record_cycle_budget(
+            allocated_ms=allocation.exploit_ms,
+            used_ms=allocation.exploit_ms * allocation_scale,
+            bucket="exploit",
+        )
+        await self._metrics_store.record_cycle_budget(
+            allocated_ms=allocation.hedge_ms,
+            used_ms=allocation.hedge_ms * allocation_scale,
+            bucket="hedge",
+        )
+        await self._metrics_store.record_cycle_budget(
+            allocated_ms=allocation.invest_ms,
+            used_ms=allocation.invest_ms * allocation_scale,
+            bucket="invest",
+        )
+        await self._metrics_store.record_cycle_budget(
+            allocated_ms=allocation.no_regret_ms,
+            used_ms=allocation.no_regret_ms * allocation_scale,
+            bucket="no_regret",
+        )
+        _record_idle_usage_seconds(self.config, cycle_elapsed_s)
         return full_packages
 
     def get_explored_scenarios(self) -> list[ExploredScenario]:
         """Return scenarios explored in the most recent precompute cycle."""
         return list(self._last_explored_scenarios)
 
+    def get_active_predictions(self) -> list[PredictedPrompt]:
+        """Return non-terminal PredictedPrompts for the active cycle.
+
+        Empty before the first precompute_cycle runs. Phase C consumes this
+        for MCP/HTTP surface; Phase D's desktop pane derives its row list
+        from it.
+        """
+        if self._prediction_registry is None:
+            return []
+        return self._prediction_registry.active()
+
+    @property
+    def prediction_registry(self) -> PredictionRegistry | None:
+        """Active prediction registry — None before the first cycle."""
+        return self._prediction_registry
+
     def get_last_decision_record(self) -> DecisionRecord | None:
         return self._last_decision_record
+
+    # ------------------------------------------------------------------
+    # Phase 4: prediction enrolment
+    # ------------------------------------------------------------------
+
+    def _merge_prediction_specs(
+        self,
+        *,
+        recent_query_text: list[str],
+        prompt_macros: list[dict[str, object]],
+        patterns: list[dict[str, object]],
+    ) -> tuple[PredictionRegistry, dict[str, str], dict[str, str]]:
+        """Build this cycle's spec batch and merge it into the persistent registry.
+
+        WS6 replacement for ``_build_prediction_registry``: the registry is
+        instantiated once per engine lifetime (lazily on first call). Each
+        cycle:
+
+        - Derives this cycle's candidate specs from arc / pattern / history.
+        - Calls ``registry.merge(specs, cycle_n=...)`` — specs already in the
+          registry have their ``last_seen_cycle`` bumped and ``run.updated_at``
+          refreshed, preserving accumulated ``evidence_score``, ``scenarios_complete``,
+          ``prepared_briefing``, ``draft_answer``, ``thinking_traces``, and
+          ``file_content_hashes``. New specs are enrolled via the standard
+          batch-weight formula.
+
+        Predictions that existed before but aren't in this cycle's batch
+        persist untouched — they're invalidated only by signals (see
+        ``apply_invalidation_signals``), not by absence-from-cycle.
+
+        Returns ``(registry, category_to_pid, macro_to_pid)`` — the two maps
+        are consumed by the frontier seed methods so scenarios get tagged
+        with their parent prediction_id.
+        """
+        ecfg = self.config.exploration
+        if self._prediction_registry is None:
+            # Pool sized by expected scenarios × rough token cost; fixed at
+            # engine-init time because it's a budgeting concept that
+            # shouldn't drift once predictions start accumulating state.
+            cycle_token_pool = max(512, int(ecfg.frontier_max_size) * 32)
+            self._prediction_registry = PredictionRegistry(cycle_token_pool=cycle_token_pool)
+        registry = self._prediction_registry
+        specs: list[PredictionSpec] = []
+        # Routing maps the engine hands to frontier.seed_from_*. Built in-step
+        # with spec enrolment so every spec has a mapping entry. When multiple
+        # enrolment sources produce the same category/macro, first-wins keeps
+        # behaviour deterministic.
+        category_to_pid: dict[str, str] = {}
+        macro_to_pid: dict[str, str] = {}
+
+        # Arc source — category-level predictions with UX labels.
+        if recent_query_text:
+            current_category = classify_query_category(recent_query_text[-1])
+            descriptions = self._arc_model.describe_next(
+                current_category,
+                top_k=3,
+                recent_queries=recent_query_text,
+            )
+            for desc in descriptions:
+                pid = prediction_id("arc", desc.anchor, desc.label)
+                specs.append(
+                    PredictionSpec(
+                        id=pid,
+                        label=desc.label,
+                        description=desc.description,
+                        source="arc",
+                        anchor=desc.anchor,
+                        confidence=min(1.0, max(0.0, float(desc.confidence))),
+                        hypothesis_type=desc.hypothesis_type,  # type: ignore[arg-type]
+                        specificity=desc.specificity,  # type: ignore[arg-type]
+                    )
+                )
+                # First-wins: arc predictions get routing priority over history
+                # for the same category, since arc carries explicit confidence.
+                category_to_pid.setdefault(desc.category, pid)
+
+        # Pattern source — repeated prompt macros are evidence of recurring intent.
+        for macro in prompt_macros[:2]:
+            macro_key = str(macro.get("macro_key", "")).strip()
+            if not macro_key:
+                continue
+            use_count = int(macro.get("use_count", 0))
+            confidence = min(1.0, float(macro.get("confidence", 0.0)) or (use_count / 10.0))
+            category = str(macro.get("category", "understanding"))
+            label = f"Recurring: {macro_key[:60]}"
+            pid = prediction_id("pattern", macro_key, label)
+            specs.append(
+                PredictionSpec(
+                    id=pid,
+                    label=label,
+                    description=f"Prompt macro '{macro_key}' ({use_count}x) in category {category}",
+                    source="pattern",
+                    anchor=macro_key,
+                    confidence=confidence,
+                    hypothesis_type="likely_next" if confidence >= 0.6 else "possible_branch",
+                    specificity="concrete",
+                )
+            )
+            macro_to_pid.setdefault(macro_key, pid)
+
+        # History source — the last observed category as a continuation hint.
+        if recent_query_text:
+            last_category = classify_query_category(recent_query_text[-1])
+            label = f"Continue: {last_category}"
+            pid = prediction_id("history", last_category, label)
+            specs.append(
+                PredictionSpec(
+                    id=pid,
+                    label=label,
+                    description=f"Continuation of the most recent {last_category} turn",
+                    source="history",
+                    anchor=last_category,
+                    confidence=0.4,
+                    hypothesis_type="possible_branch",
+                    specificity="category",
+                )
+            )
+            category_to_pid.setdefault(last_category, pid)
+
+        # Deduplicate by id (two sources can collide on identical anchor/label).
+        seen_ids: set[str] = set()
+        unique_specs: list[PredictionSpec] = []
+        for spec in specs:
+            if spec.id in seen_ids:
+                continue
+            seen_ids.add(spec.id)
+            unique_specs.append(spec)
+
+        if unique_specs:
+            # WS6: merge-per-cycle replaces enroll_batch-per-cycle. Existing
+            # predictions keep their accumulated state; brand-new ones get
+            # enrolled via the standard weight formula.
+            registry.merge(unique_specs, cycle_n=self._precompute_cycles)
+        return registry, category_to_pid, macro_to_pid
 
     @staticmethod
     def _compute_effective_concurrency(ecfg: ExplorationConfig, compute: ComputeConfig) -> int:
@@ -1097,6 +1741,20 @@ class VanerEngine:
         artefacts_by_key: dict[str, object],
         high_priority: bool = False,
     ) -> tuple[list[str], list[dict[str, object]], str, float]:
+        # WS2.b: look up the parent prediction's remaining token budget so we
+        # can clamp max_tokens on the LLM call. Reasoning models need room to
+        # think; dense models should be kept tight. The config-level caps
+        # (max_response_tokens + reasoning_token_budget) are a ceiling.
+        prediction_max_tokens: int | None = None
+        parent_pid = scenario.prediction_id
+        if parent_pid is not None and self._prediction_registry is not None and parent_pid in self._prediction_registry:
+            prompt_obj = self._prediction_registry.get(parent_pid)
+            if prompt_obj is not None:
+                remaining = max(0, prompt_obj.run.token_budget - prompt_obj.run.tokens_used)
+                cfg_cap = int(self.config.backend.max_response_tokens)
+                if self.config.backend.reasoning_mode != "off":
+                    cfg_cap += int(self.config.backend.reasoning_token_budget)
+                prediction_max_tokens = min(cfg_cap, remaining) if remaining > 0 else cfg_cap
         """Send a scenario to the LLM for enrichment and branch proposals.
 
         The LLM is given:
@@ -1188,10 +1846,28 @@ class VanerEngine:
             "}"
         )
 
+        # WS2.b: prefer the structured client when the engine was built with
+        # one. It captures reasoning-model thinking traces separately, so the
+        # JSON-parsing path sees only the content field and never chokes on
+        # preambles. Legacy bare-string `self.llm` remains the fallback.
+        captured_thinking: str = ""
         try:
-            llm_output = await self.llm(prompt)  # type: ignore[misc]
+            if self.structured_llm is not None:
+                response: LLMResponse = await self.structured_llm(prompt, max_tokens=prediction_max_tokens)
+                llm_output = response.content
+                captured_thinking = response.thinking
+            else:
+                llm_output = await self.llm(prompt)  # type: ignore[misc]
         except Exception:
             return [], [], "", 0.0
+
+        # Record the thinking trace against the parent prediction (best-effort).
+        if captured_thinking and parent_pid is not None and self._prediction_registry is not None:
+            async with self._prediction_registry.lock:
+                try:
+                    self._prediction_registry.attach_artifact(parent_pid, thinking=captured_thinking)
+                except (KeyError, ValueError):
+                    pass
 
         # Parse the JSON response
         import json as _json
@@ -1260,6 +1936,7 @@ class VanerEngine:
         deadline: float | None,
         available_paths: list[str],
         recent_queries: list[str],
+        prediction_id_for_macro: dict[str, str] | None = None,
     ) -> int:
         """Generate and cache draft responses for the top validated macros.
 
@@ -1310,6 +1987,8 @@ class VanerEngine:
             recent_path_pool.append(path)
 
         generated = 0
+        quality_snapshot = await self._metrics_store.memory_quality_snapshot()
+        prior_draft_usefulness = float(quality_snapshot.get("draft_usefulness_rate", 0.0))
         for macro in qualifying[:max_per_cycle]:
             if deadline is not None and time.monotonic() >= deadline:
                 break
@@ -1329,6 +2008,63 @@ class VanerEngine:
                 file_summaries.append(f"- {path}: {snippet}")
             summaries_text = "\n".join(file_summaries) or "(no artefact summaries available)"
             recent_hint = "\n".join(recent_queries[-5:]) or "(no recent queries)"
+            posterior_confidence = min(1.0, float(macro.get("confidence", 0.0)))
+            # Fraction of the paths we actually tried to look up that had indexed
+            # summaries. Divide by the pool size, not a hardcoded max, so a small
+            # repo with all files indexed scores 1.0, not 1/6.
+            # When the pool returned nothing at all treat quality as neutral (0.5)
+            # so the gate doesn't block on an indexing gap rather than real evidence absence.
+            evidence_quality = len(file_summaries) / max(1, len(recent_path_pool)) if file_summaries else 0.5
+            evidence_volatility = float(self._cycle_policy_state.get("volatility_score", 0.0))
+            draft_budget_min_s = float(self._cycle_policy_state.get("draft_budget_min_ms", 2000.0)) / 1000.0
+            has_budget = deadline is None or (deadline - time.monotonic()) >= draft_budget_min_s
+            if (
+                posterior_confidence < float(self._cycle_policy_state.get("draft_posterior_threshold", 0.55))
+                or evidence_quality < float(self._cycle_policy_state.get("draft_evidence_threshold", 0.45))
+                or evidence_volatility > float(self._cycle_policy_state.get("draft_volatility_ceiling", 0.40))
+                or prior_draft_usefulness < 0.0
+                or not has_budget
+            ):
+                continue
+
+            predicted_prompt = example_query or macro_key
+            # Partial regeneration: if a recent draft cached a rewritten prompt
+            # for this macro AND volatility is low, reuse the rewrite and skip
+            # Stage A — halves LLM cost on stable codebases.
+            reused_rewrite = False
+            if evidence_volatility < 0.2:
+                try:
+                    prior = await self._cache.match(example_query or macro_key)
+                except Exception:
+                    prior = None
+                prior_enrichment = None
+                if prior is not None and prior.tier in {"full_hit", "partial_hit"}:
+                    prior_enrichment = getattr(prior, "enrichment", None)
+                if isinstance(prior_enrichment, dict):
+                    cached_prompt = prior_enrichment.get("predicted_prompt")
+                    if isinstance(cached_prompt, str) and cached_prompt.strip():
+                        predicted_prompt = cached_prompt.strip()[:500]
+                        reused_rewrite = True
+
+            if not reused_rewrite:
+                rewrite_prompt = (
+                    "Rewrite the likely next developer prompt as one concrete sentence.\n"
+                    "Stay semantically equivalent and concise.\n\n"
+                    f"Candidate prompt: {predicted_prompt}\n"
+                    f"Recent queries:\n{recent_hint}\n\n"
+                    "Return plain text only."
+                )
+                try:
+                    rewritten = await self.llm(rewrite_prompt)  # type: ignore[misc]
+                    if isinstance(rewritten, str) and rewritten.strip():
+                        predicted_prompt = rewritten.strip()[:500]
+                except Exception:
+                    pass
+            else:
+                try:
+                    await self._metrics_store.increment_counter("draft_partial_regenerated_total")
+                except Exception:
+                    pass
 
             prompt = (
                 "You are Vaner, a context engine drafting a speculative answer for a\n"
@@ -1336,7 +2072,7 @@ class VanerEngine:
                 "evidence below is insufficient to produce a confident draft, say so\n"
                 "explicitly instead of hallucinating content.\n\n"
                 f"Likely next prompt (category: {category}):\n"
-                f"  {example_query}\n\n"
+                f"  {predicted_prompt}\n\n"
                 f"Recent developer queries for context:\n{recent_hint}\n\n"
                 f"Recently touched files and their summaries:\n{summaries_text}\n\n"
                 "Draft a concise response (<= 400 words) that directly addresses the\n"
@@ -1365,9 +2101,11 @@ class VanerEngine:
             )
             enrichment: dict[str, object] = {
                 "relevant_keys": keys,
-                "source_paths": recent_path_pool[:6],
+                "source_units": recent_path_pool[:6],
                 "anchor_files": recent_path_pool[:6],
+                "anchor_units": recent_path_pool[:6],
                 "scenario_question": question,
+                "predicted_prompt": predicted_prompt,
                 "confidence": min(1.0, float(macro.get("confidence", 0.6))),
                 "rationale": f"predicted-response draft for macro '{macro_key}' ({macro.get('use_count', 0)}x uses)",
                 "exploration_source": "predicted_response",
@@ -1385,6 +2123,54 @@ class VanerEngine:
                 _log.debug("Vaner: caching predicted response for %r failed: %s", macro_key, exc)
                 continue
             generated += 1
+
+            # WS1.f: a successful draft advances the parent prediction through
+            # evidence_gathering → drafting → ready and attaches the draft +
+            # briefing so ``vaner.predictions.adopt`` returns a usable package.
+            # Best-effort: the draft is cached regardless of registry state.
+            registry = self._prediction_registry
+            if registry is not None and prediction_id_for_macro:
+                pid = prediction_id_for_macro.get(macro_key)
+                if pid and pid in registry:
+                    async with registry.lock:
+                        try:
+                            prompt_obj = registry.get(pid)
+                            if prompt_obj is not None:
+                                state = prompt_obj.run.readiness
+                                if state == "queued":
+                                    registry.transition(pid, "grounding", reason="draft produced")
+                                    state = "grounding"
+                                if state == "grounding":
+                                    registry.transition(
+                                        pid,
+                                        "evidence_gathering",
+                                        reason="draft produced",
+                                    )
+                                    state = "evidence_gathering"
+                                if state == "evidence_gathering":
+                                    registry.transition(
+                                        pid,
+                                        "drafting",
+                                        reason=f"macro '{macro_key}' draft cached",
+                                    )
+                                    state = "drafting"
+                                briefing_text = "\n".join(file_summaries) or None
+                                registry.attach_artifact(
+                                    pid,
+                                    draft=draft[:4000],
+                                    briefing=briefing_text,
+                                )
+                                if state == "drafting":
+                                    registry.transition(
+                                        pid,
+                                        "ready",
+                                        reason="draft + briefing attached",
+                                    )
+                        except (KeyError, ValueError):
+                            # Registry bookkeeping failures must not kill the
+                            # draft-caching path — the cache entry is already
+                            # persisted above.
+                            pass
         return generated
 
     async def propagate_related_keys(self, source_key: str, depth: int = 2) -> list[str]:
@@ -1710,9 +2496,10 @@ class VanerEngine:
             enrichment = row.get("enrichment", {})
             if not isinstance(enrichment, dict):
                 continue
-            # Read from both canonical keys so graph-walk entries (anchor_files)
-            # and legacy LLM entries (source_paths) are both accounted for.
-            for key in ("anchor_files", "source_paths"):
+            # ``source_paths`` is a compat mirror of ``source_units`` written by
+            # cache.py for forward/backward compatibility — read from it but
+            # don't treat its presence as an error.
+            for key in ("anchor_units", "source_units", "anchor_files", "source_paths"):
                 for rel_path in enrichment.get(key, []):
                     if isinstance(rel_path, str) and rel_path:
                         covered_paths.add(rel_path)
@@ -1872,8 +2659,9 @@ class VanerEngine:
         enrichment: dict[str, object] = {
             "relevant_keys": keys,
             # Both keys used by TieredPredictionCache._path_overlap_score
-            "source_paths": scenario.file_paths,
+            "source_units": scenario.file_paths,
             "anchor_files": scenario.file_paths,
+            "anchor_units": scenario.file_paths,
             "scenario_question": scenario.question,
             "confidence": scenario.confidence,
             "rationale": scenario.rationale,
@@ -2014,15 +2802,102 @@ class VanerEngine:
         await self._persist_learning_state(force=True)
         return model_loaded
 
+    async def _load_user_profile(self) -> None:
+        """Hydrate the in-memory UserProfile from SQLite, migrating legacy JSON if present.
+
+        The JSON file at ``self._user_profile_json_path`` is imported on first run
+        and deleted once SQLite has confirmed the data is persisted. If the JSON
+        is missing or unreadable, we start from an empty profile.
+        """
+        if self._user_profile_loaded:
+            return
+        await self._user_profile_store.migrate_from_json(self._user_profile_json_path)
+        self._user_profile = await self._user_profile_store.load()
+        self._user_profile_loaded = True
+
     def _try_load_trained_scorer(self) -> None:
         if self._intent_scorer.model_path is not None:
             return
         if not self._scorer_model_path.exists():
+            fallback_model = self._defaults_bundle.search.scorer_model_path
+            if fallback_model is None or not fallback_model.exists():
+                return
+            scorer = IntentScorer(model_path=fallback_model)
+            if scorer.model_path is not None:
+                influence = (
+                    self._defaults_bundle.search.scorer_metadata.model_influence
+                    if self._defaults_bundle.search.scorer_metadata is not None
+                    else None
+                )
+                if influence is not None:
+                    scorer.set_model_influence(float(influence))
+                self._install_calibration(scorer)
+                self._intent_scorer = scorer
+                self._trainer.scorer = scorer
             return
         scorer = IntentScorer(model_path=self._scorer_model_path)
         if scorer.model_path is not None:
+            self._install_calibration(scorer)
             self._intent_scorer = scorer
             self._trainer.scorer = scorer
+
+    def _install_calibration(self, scorer: IntentScorer) -> None:
+        """Load the isotonic calibration curve from the defaults bundle, if one ships.
+
+        Fail-closed: on malformed JSON or missing file, the scorer returns
+        uncalibrated predictions (same behavior as pre-0.8.0 bundles).
+        """
+        curve_path = self._defaults_bundle.calibration_curve_path
+        if curve_path is None or not curve_path.exists():
+            return
+        scorer.load_calibration(curve_path)
+
+    async def _grade_draft_at_serve(
+        self,
+        *,
+        prompt: str,
+        predicted_prompt: str,
+        draft_referenced_paths: set[str],
+        served_paths: set[str],
+    ) -> tuple[float, bool]:
+        """Compute best-effort draft-quality signals at serve time.
+
+        Returns ``(answer_reuse_ratio, directionally_correct)``.
+
+        - **Reuse ratio:** Jaccard of draft-referenced files vs. files actually
+          served. High values mean the draft cited the right code.
+        - **Directional correctness:** cosine similarity between the embedded
+          predicted prompt and the actual prompt (threshold 0.70). If no embed
+          callable is available, falls back to token Jaccard >= 0.40.
+
+        We fire these at serve time rather than on feedback because the signal
+        is most useful while the user still has the draft in front of them;
+        feedback-time grading is handled by ``record_scenario_feedback``.
+        """
+        reuse_ratio = jaccard_reuse(sorted(draft_referenced_paths), sorted(served_paths))
+        directional = False
+        if predicted_prompt and prompt:
+            if callable(self.embed):
+                try:
+                    vecs = await self.embed([prompt, predicted_prompt])
+                    if vecs and len(vecs) == 2 and vecs[0] and vecs[1]:
+                        a, b = vecs[0], vecs[1]
+                        dot = sum(x * y for x, y in zip(a, b, strict=False))
+                        mag_a = sum(x * x for x in a) ** 0.5
+                        mag_b = sum(y * y for y in b) ** 0.5
+                        if mag_a > 0.0 and mag_b > 0.0:
+                            directional = (dot / (mag_a * mag_b)) >= 0.70
+                except Exception:
+                    directional = False
+            if not directional:
+                # Fallback: token Jaccard on the two prompt strings.
+                prompt_tokens = {t for t in prompt.lower().split() if t}
+                predicted_tokens = {t for t in predicted_prompt.lower().split() if t}
+                if prompt_tokens or predicted_tokens:
+                    union = prompt_tokens | predicted_tokens
+                    if union:
+                        directional = (len(prompt_tokens & predicted_tokens) / len(union)) >= 0.40
+        return (reuse_ratio, directional)
 
     async def _load_learning_state(self) -> None:
         if self._learning_state_loaded:
@@ -2046,6 +2921,20 @@ class VanerEngine:
             influence = scorer_row.get("model_influence")
             if isinstance(influence, (int, float)):
                 self._intent_scorer.set_model_influence(float(influence))
+
+        cycle_state_row = await self.store.get_learning_state("cycle_policy_state")
+        if cycle_state_row:
+            try:
+                stored = cycle_state_row.get("state_json")
+                if isinstance(stored, str):
+                    parsed = json.loads(stored)
+                    if isinstance(parsed, dict):
+                        for key, value in parsed.items():
+                            if key in self._cycle_policy_state and isinstance(value, (int, float)):
+                                self._cycle_policy_state[key] = float(value)
+            except Exception:
+                pass
+
         self._learning_state_loaded = True
 
     def _mark_policy_state_dirty(self) -> None:
@@ -2061,14 +2950,30 @@ class VanerEngine:
             key="scoring_policy",
             value={
                 "policy_json": self._scoring_policy.serialize(),
-                "compatibility_version": 1,
                 "trained_at": now,
             },
         )
         scorer_state = self._intent_scorer.export_metadata()
-        scorer_state["compatibility_version"] = 1
         scorer_state["trained_at"] = now
         await self.store.upsert_learning_state(key="intent_scorer", value=scorer_state)
+        persistent_cycle_keys = {
+            "exploit_ratio",
+            "hedge_ratio",
+            "invest_ratio",
+            "no_regret_ratio",
+            "breadth_coverage_threshold",
+            "deep_drill_priority_threshold",
+            "entropy_abstain_threshold",
+            "draft_posterior_threshold",
+            "draft_evidence_threshold",
+            "draft_volatility_ceiling",
+            "draft_budget_min_ms",
+        }
+        cycle_state_to_persist = {k: v for k, v in self._cycle_policy_state.items() if k in persistent_cycle_keys}
+        await self.store.upsert_learning_state(
+            key="cycle_policy_state",
+            value={"state_json": json.dumps(cycle_state_to_persist), "trained_at": now},
+        )
         self._last_policy_persist_at = now
         self._policy_state_dirty = False
 
@@ -2526,7 +3431,23 @@ class VanerEngine:
 
     async def _refresh_behavioral_memory_from_model(self) -> None:
         await self.store.replace_habit_transitions(self._arc_model.export_habit_transitions())
-        await self.store.replace_prompt_macros(self._arc_model.mine_prompt_macros())
+        macros = self._arc_model.mine_prompt_macros()
+        await self.store.replace_prompt_macros(macros)
+        scenario_store = ScenarioStore(self.config.repo_root / ".vaner" / "scenarios.db")
+        await scenario_store.initialize()
+        for macro in macros:
+            macro_key = str(macro.get("macro_key", "")).strip()
+            if not macro_key:
+                continue
+            centroid = str(macro.get("category", "understanding"))
+            confidence = float(macro.get("confidence", 0.0))
+            support = int(macro.get("use_count", 0))
+            await scenario_store.upsert_prompt_macro_cluster(
+                macro_key=macro_key,
+                centroid_label=centroid,
+                confidence=confidence,
+                support_count=support,
+            )
         summary = self._arc_model.summarize_workflow_phase([])
         await self.store.upsert_workflow_phase_summary(
             session_id=self._session_id(),
@@ -2698,6 +3619,26 @@ def _build_exploration_llm(ecfg: ExplorationConfig) -> LLMCallable | None:
         try:
             from vaner.clients.endpoint_pool import ExplorationEndpointPool
 
+            if ecfg.economics_first_routing:
+                eligible = sorted(
+                    list(ecfg.endpoints),
+                    key=lambda entry: (
+                        float(getattr(entry, "cost_per_1k_tokens", 0.0)),
+                        float(getattr(entry, "latency_p50_ms", 800.0)),
+                        -int(getattr(entry, "context_window", 8192)),
+                    ),
+                )
+                if eligible:
+                    chosen = eligible[0]
+                    single_pool = ExplorationEndpointPool.from_endpoints([chosen])
+                    _log.info(
+                        "Vaner exploration LLM: economics-first endpoint=%s model=%s cost/1k=%s latency_p50_ms=%s",
+                        chosen.url,
+                        chosen.model,
+                        getattr(chosen, "cost_per_1k_tokens", 0.0),
+                        getattr(chosen, "latency_p50_ms", 800.0),
+                    )
+                    return single_pool
             pool = ExplorationEndpointPool.from_endpoints(list(ecfg.endpoints))
             _log.info(
                 "Vaner exploration LLM: multi-endpoint pool size=%d entries=%s",
@@ -2892,6 +3833,42 @@ def _record_idle_usage_seconds(config: VanerConfig, seconds: float) -> None:
             pass
     payload["idle_seconds_used"] = round(payload["idle_seconds_used"] + max(0.0, seconds), 3)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _synthesise_briefing_from_scenarios(prompt_obj: Any, latest_paths: list[str]) -> str:
+    """Build a lightweight briefing from a PredictedPrompt's completed scenarios.
+
+    Used by the evidence-threshold drafting transition in ``_process_scenario``
+    so arc/history/macro predictions that never trigger
+    ``_precompute_predicted_responses`` can still reach ``ready`` state with
+    an adopt-usable prepared_briefing.
+
+    The synthesised briefing is deliberately minimal — just the predicted
+    label, the current scenarios' file paths, and the most recent exploration
+    context. A richer template lives in ``_precompute_predicted_responses``
+    when the draft LLM is actually invoked.
+    """
+    spec = prompt_obj.spec
+    # Dedupe latest scenario paths; keep order so the most-recent exploration
+    # shows up first.
+    seen: set[str] = set()
+    paths: list[str] = []
+    for path in latest_paths:
+        if path and path not in seen:
+            seen.add(path)
+            paths.append(path)
+    path_lines = "\n".join(f"- {p}" for p in paths[:10]) or "(no paths)"
+    return (
+        f"# Predicted next step: {spec.label}\n\n"
+        f"{spec.description or ''}\n\n"
+        f"## Relevant files\n{path_lines}\n\n"
+        f"## Provenance\n"
+        f"- source: {spec.source}\n"
+        f"- anchor: {spec.anchor}\n"
+        f"- confidence: {spec.confidence:.2f}\n"
+        f"- scenarios_complete: {prompt_obj.run.scenarios_complete}\n"
+        f"- evidence_score: {prompt_obj.artifacts.evidence_score:.2f}\n"
+    )
 
 
 def build_default_engine(repo: Path | str | None = None, config: VanerConfig | None = None) -> VanerEngine:

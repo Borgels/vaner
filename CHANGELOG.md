@@ -7,6 +7,28 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-23
+
+### Added
+
+#### Calibrated predictions
+- `IsotonicCalibrator` in `src/vaner/intent/calibration.py` — pure-Python isotonic curve consumer, no scikit-learn at inference. Loaded from `calibration_curve.json` in the defaults bundle, applied after `IntentScorer._predict()` to convert raw GBDT scores into calibrated probabilities.
+- Fail-closed: malformed curve JSON → uncalibrated fallback (same as pre-0.8.0 bundles).
+
+#### Bundle integrity enforcement
+- `DefaultsIntegrityError` — SHA256 mismatches in the defaults manifest now **raise** instead of silently returning a sentinel path. Set `VANER_DEFAULTS_ALLOW_MISMATCH=1` for permissive mode with a telemetry log accessible via `drain_checksum_mismatches()`.
+- `DefaultsVersionError` — manifests can now declare `min_reader_version`; loader refuses bundles that require a newer vaner than the current runtime.
+
+#### Event stream
+- `scenarios` stage is now emitted by default alongside `prediction`, `calibration`, `draft`, `budget`. Operators can opt stages out with `VANER_EVENT_STAGES` env var or the `?stages=` query param.
+
+### Changed
+- Manifests in `src/vaner/defaults/*/manifest.json` are regenerated to match shipped file contents; checksum drift is now a hard error rather than a silent skip.
+- `_version_tuple` in the defaults loader parses version strings robustly (stops at first non-digit per segment).
+
+### Internal
+- Tests: +28 across `test_defaults/test_loader_checksum.py` and `test_intent/test_calibration.py` (now 519 passing).
+
 ## [0.7.1] - 2026-04-22
 
 ### Added

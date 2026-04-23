@@ -663,8 +663,10 @@ class ArtefactStore:
         token_used: int | None,
         feedback_score: float | None = None,
         corpus_id: str = "default",
+        timestamp: float | None = None,
     ) -> str:
         query_id = str(uuid.uuid4())
+        ts = float(timestamp) if timestamp is not None else time.time()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -675,7 +677,7 @@ class ArtefactStore:
                 (
                     query_id,
                     session_id,
-                    time.time(),
+                    ts,
                     query_text,
                     json.dumps(selected_paths),
                     int(hit_precomputed),
@@ -1410,6 +1412,13 @@ class ArtefactStore:
                 )
             await db.commit()
 
+    async def bootstrap_habit_transitions(self, rows: list[dict[str, object]]) -> bool:
+        existing = await self.list_habit_transitions(limit=1)
+        if existing:
+            return False
+        await self.replace_habit_transitions(rows)
+        return True
+
     async def record_habit_transition(
         self,
         *,
@@ -1488,6 +1497,13 @@ class ArtefactStore:
                     ),
                 )
             await db.commit()
+
+    async def bootstrap_prompt_macros(self, rows: list[dict[str, object]]) -> bool:
+        existing = await self.list_prompt_macros(limit=1)
+        if existing:
+            return False
+        await self.replace_prompt_macros(rows)
+        return True
 
     async def bump_prompt_macro(
         self,

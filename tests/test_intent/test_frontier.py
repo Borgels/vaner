@@ -537,3 +537,142 @@ def test_exploration_config_presets_have_correct_gates() -> None:
     assert ExplorationConfig.normal().llm_gate == "non_trivial"
     assert ExplorationConfig.aggressive().llm_gate == "non_trivial"
     assert ExplorationConfig.maximum().llm_gate == "all"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: prediction_id admission gate
+# ---------------------------------------------------------------------------
+
+
+def test_prediction_gate_rejects_stale_parent():
+    admissible_ids: set[str] = {"pred-active"}
+    frontier = ExplorationFrontier(
+        prediction_gate=lambda pid: pid in admissible_ids,
+    )
+    active_scen = ExplorationScenario(
+        id=file_set_fingerprint(["a.py"]),
+        file_paths=["a.py"],
+        anchor="x",
+        source="arc",
+        priority=0.8,
+        prediction_id="pred-active",
+    )
+    stale_scen = ExplorationScenario(
+        id=file_set_fingerprint(["b.py"]),
+        file_paths=["b.py"],
+        anchor="x",
+        source="arc",
+        priority=0.8,
+        prediction_id="pred-stale",
+    )
+    untagged_scen = ExplorationScenario(
+        id=file_set_fingerprint(["c.py"]),
+        file_paths=["c.py"],
+        anchor="x",
+        source="arc",
+        priority=0.8,
+        prediction_id=None,
+    )
+    assert frontier.push(active_scen) is True
+    assert frontier.push(stale_scen) is False
+    # Untagged scenarios bypass the gate.
+    assert frontier.push(untagged_scen) is True
+
+
+def test_prediction_id_preserved_through_admission():
+    frontier = ExplorationFrontier()
+    scen = ExplorationScenario(
+        id=file_set_fingerprint(["x.py"]),
+        file_paths=["x.py"],
+        anchor="x",
+        source="arc",
+        priority=0.8,
+        prediction_id="pred-123",
+    )
+    assert frontier.push(scen) is True
+    popped = frontier.pop()
+    assert popped is not None
+    assert popped.prediction_id == "pred-123"
+
+
+# ---------------------------------------------------------------------------
+# WS1.a — seed_from_* prediction_id tagging
+# ---------------------------------------------------------------------------
+
+
+def test_seed_from_arc_tags_scenarios_with_prediction_id():
+    """When seed_from_arc receives a prediction_id_for_category callback, every
+    admitted arc-scenario carries the parent's prediction_id."""
+    from vaner.intent.arcs import ConversationArcModel
+
+    arc = ConversationArcModel()
+    for q in ["implement a parser", "add tests for parser", "fix exception in parser"]:
+        arc.observe(q)
+    available_paths = [
+        "src/parser.py",
+        "src/tests/test_parser.py",
+        "src/debug.py",
+        "docs/testing.md",
+    ]
+    frontier = ExplorationFrontier()
+    frontier.seed_from_arc(
+        arc,
+        recent_queries=["add tests for parser"],
+        available_paths=available_paths,
+        prediction_id_for_category=lambda cat: f"pid-{cat}",
+    )
+
+    tagged = [s for s in frontier._pending.values() if s.prediction_id is not None]
+    assert tagged, "expected at least one arc-seeded scenario to be tagged"
+    for scenario in tagged:
+        assert scenario.prediction_id.startswith("pid-")
+
+
+def test_seed_from_arc_no_tagging_when_callback_absent():
+    """Back-compat: calling seed_from_arc without the new kwarg leaves
+    prediction_id untouched (None)."""
+    from vaner.intent.arcs import ConversationArcModel
+
+    arc = ConversationArcModel()
+    arc.observe("implement a parser")
+    available_paths = ["src/parser.py", "src/tests/test_parser.py"]
+    frontier = ExplorationFrontier()
+    frontier.seed_from_arc(arc, recent_queries=[], available_paths=available_paths)
+    for scenario in frontier._pending.values():
+        assert scenario.prediction_id is None
+
+
+def test_seed_from_prompt_macros_tags_scenarios_with_prediction_id():
+    available_paths = ["src/review.py", "src/audit.py"]
+    macros = [
+        {"macro_key": "review diff", "category": "review", "use_count": 3, "confidence": 0.7},
+    ]
+    frontier = ExplorationFrontier()
+    frontier.seed_from_prompt_macros(
+        macros,
+        available_paths,
+        prediction_id_for_macro=lambda mk: f"pid-{mk}",
+    )
+    tagged = [s for s in frontier._pending.values() if s.prediction_id is not None]
+    assert tagged
+    for scenario in tagged:
+        assert scenario.prediction_id == "pid-review diff"
+
+
+def test_seed_from_patterns_tags_scenarios_with_prediction_id():
+    patterns = [
+        {
+            "predicted_keys": ["file_summary:src/parser.py"],
+            "confirmation_count": 4,
+            "trigger_keywords": "parser",
+        },
+    ]
+    frontier = ExplorationFrontier()
+    frontier.seed_from_patterns(
+        patterns,
+        prediction_id_for_pattern=lambda p: "pid-pattern-1",
+    )
+    tagged = [s for s in frontier._pending.values() if s.prediction_id is not None]
+    assert tagged
+    for scenario in tagged:
+        assert scenario.prediction_id == "pid-pattern-1"

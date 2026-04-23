@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from vaner.api import aquery
 from vaner.cli.commands.config import load_config, set_compute_value
 from vaner.daemon.cockpit_html import build_cockpit_html
+from vaner.events.bus import build_stage_payloads
 from vaner.intent.arcs import derive_prompt_macro
 from vaner.models.config import VanerConfig
 from vaner.models.decision import DecisionRecord
@@ -278,12 +279,16 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
 
     @app.get("/status")
     async def cockpit_status() -> JSONResponse:
+        quality = await metrics_store.memory_quality_snapshot()
+        calibration = await metrics_store.calibration_snapshot()
         return JSONResponse(
             {
                 "health": "ok",
                 "gateway_enabled": gateway_enabled,
                 "compute": config.compute.model_dump(mode="json"),
                 "backend": config.backend.model_dump(mode="json"),
+                "prediction_metrics": quality,
+                "prediction_calibration": calibration,
             }
         )
 
@@ -369,6 +374,40 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                     yield f"data: {json.dumps(event)}\n\n"
             finally:
                 decision_stream_subscribers.discard(queue)
+
+        return StreamingResponse(_event_stream(), media_type="text/event-stream")
+
+    @app.get("/events/stream")
+    async def stream_events(stages: str | None = None, limit: int | None = None) -> StreamingResponse:
+        selected = {item.strip() for item in (stages or "").split(",") if item.strip()}
+        if not selected:
+            selected = {"prediction", "calibration", "draft", "budget"}
+
+        async def _event_stream():
+            sent = 0
+            last_decision_fingerprint = ""
+            stage_fingerprints: dict[str, str] = {}
+            while True:
+                if "decisions" in selected:
+                    recent = _load_recent_decisions(config.repo_root, limit=10)
+                    decision_payload = json.dumps(recent, sort_keys=True)
+                    if decision_payload != last_decision_fingerprint:
+                        yield f"data: {json.dumps({'stage': 'decisions', 'payload': recent})}\n\n"
+                        last_decision_fingerprint = decision_payload
+                        sent += 1
+                stage_payloads = await build_stage_payloads(metrics_store)
+                for stage, payload in stage_payloads.items():
+                    if stage not in selected:
+                        continue
+                    serialized = json.dumps(payload, sort_keys=True)
+                    if serialized != stage_fingerprints.get(stage, ""):
+                        yield f"data: {json.dumps({'stage': stage, 'payload': payload})}\n\n"
+                        stage_fingerprints[stage] = serialized
+                        sent += 1
+                if limit is not None and sent >= max(1, limit):
+                    return
+                yield ": keepalive\n\n"
+                await asyncio.sleep(2.0)
 
         return StreamingResponse(_event_stream(), media_type="text/event-stream")
 

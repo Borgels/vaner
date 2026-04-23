@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import type { CycleState, ModelState } from '../api/usePipelineEvents'
+import type { BucketBudgets } from '../types'
 
 export interface SystemVitalsProps {
   live: boolean
@@ -9,6 +10,23 @@ export interface SystemVitalsProps {
   model: ModelState
   scenarioCount: number
   pendingLlm: number
+  predictionMetrics?: {
+    next_prompt_top1_rate?: number
+    next_prompt_top3_rate?: number
+    next_prompt_logloss?: number
+    next_prompt_brier?: number
+    draft_usefulness_rate?: number
+    budget_utilization?: number
+    predictive_lead_seconds_avg?: number
+    confidence_conditioned_utility?: number
+    bucket_budgets?: BucketBudgets
+  } | null
+  predictionCalibration?: Array<{
+    bucket: number
+    confidence_mid: number
+    count: number
+    accuracy: number
+  }> | null
 }
 
 function formatDuration(ms: number | null | undefined): string {
@@ -42,7 +60,38 @@ function ema(values: number[]): number {
  * flight, whether the model is currently busy, and the recent LLM latency.
  * All values are derived from the unified event bus — nothing is polled.
  */
-export function SystemVitals({ live, mode, cycle, model, scenarioCount, pendingLlm }: SystemVitalsProps) {
+export function SystemVitals({
+  live,
+  mode,
+  cycle,
+  model,
+  scenarioCount,
+  pendingLlm,
+  predictionMetrics,
+  predictionCalibration,
+}: SystemVitalsProps) {
+  const calibrationEce =
+    predictionCalibration && predictionCalibration.length
+      ? predictionCalibration.reduce(
+          (acc, row) => acc + (Math.abs(row.accuracy - row.confidence_mid) * row.count),
+          0,
+        ) / Math.max(1, predictionCalibration.reduce((acc, row) => acc + row.count, 0))
+      : null
+  const reliabilityMini =
+    predictionCalibration && predictionCalibration.length
+      ? predictionCalibration
+          .map((row) => {
+            if (row.count <= 0) {
+              return '·'
+            }
+            const gap = Math.abs(row.accuracy - row.confidence_mid)
+            if (gap < 0.05) return '█'
+            if (gap < 0.1) return '▓'
+            if (gap < 0.2) return '▒'
+            return '░'
+          })
+          .join('')
+      : null
   const [now, setNow] = useState(() => Date.now() / 1000)
 
   useEffect(() => {
@@ -137,6 +186,54 @@ export function SystemVitals({ live, mode, cycle, model, scenarioCount, pendingL
       <VitalRow label="cycles" value={`${cycle.totalCycles}`} />
       <VitalRow label="artefacts" value={`${cycle.artefactsWritten}`} />
       <VitalRow label="scenarios" value={`${scenarioCount}`} />
+      <VitalRow
+        label="pred top1"
+        value={predictionMetrics?.next_prompt_top1_rate != null ? `${(predictionMetrics.next_prompt_top1_rate * 100).toFixed(1)}%` : '—'}
+      />
+      <VitalRow
+        label="pred top3"
+        value={predictionMetrics?.next_prompt_top3_rate != null ? `${(predictionMetrics.next_prompt_top3_rate * 100).toFixed(1)}%` : '—'}
+      />
+      <VitalRow
+        label="calib brier"
+        value={predictionMetrics?.next_prompt_brier != null ? predictionMetrics.next_prompt_brier.toFixed(3) : '—'}
+      />
+      <VitalRow label="calib ece" value={calibrationEce != null ? calibrationEce.toFixed(3) : '—'} />
+      <VitalRow label="reliability" value={reliabilityMini ?? '—'} mono />
+      {predictionCalibration && predictionCalibration.length ? (
+        <ReliabilityChart rows={predictionCalibration} />
+      ) : null}
+      {predictionMetrics?.bucket_budgets ? (
+        <BucketBudgetPanel bucketBudgets={predictionMetrics.bucket_budgets} />
+      ) : null}
+      <VitalRow
+        label="pred logloss"
+        value={predictionMetrics?.next_prompt_logloss != null ? predictionMetrics.next_prompt_logloss.toFixed(3) : '—'}
+      />
+      <VitalRow
+        label="draft useful"
+        value={predictionMetrics?.draft_usefulness_rate != null ? `${(predictionMetrics.draft_usefulness_rate * 100).toFixed(1)}%` : '—'}
+      />
+      <VitalRow
+        label="budget util"
+        value={predictionMetrics?.budget_utilization != null ? `${(predictionMetrics.budget_utilization * 100).toFixed(1)}%` : '—'}
+      />
+      <VitalRow
+        label="lead time"
+        value={
+          predictionMetrics?.predictive_lead_seconds_avg != null
+            ? `${predictionMetrics.predictive_lead_seconds_avg.toFixed(1)}s`
+            : '—'
+        }
+      />
+      <VitalRow
+        label="conf utility"
+        value={
+          predictionMetrics?.confidence_conditioned_utility != null
+            ? predictionMetrics.confidence_conditioned_utility.toFixed(3)
+            : '—'
+        }
+      />
       {model.totalErrors > 0 ? (
         <VitalRow
           label="llm errors"
@@ -185,4 +282,195 @@ function VitalRow({ label, value, emphasize, mono, title }: VitalRowProps) {
       </span>
     </div>
   )
+}
+
+interface ReliabilityChartProps {
+  rows: Array<{ bucket: number; confidence_mid: number; count: number; accuracy: number }>
+}
+
+/**
+ * Compact SVG reliability diagram: each bucket is a vertical bar whose height
+ * is observed accuracy, width is proportional to bucket count. A diagonal line
+ * marks perfect calibration; gap-to-diagonal shows miscalibration direction.
+ */
+function ReliabilityChart({ rows }: ReliabilityChartProps) {
+  const width = 160
+  const height = 60
+  const padX = 4
+  const padY = 6
+  const plotW = width - padX * 2
+  const plotH = height - padY * 2
+  const maxCount = Math.max(1, ...rows.map((r) => r.count))
+  const barWidth = plotW / Math.max(1, rows.length)
+
+  return (
+    <div
+      aria-label="Calibration reliability"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        paddingTop: 4,
+      }}
+    >
+      <div className="mono" style={{ fontSize: 9, color: 'var(--fg-4)', letterSpacing: 0.8 }}>
+        RELIABILITY
+      </div>
+      <svg
+        width={width}
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Reliability diagram"
+        style={{ display: 'block' }}
+      >
+        {/* Frame */}
+        <rect
+          x={padX}
+          y={padY}
+          width={plotW}
+          height={plotH}
+          fill="none"
+          stroke="var(--line-hair)"
+          strokeWidth={0.5}
+        />
+        {/* Diagonal reference line — perfect calibration */}
+        <line
+          x1={padX}
+          y1={padY + plotH}
+          x2={padX + plotW}
+          y2={padY}
+          stroke="var(--fg-4)"
+          strokeWidth={0.5}
+          strokeDasharray="2,2"
+          opacity={0.6}
+        />
+        {rows.map((row, idx) => {
+          if (row.count <= 0) return null
+          const x = padX + idx * barWidth + 1
+          const barH = row.accuracy * plotH
+          const y = padY + plotH - barH
+          const intensity = Math.max(0.18, Math.min(1, row.count / maxCount))
+          const gap = Math.abs(row.accuracy - row.confidence_mid)
+          // Under-confident: bar above diagonal; over-confident: below.
+          // Color accent scales with miscalibration size.
+          const fill =
+            gap < 0.05
+              ? 'var(--ok)'
+              : gap < 0.15
+                ? 'var(--accent)'
+                : 'var(--amber)'
+          return (
+            <rect
+              key={idx}
+              x={x}
+              y={y}
+              width={Math.max(1, barWidth - 2)}
+              height={barH}
+              fill={fill}
+              opacity={intensity}
+            >
+              <title>
+                {`bucket ${(row.confidence_mid * 100).toFixed(0)}%: ` +
+                  `acc=${(row.accuracy * 100).toFixed(0)}% n=${row.count}`}
+              </title>
+            </rect>
+          )
+        })}
+      </svg>
+    </div>
+  )
+}
+
+interface BucketBudgetPanelProps {
+  bucketBudgets: BucketBudgets
+}
+
+/**
+ * Per-bucket allocated / used / util for the portfolio allocator.
+ * Gives operators direct visibility into how the cycle budget split actually
+ * played out (vs. just the aggregate ``budget util`` scalar).
+ */
+function BucketBudgetPanel({ bucketBudgets }: BucketBudgetPanelProps) {
+  const buckets: Array<{ key: keyof BucketBudgets; label: string }> = [
+    { key: 'exploit', label: 'exploit' },
+    { key: 'hedge', label: 'hedge' },
+    { key: 'invest', label: 'invest' },
+    { key: 'no_regret', label: 'no regret' },
+  ]
+
+  return (
+    <div
+      aria-label="Per-bucket budget"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        paddingTop: 4,
+      }}
+    >
+      <div className="mono" style={{ fontSize: 9, color: 'var(--fg-4)', letterSpacing: 0.8 }}>
+        BUDGET BUCKETS
+      </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr auto auto auto',
+          columnGap: 8,
+          rowGap: 2,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 10,
+          color: 'var(--fg-2)',
+        }}
+      >
+        <span style={{ color: 'var(--fg-4)', fontSize: 9 }}>bucket</span>
+        <span style={{ color: 'var(--fg-4)', fontSize: 9, textAlign: 'right' }}>alloc</span>
+        <span style={{ color: 'var(--fg-4)', fontSize: 9, textAlign: 'right' }}>used</span>
+        <span style={{ color: 'var(--fg-4)', fontSize: 9, textAlign: 'right' }}>util</span>
+        {buckets.map(({ key, label }) => {
+          const row = bucketBudgets[key]
+          const alloc = row?.allocated_ms ?? 0
+          const used = row?.used_ms ?? 0
+          const util = alloc > 0 ? used / alloc : 0
+          const utilColor =
+            util > 1.1 ? 'var(--err)' : util > 0.9 ? 'var(--ok)' : util > 0.5 ? 'var(--accent)' : 'var(--fg-3)'
+          return (
+            <>
+              <span key={`${key}-label`} style={{ color: 'var(--fg-3)' }}>
+                {label}
+              </span>
+              <span
+                key={`${key}-alloc`}
+                style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+              >
+                {formatBudget(alloc)}
+              </span>
+              <span
+                key={`${key}-used`}
+                style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+              >
+                {formatBudget(used)}
+              </span>
+              <span
+                key={`${key}-util`}
+                style={{
+                  textAlign: 'right',
+                  fontVariantNumeric: 'tabular-nums',
+                  color: utilColor,
+                }}
+              >
+                {alloc > 0 ? `${(util * 100).toFixed(0)}%` : '—'}
+              </span>
+            </>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function formatBudget(ms: number): string {
+  if (!ms || ms <= 0) return '—'
+  if (ms < 1000) return `${ms.toFixed(0)}ms`
+  return `${(ms / 1000).toFixed(1)}s`
 }

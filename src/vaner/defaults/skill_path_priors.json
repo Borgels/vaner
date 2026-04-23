@@ -1,0 +1,9 @@
+{
+  "schema_version": "1",
+  "__future_compat__": {},
+  "priors": {
+    "debugging": ["src/", "tests/"],
+    "planning": ["docs/", "ARCHITECTURE.md"],
+    "implementation": ["src/", "ui/"]
+  }
+}

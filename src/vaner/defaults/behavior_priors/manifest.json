@@ -1,0 +1,31 @@
+{
+  "schema_version": "1",
+  "description": "Behavior priors shipped from the training pipeline.",
+  "files": {
+    "arc_transitions": {
+      "path": "../arc_transitions.json",
+      "sha256": "6ee10b9f6abea1cbf2d93ebef0241a96b086e12f0fd7f5bd74054f90504d0c6d",
+      "size_bytes": 8806
+    },
+    "phase_classifier_weights": {
+      "path": "../phase_classifier_weights.json",
+      "sha256": "83a751ec7e8e80dc6b7c53f2135d592d1837ccdbc55e796908f35b2afa65de32",
+      "size_bytes": 2869
+    },
+    "category_centroids": {
+      "path": "../category_centroids.json",
+      "sha256": "f813dfd67a1b43b673643cc97f22e1e361d3a449a3238641f92925a75ccf9695",
+      "size_bytes": 706
+    },
+    "prompt_macros_seed": {
+      "path": "../prompt_macros_seed.json",
+      "sha256": "b405979fc9f2a81b0e647896ff75a8c7d1dba106dc3032f0dac3be78d115d5b8",
+      "size_bytes": 485
+    },
+    "habit_transitions_seed": {
+      "path": "../habit_transitions_seed.json",
+      "sha256": "40e56b71f61001fa8bb79e1a3988cfd5402831b4526e87ba8b10070aed028538",
+      "size_bytes": 470
+    }
+  }
+}

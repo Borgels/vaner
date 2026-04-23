@@ -58,6 +58,8 @@ def test_mcp_protocol_roundtrip(temp_repo: Path, monkeypatch: pytest.MonkeyPatch
                 "vaner.warm",
                 "vaner.inspect",
                 "vaner.debug.trace",
+                "vaner.predictions.active",
+                "vaner.predictions.adopt",
             }
 
             status = await session.call_tool("vaner.status", {})

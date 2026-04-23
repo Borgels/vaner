@@ -26,3 +26,25 @@ Freshness can downgrade from `fresh` to `recent`/`stale` when memory conflict is
 4) vaner.expand (if deeper inspection needed)
 5) vaner.feedback
 ```
+
+## vaner.resolve — optional briefing + draft
+
+The resolve tool returns `evidence` pointers and a 400-char `summary` by default.
+That's shape-compatible with naive RAG responses. To receive the richer output
+Vaner actually assembles internally, pass one or both of these flags:
+
+- `include_briefing: bool` (default `false`) — adds `prepared_briefing` to the
+  response: the full formatted markdown of pre-compiled artefact summaries.
+  Accompanied by `briefing_token_used` + `briefing_token_budget` for sizing the
+  downstream prompt.
+- `include_predicted_response: bool` (default `false`) — adds `predicted_response`
+  when a draft answer was speculatively cached during precompute (null when
+  none is available).
+- `include_metrics: bool` (default `false`) — adds a `metrics` object to the
+  response carrying runtime economics for this call:
+  `briefing_tokens`, `evidence_tokens`, `total_context_tokens`, `cache_tier`,
+  `freshness`, `elapsed_ms`, `estimated_cost_per_1k_tokens`, `estimated_cost_usd`.
+  Pair with the optional `estimated_cost_per_1k_tokens` request field (e.g.
+  `2.50` for gpt-4o input pricing) to get a dollar estimate per resolve call.
+
+All three flags are additive; default callers see the legacy shape unchanged.

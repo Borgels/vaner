@@ -32,6 +32,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from vaner.models.config import ExplorationEndpoint
@@ -43,6 +44,10 @@ FAILURE_COOLDOWN_SECONDS = 60.0
 FAILURE_THRESHOLD = 3
 
 LLMCallable = Callable[[str], Awaitable[str]]
+
+
+class ConfigurationError(ValueError):
+    """Raised when endpoint configuration is invalid for a backend."""
 
 
 @dataclass(slots=True)
@@ -77,6 +82,12 @@ class _PoolEntry:
     weight: float
     client: LLMCallable
     health: EndpointHealth = field(default_factory=EndpointHealth)
+    latency_p50_ms: float = 800.0
+    context_window: int = 8192
+    reasoning_depth_hint: str = "medium"
+    structured_output_reliability: float = 0.7
+    cost_per_1k_tokens: float = 0.0
+    cost_ceiling_per_cycle_usd: float = 0.0
 
 
 class ExplorationEndpointPool:
@@ -129,12 +140,58 @@ class ExplorationEndpointPool:
             if ep.backend == "ollama":
                 client: LLMCallable = ollama_llm(model=ep.model, base_url=ep.url, timeout=timeout)
             else:
-                api_key = (_env(ep.api_key_env) if ep.api_key_env else None) or "EMPTY"
+                api_key = (_env(ep.api_key_env) if ep.api_key_env else None) or ""
+                if not api_key and not cls._is_local_url(ep.url):
+                    raise ConfigurationError(
+                        f"missing API key for endpoint '{ep.url}'. Set '{ep.api_key_env}' or use a localhost endpoint without auth."
+                    )
                 client = openai_llm(model=ep.model, api_key=api_key, base_url=ep.url, timeout=timeout)
-            live.append(_PoolEntry(url=ep.url, model=ep.model, weight=ep.weight, client=client))
+            live.append(
+                _PoolEntry(
+                    url=ep.url,
+                    model=ep.model,
+                    weight=ep.weight,
+                    client=client,
+                    latency_p50_ms=float(getattr(ep, "latency_p50_ms", 800.0)),
+                    context_window=int(getattr(ep, "context_window", 8192)),
+                    reasoning_depth_hint=str(getattr(ep, "reasoning_depth_hint", "medium")),
+                    structured_output_reliability=float(getattr(ep, "structured_output_reliability", 0.7)),
+                    cost_per_1k_tokens=float(getattr(ep, "cost_per_1k_tokens", 0.0)),
+                    cost_ceiling_per_cycle_usd=float(getattr(ep, "cost_ceiling_per_cycle_usd", 0.0)),
+                )
+            )
         if not live:
             raise ValueError("no live endpoints after filtering zero-weight entries")
         return cls(live)
+
+    @staticmethod
+    def _is_local_url(url: str) -> bool:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return host in {"localhost", "127.0.0.1", "::1"}
+
+    async def pick_by_economics(
+        self,
+        *,
+        max_latency_ms: float,
+        min_context_window: int,
+        min_reliability: float,
+        max_cost_per_1k_tokens: float,
+    ) -> _PoolEntry | None:
+        now = time.monotonic()
+        async with self._lock:
+            candidates = [
+                entry
+                for entry in self._entries
+                if entry.health.cooldown_until <= now
+                and entry.latency_p50_ms <= max_latency_ms
+                and entry.context_window >= min_context_window
+                and entry.structured_output_reliability >= min_reliability
+                and (max_cost_per_1k_tokens <= 0.0 or entry.cost_per_1k_tokens <= max_cost_per_1k_tokens)
+            ]
+            if not candidates:
+                return None
+            return min(candidates, key=lambda entry: (entry.cost_per_1k_tokens, entry.latency_p50_ms))
 
     async def _pick(self) -> _PoolEntry:
         """Choose the next endpoint via weighted round-robin, skipping cooldowns."""

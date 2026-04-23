@@ -20,6 +20,7 @@ Derived metrics:
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -27,6 +28,17 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+_LEAD_TIME_BUCKETS: tuple[tuple[str, float], ...] = (
+    ("lt_1s", 1.0),
+    ("lt_3s", 3.0),
+    ("lt_10s", 10.0),
+    ("lt_30s", 30.0),
+    ("lt_60s", 60.0),
+    ("lt_300s", 300.0),
+    ("lt_900s", 900.0),
+    ("gte_900s", float("inf")),
+)
 
 
 @dataclass
@@ -173,6 +185,44 @@ class MetricsStore:
                     name TEXT PRIMARY KEY,
                     value REAL NOT NULL DEFAULT 0,
                     updated_at REAL NOT NULL
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prediction_events (
+                    id TEXT PRIMARY KEY,
+                    timestamp REAL NOT NULL,
+                    top1_label TEXT NOT NULL,
+                    top1_confidence REAL NOT NULL,
+                    probs_json TEXT NOT NULL
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS draft_events (
+                    id TEXT PRIMARY KEY,
+                    timestamp REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    predicted_prompt_similarity REAL NOT NULL DEFAULT 0.0,
+                    evidence_overlap REAL NOT NULL DEFAULT 0.0,
+                    answer_reuse_ratio REAL NOT NULL DEFAULT 0.0,
+                    directional_correct INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS counterfactual_misses (
+                    id TEXT PRIMARY KEY,
+                    timestamp REAL NOT NULL,
+                    prompt TEXT NOT NULL,
+                    miss_type TEXT NOT NULL,
+                    helpful_context_json TEXT NOT NULL DEFAULT '[]',
+                    wasted_branches_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
                 )
                 """
             )
@@ -399,11 +449,14 @@ class MetricsStore:
             await db.commit()
 
     async def _counters_map(self) -> dict[str, float]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT name, value FROM memory_quality_counters")
-            rows = await cur.fetchall()
-        return {str(row["name"]): float(row["value"]) for row in rows}
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute("SELECT name, value FROM memory_quality_counters")
+                rows = await cur.fetchall()
+            return {str(row["name"]): float(row["value"]) for row in rows}
+        except Exception:
+            return {}
 
     async def memory_quality_snapshot(self) -> dict[str, float]:
         counters = await self._counters_map()
@@ -411,7 +464,7 @@ class MetricsStore:
         promotions = max(1.0, counters.get("promotions_total", 0.0))
         corrections = max(1.0, counters.get("corrections_submitted", 0.0))
         demotions = max(1.0, counters.get("demotions_total", 0.0))
-        return {
+        snapshot: dict[str, float] = {
             "predictive_hit_rate": counters.get("predictive_hit_total", 0.0) / resolves,
             "stale_hit_rate": counters.get("stale_hit_total", 0.0) / resolves,
             "promotion_precision": counters.get("promotions_still_trusted_total", 0.0) / promotions,
@@ -420,4 +473,281 @@ class MetricsStore:
             "demotion_recovery_rate": counters.get("demotion_recovery_total", 0.0) / demotions,
             "trusted_evidence_avg": counters.get("trusted_evidence_total", 0.0) / max(1.0, counters.get("trusted_scenarios_count", 0.0)),
             "abstain_rate": counters.get("abstain_total", 0.0) / resolves,
+            "next_prompt_top1_rate": counters.get("next_prompt_top1_correct_total", 0.0)
+            / max(1.0, counters.get("next_prompt_predictions_total", 0.0)),
+            "next_prompt_top3_rate": counters.get("next_prompt_top3_correct_total", 0.0)
+            / max(1.0, counters.get("next_prompt_predictions_total", 0.0)),
+            "next_prompt_logloss": counters.get("next_prompt_logloss_total", 0.0)
+            / max(1.0, counters.get("next_prompt_predictions_total", 0.0)),
+            "next_prompt_brier": counters.get("next_prompt_brier_total", 0.0)
+            / max(1.0, counters.get("next_prompt_predictions_total", 0.0)),
+            "draft_usefulness_rate": counters.get("draft_useful_total", 0.0) / max(1.0, counters.get("draft_served_total", 0.0)),
+            "budget_utilization": counters.get("cycle_budget_used_ms_total", 0.0)
+            / max(1.0, counters.get("cycle_budget_allocated_ms_total", 0.0)),
+            "predictive_lead_seconds_avg": counters.get("predictive_lead_seconds_total", 0.0)
+            / max(1.0, counters.get("predictive_lead_events_total", 0.0)),
+            "confidence_conditioned_utility": counters.get("confidence_conditioned_utility_total", 0.0)
+            / max(1.0, counters.get("next_prompt_predictions_total", 0.0)),
+            "cycle_budget_allocated_ms_total": counters.get("cycle_budget_allocated_ms_total", 0.0),
+            "cycle_budget_used_ms_total": counters.get("cycle_budget_used_ms_total", 0.0),
+            "bucket_budget_exploit_allocated_ms_total": counters.get("bucket_budget_exploit_allocated_ms_total", 0.0),
+            "bucket_budget_hedge_allocated_ms_total": counters.get("bucket_budget_hedge_allocated_ms_total", 0.0),
+            "bucket_budget_invest_allocated_ms_total": counters.get("bucket_budget_invest_allocated_ms_total", 0.0),
+            "bucket_budget_no_regret_allocated_ms_total": counters.get("bucket_budget_no_regret_allocated_ms_total", 0.0),
+            "bucket_budget_exploit_used_ms_total": counters.get("bucket_budget_exploit_used_ms_total", 0.0),
+            "bucket_budget_hedge_used_ms_total": counters.get("bucket_budget_hedge_used_ms_total", 0.0),
+            "bucket_budget_invest_used_ms_total": counters.get("bucket_budget_invest_used_ms_total", 0.0),
+            "bucket_budget_no_regret_used_ms_total": counters.get("bucket_budget_no_regret_used_ms_total", 0.0),
+            "draft_predicted_prompt_similarity_total": counters.get("draft_predicted_prompt_similarity_total", 0.0),
+            "draft_evidence_overlap_total": counters.get("draft_evidence_overlap_total", 0.0),
+            "draft_answer_reuse_ratio_total": counters.get("draft_answer_reuse_ratio_total", 0.0),
+            "draft_directionally_correct_total": counters.get("draft_directionally_correct_total", 0.0),
         }
+        for bucket_name, _ in _LEAD_TIME_BUCKETS:
+            snapshot[f"predictive_lead_hist_{bucket_name}"] = counters.get(f"predictive_lead_hist_{bucket_name}", 0.0)
+        return snapshot
+
+    async def calibration_snapshot(self) -> list[dict[str, float]]:
+        counters = await self._counters_map()
+        rows: list[dict[str, float]] = []
+        for bucket_idx in range(10):
+            total = counters.get(f"calibration_bucket_{bucket_idx}_total", 0.0)
+            correct = counters.get(f"calibration_bucket_{bucket_idx}_correct", 0.0)
+            confidence_mid = (bucket_idx + 0.5) / 10.0
+            rows.append(
+                {
+                    "bucket": float(bucket_idx),
+                    "confidence_mid": confidence_mid,
+                    "count": total,
+                    "accuracy": (correct / total) if total > 0 else 0.0,
+                }
+            )
+        return rows
+
+    async def record_next_prompt_prediction(
+        self,
+        *,
+        probabilities: dict[str, float],
+        actual_label: str,
+    ) -> None:
+        if not probabilities:
+            return
+        total = sum(max(0.0, float(v)) for v in probabilities.values())
+        if total <= 0.0:
+            return
+        normalized = {k: max(0.0, float(v)) / total for k, v in probabilities.items()}
+        ranked = sorted(normalized.items(), key=lambda item: item[1], reverse=True)
+        top1_label, top1_conf = ranked[0]
+        top3_labels = {label for label, _ in ranked[:3]}
+        p_actual = max(1e-9, normalized.get(actual_label, 0.0))
+        logloss = -math.log(p_actual)
+        labels = set(normalized.keys())
+        labels.add(actual_label)
+        brier = 0.0
+        for label in labels:
+            y = 1.0 if label == actual_label else 0.0
+            p = normalized.get(label, 0.0)
+            brier += (p - y) ** 2
+        brier /= max(1, len(labels))
+        confidence = float(top1_conf)
+        confidence_utility = confidence * (1.0 if top1_label == actual_label else -1.0)
+        bucket_idx = min(9, max(0, int(confidence * 10.0)))
+
+        async with aiosqlite.connect(self.db_path) as db:
+            now = time.time()
+            await db.execute(
+                """
+                INSERT INTO prediction_events (id, timestamp, top1_label, top1_confidence, probs_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), now, top1_label, confidence, json.dumps(normalized, sort_keys=True)),
+            )
+
+            async def _inc(name: str, delta: float) -> None:
+                await db.execute(
+                    """
+                    INSERT INTO memory_quality_counters (name, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        value = value + excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    (name, float(delta), now),
+                )
+
+            await _inc("next_prompt_predictions_total", 1.0)
+            await _inc("next_prompt_top1_correct_total", 1.0 if top1_label == actual_label else 0.0)
+            await _inc("next_prompt_top3_correct_total", 1.0 if actual_label in top3_labels else 0.0)
+            await _inc("next_prompt_logloss_total", logloss)
+            await _inc("next_prompt_brier_total", brier)
+            await _inc("confidence_conditioned_utility_total", confidence_utility)
+            await _inc(f"calibration_bucket_{bucket_idx}_total", 1.0)
+            await _inc(f"calibration_bucket_{bucket_idx}_correct", 1.0 if top1_label == actual_label else 0.0)
+            await db.commit()
+
+    async def record_cycle_budget(
+        self,
+        *,
+        allocated_ms: float,
+        used_ms: float,
+        bucket: str | None = None,
+    ) -> None:
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+
+            async def _inc(name: str, delta: float) -> None:
+                await db.execute(
+                    """
+                    INSERT INTO memory_quality_counters (name, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        value = value + excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    (name, float(delta), now),
+                )
+
+            await _inc("cycle_budget_allocated_ms_total", max(0.0, float(allocated_ms)))
+            await _inc("cycle_budget_used_ms_total", max(0.0, float(used_ms)))
+            if bucket:
+                await _inc(f"bucket_budget_{bucket}_allocated_ms_total", max(0.0, float(allocated_ms)))
+                await _inc(f"bucket_budget_{bucket}_used_ms_total", max(0.0, float(used_ms)))
+            await db.commit()
+
+    async def record_predictive_lead_seconds(self, seconds: float) -> None:
+        value = max(0.0, float(seconds))
+        await self.increment_counter("predictive_lead_seconds_total", delta=value)
+        await self.increment_counter("predictive_lead_events_total", delta=1.0)
+        for bucket_name, ceiling in _LEAD_TIME_BUCKETS:
+            if value < ceiling:
+                await self.increment_counter(f"predictive_lead_hist_{bucket_name}", delta=1.0)
+                break
+
+    async def record_draft_event(
+        self,
+        *,
+        status: str,
+        predicted_prompt_similarity: float = 0.0,
+        evidence_overlap: float = 0.0,
+        answer_reuse_ratio: float = 0.0,
+        directional_correct: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        status_key = status.strip().lower()
+        if status_key not in {"served", "useful", "wrong", "unused"}:
+            status_key = "served"
+        payload = metadata or {}
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO draft_events (
+                    id, timestamp, status, predicted_prompt_similarity, evidence_overlap,
+                    answer_reuse_ratio, directional_correct, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    now,
+                    status_key,
+                    max(0.0, min(1.0, float(predicted_prompt_similarity))),
+                    max(0.0, min(1.0, float(evidence_overlap))),
+                    max(0.0, min(1.0, float(answer_reuse_ratio))),
+                    int(bool(directional_correct)),
+                    json.dumps(payload, sort_keys=True),
+                ),
+            )
+            await db.execute(
+                """
+                INSERT INTO memory_quality_counters (name, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    value = value + excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (f"draft_{status_key}_total", 1.0, now),
+            )
+            if status_key == "served":
+                await db.execute(
+                    """
+                    INSERT INTO memory_quality_counters (name, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        value = value + excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    ("draft_predicted_prompt_similarity_total", max(0.0, min(1.0, float(predicted_prompt_similarity))), now),
+                )
+                await db.execute(
+                    """
+                    INSERT INTO memory_quality_counters (name, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        value = value + excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    ("draft_evidence_overlap_total", max(0.0, min(1.0, float(evidence_overlap))), now),
+                )
+                await db.execute(
+                    """
+                    INSERT INTO memory_quality_counters (name, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        value = value + excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    ("draft_answer_reuse_ratio_total", max(0.0, min(1.0, float(answer_reuse_ratio))), now),
+                )
+                if directional_correct:
+                    await db.execute(
+                        """
+                        INSERT INTO memory_quality_counters (name, value, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(name) DO UPDATE SET
+                            value = value + excluded.value,
+                            updated_at = excluded.updated_at
+                        """,
+                        ("draft_directionally_correct_total", 1.0, now),
+                    )
+            await db.commit()
+
+    async def record_counterfactual_miss(
+        self,
+        *,
+        prompt: str,
+        miss_type: str,
+        helpful_context: list[str],
+        wasted_branches: list[str],
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO counterfactual_misses (
+                    id, timestamp, prompt, miss_type, helpful_context_json, wasted_branches_json, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    now,
+                    prompt[:4000],
+                    miss_type[:128],
+                    json.dumps(helpful_context[:50]),
+                    json.dumps(wasted_branches[:50]),
+                    json.dumps(metadata or {}, sort_keys=True),
+                ),
+            )
+            await db.execute(
+                """
+                INSERT INTO memory_quality_counters (name, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    value = value + excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                ("counterfactual_miss_total", 1.0, now),
+            )
+            await db.commit()

@@ -61,6 +61,29 @@ class ConflictSignal(BaseModel):
     reason: str = ""
 
 
+class ResolutionMetrics(BaseModel):
+    """Runtime economics for a single ``vaner.resolve`` call.
+
+    Populated when the caller sets ``include_metrics=True`` on the request.
+    Gives the consumer (the backend LLM or its agent host) a way to see the
+    token/latency/cache characteristics of the context they just received —
+    so they can size their prompt, budget their cost, and decide whether to
+    trust the cache tier without guessing.
+    """
+
+    briefing_tokens: int = 0
+    evidence_tokens: int = 0
+    total_context_tokens: int = 0
+    cache_tier: str = "miss"  # "miss" | "warm_start" | "partial_hit" | "full_hit" | "predictive_hit"
+    freshness: str = "fresh"  # "fresh" | "recent" | "stale"
+    elapsed_ms: float = 0.0
+    # Rough cost estimate in USD assuming ``total_context_tokens`` are billed
+    # at ``estimated_cost_per_1k_tokens``. The rate is a hint — the caller can
+    # override with their actual pricing. Defaults to 0 (unknown model pricing).
+    estimated_cost_per_1k_tokens: float = 0.0
+    estimated_cost_usd: float = 0.0
+
+
 class Resolution(BaseModel):
     intent: str
     confidence: float
@@ -72,6 +95,28 @@ class Resolution(BaseModel):
     context_envelope: ContextEnvelope | None = None
     provenance: Provenance
     resolution_id: str
+    # Opt-in, additive. When a consumer passes ``include_briefing=True`` on
+    # the resolve request, ``prepared_briefing`` carries the full formatted
+    # context briefing (pre-compiled artefact summaries) — the output that
+    # differentiates Vaner from a plain top-K RAG response. Default None.
+    prepared_briefing: str | None = None
+    # When ``include_predicted_response=True`` and a draft answer was cached
+    # speculatively during precompute, it is returned verbatim. Consumers use
+    # this to skip a round-trip when Vaner's prediction is high-confidence.
+    predicted_response: str | None = None
+    # Honest token accounting for the briefing field so callers can size the
+    # downstream prompt. Both default 0 when ``prepared_briefing`` is None.
+    briefing_token_used: int = 0
+    briefing_token_budget: int = 0
+    # When ``include_metrics=True``, carries per-call runtime economics. Lets
+    # consumers observe Vaner's cache-tier / token / latency / cost footprint
+    # without a side channel.
+    metrics: ResolutionMetrics | None = None
+    # Phase 4 / Phase C: when this Resolution was produced by a
+    # ``vaner.predictions.adopt`` call, carries the source prediction's id so
+    # downstream agents know the prepared package came from an adopted
+    # prediction (and can surface that provenance in their UI).
+    adopted_from_prediction_id: str | None = None
 
 
 class Abstain(BaseModel):

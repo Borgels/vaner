@@ -60,6 +60,8 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
             "vaner.warm",
             "vaner.inspect",
             "vaner.debug.trace",
+            "vaner.predictions.active",
+            "vaner.predictions.adopt",
         }
 
         monkeypatch.setattr("vaner.mcp.server.aprecompute", lambda *args, **kwargs: asyncio.sleep(0, result=1))

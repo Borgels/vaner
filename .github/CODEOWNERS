@@ -1,1 +1,13 @@
 * @abolsen
+
+# Ponder engine — intent, scheduling, learning, defaults
+src/vaner/intent/ @abolsen
+src/vaner/defaults/ @abolsen
+src/vaner/learning/ @abolsen
+src/vaner/telemetry/ @abolsen
+
+# Cockpit UI
+ui/cockpit/ @abolsen
+
+# CI and release
+.github/ @abolsen

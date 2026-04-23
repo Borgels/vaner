@@ -44,7 +44,42 @@ jobs:
       - name: Pre-commit
         run: pre-commit run --all-files
       - name: Type check
-        run: mypy src/vaner/__init__.py src/vaner/server.py src/vaner/cli/main.py
+        run: |
+          mypy src/vaner/__init__.py src/vaner/server.py src/vaner/cli/main.py
+          # 0.8.0 modules — strict scope, only 4 disables (untyped-def/call
+          # from third-party libs and unused-ignore). Keep this tight.
+          mypy \
+            --disable-error-code no-untyped-def \
+            --disable-error-code no-untyped-call \
+            --disable-error-code untyped-decorator \
+            --disable-error-code unused-ignore \
+            src/vaner/intent/calibration.py \
+            src/vaner/intent/ev.py \
+            src/vaner/intent/abstain.py \
+            src/vaner/store/profile_store.py
+          # Legacy scope — broader disables tolerated while we incrementally
+          # tighten types module-by-module.
+          mypy \
+            --disable-error-code no-untyped-def \
+            --disable-error-code no-untyped-call \
+            --disable-error-code untyped-decorator \
+            --disable-error-code call-arg \
+            --disable-error-code arg-type \
+            --disable-error-code operator \
+            --disable-error-code assignment \
+            --disable-error-code no-redef \
+            --disable-error-code comparison-overlap \
+            --disable-error-code unused-ignore \
+            src/vaner/mcp/server.py src/vaner/daemon/http.py \
+            src/vaner/intent/allocator.py \
+            src/vaner/intent/taxonomy.py \
+            src/vaner/intent/volatility.py \
+            src/vaner/intent/profile.py \
+            src/vaner/learning/counterfactual.py \
+            src/vaner/defaults/loader.py
+      - name: Replay regression
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: pytest tests/test_replay_regression.py -v
       - name: Tests (non-windows)
         if: matrix.os != 'windows-latest'
         run: pytest tests -m "not slow and not integration" --cov=src/vaner --cov-fail-under=70

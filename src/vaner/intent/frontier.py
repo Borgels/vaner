@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -111,6 +112,11 @@ class ExplorationScenario:
     # frontier's configured ``max_depth`` by up to this many hops. Children
     # decrement the bonus by 1 per LLM hop, so the drill-down is bounded.
     depth_bonus: int = 0
+    # Phase 4: parent prediction — when set, this scenario was spawned to
+    # advance a specific PredictedPrompt. The frontier consults
+    # ``prediction_gate`` during admission so stale-prediction scenarios are
+    # rejected early instead of wasting a pop.
+    prediction_id: str | None = None
 
     def is_trivial(self) -> bool:
         """True for cheap, structural graph-walk scenarios that skip the LLM."""
@@ -157,6 +163,7 @@ class ExplorationFrontier:
         dedup_threshold: float = 0.7,
         saturation_coverage: float = 0.90,
         scoring_policy: ScoringPolicy | None = None,
+        prediction_gate: Callable[[str], bool] | None = None,
     ) -> None:
         self.max_depth = max_depth
         self.max_size = max_size
@@ -164,6 +171,11 @@ class ExplorationFrontier:
         self.dedup_threshold = dedup_threshold
         self.saturation_coverage = saturation_coverage
         self._scoring_policy = scoring_policy or ScoringPolicy()
+        # Phase 4: called during push() for scenarios with a prediction_id.
+        # Returns True if the parent prediction is still admissible (non-stale);
+        # False rejects the scenario before it enters the heap. None means
+        # "no prediction layer in use" — the frontier behaves as before.
+        self._prediction_gate = prediction_gate
 
         # (neg_priority, counter, scenario) heap — min-heap, so we negate priority
         self._heap: list[tuple[float, int, ExplorationScenario]] = []
@@ -299,11 +311,18 @@ class ExplorationFrontier:
         arc_model: ConversationArcModel,
         recent_queries: list[str],
         available_paths: list[str],
+        *,
+        prediction_id_for_category: Callable[[str], str | None] | None = None,
     ) -> int:
         """Seed from conversation arc model predictions.
 
         Predicts the next interaction category (testing, debugging, etc.) and
         selects paths that match that category's keywords.
+
+        When ``prediction_id_for_category`` is supplied, each admitted scenario
+        is tagged with the corresponding enrolled ``PredictedPrompt.id``. The
+        engine uses the tag to route registry updates (evidence, readiness
+        transitions) back to the parent prediction during the LLM cycle.
 
         Returns the number of scenarios admitted.
         """
@@ -371,12 +390,19 @@ class ExplorationFrontier:
                 depth=0,
                 reason=(f"arc model: {phase} → {category} (p={confidence:.2f})" + (f" [{prediction_reason}]" if prediction_reason else "")),
                 layer="tactical",
+                prediction_id=(prediction_id_for_category(category) if prediction_id_for_category else None),
             )
             if self.push(scenario):
                 admitted += 1
         return admitted
 
-    def seed_from_prompt_macros(self, prompt_macros: list[dict[str, object]], available_paths: list[str]) -> int:
+    def seed_from_prompt_macros(
+        self,
+        prompt_macros: list[dict[str, object]],
+        available_paths: list[str],
+        *,
+        prediction_id_for_macro: Callable[[str], str | None] | None = None,
+    ) -> int:
         """Seed from repeated prompt macros mined from query history."""
         self._total_available = max(self._total_available, len(available_paths))
         admitted = 0
@@ -413,12 +439,18 @@ class ExplorationFrontier:
                 depth=0,
                 reason=f"prompt macro '{macro_key}' ({use_count}x) in {category}",
                 layer="tactical",
+                prediction_id=(prediction_id_for_macro(macro_key) if prediction_id_for_macro else None),
             )
             if self.push(scenario):
                 admitted += 1
         return admitted
 
-    def seed_from_patterns(self, validated_patterns: list[dict[str, object]]) -> int:
+    def seed_from_patterns(
+        self,
+        validated_patterns: list[dict[str, object]],
+        *,
+        prediction_id_for_pattern: Callable[[dict[str, object]], str | None] | None = None,
+    ) -> int:
         """Seed from empirically validated patterns.
 
         Patterns are confirmed hit histories — high-confidence, no LLM needed.
@@ -455,6 +487,7 @@ class ExplorationFrontier:
                 depth=0,
                 reason=f"validated pattern (confirmed {confirmation_count}x)",
                 layer="tactical",
+                prediction_id=(prediction_id_for_pattern(pattern) if prediction_id_for_pattern else None),
             )
             if self.push(scenario):
                 admitted += 1
@@ -525,6 +558,10 @@ class ExplorationFrontier:
         if scenario.id in self._explored:
             return False
 
+        # Phase 4: reject scenarios whose parent prediction has been staled.
+        if scenario.prediction_id is not None and self._prediction_gate is not None and not self._prediction_gate(scenario.prediction_id):
+            return False
+
         effective_priority = scenario.priority * self._multipliers.get(scenario.source, 1.0)
 
         # Upgrade existing pending entry if the new effective priority is higher
@@ -542,6 +579,7 @@ class ExplorationFrontier:
                     reason=scenario.reason,
                     layer=scenario.layer,
                     depth_bonus=max(existing.depth_bonus, scenario.depth_bonus),
+                    prediction_id=scenario.prediction_id or existing.prediction_id,
                 )
                 self._pending[scenario.id] = upgraded
                 self._push_counter += 1
@@ -584,6 +622,7 @@ class ExplorationFrontier:
             reason=scenario.reason,
             layer=scenario.layer,
             depth_bonus=max(0, scenario.depth_bonus),
+            prediction_id=scenario.prediction_id,
         )
         self._pending[scenario.id] = admitted_scenario
         self._pending_file_sets.append(file_set)

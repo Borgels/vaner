@@ -1,0 +1,452 @@
+# SPDX-License-Identifier: Apache-2.0
+"""PredictionRegistry — in-memory lifecycle manager for PredictedPrompts in a cycle.
+
+The registry is the engine-side owner of the prediction population for the
+current precompute cycle. It enrols predictions, attaches scenarios and
+artifacts, moves predictions through the readiness state machine, rebalances
+weight based on observed yield, and stales the population when the user turn
+shifts.
+
+This module deliberately holds no business logic beyond bookkeeping + the
+rebalance arithmetic. Scheduling decisions stay in engine.py and frontier.py;
+the registry just records what they did.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+
+from vaner.intent.prediction import (
+    PredictedPrompt,
+    PredictionArtifacts,
+    PredictionRun,
+    PredictionSpec,
+    ReadinessState,
+    is_transition_allowed,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PredictionEvent:
+    """A discrete event emitted by the registry. Phase C wires this into SSE."""
+
+    kind: str
+    prediction_id: str
+    payload: dict[str, object]
+    ts: float
+
+
+EventListener = Callable[[PredictionEvent], None]
+
+
+class InvalidTransitionError(ValueError):
+    """Raised when a caller attempts an illegal readiness transition."""
+
+
+class PredictionRegistry:
+    """In-memory store + lifecycle manager for PredictedPrompts in one cycle."""
+
+    MIN_FLOOR_WEIGHT = 0.05
+    """Minimum fraction of cycle attention any admitted prediction may hold.
+
+    Below this floor, a prediction would effectively be starved; we'd rather
+    stale it than keep it nominally alive.
+    """
+
+    MIN_TOKEN_BUDGET = 128
+    """Absolute minimum token budget per admitted prediction.
+
+    When ``cycle_token_pool`` is small, the weight-derived token budget can
+    collapse to a handful of tokens that no real LLM call can use. Clamp at
+    this floor so a budget either buys a real inference or the prediction is
+    staled outright.
+    """
+
+    MAX_THINKING_TRACES = 10
+    """Cap the per-prediction thinking-trace ring buffer.
+
+    Reasoning models can emit many thousands of thinking tokens per call.
+    Keeping every trace unbounded blows up cycle memory and inflates the
+    adopt-Resolution payload. Newer traces evict older ones FIFO.
+    """
+
+    MAX_THINKING_TRACE_BYTES = 32_000
+    """Per-trace byte cap — longer traces are truncated with an ellipsis."""
+
+    def __init__(
+        self,
+        *,
+        cycle_token_pool: int = 4096,
+        listener: EventListener | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._predictions: dict[str, PredictedPrompt] = {}
+        self._cycle_token_pool = max(0, int(cycle_token_pool))
+        self._listener = listener
+        self._clock = clock
+        # Phase 4 / WS1.c: registry is accessed from concurrent
+        # ``_process_scenario`` workers. Callers may ``async with registry.lock:``
+        # around sequences that must be atomic (e.g. rebalance).
+        self.lock = asyncio.Lock()
+
+    # -----------------------------------------------------------------------
+    # Enrolment
+    # -----------------------------------------------------------------------
+
+    def enroll(self, spec: PredictionSpec, *, initial_weight: float) -> PredictedPrompt:
+        """Enrol a prediction with an initial weight. Returns the enrolled PredictedPrompt.
+
+        Raises ValueError if a prediction with the same id is already enrolled.
+        """
+        if spec.id in self._predictions:
+            raise ValueError(f"prediction already enrolled: {spec.id}")
+        weight = max(self.MIN_FLOOR_WEIGHT, float(initial_weight))
+        run = PredictionRun(
+            weight=weight,
+            token_budget=max(self.MIN_TOKEN_BUDGET, int(self._cycle_token_pool * weight)),
+            updated_at=self._clock(),
+        )
+        prompt = PredictedPrompt(spec=spec, run=run, artifacts=PredictionArtifacts())
+        self._predictions[spec.id] = prompt
+        self._emit(
+            "prediction.enrolled",
+            spec.id,
+            {
+                "label": spec.label,
+                "source": spec.source,
+                "confidence": spec.confidence,
+                "weight": weight,
+                "token_budget": run.token_budget,
+                "hypothesis_type": spec.hypothesis_type,
+                "specificity": spec.specificity,
+            },
+        )
+        return prompt
+
+    def enroll_batch(
+        self,
+        specs: Iterable[PredictionSpec],
+    ) -> list[PredictedPrompt]:
+        """Enrol multiple specs in one shot, allocating initial weights by the
+        plan's formula:
+
+            w_i = max(floor, confidence_i) / sum(max(floor, confidence_j))
+
+        The floor is self.MIN_FLOOR_WEIGHT. Returns the enrolled PredictedPrompts.
+        """
+        materialized = list(specs)
+        if not materialized:
+            return []
+        floored = [max(self.MIN_FLOOR_WEIGHT, float(s.confidence)) for s in materialized]
+        total = sum(floored)
+        if total <= 0:
+            return []
+        weights = [f / total for f in floored]
+        return [self.enroll(spec, initial_weight=w) for spec, w in zip(materialized, weights, strict=True)]
+
+    def merge(
+        self,
+        specs: Iterable[PredictionSpec],
+        *,
+        cycle_n: int,
+    ) -> list[PredictedPrompt]:
+        """Merge a fresh batch of specs into the existing registry.
+
+        For each spec:
+          - If the id already exists (spec was observed in a prior cycle), **update
+            in place**: refresh spec.confidence, bump ``run.last_seen_cycle``, clear
+            any stale ``invalidation_reason`` from a prior cycle, keep
+            ``scenarios_spawned``/``scenarios_complete``/``tokens_used``/``model_calls``
+            /``evidence_score``/``thinking_traces``/``prepared_briefing`` /
+            ``draft_answer`` / ``file_content_hashes`` untouched. A ``spent``
+            prediction stays spent — it surfaces again only after invalidation
+            clears its evidence.
+          - If the id is new, enrol it via ``enroll_batch``'s weight formula.
+
+        Predictions that existed before but are **not** in ``specs`` this cycle
+        are NOT removed. Missing-from-cycle is not a reason to stale — use
+        invalidation signals via ``apply_invalidation_signals`` for that.
+
+        This is the WS6 replacement for per-cycle rebuild. Called from the
+        engine's ``_merge_prediction_specs``.
+        """
+        materialized = list(specs)
+        if not materialized:
+            return []
+        existing: list[PredictionSpec] = []
+        new_specs: list[PredictionSpec] = []
+        for spec in materialized:
+            if spec.id in self._predictions:
+                existing.append(spec)
+            else:
+                new_specs.append(spec)
+
+        touched: list[PredictedPrompt] = []
+
+        # In-place update for specs we've seen before.
+        for spec in existing:
+            prompt = self._predictions[spec.id]
+            # Refresh immutable-in-spec fields that *can* shift between cycles
+            # (confidence can go up or down; label/description are stable by id).
+            prompt.spec = spec  # type: ignore[misc]  # slots dataclass allows reassign
+            prompt.run.last_seen_cycle = cycle_n
+            prompt.run.updated_at = self._clock()
+            # Don't reset invalidation_reason here — it gets cleared by
+            # apply_invalidation_signals when the cause is gone.
+            touched.append(prompt)
+
+        # Enrol brand-new specs using the existing batch weight formula.
+        if new_specs:
+            fresh = self.enroll_batch(new_specs)
+            for prompt in fresh:
+                prompt.run.last_seen_cycle = cycle_n
+            touched.extend(fresh)
+
+        return touched
+
+    # -----------------------------------------------------------------------
+    # Attach / record
+    # -----------------------------------------------------------------------
+
+    def attach_scenario(self, prediction_id: str, scenario_id: str) -> None:
+        prompt = self._require(prediction_id)
+        if scenario_id in prompt.artifacts.scenario_ids:
+            return
+        prompt.artifacts.scenario_ids.append(scenario_id)
+        prompt.run.scenarios_spawned += 1
+        prompt.run.updated_at = self._clock()
+        # First scenario attached → we are no longer queued.
+        if prompt.run.readiness == "queued":
+            self._transition(prompt, "grounding", reason="first scenario attached")
+
+    def complete_scenario(self, prediction_id: str, scenario_id: str) -> None:
+        """Mark a scenario as completed under its parent prediction."""
+        prompt = self._require(prediction_id)
+        if scenario_id not in prompt.artifacts.scenario_ids:
+            return
+        prompt.run.scenarios_complete += 1
+        prompt.run.updated_at = self._clock()
+
+    def record_call(self, prediction_id: str, *, tokens_used: int) -> None:
+        prompt = self._require(prediction_id)
+        prompt.run.model_calls += 1
+        prompt.run.tokens_used += max(0, int(tokens_used))
+        prompt.run.updated_at = self._clock()
+        self._emit(
+            "prediction.progress",
+            prediction_id,
+            {
+                "tokens_used": prompt.run.tokens_used,
+                "token_budget": prompt.run.token_budget,
+                "scenarios_complete": prompt.run.scenarios_complete,
+                "evidence_score": prompt.artifacts.evidence_score,
+                "model_calls": prompt.run.model_calls,
+            },
+        )
+
+    def record_evidence(self, prediction_id: str, *, delta_score: float) -> None:
+        prompt = self._require(prediction_id)
+        prompt.artifacts.evidence_score += float(delta_score)
+        prompt.run.updated_at = self._clock()
+        self._emit(
+            "prediction.progress",
+            prediction_id,
+            {
+                "tokens_used": prompt.run.tokens_used,
+                "token_budget": prompt.run.token_budget,
+                "scenarios_complete": prompt.run.scenarios_complete,
+                "evidence_score": prompt.artifacts.evidence_score,
+                "model_calls": prompt.run.model_calls,
+            },
+        )
+
+    def record_adoption(self, prediction_id: str) -> None:
+        """Record that a prediction was adopted by a downstream agent.
+
+        Adoption is the strongest positive signal a prediction can get —
+        stronger than any evidence_score increment, because it reflects the
+        agent's *actual* decision to inject the prepared package. We bump
+        the prediction's evidence_score by a large-but-bounded amount so
+        the next ``rebalance()`` reallocates budget toward it, and set
+        ``spent=True`` so adopted predictions don't immediately resurface on
+        the next cycle — they come back only after invalidation clears the
+        evidence that justified them.
+
+        No state machine transition — adoption can happen from any non-stale
+        state (typically ``ready`` via the HTTP/MCP path, but also ``drafting``
+        for partially-prepared predictions).
+        """
+        prompt = self._predictions.get(prediction_id)
+        if prompt is None:
+            return
+        prompt.artifacts.evidence_score += 1.0
+        prompt.run.spent = True
+        prompt.run.updated_at = self._clock()
+        self._emit(
+            "prediction.artifact_added",
+            prediction_id,
+            {"kind": "adoption"},
+        )
+
+    def attach_artifact(
+        self,
+        prediction_id: str,
+        *,
+        draft: str | None = None,
+        briefing: str | None = None,
+        thinking: str | None = None,
+    ) -> None:
+        prompt = self._require(prediction_id)
+        kinds: list[str] = []
+        if draft is not None:
+            prompt.artifacts.draft_answer = draft
+            kinds.append("draft")
+        if briefing is not None:
+            prompt.artifacts.prepared_briefing = briefing
+            kinds.append("briefing")
+        if thinking is not None:
+            truncated = thinking
+            if len(truncated) > self.MAX_THINKING_TRACE_BYTES:
+                truncated = truncated[: self.MAX_THINKING_TRACE_BYTES].rstrip() + "…"
+            prompt.artifacts.thinking_traces.append(truncated)
+            # FIFO ring buffer — keep only the most recent MAX_THINKING_TRACES.
+            if len(prompt.artifacts.thinking_traces) > self.MAX_THINKING_TRACES:
+                overflow = len(prompt.artifacts.thinking_traces) - self.MAX_THINKING_TRACES
+                del prompt.artifacts.thinking_traces[:overflow]
+            kinds.append("thinking")
+        if not kinds:
+            return
+        prompt.run.updated_at = self._clock()
+        for kind in kinds:
+            self._emit(
+                "prediction.artifact_added",
+                prediction_id,
+                {"kind": kind},
+            )
+
+    # -----------------------------------------------------------------------
+    # Readiness transitions
+    # -----------------------------------------------------------------------
+
+    def transition(self, prediction_id: str, to_state: ReadinessState, *, reason: str = "") -> None:
+        """Move a prediction to `to_state`. Raises InvalidTransitionError on illegal moves."""
+        prompt = self._require(prediction_id)
+        self._transition(prompt, to_state, reason=reason)
+
+    def stale_all(self, reason: str) -> list[str]:
+        """Mark every non-terminal prediction stale. Returns list of staled ids.
+
+        Called on new user-turn observation or other context-shift signals.
+        """
+        staled: list[str] = []
+        for prompt in list(self._predictions.values()):
+            if prompt.run.readiness == "stale":
+                continue
+            try:
+                self._transition(prompt, "stale", reason=reason)
+                staled.append(prompt.id)
+            except InvalidTransitionError:
+                continue
+        return staled
+
+    # -----------------------------------------------------------------------
+    # Rebalance
+    # -----------------------------------------------------------------------
+
+    def rebalance(self) -> dict[str, float]:
+        """Redistribute remaining weight based on observed per-prediction yield.
+
+        Yield = Δ(evidence_score) / tokens_used since enrolment, measured
+        on currently-active (non-terminal) predictions. The rebalance respects
+        the MIN_FLOOR_WEIGHT so no admitted prediction is starved.
+
+        Returns the new weight map (prediction_id -> weight).
+        """
+        active = [p for p in self._predictions.values() if not p.is_terminal()]
+        if not active:
+            return {}
+
+        yields: dict[str, float] = {}
+        for prompt in active:
+            tokens = max(1, prompt.run.tokens_used)
+            yields[prompt.id] = max(0.0, prompt.artifacts.evidence_score) / tokens
+
+        total_yield = sum(yields.values())
+        if total_yield <= 0:
+            # No evidence yet — preserve existing weights.
+            return {p.id: p.run.weight for p in active}
+
+        # Normalise yields into weight shares, then apply the starvation
+        # floor post-normalisation so predictions with non-zero yield stay
+        # proportional to their observed usefulness. Without the post-step
+        # floor, every tiny yield collapses to MIN_FLOOR_WEIGHT and the
+        # rebalance loses its signal (weaker predictions end up equal-weight
+        # with adopted ones).
+        new_weights: dict[str, float] = {}
+        for prompt in active:
+            share = yields[prompt.id] / total_yield
+            weight = max(self.MIN_FLOOR_WEIGHT, share)
+            prompt.run.weight = weight
+            prompt.run.token_budget = max(self.MIN_TOKEN_BUDGET, int(self._cycle_token_pool * weight))
+            prompt.run.updated_at = self._clock()
+            new_weights[prompt.id] = weight
+        return new_weights
+
+    # -----------------------------------------------------------------------
+    # Introspection
+    # -----------------------------------------------------------------------
+
+    def get(self, prediction_id: str) -> PredictedPrompt | None:
+        return self._predictions.get(prediction_id)
+
+    def active(self) -> list[PredictedPrompt]:
+        """Snapshot of currently adoptable predictions.
+
+        Excludes ``stale`` (terminal) and ``spent`` (already adopted — the
+        prediction shouldn't resurface until its underlying evidence is
+        invalidated, at which point the cycle will rebuild it fresh).
+        """
+        return [p for p in self._predictions.values() if not p.is_terminal() and not p.run.spent]
+
+    def all(self) -> list[PredictedPrompt]:
+        return list(self._predictions.values())
+
+    def __len__(self) -> int:
+        return len(self._predictions)
+
+    def __contains__(self, prediction_id: object) -> bool:
+        return prediction_id in self._predictions
+
+    # -----------------------------------------------------------------------
+    # Internal
+    # -----------------------------------------------------------------------
+
+    def _require(self, prediction_id: str) -> PredictedPrompt:
+        prompt = self._predictions.get(prediction_id)
+        if prompt is None:
+            raise KeyError(f"no such prediction: {prediction_id}")
+        return prompt
+
+    def _transition(self, prompt: PredictedPrompt, to_state: ReadinessState, *, reason: str) -> None:
+        from_state = prompt.run.readiness
+        if from_state == to_state:
+            return
+        if not is_transition_allowed(from_state, to_state):
+            raise InvalidTransitionError(f"illegal transition {from_state} -> {to_state} for prediction {prompt.id}")
+        prompt.run.readiness = to_state
+        prompt.run.updated_at = self._clock()
+        self._emit(
+            "prediction.readiness_changed",
+            prompt.id,
+            {"from_state": from_state, "to_state": to_state, "reason": reason},
+        )
+        if to_state == "stale":
+            self._emit("prediction.staled", prompt.id, {"reason": reason})
+
+    def _emit(self, kind: str, prediction_id: str, payload: dict[str, object]) -> None:
+        if self._listener is None:
+            return
+        self._listener(PredictionEvent(kind=kind, prediction_id=prediction_id, payload=payload, ts=self._clock()))

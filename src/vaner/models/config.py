@@ -56,6 +56,21 @@ class BackendConfig(BaseModel):
     fallback_api_key_env: str = "OPENAI_API_KEY"
     remote_budget_per_hour: int = 60
     request_timeout_seconds: float = 30.0
+    # Phase 4 / Phase B: reasoning-LLM support.
+    # reasoning_mode tells Vaner how to handle thinking-block preambles:
+    #   - "off": disable thinking at the provider level when possible; reject
+    #     responses that still emit a preamble.
+    #   - "allowed": thinking permitted; adapter strips it; trace captured.
+    #   - "required": provider must emit a thinking preamble; error otherwise.
+    #   - "provider_default": trust the adapter/provider default (status quo).
+    reasoning_mode: Literal["off", "allowed", "required", "provider_default"] = "provider_default"
+    # Default cap on content tokens (applied when the engine doesn't supply a
+    # per-prediction budget).
+    max_response_tokens: int = 2048
+    # Extra tokens allowed for thinking when reasoning_mode != "off".
+    reasoning_token_budget: int = 8192
+    # Try response_format={"type":"json_object"} before tolerant parsing.
+    prefer_structured_output: bool = True
 
 
 class GenerationConfig(BaseModel):
@@ -150,6 +165,9 @@ class IntentConfig(BaseModel):
     lookback_turns: int = 8
     skills_loop_enabled: bool = True
     max_feedback_events_per_cycle: int = 5
+    domain: Literal["coding", "research", "writing", "ops"] = "coding"
+    embedding_classifier_enabled: bool = True
+    cross_workspace_profile: bool = False
 
 
 class ExplorationEndpoint(BaseModel):
@@ -182,6 +200,13 @@ class ExplorationEndpoint(BaseModel):
     OpenAI-compatible server; ``ollama`` uses the native ``/api/generate``
     protocol.
     """
+
+    latency_p50_ms: float = 800.0
+    context_window: int = 8192
+    reasoning_depth_hint: Literal["low", "medium", "high"] = "medium"
+    structured_output_reliability: float = 0.7
+    cost_per_1k_tokens: float = 0.0
+    cost_ceiling_per_cycle_usd: float = 0.0
 
 
 class ExplorationConfig(BaseModel):
@@ -337,6 +362,9 @@ class ExplorationConfig(BaseModel):
     API keys, when needed, are read from the environment variable named by
     ``api_key_env`` on each entry.
     """
+    economics_first_routing: bool = True
+    """When true, prefer the cheapest endpoint that satisfies minimum latency,
+    context window, and reliability requirements for exploration tasks."""
 
     # ------------------------------------------------------------------
     # Embedding model for semantic cache matching
