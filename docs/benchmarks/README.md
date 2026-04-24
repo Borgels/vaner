@@ -95,6 +95,13 @@ raw JSON (for full transparency) and the rendered markdown.
 | **2026-04-23** | **Qwen/Qwen3.5-35B-A3B-FP8** | **spark01 DGX (vLLM)** | **4** | **1800s cap, mult={0.5,1.0,2.0}** | **+1.73 (best @ mult=2.0)** | [run](https://github.com/abolsen/Vaner-train/tree/main/eval/runs/session/idle-curve-spark01-) |
 | **2026-04-23** | **qwen3.5:35b Q4_K_M** | **RTX 5090 (ollama)** | **4** | **1800s cap, mult={0.5,1.0,2.0}** | **+1.22 (best @ mult=0.5)** | [run](https://github.com/abolsen/Vaner-train/tree/main/eval/runs/session/idle-curve-local-) |
 
+## Deep-Run maturation bench
+
+The 0.8.3 / 0.8.4 Deep-Run work has its own bench family (maturation-loop effectiveness, judge agreement κ, probationary rollback rate) distinct from the session-replay answer-quality bench above. See:
+
+- [0.8.3 — Deep-Run validation status (gate definitions, hard-safety-gate status)](./0.8.3-deep-run-validation.md) — numbers deferred until labelled corpus lands.
+- [0.8.4 — Deep-Run bench infrastructure validation (pipeline run on 16-session synthetic corpus)](./0.8.4-deep-run-infra.md) — pipeline wires cleanly, 4 of 5 ship gates pass in scaffolding mode, persistence-rate-in-band fails by construction until drafter integration in 0.8.5.x.
+
 ### What the numbers say
 
 - **Idle time matters.** The early runs capped precompute at 60 seconds per turn. The authored session traces encode 3–15 minute idle windows (representative of real user pacing). Re-running with the cap lifted to 30 minutes flips the headline numbers dramatically:
