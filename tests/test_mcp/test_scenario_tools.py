@@ -62,6 +62,8 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
             "vaner.debug.trace",
             "vaner.predictions.active",
             "vaner.predictions.adopt",
+            # 0.8.5 WS5: interactive MCP Apps dashboard.
+            "vaner.predictions.dashboard",
             # WS7: workspace goals.
             "vaner.goals.list",
             "vaner.goals.declare",
