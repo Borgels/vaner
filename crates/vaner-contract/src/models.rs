@@ -274,7 +274,9 @@ mod tests {
         assert!(!decoded.artifacts.has_draft);
     }
 
-    const RESOLUTION_SAMPLE: &str = r#"{
+    // `r##"..."##` — the content contains `"#` (markdown-heading inside a
+    // string literal) which would otherwise close `r#"..."#` prematurely.
+    const RESOLUTION_SAMPLE: &str = r##"{
         "intent": "Write the next test",
         "confidence": 0.8,
         "summary": "summary",
@@ -286,7 +288,7 @@ mod tests {
         "briefing_token_used": 100,
         "briefing_token_budget": 2048,
         "adopted_from_prediction_id": "p-1"
-    }"#;
+    }"##;
 
     #[test]
     fn resolution_decodes_with_optional_fields() {
