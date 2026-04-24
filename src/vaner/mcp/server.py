@@ -904,6 +904,46 @@ def build_server(
             if not query:
                 await _record("error")
                 return _json_result({"code": "invalid_input", "message": "query is required"}, is_error=True)
+
+            # 0.8.5 WS4: a fresh adopted-package handoff on disk short-circuits
+            # resolution — the user already picked a prepared prediction on
+            # the desktop (or equivalent UI) and we should return that
+            # resolution verbatim rather than spending model budget on a
+            # fresh resolve. Consume (read+delete) so subsequent turns don't
+            # keep reusing the same package.
+            try:
+                from vaner.integrations.injection.handoff import consume_handoff
+
+                ttl = int(config.integrations.context_injection.ttl_seconds)
+                handoff = consume_handoff(ttl_seconds=ttl)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("handoff probe skipped: %s", exc)
+                handoff = None
+            if handoff is not None and handoff.intent is not None:
+                logger.info(
+                    "vaner.resolve suppressed by adopt handoff: pred=%s age=%.1fs",
+                    handoff.adopted_from_prediction_id,
+                    handoff.age_seconds,
+                )
+                await metrics_store.increment_counter("resolves_total")
+                await metrics_store.increment_counter("tool_call_redundancy_suppressed")
+                append_log(
+                    repo_root,
+                    tool=name,
+                    label=(handoff.intent or "")[:60],
+                    decision_id=None,
+                    provenance_mode="handoff_hit",
+                    memory_state=None,
+                )
+                await _record("ok", tool_name="vaner.resolve.handoff")
+                payload = dict(handoff.raw)
+                payload.setdefault("provenance", {})
+                if isinstance(payload["provenance"], dict):
+                    payload["provenance"].setdefault("mode", "handoff_hit")
+                    payload["provenance"].setdefault("cache", "warm")
+                    payload["provenance"].setdefault("freshness", "fresh")
+                payload["suppressed_reason"] = "fresh_adopted_package_handoff"
+                return _json_result(payload)
             suggestion_id = str(args.get("suggestion_id", "")).strip()
             context_arg = args.get("context") or {}
             if suggestion_id and suggestion_id in suggestion_cache:
