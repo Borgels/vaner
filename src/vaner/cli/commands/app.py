@@ -62,6 +62,7 @@ from vaner.cli.commands.init import (
 from vaner.cli.commands.inspect import inspect_decision as inspect_decision_output
 from vaner.cli.commands.inspect import inspect_last as inspect_last_output
 from vaner.cli.commands.inspect import list_decisions as list_decisions_output
+from vaner.cli.commands.integrations import integrations_app
 from vaner.cli.commands.primer import PRIMER_SURFACES, write_primers
 from vaner.cli.commands.profile import export_pins, import_pins, pin_fact, profile_show, unpin_fact
 from vaner.cli.commands.runtime_snapshot import runtime_snapshot
@@ -2143,6 +2144,7 @@ app.add_typer(profile_app, name="profile", rich_help_panel="Background and local
 app.add_typer(scenarios_app, name="scenarios", rich_help_panel="Use with an agent")
 app.add_typer(deep_run_app, name="deep-run", rich_help_panel="Background and local")
 app.add_typer(guidance_app, name="guidance", rich_help_panel="Use with an agent")
+app.add_typer(integrations_app, name="integrations", rich_help_panel="Inspect and debug")
 
 
 def run() -> None:
