@@ -40,8 +40,7 @@ fn load(name: &str) -> String {
 #[test]
 fn predictions_active_envelope_decodes() {
     let body = load("predictions_active_sample.json");
-    let envelope: PredictionsEnvelope =
-        serde_json::from_str(&body).expect("envelope must decode");
+    let envelope: PredictionsEnvelope = serde_json::from_str(&body).expect("envelope must decode");
     assert_eq!(envelope.predictions.len(), 3);
 
     let ready = &envelope.predictions[0];
@@ -79,8 +78,7 @@ fn predictions_single_decodes() {
 #[test]
 fn adopt_rich_response_decodes_including_ws8_fields() {
     let body = load("adopt_response_rich.json");
-    let resolution: Resolution =
-        serde_json::from_str(&body).expect("rich Resolution must decode");
+    let resolution: Resolution = serde_json::from_str(&body).expect("rich Resolution must decode");
 
     assert_eq!(resolution.intent, "Write the next test for webhook signing");
     assert_eq!(resolution.resolution_id, "adopt-pred-ready-0001");
@@ -94,7 +92,10 @@ fn adopt_rich_response_decodes_including_ws8_fields() {
 
     // WS8 additive fields (0.8.0) — populated only on the rich sample.
     assert_eq!(resolution.alternatives_considered.len(), 1);
-    assert_eq!(resolution.alternatives_considered[0].source, "scn_webhook_docs");
+    assert_eq!(
+        resolution.alternatives_considered[0].source,
+        "scn_webhook_docs"
+    );
     assert_eq!(resolution.gaps.len(), 1);
     assert_eq!(resolution.next_actions.len(), 2);
 }
