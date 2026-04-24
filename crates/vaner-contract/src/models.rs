@@ -274,21 +274,23 @@ mod tests {
         assert!(!decoded.artifacts.has_draft);
     }
 
-    // `r##"..."##` — the content contains `"#` (markdown-heading inside a
-    // string literal) which would otherwise close `r#"..."#` prematurely.
-    const RESOLUTION_SAMPLE: &str = r##"{
+    // Briefing content intentionally avoids `"#` adjacency so the
+    // `r#"..."#` delimiter doesn't terminate prematurely. Rust 2024
+    // reserves `##` token sequences, so the obvious `r##"..."##`
+    // workaround fails to parse.
+    const RESOLUTION_SAMPLE: &str = r#"{
         "intent": "Write the next test",
         "confidence": 0.8,
         "summary": "summary",
         "evidence": [],
         "provenance": { "mode": "predictive_hit", "cache": "warm", "freshness": "fresh" },
         "resolution_id": "adopt-p-1",
-        "prepared_briefing": "## Context\nfoo\n",
+        "prepared_briefing": "Briefing\nfoo\n",
         "predicted_response": "draft",
         "briefing_token_used": 100,
         "briefing_token_budget": 2048,
         "adopted_from_prediction_id": "p-1"
-    }"##;
+    }"#;
 
     #[test]
     fn resolution_decodes_with_optional_fields() {
