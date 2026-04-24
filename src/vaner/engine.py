@@ -1120,6 +1120,9 @@ class VanerEngine:
         try:
             await self._apply_artefact_reconciliation(cycle_signals)
         except Exception:
+            # Best-effort: a reconciliation failure (e.g. transient DB
+            # lock, corrupt item row) must not abort the precompute
+            # cycle. The next cycle retries automatically.
             pass
 
         # WS7 (0.8.2 WS2): run unified goal inference — branch name,
@@ -1908,6 +1911,10 @@ class VanerEngine:
                     )
                 )
         except Exception:
+            # Best-effort per source: any producer that throws is
+            # dropped from the candidate stream for this cycle rather
+            # than failing the whole inference pass. The other three
+            # sources still contribute.
             pass
 
         # Source 2: commit clustering.
@@ -1915,6 +1922,7 @@ class VanerEngine:
             subjects = read_commit_subjects(self.config.repo_root, last_n=30)
             candidates.extend(cluster_commit_subjects(subjects))
         except Exception:
+            # Best-effort per source — see branch-name comment above.
             pass
 
         # Source 3: query-history clustering.
@@ -1922,6 +1930,7 @@ class VanerEngine:
             query_rows = await self.store.list_query_history(limit=50)
             candidates.extend(cluster_query_history(query_rows))
         except Exception:
+            # Best-effort per source — see branch-name comment above.
             pass
 
         # Source 4: intent-bearing artefacts. Also populates the per-
@@ -1977,6 +1986,7 @@ class VanerEngine:
                 self._active_artefact_items_cache[artefact.id] = list(item_rows)
             candidates.extend(hints_from_artefacts(bundle))
         except Exception:
+            # Best-effort per source — see branch-name comment above.
             pass
 
         merged = merge_hints(candidates)

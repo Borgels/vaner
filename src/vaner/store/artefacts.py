@@ -565,7 +565,6 @@ class ArtefactStore:
                 if "last_accessed_at" not in prediction_columns:
                     await db.execute("ALTER TABLE prediction_cache ADD COLUMN last_accessed_at REAL NOT NULL DEFAULT 0")
                 await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (7)")
-                current_schema_version = 7
 
             # v8: extend workspace_goals with artefact back-refs + the §6.6
             # policy-consumer metadata block so downstream scheduling /
@@ -592,7 +591,6 @@ class ArtefactStore:
                     await db.execute("ALTER TABLE workspace_goals ADD COLUMN pc_unfinished_item_state TEXT NOT NULL DEFAULT 'none'")
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_workspace_goals_subgoal_of ON workspace_goals(subgoal_of)")
                 await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (8)")
-                current_schema_version = 8
 
             # FTS5 index on artefact source_path + content for sub-millisecond
             # candidate retrieval; the full scorer then re-ranks the top-N hits.

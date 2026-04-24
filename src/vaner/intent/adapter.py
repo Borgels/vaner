@@ -373,13 +373,10 @@ class IntentArtefactSource(Protocol):
         """Enumerate artefact candidates from this source. Cheap — no body
         fetches, no LLM calls. Must respect the tier / allowlist config
         (the pipeline will *not* filter a second time)."""
-        ...
 
     async def fetch(self, candidate: ArtefactCandidate) -> RawArtefact:
         """Fetch the raw content for a candidate. May perform network I/O."""
-        ...
 
     def identify(self, raw: RawArtefact) -> str:
         """Return the stable ``source_uri`` for this artefact. Deterministic
         across runs; same logical source → same uri."""
-        ...

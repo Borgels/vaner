@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
 
 from vaner.intent.goals import (
     GoalEvidence,
@@ -265,7 +264,3 @@ __all__ = [
     "merge_hints",
     "normalize_title",
 ]
-
-# Re-exports so callers can import everything they need from one module.
-_re_exports: Literal["re-exports"] = "re-exports"  # sentinel for readability
-del _re_exports
