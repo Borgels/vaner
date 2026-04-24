@@ -51,12 +51,15 @@ jobs:
         # carries a minimal package.json + package-lock.json whose
         # lockfile records the sha-512 integrity hash for claude-code
         # 2.1.117. ``npm ci`` verifies the hash on install and fails
-        # otherwise. We then put the isolated node_modules/.bin on
+        # otherwise. claude-code's postinstall downloads a platform-
+        # native binary, so we do NOT pass ``--ignore-scripts`` here;
+        # the integrity hash is our guarantee against a tampered
+        # tarball. We then put the isolated node_modules/.bin on
         # $GITHUB_PATH so subsequent steps can invoke ``claude`` the
         # same way the global install exposed it.
         run: |
           cd scripts/ci/claude-code
-          npm ci --ignore-scripts
+          npm ci
           echo "$GITHUB_WORKSPACE/scripts/ci/claude-code/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Skill parity (defaults ↔ plugin)
