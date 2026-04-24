@@ -133,27 +133,6 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
     # engine per call — durable but does not arm in-process gates.
     # ------------------------------------------------------------------
 
-    async def _deep_run_call(handler: Any, *args: Any, **kwargs: Any) -> Any:
-        if engine is not None:
-            return await handler(engine, *args, **kwargs)
-        from vaner.server import (
-            alist_deep_run_sessions,
-            aresolve_deep_run_session,
-            astart_deep_run,
-            astatus_deep_run,
-            astop_deep_run,
-        )
-
-        fallback_map = {
-            "start": astart_deep_run,
-            "stop": astop_deep_run,
-            "status": astatus_deep_run,
-            "list": alist_deep_run_sessions,
-            "show": aresolve_deep_run_session,
-        }
-        op = handler  # str key when engine is None
-        return await fallback_map[op](config.repo_root, *args, **kwargs)
-
     def _serialize_session(session: Any) -> dict[str, Any] | None:
         from vaner.cli.commands.deep_run import _session_to_dict
 

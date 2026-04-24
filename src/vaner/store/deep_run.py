@@ -39,9 +39,6 @@ from vaner.intent.deep_run import (
     DeepRunStatus,
 )
 
-_SESSIONS_TABLE = "deep_run_sessions"
-_PASS_LOG_TABLE = "deep_run_pass_log"
-
 
 async def create_deep_run_tables(db: aiosqlite.Connection) -> None:
     """Create the Deep-Run tables and indices on an open connection.

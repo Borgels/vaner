@@ -186,7 +186,8 @@ class MaturationDrafterCallable(Protocol):
         self,
         prediction: PredictedPrompt,
         contract: MaturationContract,
-    ) -> tuple[str, list[str]]: ...
+    ) -> tuple[str, list[str]]:
+        """Protocol — no implementation."""
 
 
 class JudgeCallable(Protocol):
@@ -206,7 +207,8 @@ class JudgeCallable(Protocol):
         old_draft: str | None,
         new_draft: str,
         new_evidence_refs: list[str],
-    ) -> MaturationVerdict: ...
+    ) -> MaturationVerdict:
+        """Protocol — no implementation."""
 
 
 # ---------------------------------------------------------------------------
