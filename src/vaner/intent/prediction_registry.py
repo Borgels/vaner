@@ -15,6 +15,7 @@ the registry just records what they did.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -87,6 +88,21 @@ class PredictionRegistry:
         self._cycle_token_pool = max(0, int(cycle_token_pool))
         self._listener = listener
         self._clock = clock
+        # 0.8.4 WS4 — adoption-outcome descriptor queue. record_adoption()
+        # is sync, so it cannot write to the SQLite store directly.
+        # Instead it appends a descriptor dict here; the engine drains
+        # the queue at end-of-cycle and writes pending-outcome rows via
+        # the async DAO. Drained descriptors are popped — callers should
+        # use ``consume_pending_adoption_descriptors()``.
+        #
+        # The queue is guarded by a plain ``threading.Lock`` (not the
+        # asyncio ``self.lock`` below) because ``record_adoption`` is a
+        # sync method callable from any context, and the flush path is
+        # async. The two-op snapshot-then-clear is not atomic under the
+        # GIL on its own. 0.8.4 hardening fix — see HIGH-3 in
+        # docs/reviews/0.8.4-hardening.md.
+        self._pending_adoption_descriptors: list[dict[str, object]] = []
+        self._pending_adoption_lock = threading.Lock()
         # Phase 4 / WS1.c: registry is accessed from concurrent
         # ``_process_scenario`` workers. Callers may ``async with registry.lock:``
         # around sequences that must be atomic (e.g. rebalance).
@@ -278,6 +294,12 @@ class PredictionRegistry:
         No state machine transition — adoption can happen from any non-stale
         state (typically ``ready`` via the HTTP/MCP path, but also ``drafting``
         for partially-prepared predictions).
+
+        0.8.4 WS4: appends an adoption descriptor to the pending-outcome
+        queue. The engine drains the queue at end-of-cycle and writes a
+        pending-outcome row to ``prediction_adoption_outcomes``. The
+        descriptor carries everything the DAO needs that is known at
+        adoption time; ``workspace_root`` is added by the engine.
         """
         prompt = self._predictions.get(prediction_id)
         if prompt is None:
@@ -285,11 +307,37 @@ class PredictionRegistry:
         prompt.artifacts.evidence_score += 1.0
         prompt.run.spent = True
         prompt.run.updated_at = self._clock()
+        descriptor = {
+            "prediction_id": prediction_id,
+            "label": prompt.spec.label,
+            "anchor": prompt.spec.anchor,
+            "revision_at_adoption": int(prompt.run.revision),
+            "source": str(prompt.spec.source),
+        }
+        with self._pending_adoption_lock:
+            self._pending_adoption_descriptors.append(descriptor)
         self._emit(
             "prediction.artifact_added",
             prediction_id,
             {"kind": "adoption"},
         )
+
+    def consume_pending_adoption_descriptors(self) -> list[dict[str, object]]:
+        """Return the queued adoption descriptors and clear the queue.
+
+        Called by the engine at end-of-cycle to drain pending adoption
+        writes into the SQLite store. Empty list when nothing was
+        adopted this cycle.
+
+        Acquires ``_pending_adoption_lock`` so the snapshot + clear
+        pair is atomic vs. concurrent ``record_adoption()`` appends.
+        (0.8.4 hardening — see HIGH-3 in the hardening doc.)
+        """
+
+        with self._pending_adoption_lock:
+            drained = list(self._pending_adoption_descriptors)
+            self._pending_adoption_descriptors.clear()
+        return drained
 
     def attach_artifact(
         self,

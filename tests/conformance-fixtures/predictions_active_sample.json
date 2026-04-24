@@ -1,0 +1,94 @@
+{
+  "predictions": [
+    {
+      "id": "pred-ready-0001",
+      "spec": {
+        "label": "Write the next test for webhook signing",
+        "description": "You just edited webhook.js; next move is almost certainly a test.",
+        "source": "arc",
+        "anchor": "testing",
+        "confidence": 0.86,
+        "hypothesis_type": "likely_next",
+        "specificity": "concrete",
+        "created_at": 1000000000.0
+      },
+      "run": {
+        "weight": 0.9,
+        "token_budget": 2048,
+        "tokens_used": 1840,
+        "model_calls": 4,
+        "scenarios_spawned": 2,
+        "scenarios_complete": 2,
+        "readiness": "ready",
+        "updated_at": 1000000120.0
+      },
+      "artifacts": {
+        "scenario_ids": ["scn_webhook_test"],
+        "evidence_score": 0.78,
+        "has_draft": true,
+        "has_briefing": true,
+        "thinking_trace_count": 3
+      }
+    },
+    {
+      "id": "pred-goal-0002",
+      "spec": {
+        "label": "Finish the JWT-migration rollout",
+        "description": "Anchored to the current branch-declared goal.",
+        "source": "goal",
+        "anchor": "JWT migration",
+        "confidence": 0.72,
+        "hypothesis_type": "likely_next",
+        "specificity": "concrete",
+        "created_at": 1000000060.0
+      },
+      "run": {
+        "weight": 0.7,
+        "token_budget": 2048,
+        "tokens_used": 1200,
+        "model_calls": 3,
+        "scenarios_spawned": 2,
+        "scenarios_complete": 1,
+        "readiness": "drafting",
+        "updated_at": 1000000180.0
+      },
+      "artifacts": {
+        "scenario_ids": ["scn_jwt_migration"],
+        "evidence_score": 0.58,
+        "has_draft": false,
+        "has_briefing": true,
+        "thinking_trace_count": 2
+      }
+    },
+    {
+      "id": "pred-queued-0003",
+      "spec": {
+        "label": "Something about OAuth refresh tokens",
+        "description": null,
+        "source": "macro",
+        "anchor": "auth",
+        "confidence": 0.14,
+        "hypothesis_type": "long_tail",
+        "specificity": "category",
+        "created_at": 999999800.0
+      },
+      "run": {
+        "weight": 0.1,
+        "token_budget": 1024,
+        "tokens_used": 0,
+        "model_calls": 0,
+        "scenarios_spawned": 0,
+        "scenarios_complete": 0,
+        "readiness": "queued",
+        "updated_at": 999999800.0
+      },
+      "artifacts": {
+        "scenario_ids": [],
+        "evidence_score": 0.0,
+        "has_draft": false,
+        "has_briefing": false,
+        "thinking_trace_count": 0
+      }
+    }
+  ]
+}

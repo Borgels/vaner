@@ -434,8 +434,16 @@ class ArtefactStore:
             # vaner.store.deep_run; declared here so all artefact-DB tables
             # share one initialize() call and one connection lifecycle.
             from vaner.store.deep_run import create_deep_run_tables
+            from vaner.store.prediction_adoption_outcomes import (
+                create_prediction_adoption_outcomes_table,
+            )
 
             await create_deep_run_tables(db)
+            # 0.8.4 WS4 — adoption-outcome log. Writes happen
+            # unconditionally (whether or not refinement.enabled is on)
+            # so the scoring consumer in 0.8.5 has real data from day
+            # one. Declared here alongside the 0.8.3 deep-run tables.
+            await create_prediction_adoption_outcomes_table(db)
             async with db.execute("PRAGMA table_info(signal_events)") as cursor:
                 signal_columns = [row[1] for row in await cursor.fetchall()]
             if "corpus_id" not in signal_columns:

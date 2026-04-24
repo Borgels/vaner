@@ -47,6 +47,11 @@ from vaner.intent.deep_run_gates import (
     reset_cost_gate,
     set_active_session_for_routing,
 )
+from vaner.intent.deep_run_maturation import (
+    RefinementContext,
+    mature_one,
+    select_maturation_candidates,
+)
 from vaner.intent.drafter import Drafter
 from vaner.intent.ev import jaccard_reuse
 from vaner.intent.features import extract_hybrid_features
@@ -210,6 +215,29 @@ class VanerEngine:
         # created on the first ``precompute_cycle``; thereafter reused and
         # updated in place via ``merge()`` + ``apply_invalidation_signals()``.
         self._prediction_registry: PredictionRegistry | None = None
+        # 0.8.4 hardening (BLOCK-1): staled prediction ids from the most
+        # recent ``_apply_cycle_invalidation`` pass — consumed by the
+        # async caller in ``precompute_cycle`` to flip pending adoption
+        # outcomes to ``stale``. Empty list between cycles.
+        self._last_staled_prediction_ids: list[str] = []
+        # 0.8.4 hardening (BLOCK-1 completion): rolled-back prediction
+        # ids from the same pass. A rollback fires when an invalidation
+        # signal touches a prediction that is currently inside its
+        # probation window; the kept maturation is undone and the
+        # pending adoption outcome is flipped to ``rejected`` (not
+        # ``stale`` — the user adopted something that turned out wrong,
+        # not "the world moved"). Empty list between cycles.
+        self._last_rolled_back_prediction_ids: list[str] = []
+        # 0.8.4 WS3: optional drafter injected for background refinement.
+        # Default is None — the refinement hook is a no-op. 0.8.5 wires
+        # a production drafter; tests inject stubs. Keeping this as an
+        # engine-level attribute rather than a constructor param avoids
+        # churn on every VanerEngine() call site.
+        from vaner.intent.deep_run_maturation import (
+            MaturationDrafterCallable as _MaturationDrafterCallable,
+        )
+
+        self._refinement_drafter: _MaturationDrafterCallable | None = None
         # WS6: snapshot the most recent git HEAD and category tail so each
         # cycle can diff against them to build invalidation signals. Empty
         # string / list means "no prior observation", which yields no signals.
@@ -1145,6 +1173,33 @@ class VanerEngine:
         # against whatever the registry captured on its last touch. No
         # wall-clock decay: if no signal fires, nothing is invalidated.
         cycle_signals = self._apply_cycle_invalidation(recent_query_text)
+        # 0.8.4 hardening (BLOCK-1): bridge the invalidation sweep's
+        # staled + rolled-back prediction lists to the adoption-outcome
+        # log. ``_apply_cycle_invalidation`` is sync; we do the async
+        # DB writes here so WS4's outcome log captures ``stale`` +
+        # ``rejected`` rows on every invalidation cycle. Without this
+        # bridge the log would only ever contain ``pending`` +
+        # ``confirmed`` in production.
+        if self._last_staled_prediction_ids:
+            try:
+                await self._resolve_pending_adoptions_for_predictions(
+                    self._last_staled_prediction_ids,
+                    outcome="stale",
+                    reason="invalidation_staled",
+                )
+            except Exception:  # pragma: no cover — defensive: never crash cycle
+                pass
+            self._last_staled_prediction_ids = []
+        if self._last_rolled_back_prediction_ids:
+            try:
+                await self._resolve_pending_adoptions_for_predictions(
+                    self._last_rolled_back_prediction_ids,
+                    outcome="rejected",
+                    reason="probation_rollback",
+                )
+            except Exception:  # pragma: no cover — defensive: never crash cycle
+                pass
+            self._last_rolled_back_prediction_ids = []
         # 0.8.2 WS3 — reconciliation runs on every cycle that saw at
         # least one commit or file_change signal. Best-effort: a
         # reconciliation failure is logged and swallowed so it never
@@ -1641,6 +1696,29 @@ class VanerEngine:
                 prediction_id_for_macro=_pid_by_macro,
             )
 
+        # 0.8.4 WS4 — Flush any pending adoption descriptors from the
+        # registry into the adoption-outcome log, and sweep pending
+        # outcomes that have aged past the confirm window into
+        # ``confirmed``. Both steps run unconditionally (not behind the
+        # refinement.enabled flag) so the log accumulates from day one
+        # and is ready for 0.8.5 activation of the scoring consumer.
+        await self._flush_pending_adoption_outcomes()
+        await self._sweep_pending_adoption_outcomes()
+
+        # 0.8.4 WS3 — Background refinement pass. Runs on spare compute
+        # post-frontier, post-predicted-response, if (a) the feature flag
+        # is on, (b) a drafter callable has been injected, (c) the
+        # prediction registry has candidates, and (d) the user is not
+        # actively requesting. Generalises the 0.8.3 Deep-Run maturation
+        # loop to ordinary idle cycles using the same skeptical-default
+        # judge + probation + rollback machinery. Default-off in 0.8.4;
+        # 0.8.5 flips the default after the κ bench gate passes.
+        if self.config.refinement.enabled and self._refinement_drafter is not None:
+            await self._run_background_refinement_pass(
+                governor=governor,
+                cycle_deadline=cycle_deadline,
+            )
+
         retention_seconds = max(3600, int(self.config.max_age_seconds))
         await self.store.purge_old_signal_events(max_age_seconds=retention_seconds)
         await self.store.purge_old_replay_entries(max_age_seconds=retention_seconds)
@@ -1707,6 +1785,246 @@ class VanerEngine:
     def prediction_registry(self) -> PredictionRegistry | None:
         """Active prediction registry — None before the first cycle."""
         return self._prediction_registry
+
+    # ------------------------------------------------------------------
+    # 0.8.4 WS4 — Adoption-outcome log (flush + sweep)
+    # ------------------------------------------------------------------
+
+    async def _flush_pending_adoption_outcomes(self) -> int:
+        """Drain the prediction registry's pending-adoption queue and
+        persist each descriptor as a ``pending`` outcome row.
+
+        Runs unconditionally at end-of-cycle — the adoption log
+        accumulates signal regardless of whether ``refinement.enabled``
+        is set. Returns the number of rows written.
+        """
+
+        if self._prediction_registry is None:
+            return 0
+        descriptors = self._prediction_registry.consume_pending_adoption_descriptors()
+        if not descriptors:
+            return 0
+        from vaner.models.prediction_adoption_outcome import (
+            PredictionAdoptionOutcome,
+        )
+        from vaner.store import prediction_adoption_outcomes as _pao_store
+
+        workspace_root = str(self.config.repo_root)
+        written = 0
+        for d in descriptors:
+            try:
+                outcome = PredictionAdoptionOutcome.new_pending(
+                    prediction_id=str(d["prediction_id"]),
+                    label=str(d["label"]),
+                    anchor=str(d["anchor"]),
+                    revision_at_adoption=int(d["revision_at_adoption"]),  # type: ignore[arg-type]
+                    workspace_root=workspace_root,
+                    source=str(d["source"]),
+                )
+                await _pao_store.create_outcome(self.store.db_path, outcome)
+                written += 1
+            except Exception:  # pragma: no cover - defensive: never crash cycle
+                continue
+        return written
+
+    async def _sweep_pending_adoption_outcomes(self) -> int:
+        """Resolve pending adoption outcomes older than the configured
+        confirm window to ``confirmed``. Returns the number updated.
+
+        Runs unconditionally at end-of-cycle (cheap single-table scan
+        bounded by ``LIMIT 500``). Resolution is cycle-count-based via
+        ``adopted_at`` vs. a synthetic ``adopted_at_cutoff`` derived
+        from the current cycle index + an assumed mean cycle time —
+        conservative in that it only confirms outcomes whose adoption
+        predates the cutoff by a wide margin. Rollback-driven
+        ``rejected`` transitions happen via
+        :meth:`_reject_pending_adoptions_for_predictions`, invoked by
+        the rollback path.
+        """
+
+        if self._prediction_registry is None:
+            return 0
+        cfg = self.config.refinement
+        # Wall-clock aging: anything adopted more than
+        # ``adoption_pending_confirm_seconds`` ago with no contradicting
+        # signal is treated as ``confirmed``. Pre-hardening the field
+        # was named ``_cycles`` with a hardcoded 30s nominal cycle; the
+        # name lied. 0.8.4 hardening renamed it to ``_seconds`` so the
+        # config surface matches the behaviour.
+        cutoff = time.time() - cfg.adoption_pending_confirm_seconds
+
+        from vaner.store import prediction_adoption_outcomes as _pao_store
+
+        pending = await _pao_store.list_pending_outcomes(self.store.db_path, limit=500)
+        resolved = 0
+        now = time.time()
+        for outcome in pending:
+            if outcome.adopted_at <= cutoff:
+                try:
+                    ok = await _pao_store.update_outcome_state(
+                        self.store.db_path,
+                        outcome.id,
+                        outcome="confirmed",
+                        resolved_at=now,
+                    )
+                    if ok:
+                        resolved += 1
+                except Exception:  # pragma: no cover - defensive
+                    continue
+        return resolved
+
+    async def _resolve_pending_adoptions_for_predictions(
+        self,
+        prediction_ids: list[str],
+        *,
+        outcome: str,
+        reason: str,
+    ) -> int:
+        """Mark any pending adoption outcomes for the named predictions
+        as the given terminal state (``rejected`` or ``stale``).
+
+        Two call paths today:
+        - **invalidation → stale**: when a file_change / commit /
+          category_shift signal stales a prediction whose adoption
+          was still pending, the outcome flips to ``stale`` (not
+          ``rejected``). Semantics: "the world moved; the user's
+          choice wasn't necessarily wrong."
+        - **rollback → rejected**: when
+          ``rollback_kept_maturation()`` fires during probation, the
+          adoption flips to ``rejected``. Semantics: "the maturation
+          was wrong." (0.8.5 will wire this path when probation-
+          contradiction detection ships; 0.8.4 leaves it inert by
+          design — see BLOCK-1 in docs/reviews/0.8.4-hardening.md.)
+
+        0.8.4 hardening: renamed from ``_reject_pending_adoptions_for_predictions``
+        and generalised with an explicit ``outcome`` param so the
+        invalidation-staled path can use it without pretending every
+        negative outcome is a rollback. Chunks the id list to 500 at
+        a time to stay well below SQLite's 999-variable default
+        (MED-7). Returns the total rows updated.
+        """
+
+        if not prediction_ids:
+            return 0
+        if outcome not in ("rejected", "stale"):
+            raise ValueError(f"_resolve_pending_adoptions_for_predictions: outcome must be 'rejected' or 'stale', got {outcome!r}")
+        from vaner.store import prediction_adoption_outcomes as _pao_store
+
+        chunk_size = 500
+        total = 0
+        resolved_at = time.time()
+        for i in range(0, len(prediction_ids), chunk_size):
+            chunk = prediction_ids[i : i + chunk_size]
+            total += await _pao_store.update_pending_by_prediction_id(
+                self.store.db_path,
+                chunk,
+                outcome=outcome,  # type: ignore[arg-type]
+                resolved_at=resolved_at,
+                rollback_reason=reason,
+            )
+        return total
+
+    # Back-compat alias for the 0.8.4-pre-hardening name used by tests.
+    # Always resolves to ``rejected`` — existing callers were rollback-
+    # path callers. New code should call ``_resolve_pending_adoptions_for_predictions``
+    # directly with an explicit ``outcome``.
+    async def _reject_pending_adoptions_for_predictions(self, prediction_ids: list[str], *, reason: str) -> int:
+        return await self._resolve_pending_adoptions_for_predictions(prediction_ids, outcome="rejected", reason=reason)
+
+    # ------------------------------------------------------------------
+    # 0.8.4 WS3 — Background refinement
+    # ------------------------------------------------------------------
+
+    def set_refinement_drafter(self, drafter: object) -> None:
+        """Inject the :class:`MaturationDrafterCallable` used by background
+        refinement. Default is ``None`` — the refinement pass is a no-op
+        until a drafter is set. Typed as ``object`` to avoid forcing
+        callers to import the Protocol; the engine treats it as a duck-typed
+        async callable matching the Protocol signature."""
+
+        from vaner.intent.deep_run_maturation import MaturationDrafterCallable
+
+        self._refinement_drafter = drafter  # type: ignore[assignment]
+        _ = MaturationDrafterCallable  # keep the import alive for type-checkers
+
+    async def _run_background_refinement_pass(
+        self,
+        *,
+        governor: PredictionGovernor | None,
+        cycle_deadline: float | None,
+    ) -> int:
+        """Run one background-refinement pass over the top-K ready predictions.
+
+        Selects candidates via :func:`select_maturation_candidates`, then
+        invokes :func:`mature_one` on each (stopping immediately if the
+        governor signals a user request or the cycle deadline expires).
+        Returns the number of maturation passes actually attempted.
+
+        No audit log is written for background passes — the
+        :class:`RefinementContext` carries ``session_id=None`` so the
+        ``deep_run_pass_log`` path is bypassed by design.
+        """
+
+        if self._prediction_registry is None:
+            return 0
+        if self._refinement_drafter is None:
+            return 0
+        refinement_cfg = self.config.refinement
+        if not refinement_cfg.enabled:
+            return 0
+
+        # Deadline floor — don't start a pass if there's less than the
+        # configured minimum headroom; the drafter + judge round-trip
+        # alone typically exceeds a few hundred ms.
+        if cycle_deadline is not None:
+            remaining = cycle_deadline - time.monotonic()
+            if remaining < refinement_cfg.min_remaining_deadline_seconds:
+                return 0
+
+        active = self._prediction_registry.active()
+        if not active:
+            return 0
+
+        context = RefinementContext.background_default(cycle_index=self._precompute_cycles)
+        candidates = select_maturation_candidates(
+            active,
+            context=context,
+            max_candidates=refinement_cfg.max_candidates_per_cycle,
+        )
+
+        attempted = 0
+        for candidate in candidates:
+            if not candidate.eligible:
+                # select_maturation_candidates puts ineligibles at the
+                # tail of the sorted list; ``break`` would be slightly
+                # faster, but ``continue`` keeps the code defensive
+                # against any future reordering of the return value.
+                continue
+            if governor is not None and not governor.should_continue():
+                break
+            if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
+                break
+            # 0.8.4 hardening (MED-2): re-check is_terminal() before
+            # running the drafter. Between the earlier ``active()``
+            # snapshot and this loop iteration, another coroutine
+            # (e.g. MCP ``stale_all`` or the cycle-top invalidation
+            # sweep) may have transitioned this prediction to
+            # ``stale``. Mutating a terminal prediction's draft /
+            # revision / probation would corrupt the terminal state.
+            if candidate.prediction.is_terminal():
+                continue
+            pass_id = f"bg-{self._precompute_cycles}-{candidate.prediction.spec.id}"
+            try:
+                await mature_one(
+                    candidate.prediction,
+                    context=context,
+                    drafter=self._refinement_drafter,  # type: ignore[arg-type]
+                    pass_id=pass_id,
+                )
+            except Exception:  # pragma: no cover — defensive: never crash cycle
+                continue
+            attempted += 1
+        return attempted
 
     def get_last_decision_record(self) -> DecisionRecord | None:
         return self._last_decision_record
@@ -2312,8 +2630,61 @@ class VanerEngine:
         if cat_sig is not None:
             signals.append(cat_sig)
 
+        # 0.8.4 hardening (BLOCK-1 completion): detect probation
+        # contradictions alongside ordinary staleness.
+        #
+        # Before applying signals, snapshot every prediction currently
+        # in its probation window plus its pre-maturation draft /
+        # evidence so ``rollback_kept_maturation`` can restore them.
+        # After the signals run, any probationary prediction that was
+        # touched is rolled back — the kept maturation was contradicted
+        # by a real-world signal inside its probation window, which is
+        # precisely the condition WS4 treats as "the user adopted this
+        # but it turned out wrong". The same prediction is excluded
+        # from the ``stale`` list (rollback takes priority for the
+        # adoption-outcome log; otherwise a single prediction would
+        # flip to both ``stale`` and ``rejected``). See
+        # docs/reviews/0.8.4-hardening.md BLOCK-1.
         if signals:
-            registry.apply_invalidation_signals(signals)
+            probation_snapshots: dict[str, tuple[str | None, float]] = {}
+            current_cycle = int(self._precompute_cycles)
+            for pid, prompt in registry._predictions.items():
+                prob_until = prompt.run.probationary_until_cycle
+                if prob_until is None or prob_until < current_cycle:
+                    continue
+                rollback_draft = prompt.artifacts.pre_maturation_draft_answer
+                rollback_score_raw = prompt.artifacts.pre_maturation_evidence_score
+                rollback_score = float(rollback_score_raw) if rollback_score_raw is not None else 0.0
+                probation_snapshots[pid] = (rollback_draft, rollback_score)
+
+            invalidation_outcomes = registry.apply_invalidation_signals(signals)
+
+            rolled_back_ids: list[str] = []
+            if probation_snapshots:
+                from vaner.intent.deep_run_maturation import rollback_kept_maturation
+
+                for pid in probation_snapshots:
+                    if pid not in invalidation_outcomes:
+                        continue
+                    prompt = registry._predictions.get(pid)
+                    if prompt is None:
+                        continue
+                    rollback_draft, rollback_score = probation_snapshots[pid]
+                    rollback_kept_maturation(
+                        prompt,
+                        rollback_to_draft=rollback_draft,
+                        rollback_to_evidence_score=rollback_score,
+                    )
+                    rolled_back_ids.append(pid)
+
+            rolled_back_set = set(rolled_back_ids)
+            self._last_staled_prediction_ids = [
+                pid for pid, verdict in invalidation_outcomes.items() if verdict == "staled" and pid not in rolled_back_set
+            ]
+            self._last_rolled_back_prediction_ids = rolled_back_ids
+        else:
+            self._last_staled_prediction_ids = []
+            self._last_rolled_back_prediction_ids = []
 
         # Refresh observations for the next cycle's diff.
         self._last_observed_head_sha = current_head

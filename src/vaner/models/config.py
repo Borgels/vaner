@@ -545,6 +545,31 @@ class SourcesConfig(BaseModel):
     intent_artefacts: IntentArtefactsConfig = Field(default_factory=IntentArtefactsConfig)
 
 
+# 0.8.4 WS3 — background refinement feature flag.
+#
+# Deep-Run maturation (0.8.3 WS3) ships the machinery but is gated to
+# declared Deep-Run windows. This config flag lets the engine run the
+# same ``mature_one()`` loop on top-K READY predictions during ordinary
+# background cycles, post-frontier, on spare compute.
+#
+# Ships default-OFF in 0.8.4. 0.8.5 flips the default after the κ
+# anti-self-judging bench gate (WS1+WS2) passes. The log writes from
+# WS4 (``prediction_adoption_outcomes``) happen regardless of this
+# flag — data accumulates from day one.
+class RefinementConfig(BaseModel):
+    enabled: bool = Field(default=False)
+    max_candidates_per_cycle: int = Field(default=3, ge=1)
+    min_remaining_deadline_seconds: float = Field(default=2.0, ge=0.0)
+    # WS4 — adoption-outcome sweep thresholds (these are always-active;
+    # gating them behind ``enabled`` would delay log population).
+    # Named ``_seconds`` to match the implementation in
+    # ``engine._sweep_pending_adoption_outcomes`` which is wall-clock-
+    # based, not cycle-count-based. The earlier ``_cycles`` name
+    # (0.8.4-pre-hardening) promised cycle semantics the code did not
+    # deliver; renamed during the 0.8.4 hardening pass.
+    adoption_pending_confirm_seconds: float = Field(default=600.0, ge=0.0)
+
+
 class VanerConfig(BaseModel):
     repo_root: Path
     store_path: Path
@@ -561,3 +586,4 @@ class VanerConfig(BaseModel):
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
+    refinement: RefinementConfig = Field(default_factory=RefinementConfig)

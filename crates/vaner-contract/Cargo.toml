@@ -1,0 +1,53 @@
+[package]
+name = "vaner-contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Cross-platform contract integration layer for Vaner desktop clients (HTTP, SSE, state reducer, adopt-handoff)."
+readme = "README.md"
+keywords = ["vaner", "client", "contract", "sse"]
+categories = ["api-bindings", "web-programming::http-client"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["http", "sse"]
+
+# HTTP client (reqwest-based) + EngineClient trait. Without it, the crate
+# is pure models + reducer + handoff — still useful for in-process tests.
+http = ["dep:reqwest", "dep:tokio", "dep:async-trait"]
+
+# SSE stream with multi-line `data:` accumulator. Pulls in futures +
+# bytes for the streaming response path.
+sse = ["http", "dep:futures", "dep:bytes"]
+
+# Emit TypeScript type definitions for the SvelteKit frontend. When built
+# with this feature, `cargo test --features ts-rs` writes a file at a
+# workspace-relative path (see `src/ts.rs`).
+ts-rs = ["dep:ts-rs"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+tempfile = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+xdg = { workspace = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+dirs = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+wiremock = "0.6"

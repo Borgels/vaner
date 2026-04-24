@@ -135,29 +135,87 @@ def _budget_state_path(repo_root: Path) -> Path:
 
 
 def _consume_remote_budget(repo_root: Path, max_per_hour: int) -> bool:
+    """Reserve one remote call against the hourly budget.
+
+    0.8.4 hardening (HIGH-5): the previous implementation did
+    ``read_text`` → parse → ``write_text`` with no lock and treated
+    parse failure as "reset to 0". Two concurrent callers could both
+    read the same ``used`` value and both increment to ``used+1``,
+    overshooting ``max_per_hour``. A crash mid-write would leave a
+    malformed file and subsequent callers would silently reset the
+    counter, unblocking the budget. Current version:
+
+    1. Uses ``fcntl.flock`` on the state file to serialise access
+       across processes sharing the same ``repo_root``.
+    2. Writes via a temp file + ``os.replace`` so the swap is atomic
+       and a crash mid-write leaves either the old state or the new
+       state on disk, never a truncated file.
+    3. Treats parse failure as cap-hit (return False) rather than
+       resetting to 0 — fail-closed under state corruption.
+    """
+
     now = int(time.time())
     hour = now // 3600
     state_path = _budget_state_path(repo_root)
     state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(".lock")
 
-    state = {"hour": hour, "used": 0}
-    if state_path.exists():
+    # Open (and create if needed) the lock file. Cross-process
+    # serialisation via fcntl.flock. Threads within a single process
+    # also serialise on the same file descriptor.
+    import fcntl
+    import os
+    import tempfile
+
+    with open(lock_path, "a+b") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         try:
-            parsed = json.loads(state_path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict):
-                state["hour"] = int(parsed.get("hour", hour))
-                state["used"] = int(parsed.get("used", 0))
-        except Exception:
             state = {"hour": hour, "used": 0}
+            if state_path.exists():
+                try:
+                    parsed = json.loads(state_path.read_text(encoding="utf-8"))
+                    if not isinstance(parsed, dict):
+                        return False  # malformed → fail-closed
+                    state["hour"] = int(parsed.get("hour", hour))
+                    state["used"] = int(parsed.get("used", 0))
+                except (ValueError, OSError, TypeError):
+                    # Corrupt state file → fail-closed. The operator
+                    # can manually delete the file to reset.
+                    return False
 
-    if state["hour"] != hour:
-        state = {"hour": hour, "used": 0}
-    if state["used"] >= max_per_hour:
-        return False
+            if state["hour"] != hour:
+                # Fresh hour — reset counter.
+                state = {"hour": hour, "used": 0}
+            if state["used"] >= max_per_hour:
+                return False
 
-    state["used"] += 1
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-    return True
+            state["used"] += 1
+
+            # Atomic write: temp file in the same directory + os.replace.
+            tmp_fd, tmp_name = tempfile.mkstemp(
+                prefix=".remote_budget.",
+                suffix=".tmp",
+                dir=str(state_path.parent),
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_fh:
+                    json.dump(state, tmp_fh)
+                os.replace(tmp_name, state_path)
+            except Exception:
+                # Best-effort cleanup of the temp file on failure.
+                # Swallow unlink errors — the primary failure is about
+                # to re-raise below; a cleanup race (e.g. another
+                # process already removed it) must not mask the root
+                # cause.
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    # See outer comment: intentionally silent.
+                    pass
+                raise
+            return True
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
 async def _post_chat(backend: BackendConfig, payload: dict[str, Any], *, use_fallback: bool = False) -> dict[str, Any]:

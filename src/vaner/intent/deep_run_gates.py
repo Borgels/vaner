@@ -233,9 +233,17 @@ def try_consume_cost(estimated_usd: float) -> bool:
 
     Thread-safe; safe to call from concurrent backend tasks. Returns
     ``True`` (no-op) when no Deep-Run session is active.
+
+    0.8.4 hardening (HIGH-6): the ``_cost_state`` pointer itself is
+    read under ``_cost_state_lock`` so a concurrent
+    ``reset_cost_gate(new_session)`` cannot rebind the pointer between
+    our read and our ``with state.lock:`` entry. Without this the
+    first call after a session swap could charge the *old* session's
+    counter and bypass the new session's accounting by one charge.
     """
 
-    state = _cost_state
+    with _cost_state_lock:
+        state = _cost_state
     if state is None:
         return True
     with state.lock:
@@ -250,9 +258,14 @@ def try_consume_cost(estimated_usd: float) -> bool:
 
 
 def remaining_cost_budget() -> float | None:
-    """Return the remaining budget in USD, or ``None`` if no session."""
+    """Return the remaining budget in USD, or ``None`` if no session.
 
-    state = _cost_state
+    See :func:`try_consume_cost` for the rationale behind reading
+    ``_cost_state`` under ``_cost_state_lock``.
+    """
+
+    with _cost_state_lock:
+        state = _cost_state
     if state is None:
         return None
     with state.lock:
@@ -266,9 +279,13 @@ def cost_gate_spent_usd() -> float | None:
     persisted ``DeepRunSession.spend_usd`` periodically (durable
     record vs. fast-path arbiter). The two diverge briefly between
     flushes; the persisted value lags the in-memory value.
+
+    See :func:`try_consume_cost` for the rationale behind reading
+    ``_cost_state`` under ``_cost_state_lock``.
     """
 
-    state = _cost_state
+    with _cost_state_lock:
+        state = _cost_state
     if state is None:
         return None
     with state.lock:

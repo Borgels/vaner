@@ -48,9 +48,10 @@ from typing import Literal, Protocol
 
 from vaner.intent.deep_run import (
     DeepRunPassAction,
+    DeepRunPreset,
     DeepRunSession,
 )
-from vaner.intent.deep_run_policy import preset_for
+from vaner.intent.deep_run_policy import PRESETS, preset_for
 from vaner.intent.prediction import PredictedPrompt
 
 TargetWeakness = Literal[
@@ -62,6 +63,89 @@ TargetWeakness = Literal[
 ]
 
 ClauseKind = Literal["must", "forbidden"]
+
+
+# ---------------------------------------------------------------------------
+# Refinement context (0.8.4 WS3) — replaces the DeepRunSession parameter on
+# mature_one() and select_maturation_candidates() so the same machinery can
+# run (a) inside a Deep-Run window via ``from_deep_run_session()``, and
+# (b) in ordinary background cycles via ``background_default()`` once 0.8.5
+# activates the refinement flag. The two factory methods are the only
+# supported construction paths; direct ``RefinementContext(...)`` calls are
+# valid but discouraged — use the factories to pull preset-derived defaults.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RefinementContext:
+    """Per-cycle context for one maturation / refinement pass.
+
+    Encodes everything the maturation pass needs that used to come from
+    a ``DeepRunSession``: the preset (for thresholds), the cycle index
+    (for probation windows), the per-prediction revisit cap, the
+    drafter's evidence floor, and an optional ``session_id`` that tags
+    Deep-Run-originated passes for audit-log routing.
+
+    ``session_id is None`` means **background refinement** — no
+    ``deep_run_pass_log`` row is written; the pass is invisible to
+    audit surfaces by design. The 0.8.3 Deep-Run path always produces
+    a non-None ``session_id`` via :meth:`from_deep_run_session`.
+    """
+
+    preset: DeepRunPreset
+    cycle_index: int
+    max_revisits_per_prediction: int
+    draft_evidence_threshold: float
+    session_id: str | None = None
+
+    @classmethod
+    def from_deep_run_session(cls, session: DeepRunSession, *, cycle_index: int) -> RefinementContext:
+        """Construct the context for a Deep-Run maturation pass.
+
+        The preset, revisit cap, and evidence floor are read from the
+        session's preset bundle. ``session_id`` is populated so the
+        engine's audit-log writer tags the pass correctly.
+        """
+
+        spec = preset_for(session)
+        return cls(
+            preset=session.preset,
+            cycle_index=cycle_index,
+            max_revisits_per_prediction=spec.max_revisits_per_prediction,
+            draft_evidence_threshold=spec.draft_evidence_threshold,
+            session_id=session.id,
+        )
+
+    @classmethod
+    def background_default(
+        cls,
+        *,
+        cycle_index: int,
+        preset: DeepRunPreset = "balanced",
+    ) -> RefinementContext:
+        """Construct the context for ordinary background refinement.
+
+        ``session_id`` is ``None`` — no audit-log write, no Deep-Run
+        session binding. Defaults to the ``balanced`` preset; callers
+        can override by passing a different preset name.
+        """
+
+        spec = PRESETS[preset]
+        return cls(
+            preset=preset,
+            cycle_index=cycle_index,
+            max_revisits_per_prediction=spec.max_revisits_per_prediction,
+            draft_evidence_threshold=spec.draft_evidence_threshold,
+            session_id=None,
+        )
+
+    @property
+    def is_deep_run(self) -> bool:
+        """``True`` if this context was derived from a Deep-Run session
+        (i.e. ``session_id is not None``). Used by the engine to decide
+        whether to route the outcome through ``deep_run_pass_log``."""
+
+        return self.session_id is not None
 
 
 # ---------------------------------------------------------------------------
@@ -148,10 +232,16 @@ class MaturationVerdict:
 
 @dataclass(slots=True)
 class MaturationOutcome:
-    """Result of one :func:`mature_one` call."""
+    """Result of one :func:`mature_one` call.
+
+    ``session_id`` is ``None`` for background-refinement passes
+    (0.8.4+) and a Deep-Run session id for Deep-Run passes. The engine
+    routes ``deep_run_pass_log`` writes only when ``session_id`` is
+    non-None, so background passes are audit-log-free by design.
+    """
 
     prediction_id: str
-    session_id: str
+    session_id: str | None
     cycle_index: int
     contract: MaturationContract
     verdict: MaturationVerdict
@@ -521,12 +611,40 @@ class MaturationCandidate:
     skip_reason: str | None
 
 
+def adoption_success_factor(*, confirmed: int, rejected: int) -> float:
+    """Compute the scoring multiplier from adoption-outcome history.
+
+    Uses a symmetric Bayesian prior (``prior_c = prior_r = 1``):
+    ``smoothed_rate = (confirmed + 1) / (confirmed + rejected + 2)``.
+    Then map ``[0, 1]`` → ``[0.5, 1.5]`` with ``factor = 1.0 +
+    (smoothed_rate - 0.5)`` and clamp.
+
+    Key properties:
+
+    - Cold start (no history): ``0/0`` → smoothed ``0.5`` →
+      factor ``1.0`` (neutral). No bias for never-adopted predictions.
+    - Strong confirms: ``5/0`` → smoothed ≈ ``0.86`` → factor ≈
+      ``1.36``; ``100/0`` saturates toward the ``1.5`` ceiling.
+    - Strong rejects: ``0/5`` → smoothed ≈ ``0.14`` → factor ≈
+      ``0.64``; ``0/100`` floors at ``0.5``.
+
+    Gated by ``refinement.enabled`` at the call site (engine-level);
+    this helper is pure so tests can exercise it in isolation.
+    """
+
+    # Symmetric Beta(1, 1) prior → mean 0.5 for no-data predictions.
+    smoothed_rate = (confirmed + 1) / (confirmed + rejected + 2)
+    factor = 1.0 + (smoothed_rate - 0.5)
+    return max(0.5, min(1.5, factor))
+
+
 def score_maturation_value(
     prediction: PredictedPrompt,
     *,
     goal_confidence: float = 0.5,
     artefact_alignment_score: float = 1.0,
     item_state: str = "pending",
+    adoption_success_factor_value: float = 1.0,
 ) -> float:
     """Compute the ``maturation_value`` score from the spec §9.1 formula.
 
@@ -539,6 +657,9 @@ def score_maturation_value(
     - ``1 / (revision + 1)`` — diminishing returns across revisions
     - state factor — pending/in_progress/stalled count fully; complete
       counts at 0.5 (still maturable but lower priority)
+    - ``adoption_success_factor_value`` (0.8.4 WS4) — multiplier in
+      [0.5, 1.5] derived from the prediction's adoption-outcome history.
+      Neutral (1.0) when no history or when the refinement flag is off.
 
     Probationary or failure-capped predictions are excluded by
     :func:`select_maturation_candidates`, not by this score.
@@ -548,14 +669,13 @@ def score_maturation_value(
     evidence_room = 1.0 - evidence_norm
     state_factor = 1.0 if item_state in ("pending", "in_progress", "stalled") else 0.5
     revision_decay = 1.0 / (prediction.run.revision + 1)
-    return goal_confidence * artefact_alignment_score * evidence_room * revision_decay * state_factor
+    return goal_confidence * artefact_alignment_score * evidence_room * revision_decay * state_factor * adoption_success_factor_value
 
 
 def select_maturation_candidates(
     predictions: list[PredictedPrompt],
     *,
-    session: DeepRunSession,
-    cycle_index: int,
+    context: RefinementContext,
     max_candidates: int,
     goal_confidence_lookup: Callable[[PredictedPrompt], float] | None = None,
     artefact_alignment_lookup: Callable[[PredictedPrompt], float] | None = None,
@@ -567,11 +687,11 @@ def select_maturation_candidates(
     1. ``maturation_eligible`` must be True.
     2. ``readiness == "ready"`` only — pre-ready predictions go through
        the normal drafter, not maturation.
-    3. ``failed_revisits < preset.max_revisits_per_prediction`` (cap on
+    3. ``failed_revisits < context.max_revisits_per_prediction`` (cap on
        repeated failures so we stop attempting after exhaustion).
-    4. ``revision < preset.max_revisits_per_prediction`` (cap on kept
+    4. ``revision < context.max_revisits_per_prediction`` (cap on kept
        revisions per prediction).
-    5. ``probationary_until_cycle is None`` or ``< cycle_index`` —
+    5. ``probationary_until_cycle is None`` or ``< context.cycle_index`` —
        predictions in their probation window are not re-matured.
 
     Returns up to ``max_candidates`` eligible predictions ordered by
@@ -581,12 +701,11 @@ def select_maturation_candidates(
     :func:`mature_one`.
     """
 
-    preset = preset_for(session)
-    cap = preset.max_revisits_per_prediction
+    cap = context.max_revisits_per_prediction
     eligible: list[MaturationCandidate] = []
     skipped: list[MaturationCandidate] = []
     for prediction in predictions:
-        skip_reason = _maturation_skip_reason(prediction, cap=cap, cycle_index=cycle_index)
+        skip_reason = _maturation_skip_reason(prediction, cap=cap, cycle_index=context.cycle_index)
         if skip_reason is not None:
             skipped.append(
                 MaturationCandidate(
@@ -655,15 +774,14 @@ def _hash_text(text: str | None) -> str | None:
 async def mature_one(
     prediction: PredictedPrompt,
     *,
-    session: DeepRunSession,
+    context: RefinementContext,
     drafter: MaturationDrafterCallable,
     judge: JudgeCallable | None = None,
-    cycle_index: int,
     pass_id: str,
     evidence_floor: float | None = None,
     on_kept_evidence_increment: float = 0.10,
 ) -> MaturationOutcome:
-    """Run one maturation pass against a single prediction.
+    """Run one maturation / refinement pass against a single prediction.
 
     Steps:
     1. Build contract from current weakness.
@@ -677,19 +795,21 @@ async def mature_one(
     5. If discarded: leave the existing draft alone, increment
        ``failed_revisits``.
 
-    Returns a :class:`MaturationOutcome` describing what happened. The
-    engine writes a ``deep_run_pass_log`` row from the outcome.
+    Returns a :class:`MaturationOutcome` describing what happened. When
+    ``context.is_deep_run`` is True, the engine writes a
+    ``deep_run_pass_log`` row from the outcome; background-refinement
+    passes (``session_id is None``) are not audit-logged by default.
 
     Note: this function does *not* itself write to the database. It
     mutates the in-memory ``PredictionRun`` and returns an outcome
     record; the engine is responsible for persisting both the
-    prediction registry update and the audit-log row. Keeping this
-    separation lets unit tests exercise the full pass logic without
-    a store fixture.
+    prediction registry update and (when applicable) the audit-log row.
+    Keeping this separation lets unit tests exercise the full pass
+    logic without a store fixture.
     """
 
     judge_callable: JudgeCallable = judge or default_rubric_judge
-    floor = evidence_floor if evidence_floor is not None else preset_for(session).draft_evidence_threshold
+    floor = evidence_floor if evidence_floor is not None else context.draft_evidence_threshold
     contract = build_contract(prediction, pass_id=pass_id, evidence_floor=floor)
     old_draft = prediction.artifacts.draft_answer
     before_evidence = prediction.artifacts.evidence_score
@@ -707,11 +827,16 @@ async def mature_one(
     )
 
     if verdict.kept:
+        # 0.8.4 WS4 — snapshot pre-maturation values so a probation
+        # rollback can restore them. Cleared by rollback_kept_maturation
+        # once consumed. Bounded in time by the probation window.
+        prediction.artifacts.pre_maturation_draft_answer = old_draft
+        prediction.artifacts.pre_maturation_evidence_score = before_evidence
         prediction.artifacts.draft_answer = new_draft
         prediction.artifacts.evidence_score = before_evidence + on_kept_evidence_increment
         prediction.run.revision += 1
-        prediction.run.last_matured_cycle = cycle_index
-        prediction.run.probationary_until_cycle = cycle_index + _PROBATION_CYCLES
+        prediction.run.last_matured_cycle = context.cycle_index
+        prediction.run.probationary_until_cycle = context.cycle_index + _PROBATION_CYCLES
         prediction.run.failed_revisits = 0
         action: DeepRunPassAction = "matured_kept"
     else:
@@ -720,8 +845,8 @@ async def mature_one(
 
     return MaturationOutcome(
         prediction_id=prediction.spec.id,
-        session_id=session.id,
-        cycle_index=cycle_index,
+        session_id=context.session_id,
+        cycle_index=context.cycle_index,
         contract=contract,
         verdict=verdict,
         action=action,
@@ -743,15 +868,26 @@ def rollback_kept_maturation(
     *,
     rollback_to_draft: str | None,
     rollback_to_evidence_score: float,
-    cycle_index: int,
 ) -> None:
     """Roll back the most recent kept maturation on this prediction.
 
     Called by reconciliation when a contradicting signal fires inside
     the prediction's probation window. Restores the prior draft +
-    evidence_score, decrements ``revision`` (the kept maturation no
-    longer counts), and increments ``failed_revisits`` (so we stop
-    re-attempting if reconciliation keeps disagreeing).
+    evidence_score and decrements ``revision`` (the kept maturation
+    no longer counts).
+
+    ``failed_revisits`` is **not** bumped by rollback. Rollback is an
+    *external* signal (the world changed under the kept draft), not a
+    judge-discard, and the two shouldn't share a counter — otherwise
+    N successful mature+contradict cycles can exhaust the per-
+    prediction failure cap and permanently exclude a prediction that
+    has never actually had a judge-discarded maturation. (0.8.4
+    hardening fix, per docs/reviews/0.8.4-hardening.md HIGH-1.)
+
+    ``last_matured_cycle`` is set to ``None`` after rollback. The
+    last-matured cycle just got undone; setting it to the rollback
+    cycle would mislead any future "when was this last successfully
+    matured?" analytics. (0.8.4 hardening fix, HIGH-2.)
 
     Engine wires this into the reconciliation path; this module just
     owns the in-memory mutation contract.
@@ -759,10 +895,13 @@ def rollback_kept_maturation(
 
     prediction.artifacts.draft_answer = rollback_to_draft
     prediction.artifacts.evidence_score = rollback_to_evidence_score
+    # Consume the snapshot so a follow-up maturation can snapshot fresh
+    # values without ambiguity about which pass the snapshot belongs to.
+    prediction.artifacts.pre_maturation_draft_answer = None
+    prediction.artifacts.pre_maturation_evidence_score = None
     prediction.run.revision = max(0, prediction.run.revision - 1)
-    prediction.run.failed_revisits += 1
     prediction.run.probationary_until_cycle = None
-    prediction.run.last_matured_cycle = cycle_index
+    prediction.run.last_matured_cycle = None
 
 
 __all__ = [
@@ -774,7 +913,9 @@ __all__ = [
     "MaturationDrafterCallable",
     "MaturationOutcome",
     "MaturationVerdict",
+    "RefinementContext",
     "TargetWeakness",
+    "adoption_success_factor",
     "build_contract",
     "default_rubric_judge",
     "mature_one",

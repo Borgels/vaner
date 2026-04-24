@@ -138,6 +138,14 @@ class PredictionArtifacts:
     against the current git_state and demotes / stales the prediction when
     the underlying files changed. Without this, the registry can't know
     whether a ``ready`` prediction is still valid after a file edit.
+
+    0.8.4 WS4 — ``pre_maturation_draft_answer`` and
+    ``pre_maturation_evidence_score`` are snapshotted by
+    :func:`mature_one` on a kept maturation so the value can be restored
+    by :func:`rollback_kept_maturation` when a contradicting signal
+    fires inside the probation window. Both are ``None`` outside of a
+    probation window or when no kept maturation has ever run on this
+    prediction. Cleared when rollback consumes them.
     """
 
     scenario_ids: list[str] = field(default_factory=list)
@@ -146,6 +154,8 @@ class PredictionArtifacts:
     thinking_traces: list[str] = field(default_factory=list)
     prepared_briefing: str | None = None
     file_content_hashes: dict[str, str] = field(default_factory=dict)
+    pre_maturation_draft_answer: str | None = None
+    pre_maturation_evidence_score: float | None = None
 
 
 @dataclass(slots=True)
