@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from vaner.cli.commands.config import load_config, set_compute_value
@@ -310,6 +310,51 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         from vaner.mcp.server import _build_adopt_resolution
 
         resolution = _build_adopt_resolution(prompt)
+        return JSONResponse(resolution.model_dump(mode="json"))
+
+    @app.post("/resolve")
+    async def resolve_endpoint(request: Request) -> JSONResponse:
+        """0.8.1: expose :meth:`VanerEngine.resolve_query` over HTTP.
+
+        The MCP ``vaner.resolve`` handler now forwards to this endpoint
+        (via :class:`VanerDaemonClient`) when no in-process engine is
+        injected. Keeping a single canonical query→Resolution path in
+        the engine, with HTTP as the transport, removes the parallel
+        scenario-store path that WS8 documented as dead-code risk.
+        """
+        if engine is None:
+            return JSONResponse(
+                {"code": "engine_unavailable", "message": "daemon engine unavailable"},
+                status_code=409,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"code": "invalid_input", "message": "request body must be JSON"},
+                status_code=400,
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"code": "invalid_input", "message": "request body must be a JSON object"},
+                status_code=400,
+            )
+        query = str(body.get("query", "")).strip()
+        if not query:
+            return JSONResponse(
+                {"code": "invalid_input", "message": "query is required"},
+                status_code=400,
+            )
+        context_raw = body.get("context")
+        context = context_raw if isinstance(context_raw, dict) else None
+        include_briefing = bool(body.get("include_briefing", True))
+        include_predicted_response = bool(body.get("include_predicted_response", True))
+        resolution = await engine.resolve_query(
+            query,
+            context=context,
+            include_briefing=include_briefing,
+            include_predicted_response=include_predicted_response,
+        )
         return JSONResponse(resolution.model_dump(mode="json"))
 
     @app.get("/scenarios/stream")

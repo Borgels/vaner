@@ -303,3 +303,132 @@ def test_adopt_resolution_lists_evidence_for_attached_scenarios(temp_repo):
         assert e["locator"]["prediction_id"] == pid
     # briefing_token_used is nonzero for a non-empty briefing.
     assert body["briefing_token_used"] > 0
+
+
+# ---------------------------------------------------------------------------
+# 0.8.1 — POST /resolve delegates to VanerEngine.resolve_query
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _StubResolveEngine:
+    """Engine shim for the /resolve endpoint. Records the call kwargs and
+    returns the injected Resolution unchanged so tests can assert the shape
+    without spinning up a full engine."""
+
+    resolution: object
+    calls: list = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        self.calls = []
+
+    async def resolve_query(
+        self,
+        query: str,
+        *,
+        context=None,
+        include_briefing=True,
+        include_predicted_response=True,
+    ):
+        self.calls.append(
+            {
+                "query": query,
+                "context": context,
+                "include_briefing": include_briefing,
+                "include_predicted_response": include_predicted_response,
+            }
+        )
+        return self.resolution
+
+
+def _build_resolution_stub(*, resolution_id="resolve-stub-1", confidence=0.8):
+    from vaner.mcp.contracts import Provenance, Resolution
+
+    return Resolution(
+        intent="explain",
+        confidence=confidence,
+        summary="summary",
+        evidence=[],
+        provenance=Provenance(mode="predictive_hit", cache="warm", freshness="fresh"),
+        resolution_id=resolution_id,
+        prepared_briefing="briefing body",
+        predicted_response="draft",
+        briefing_token_used=30,
+        briefing_token_budget=500,
+    )
+
+
+def test_resolve_endpoint_requires_query(temp_repo):
+    config = _make_config(temp_repo)
+    engine = _StubResolveEngine(resolution=_build_resolution_stub())
+    app = create_daemon_http_app(config, engine=engine)
+    with TestClient(app) as client:
+        response = client.post("/resolve", json={"query": "   "})
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_input"
+    assert engine.calls == []  # never reached the engine
+
+
+def test_resolve_endpoint_returns_resolution_from_engine(temp_repo):
+    config = _make_config(temp_repo)
+    engine = _StubResolveEngine(
+        resolution=_build_resolution_stub(resolution_id="resolve-real-1"),
+    )
+    app = create_daemon_http_app(config, engine=engine)
+    with TestClient(app) as client:
+        response = client.post(
+            "/resolve",
+            json={
+                "query": "explain auth",
+                "context": {"domain": "code"},
+                "include_briefing": True,
+                "include_predicted_response": False,
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["resolution_id"] == "resolve-real-1"
+    assert body["prepared_briefing"] == "briefing body"
+    assert len(engine.calls) == 1
+    call = engine.calls[0]
+    assert call["query"] == "explain auth"
+    assert call["context"] == {"domain": "code"}
+    assert call["include_briefing"] is True
+    assert call["include_predicted_response"] is False
+
+
+def test_resolve_endpoint_returns_409_when_engine_absent(temp_repo):
+    config = _make_config(temp_repo)
+    app = create_daemon_http_app(config, engine=None)
+    with TestClient(app) as client:
+        response = client.post("/resolve", json={"query": "anything"})
+    assert response.status_code == 409
+    assert response.json()["code"] == "engine_unavailable"
+
+
+def test_resolve_endpoint_rejects_non_json_body(temp_repo):
+    config = _make_config(temp_repo)
+    engine = _StubResolveEngine(resolution=_build_resolution_stub())
+    app = create_daemon_http_app(config, engine=engine)
+    with TestClient(app) as client:
+        response = client.post(
+            "/resolve",
+            content=b"not-json",
+            headers={"content-type": "application/json"},
+        )
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_input"
+
+
+def test_resolve_endpoint_defaults_includes_to_true(temp_repo):
+    """Omitting include_briefing/include_predicted_response should default
+    to True — the engine path is opt-out for these fields, not opt-in."""
+    config = _make_config(temp_repo)
+    engine = _StubResolveEngine(resolution=_build_resolution_stub())
+    app = create_daemon_http_app(config, engine=engine)
+    with TestClient(app) as client:
+        response = client.post("/resolve", json={"query": "q"})
+    assert response.status_code == 200
+    call = engine.calls[0]
+    assert call["include_briefing"] is True
+    assert call["include_predicted_response"] is True

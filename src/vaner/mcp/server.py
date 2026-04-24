@@ -51,17 +51,11 @@ except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency pat
 from vaner.api import aprecompute
 from vaner.cli.commands.config import load_config
 from vaner.cli.commands.init import init_repo
-from vaner.daemon.signals.git_reader import read_git_state
 from vaner.intent.briefing import BriefingAssembler
-from vaner.intent.volatility import semantic_volatility
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.mcp.contracts import (
-    CACHE_TIER_TO_PROVENANCE,
     Abstain,
-    ConflictSignal,
-    ContextEnvelope,
     EvidenceItem,
-    MemoryMeta,
     Provenance,
     Resolution,
     ResolutionMetrics,
@@ -69,17 +63,13 @@ from vaner.mcp.contracts import (
 from vaner.mcp.lint import run_lint
 from vaner.mcp.memory_log import append_log, write_index
 from vaner.memory.policy import (
-    ConflictInput,
     NegativeFeedbackContext,
     PromotionContext,
-    ReuseInput,
     decide_on_negative_feedback,
     decide_promotion,
-    decide_reuse,
-    detect_conflict,
     evidence_fingerprint,
 )
-from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor, SelectionDecision
+from vaner.models.decision import DecisionRecord
 from vaner.models.scenario import Scenario
 from vaner.store.scenarios import ScenarioStore
 from vaner.telemetry.metrics import MetricsStore
@@ -123,20 +113,6 @@ def _tokenize(text: str) -> set[str]:
     return {tok for tok in "".join(ch if ch.isalnum() else " " for ch in text.lower()).split() if len(tok) > 2}
 
 
-def _env_similarity(left: str, right: dict[str, Any] | None) -> float:
-    try:
-        left_obj = json.loads(left or "{}")
-    except Exception:
-        left_obj = {}
-    right_obj = right or {}
-    left_tokens = _tokenize(json.dumps(left_obj, sort_keys=True))
-    right_tokens = _tokenize(json.dumps(right_obj, sort_keys=True))
-    if not left_tokens and not right_tokens:
-        return 1.0
-    denom = max(1, len(left_tokens | right_tokens))
-    return len(left_tokens & right_tokens) / denom
-
-
 def _scenario_fingerprints(scenario: Scenario) -> list[str]:
     return [evidence_fingerprint(e.source_path, {"key": e.key}, e.excerpt[:128], e.weight) for e in scenario.evidence]
 
@@ -154,11 +130,6 @@ def _scenario_to_summary(scenario: Scenario) -> dict[str, Any]:
         "cost_to_expand": scenario.cost_to_expand,
         "prepared_context_preview": scenario.prepared_context[:220],
     }
-
-
-def _build_decision_id(prompt: str) -> str:
-    digest = hashlib.sha256(f"{prompt}-{time.time_ns()}".encode()).hexdigest()[:16]
-    return f"dec_{digest}"
 
 
 def _normalize_path(value: str) -> str:
@@ -645,6 +616,11 @@ def build_server(
             return _json_result(payload)
 
         if name == "vaner.resolve":
+            # 0.8.1: converged path — delegate to VanerEngine.resolve_query.
+            # When an engine is injected (tests + in-process embedders), call
+            # the engine directly. Otherwise forward to the daemon's /resolve
+            # endpoint via the shared VanerDaemonClient (mirrors the WS3
+            # predictions.* forward pattern).
             if not _ensure_backend(config):
                 await _record("error")
                 return _backend_error(degradable=False)
@@ -654,132 +630,57 @@ def build_server(
                 await _record("error")
                 return _json_result({"code": "invalid_input", "message": "query is required"}, is_error=True)
             suggestion_id = str(args.get("suggestion_id", "")).strip()
-            context = args.get("context") or {}
-            query_for_selection = query
+            context_arg = args.get("context") or {}
             if suggestion_id and suggestion_id in suggestion_cache:
-                query_for_selection = str(suggestion_cache[suggestion_id].get("label") or query)
-            query_tokens = _tokenize(query_for_selection)
-            scenarios = await scenario_store.list_top(limit=25)
-            candidate: Scenario | None = None
-            best_overlap = -1
-            best_rank = float("-inf")
-            for scenario in scenarios:
-                overlap = len(query_tokens & set(tok.lower() for tok in scenario.entities))
-                rank = scenario.score - _scenario_penalty(scenario, query_tokens)
-                if overlap > best_overlap or (overlap == best_overlap and rank > best_rank):
-                    candidate = scenario
-                    best_overlap = overlap
-                    best_rank = rank
-            if candidate is None:
-                await aprecompute(repo_root, config=config)
-                scenarios = await scenario_store.list_top(limit=25)
-                candidate = scenarios[0] if scenarios else None
-                best_overlap = 0
-            if candidate is None:
-                abstain = Abstain(
-                    reason="insufficient_evidence",
-                    message="No scenarios are available yet.",
-                    suggestions=[],
-                )
-                await metrics_store.increment_counter("abstain_total")
-                await metrics_store.increment_counter("resolves_total")
-                await _record("ok")
-                return _json_result(abstain.model_dump(mode="json"))
+                # Carry the suggestion's label through to the engine so the
+                # resolve picks up the canonical form even when the caller's
+                # query text is terse.
+                query = str(suggestion_cache[suggestion_id].get("label") or query)
+            include_briefing = bool(args.get("include_briefing", False))
+            include_predicted_response = bool(args.get("include_predicted_response", False))
+            include_metrics = bool(args.get("include_metrics", False))
 
-            expected = set(json.loads(candidate.memory_evidence_hashes_json or "[]"))
-            fresh_fingerprints = set(_scenario_fingerprints(candidate))
-            evidence_fresh = expected.issubset(fresh_fingerprints) if expected else candidate.freshness != "stale"
-            invalidated_this_request = False
-            git_state = read_git_state(repo_root)
-            changed_paths = {
-                line.strip()
-                for line in (str(git_state.get("recent_diff", "")) + "\n" + str(git_state.get("staged", ""))).splitlines()
-                if line.strip()
-            }
-            volatility = semantic_volatility(sorted(changed_paths))
-            if candidate.memory_state in {"trusted", "candidate"} and expected and not evidence_fresh:
-                if volatility >= 0.2:
-                    await scenario_store.mark_stale_by_evidence(candidate.id, evidence_hashes_now=list(fresh_fingerprints))
-                    invalidated_this_request = True
-                    refreshed_after_invalidation = await scenario_store.get(candidate.id)
-                    if refreshed_after_invalidation is not None:
-                        candidate = refreshed_after_invalidation
-                        expected = set(json.loads(candidate.memory_evidence_hashes_json or "[]"))
-                        fresh_fingerprints = set(_scenario_fingerprints(candidate))
-                        evidence_fresh = expected.issubset(fresh_fingerprints) if expected else candidate.freshness != "stale"
-            similarity = _env_similarity(candidate.context_envelope_json, context)
-            reuse = decide_reuse(
-                ReuseInput(
-                    evidence_fresh=evidence_fresh,
-                    envelope_similarity=similarity,
-                    contradiction_since_last_validation=float(candidate.contradiction_signal) >= 0.5,
-                    memory_state=candidate.memory_state,
-                )
-            )
-            if reuse == "reuse_payload":
-                cache_tier = "full_hit"
-            elif reuse == "rerank_prior":
-                cache_tier = "partial_hit"
-            else:
-                cache_tier = "warm_start"
-                await aprecompute(repo_root, config=config)
-                refreshed = await scenario_store.get(candidate.id)
-                if refreshed is not None:
-                    candidate = refreshed
-                    fresh_fingerprints = set(_scenario_fingerprints(candidate))
-                if not fresh_fingerprints:
-                    cache_tier = "miss"
-            compiled_sections = {"decision_digests": candidate.prepared_context[:500]}
-            conflict = detect_conflict(
-                ConflictInput(
-                    compiled_sections=compiled_sections,
-                    compiled_entities=set(candidate.entities),
-                    compiled_fingerprints=list(expected),
-                    fresh_entities=set(candidate.entities),
-                    fresh_fingerprints=list(fresh_fingerprints),
-                )
-            )
-
-            confidence = min(0.99, max(0.05, (candidate.confidence or 0.0) * 0.7 + candidate.score * 0.3))
-            freshness = "fresh"
-            gaps: list[str] = list(candidate.coverage_gaps)
-            if candidate.freshness == "stale":
-                freshness = "stale"
-                await metrics_store.increment_counter("stale_hit_total")
-            if invalidated_this_request:
-                freshness = "stale"
-                await metrics_store.increment_counter("stale_hit_total")
-            if conflict.has_conflict and conflict.strength >= 0.5 and candidate.memory_state in {"trusted", "candidate"}:
-                gaps.append("memory_conflict")
-                freshness = "recent" if freshness == "fresh" else "stale"
-                confidence = max(0.05, confidence * (1.0 - min(0.6, conflict.strength * 0.35)))
-                await metrics_store.increment_counter("conflict_total")
-                if conflict.strength >= 0.7:
-                    abstain = Abstain(
-                        reason="memory_conflict",
-                        message="Compiled memory conflicts with current evidence.",
-                        suggestions=[],
-                        conflict=ConflictSignal.model_validate(conflict.model_dump(mode="json")),
+            try:
+                if engine is not None:
+                    resolution = await engine.resolve_query(
+                        query,
+                        context=context_arg,
+                        include_briefing=include_briefing,
+                        include_predicted_response=include_predicted_response,
                     )
-                    await metrics_store.increment_counter("abstain_total")
-                    await metrics_store.increment_counter("resolves_total")
-                    append_log(
-                        repo_root,
-                        tool=name,
-                        label=query[:60],
-                        decision_id=None,
-                        provenance_mode=CACHE_TIER_TO_PROVENANCE.get(cache_tier),
-                        memory_state=candidate.memory_state,
+                else:
+                    resolution = await _daemon().resolve(
+                        query,
+                        context=context_arg if isinstance(context_arg, dict) else None,
+                        include_briefing=include_briefing,
+                        include_predicted_response=include_predicted_response,
                     )
-                    await _record("ok", scenario_id=candidate.id)
-                    return _json_result(abstain.model_dump(mode="json"))
+            except VanerDaemonUnavailable as exc:
+                await _record("error")
+                return _json_result(
+                    {
+                        "code": "engine_unavailable",
+                        "message": str(exc)
+                        or "vaner.resolve needs either an in-process engine or a running `vaner daemon serve-http --with-engine`",
+                    },
+                    is_error=True,
+                )
+            except ValueError as exc:
+                await _record("error")
+                return _json_result(
+                    {"code": "invalid_input", "message": str(exc)},
+                    is_error=True,
+                )
 
-            if confidence < 0.35:
+            # Low-confidence abstain — the engine doesn't produce Abstain
+            # itself; it's an MCP-surface concern. We keep the same 0.35
+            # threshold the pre-convergence handler used so callers see no
+            # behaviour regression on this axis.
+            if resolution.confidence < 0.35:
                 abstain = Abstain(
                     reason="low_confidence",
                     message="Resolution confidence is below threshold.",
                     suggestions=[],
-                    conflict=ConflictSignal.model_validate(conflict.model_dump(mode="json")) if conflict.has_conflict else None,
                 )
                 await metrics_store.increment_counter("abstain_total")
                 await metrics_store.increment_counter("resolves_total")
@@ -788,171 +689,46 @@ def build_server(
                     tool=name,
                     label=query[:60],
                     decision_id=None,
-                    provenance_mode=CACHE_TIER_TO_PROVENANCE.get(cache_tier),
-                    memory_state=candidate.memory_state,
+                    provenance_mode=resolution.provenance.mode,
+                    memory_state=None,
                 )
-                await _record("ok", scenario_id=candidate.id)
+                await _record("ok")
                 return _json_result(abstain.model_dump(mode="json"))
 
-            decision = DecisionRecord(
-                id=_build_decision_id(query),
-                prompt=query,
-                prompt_hash=hashlib.sha256(query.encode("utf-8")).hexdigest(),
-                assembled_at=time.time(),
-                cache_tier=cache_tier,
-                partial_similarity=float(similarity),
-                token_budget=4096,
-                token_used=min(2048, max(256, len(candidate.prepared_context) // 3)),
-                selections=[
-                    SelectionDecision(
-                        artefact_key=candidate.id,
-                        source_path="scenario_store",
-                        final_score=float(candidate.score),
-                        token_count=min(1024, max(128, len(candidate.prepared_context) // 4)),
-                        stale=(candidate.freshness == "stale"),
-                        rationale="highest overlap scenario",
-                        factors=[
-                            ScoreFactor(name="overlap", contribution=float(best_overlap), detail="query/entity overlap"),
-                            ScoreFactor(name="score", contribution=float(candidate.score), detail="scenario score"),
-                        ],
-                    )
-                ],
-                prediction_links={
-                    candidate.id: PredictionLink(
-                        source="scenario_store",
-                        scenario_question=query,
-                        scenario_rationale="resolve",
-                        confidence=float(confidence),
-                    )
-                },
-                notes=[
-                    json.dumps(
-                        {
-                            "memory_meta": {
-                                "state": candidate.memory_state,
-                                "confidence": candidate.memory_confidence,
-                                "evidence_count": len(expected),
-                                "prior_successes": candidate.prior_successes,
-                                "contradiction_signal": candidate.contradiction_signal,
-                                "last_validated_at": candidate.memory_last_validated_at,
-                            }
-                        }
-                    ),
-                    json.dumps({"conflict": conflict.model_dump(mode="json")}),
-                ],
-            )
-            decision.write(repo_root)
-            resolved_hashes = list(fresh_fingerprints or expected)
-            await scenario_store.merge_memory_section(
-                candidate.id,
-                section="decision_digests",
-                body=f"{query}\n\n{candidate.prepared_context[:600]}",
-                evidence_hashes=resolved_hashes,
-                mark_stale_older=False,
-            )
-            if candidate.entities:
-                invariant_body = "Stable entities observed:\n" + "\n".join(f"- {entity}" for entity in candidate.entities[:8])
-                await scenario_store.merge_memory_section(
-                    candidate.id,
-                    section="invariants",
-                    body=invariant_body,
-                    evidence_hashes=resolved_hashes,
-                    mark_stale_older=False,
-                )
-
-            evidence_items = []
-            max_evidence_items = max(1, int(args.get("max_evidence_items", 8)))
-            for index, ev in enumerate(candidate.evidence[:max_evidence_items], start=1):
-                evidence_items.append(
-                    {
-                        "id": f"ev_{index}",
-                        "source": ev.source_path or "unknown",
-                        "kind": "file",
-                        "locator": {"symbol": ev.key},
-                        "reason": "high-weight scenario evidence",
-                        "fingerprint": evidence_fingerprint(ev.source_path, {"key": ev.key}, ev.excerpt[:128], ev.weight),
-                    }
-                )
-
-            include_briefing = bool(args.get("include_briefing", False))
-            include_predicted_response = bool(args.get("include_predicted_response", False))
-            include_metrics = bool(args.get("include_metrics", False))
-            briefing_text = candidate.prepared_context or ""
-            prepared_briefing: str | None = briefing_text if include_briefing and briefing_text else None
-            # The scenario MCP path doesn't wire to the engine's predicted_response
-            # cache directly. Field is part of the contract for forward-compat; a
-            # future resolve path that consults VanerEngine's prediction_cache
-            # will populate it. Until then it remains None even when opted in.
-            predicted_response: str | None = None
-            # Rough token accounting: ≈4 chars per token is a conservative proxy
-            # used elsewhere in Vaner for budget estimation; good enough for
-            # callers sizing their downstream prompts.
-            briefing_token_used = (len(briefing_text) // 4) if prepared_briefing else 0
-            briefing_token_budget = briefing_token_used
-
-            metrics_payload: ResolutionMetrics | None = None
+            # Optional ResolutionMetrics layer — wraps the engine's
+            # briefing_token_used with wall-clock + cost economics the
+            # engine doesn't own. Opt-in to avoid paying the extra
+            # serialisation cost for callers that don't consume it.
             if include_metrics:
-                evidence_text_chars = sum(len(ev.get("reason", "") or "") + len(str(ev.get("locator") or "")) for ev in evidence_items)
+                briefing_tokens = int(resolution.briefing_token_used or 0)
+                evidence_text_chars = sum(
+                    len(getattr(ev, "reason", "") or "") + len(str(getattr(ev, "locator", "") or "")) for ev in resolution.evidence
+                )
                 evidence_tokens = evidence_text_chars // 4
-                total_context_tokens = briefing_token_used + evidence_tokens
-                # Map cache tiers to provenance-relevant labels, plus freshness
-                # derived from the scenario candidate's state.
-                metrics_freshness = str(freshness) if freshness in {"fresh", "recent", "stale"} else "fresh"
+                total_context_tokens = briefing_tokens + evidence_tokens
+                metrics_freshness = (
+                    resolution.provenance.freshness if resolution.provenance.freshness in {"fresh", "recent", "stale"} else "fresh"
+                )
                 estimated_cost_per_1k = float(args.get("estimated_cost_per_1k_tokens", 0.0) or 0.0)
                 estimated_cost_usd = (total_context_tokens / 1000.0) * estimated_cost_per_1k
-                metrics_payload = ResolutionMetrics(
-                    briefing_tokens=briefing_token_used,
-                    evidence_tokens=evidence_tokens,
-                    total_context_tokens=total_context_tokens,
-                    cache_tier=cache_tier if cache_tier in {"miss", "warm_start", "partial_hit", "full_hit"} else "miss",
-                    freshness=metrics_freshness,
-                    elapsed_ms=(time.monotonic() - resolve_started_monotonic) * 1000.0,
-                    estimated_cost_per_1k_tokens=estimated_cost_per_1k,
-                    estimated_cost_usd=estimated_cost_usd,
+                cache_tier = str(resolution.provenance.cache) if resolution.provenance.cache in {"cold", "warm", "hot"} else "cold"
+                resolution = resolution.model_copy(
+                    update={
+                        "metrics": ResolutionMetrics(
+                            briefing_tokens=briefing_tokens,
+                            evidence_tokens=evidence_tokens,
+                            total_context_tokens=total_context_tokens,
+                            cache_tier=cache_tier,
+                            freshness=metrics_freshness,
+                            elapsed_ms=(time.monotonic() - resolve_started_monotonic) * 1000.0,
+                            estimated_cost_per_1k_tokens=estimated_cost_per_1k,
+                            estimated_cost_usd=estimated_cost_usd,
+                        ),
+                    }
                 )
 
-            resolution = Resolution(
-                intent=f"{candidate.kind}::{candidate.id}",
-                confidence=float(confidence),
-                summary=briefing_text[:400] or "No summary available.",
-                evidence=evidence_items,
-                alternatives_considered=[],
-                gaps=sorted(set(gaps)),
-                next_actions=["vaner.expand", "vaner.explain"],
-                context_envelope=ContextEnvelope.model_validate(
-                    {
-                        "domain": str(context.get("domain", "code")),
-                        "current_artifact": context.get("current_artifact"),
-                        "selection": context.get("selection"),
-                        "recent_queries": list(context.get("recent_queries") or []),
-                        "agent_goal": context.get("agent_goal"),
-                    }
-                ),
-                provenance={
-                    "mode": CACHE_TIER_TO_PROVENANCE.get(cache_tier, "retrieval_fallback"),
-                    "cache": "warm" if cache_tier in {"full_hit", "partial_hit"} else "cold",
-                    "freshness": freshness,
-                    "memory": MemoryMeta(
-                        state=candidate.memory_state,
-                        confidence=float(candidate.memory_confidence),
-                        last_validated_at=float(candidate.memory_last_validated_at or 0.0),
-                        evidence_count=len(expected),
-                        prior_successes=int(candidate.prior_successes),
-                        contradiction_signal=float(candidate.contradiction_signal),
-                    ),
-                },
-                resolution_id=decision.id,
-                prepared_briefing=prepared_briefing,
-                predicted_response=predicted_response,
-                briefing_token_used=briefing_token_used,
-                briefing_token_budget=briefing_token_budget,
-                metrics=metrics_payload,
-            )
-            # Silence unused-variable lint on the opt-in flag; the field is
-            # returned as None today but consumers can opt in now.
-            _ = include_predicted_response
             await metrics_store.increment_counter("resolves_total")
-            if cache_tier == "full_hit":
+            if resolution.provenance.mode == "predictive_hit":
                 await metrics_store.increment_counter("predictive_hit_total")
             append_log(
                 repo_root,
@@ -960,10 +736,9 @@ def build_server(
                 label=query[:60],
                 decision_id=resolution.resolution_id,
                 provenance_mode=resolution.provenance.mode,
-                memory_state=candidate.memory_state,
+                memory_state=None,
             )
-            write_index(repo_root, await scenario_store.list_top(limit=50))
-            await _record("ok", scenario_id=candidate.id)
+            await _record("ok")
             return _json_result(resolution.model_dump(mode="json"))
 
         if name == "vaner.expand":
