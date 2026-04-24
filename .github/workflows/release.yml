@@ -92,6 +92,18 @@ jobs:
           assets=$(printf '%s\n' dist/* sbom.json sbom.json.sigstore.json | sort -u)
           # shellcheck disable=SC2086
           gh release upload "$TAG" $assets --clobber
+          # 0.8.5 WS11 — auto-publish a drafted release after assets attach.
+          # release-drafter creates a draft on every PR merge to main; the
+          # draft becomes the tagged release but stays unpublished unless
+          # we flip the draft bit here. Prior to this step v0.8.2 and
+          # v0.8.3 tags had drafts that never shipped (user surfaced the
+          # gap during 0.8.4). Publishing explicitly is idempotent on
+          # already-published releases.
+          is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          if [ "$is_draft" = "true" ]; then
+            echo "Publishing draft release $TAG"
+            gh release edit "$TAG" --draft=false --latest
+          fi
 
   slsa-provenance:
     needs: publish
