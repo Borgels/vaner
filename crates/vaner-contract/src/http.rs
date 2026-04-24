@@ -29,10 +29,7 @@ pub trait EngineClient: Send + Sync {
     /// paired with the raw server bytes. The raw bytes flow through to
     /// `AdoptHandoff` so unknown top-level server keys (future additive
     /// fields) reach the agent verbatim.
-    async fn adopt(
-        &self,
-        prediction_id: &str,
-    ) -> Result<(Resolution, Bytes), EngineClientError>;
+    async fn adopt(&self, prediction_id: &str) -> Result<(Resolution, Bytes), EngineClientError>;
 }
 
 /// Concrete `reqwest`-backed engine client. Default base URL is
@@ -100,10 +97,7 @@ impl EngineClient for HttpEngineClient {
         Ok(predictions)
     }
 
-    async fn adopt(
-        &self,
-        prediction_id: &str,
-    ) -> Result<(Resolution, Bytes), EngineClientError> {
+    async fn adopt(&self, prediction_id: &str) -> Result<(Resolution, Bytes), EngineClientError> {
         let trimmed = prediction_id.trim();
         if trimmed.is_empty() {
             return Err(EngineClientError::InvalidInput);
@@ -147,13 +141,10 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/status"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({
-                        "health": "ok",
-                        "scenario_counts": {"fresh": 1, "recent": 2, "stale": 0, "total": 3}
-                    })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "health": "ok",
+                "scenario_counts": {"fresh": 1, "recent": 2, "stale": 0, "total": 3}
+            })))
             .mount(&server)
             .await;
 
@@ -168,29 +159,27 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/predictions/active"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "predictions": [{
-                        "id": "p-1",
-                        "spec": {
-                            "label": "Write test", "description": "foo",
-                            "source": "arc", "anchor": "testing",
-                            "confidence": 0.8, "hypothesis_type": "likely_next",
-                            "specificity": "concrete", "created_at": 1.0
-                        },
-                        "run": {
-                            "weight": 0.5, "token_budget": 2048, "tokens_used": 1024,
-                            "model_calls": 2, "scenarios_spawned": 1, "scenarios_complete": 1,
-                            "readiness": "ready", "updated_at": 2.0
-                        },
-                        "artifacts": {
-                            "scenario_ids": ["scn_1"], "evidence_score": 0.5,
-                            "has_draft": true, "has_briefing": true,
-                            "thinking_trace_count": 1
-                        }
-                    }]
-                })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "predictions": [{
+                    "id": "p-1",
+                    "spec": {
+                        "label": "Write test", "description": "foo",
+                        "source": "arc", "anchor": "testing",
+                        "confidence": 0.8, "hypothesis_type": "likely_next",
+                        "specificity": "concrete", "created_at": 1.0
+                    },
+                    "run": {
+                        "weight": 0.5, "token_budget": 2048, "tokens_used": 1024,
+                        "model_calls": 2, "scenarios_spawned": 1, "scenarios_complete": 1,
+                        "readiness": "ready", "updated_at": 2.0
+                    },
+                    "artifacts": {
+                        "scenario_ids": ["scn_1"], "evidence_score": 0.5,
+                        "has_draft": true, "has_briefing": true,
+                        "thinking_trace_count": 1
+                    }
+                }]
+            })))
             .mount(&server)
             .await;
 

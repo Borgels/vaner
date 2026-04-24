@@ -38,12 +38,12 @@ pub mod ts;
 
 pub use enums::{HypothesisType, PredictionSource, Readiness, Specificity};
 pub use errors::EngineClientError;
-pub use handoff::{handoff_path, stash_adopt, AdoptHandoffError};
+pub use handoff::{AdoptHandoffError, handoff_path, stash_adopt};
 pub use models::{
-    EngineStatus, PredictedPrompt, PredictionArtifacts, PredictionRun, PredictionSpec,
-    Provenance, Resolution, ResolutionAlternative, ResolutionEvidence,
+    EngineStatus, PredictedPrompt, PredictionArtifacts, PredictionRun, PredictionSpec, Provenance,
+    Resolution, ResolutionAlternative, ResolutionEvidence,
 };
-pub use reducer::{reduce, ReducerInputs, VanerState};
+pub use reducer::{ReducerInputs, VanerState, reduce};
 
 #[cfg(feature = "http")]
 pub use http::{EngineClient, HttpEngineClient};

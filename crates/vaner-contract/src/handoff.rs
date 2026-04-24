@@ -114,9 +114,9 @@ pub fn stash_adopt_at(
             match reencoded {
                 Value::Object(map) => map,
                 _ => {
-                    return Err(AdoptHandoffError::Json(
-                        serde::de::Error::custom("resolution did not encode as an object"),
-                    ))
+                    return Err(AdoptHandoffError::Json(serde::de::Error::custom(
+                        "resolution did not encode as an object",
+                    )));
                 }
             }
         }
@@ -131,9 +131,7 @@ pub fn stash_adopt_at(
     let payload = serde_json::to_vec_pretty(&Value::Object(obj))?;
 
     // Atomic write: temp file in the same directory, then rename.
-    let tmp = tempfile::NamedTempFile::new_in(
-        target.parent().unwrap_or_else(|| Path::new(".")),
-    )?;
+    let tmp = tempfile::NamedTempFile::new_in(target.parent().unwrap_or_else(|| Path::new(".")))?;
     tmp.as_file().write_all(&payload)?;
     tmp.as_file().sync_all()?;
     tmp.persist(target)
