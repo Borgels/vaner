@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from vaner.broker.selector import score_artefact
+from vaner.intent.calibration import IsotonicCalibrator
 from vaner.intent.features import feature_vector_for_artefact
 from vaner.models.artefact import Artefact
 
@@ -39,8 +40,24 @@ class IntentScorer:
         self.model_influence = 0.05
         self.model_influence_max = 0.35
         self.last_train_metrics: dict[str, float | str] = {}
+        self._calibrator: IsotonicCalibrator | None = None
+        self.calibration_path: Path | None = None
         if model_path is not None:
             self.load_model(model_path)
+
+    def load_calibration(self, calibration_path: Path) -> bool:
+        """Load an isotonic calibration curve to apply after model inference.
+
+        Fails closed: on malformed JSON or missing file, the scorer keeps
+        returning uncalibrated predictions (same behavior as before).
+        Returns True when a calibrator was successfully installed.
+        """
+        calibrator = IsotonicCalibrator.load(calibration_path)
+        if calibrator is None:
+            return False
+        self._calibrator = calibrator
+        self.calibration_path = calibration_path
+        return True
 
     def load_model(self, model_path: Path, *, backend: str | None = None) -> bool:
         if not model_path.exists():
@@ -120,6 +137,8 @@ class IntentScorer:
         runtime_features.setdefault("frontier_source_llm_branch", 1.0 if source == "llm_branch" else 0.0)
         vec = feature_vector_for_artefact(runtime_features, artefact)
         prediction = self._predict(vec)
+        if self._calibrator is not None:
+            prediction = self._calibrator.transform(prediction)
         influence = max(0.0, min(self.model_influence_max, self.model_influence))
         # Guardrail: keep model correction bounded by heuristic scale.
         blended = ((1.0 - influence) * base) + (influence * prediction)
@@ -131,14 +150,29 @@ class IntentScorer:
         if self._booster is None:
             return 0.0
         if self._backend == "lightgbm":
-            return float(self._booster.predict([vector])[0])
+            try:
+                return float(self._booster.predict([vector])[0])
+            except Exception:
+                self._booster = None
+                return 0.0
         if self._backend == "xgboost":
             if xgb is None:
                 return 0.0
-            matrix = xgb.DMatrix([vector])
-            return float(self._booster.predict(matrix)[0])
+            try:
+                matrix = xgb.DMatrix([vector])
+                return float(self._booster.predict(matrix)[0])
+            except Exception:
+                # Feature-count mismatch when new signals are added before the
+                # model is retrained. Disable the booster so subsequent calls
+                # fall through to the heuristic scorer without retrying.
+                self._booster = None
+                return 0.0
         if self._backend == "catboost":
-            return float(self._booster.predict([vector])[0])
+            try:
+                return float(self._booster.predict([vector])[0])
+            except Exception:
+                self._booster = None
+                return 0.0
         return 0.0
 
     def set_model_influence(self, value: float) -> None:

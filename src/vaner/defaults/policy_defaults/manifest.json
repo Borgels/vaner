@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "description": "Cold-start policy defaults. Local online policy state supersedes these after first run.",
+  "files": {
+    "scoring_policy": {
+      "path": "../scoring_policy.json",
+      "sha256": "74fde2dc0d1c78dc8c927b7aeded38803b8a6ad8df928e7c3267447056e24e06",
+      "size_bytes": 765
+    },
+    "draft_gates": {
+      "path": "../draft_gates.json",
+      "sha256": "d5621c74d8844a03f7827652dffc1e6f11c46587cdac90800eb8da1ba1109ddd",
+      "size_bytes": 232
+    }
+  }
+}

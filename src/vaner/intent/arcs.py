@@ -73,6 +73,170 @@ class ArcPrediction:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class ArcPredictionDescription:
+    """UX-shaped counterpart to ArcPrediction.
+
+    `label` is a short imperative/phrase for display; `hypothesis_type` and
+    `specificity` inform how the UI renders the row.
+    """
+
+    category: str
+    confidence: float
+    label: str
+    description: str
+    hypothesis_type: str  # likely_next | possible_branch | long_tail
+    specificity: str  # concrete | category | anchor
+    anchor: str
+
+
+_CATEGORY_VERB: dict[str, str] = {
+    "review": "Review",
+    "planning": "Plan",
+    "testing": "Write tests for",
+    "debugging": "Debug",
+    "implementation": "Implement",
+    "cleanup": "Clean up",
+    "understanding": "Understand",
+}
+
+# Verbs that commonly lead an imperative user prompt — stripped from the raw
+# query when extracting a noun phrase for label synthesis, so "add tests for
+# parser" produces "tests for parser" (not "add tests for parser").
+_LEADING_VERBS: frozenset[str] = frozenset(
+    {
+        "add",
+        "audit",
+        "build",
+        "check",
+        "create",
+        "debug",
+        "explain",
+        "fix",
+        "help",
+        "implement",
+        "investigate",
+        "make",
+        "plan",
+        "refactor",
+        "remove",
+        "rename",
+        "review",
+        "run",
+        "show",
+        "test",
+        "update",
+        "write",
+    }
+)
+
+# Phase names returned by summarize_workflow_phase — used to disambiguate
+# "concrete" anchors (a file or symbol) from "anchor" ones (a phase label).
+_PHASE_ANCHORS: frozenset[str] = frozenset({"exploring", "discovery", "planning", "building", "validation", "stabilizing"})
+
+
+def _hypothesis_type_for(confidence: float) -> str:
+    if confidence >= 0.6:
+        return "likely_next"
+    if confidence >= 0.3:
+        return "possible_branch"
+    return "long_tail"
+
+
+def _anchor_names_file_or_symbol(anchor: str) -> bool:
+    """True when the anchor looks like a path/extension/symbol rather than a
+    free-form phase label."""
+    if not anchor:
+        return False
+    if "/" in anchor or "::" in anchor:
+        return True
+    for ext in (".py", ".ts", ".tsx", ".go", ".rs", ".js", ".md", ".java", ".cpp", ".c", ".rb", ".swift"):
+        if ext in anchor:
+            return True
+    return False
+
+
+def _specificity_for(anchor: str | None, macro: str | None) -> str:
+    """Classify how specific a predicted prompt is.
+
+    - ``concrete``: the anchor names a file/symbol, or the macro picks out a
+      recognisable noun phrase. The UI should render the raw prompt context.
+    - ``anchor``: the anchor is a phase label (e.g. "validation") — useful
+      but not pointing at code.
+    - ``category``: only the category is available.
+    """
+    if anchor and _anchor_names_file_or_symbol(anchor):
+        return "concrete"
+    if macro and macro != "general":
+        return "concrete"
+    if anchor and anchor not in _PHASE_ANCHORS:
+        return "anchor"
+    return "category"
+
+
+def _noun_phrase_from_query(query: str, *, max_len: int = 40) -> str:
+    """Extract a short noun phrase from a user query, preserving word order.
+
+    Drops politeness prefixes, leading verbs, and articles. Returns an empty
+    string for non-useful inputs. This is deliberately different from
+    :func:`derive_prompt_macro` — the macro is a bag-of-tokens identity key,
+    while this is a natural-reading snippet for UI labels.
+    """
+    if not query:
+        return ""
+    q = query.strip().rstrip(".?!:,; ")
+    lowered = q.lower()
+    for prefix in ("please ", "can you ", "could you ", "i want to ", "i need to "):
+        if lowered.startswith(prefix):
+            q = q[len(prefix) :]
+            lowered = q.lower()
+            break
+    tokens = q.split()
+    while tokens and tokens[0].lower() in _LEADING_VERBS:
+        tokens.pop(0)
+    while tokens and tokens[0].lower() in {"a", "an", "the", "some", "that"}:
+        tokens.pop(0)
+    phrase = " ".join(tokens).strip()
+    if len(phrase) > max_len:
+        phrase = phrase[:max_len].rstrip() + "…"
+    return phrase
+
+
+def _label_for(
+    category: str,
+    macro: str | None,
+    hypothesis_type: str,
+    *,
+    specificity: str = "category",
+    recent_query: str | None = None,
+) -> str:
+    """Synthesise a short imperative label for a predicted next prompt.
+
+    When ``specificity == "concrete"`` and a recent query is available, the
+    label echoes the user's own phrasing (via :func:`_noun_phrase_from_query`)
+    so the UI shows a natural-reading continuation rather than the
+    bag-of-tokens macro. Falls back to a macro-/category-derived label for
+    less specific tiers.
+    """
+    verb = _CATEGORY_VERB.get(category, category.capitalize())
+    if specificity == "concrete" and recent_query:
+        noun = _noun_phrase_from_query(recent_query)
+        if noun:
+            if hypothesis_type == "likely_next":
+                return f"{verb}: {noun}"
+            if hypothesis_type == "possible_branch":
+                return f"Maybe {verb.lower()}: {noun}"
+            return f"Might follow: {verb.lower()} {noun}"
+    macro_phrase = macro if macro and macro != "general" else ""
+    if hypothesis_type == "likely_next" and macro_phrase:
+        return f"{verb} {macro_phrase}".strip()
+    if hypothesis_type == "likely_next":
+        return f"{verb} next"
+    if hypothesis_type == "possible_branch":
+        return f"Maybe: {verb.lower()} {macro_phrase}".strip() if macro_phrase else f"Maybe: {verb.lower()}"
+    return f"Long-tail: {verb.lower()}"
+
+
 def _tokenize(text: str) -> list[str]:
     normalized = "".join(ch.lower() if ch.isalnum() else " " for ch in text)
     return [token for token in normalized.split() if token]
@@ -114,7 +278,16 @@ def classify_query_category(query: str) -> str:
 
 
 class ConversationArcModel:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        transition_priors: dict[str, dict[str, float]] | None = None,
+        phase_affinity_priors: dict[str, dict[str, float]] | None = None,
+        community_priors: dict[str, dict[str, float]] | None = None,
+        laplace_alpha: float = 0.1,
+        prior_weight: float = 50.0,
+        community_blend_weight: float = 0.2,
+    ) -> None:
         self._transitions: dict[str, Counter[str]] = defaultdict(Counter)
         self._macro_to_category: dict[str, Counter[str]] = defaultdict(Counter)
         self._macro_transitions: dict[str, Counter[str]] = defaultdict(Counter)
@@ -126,6 +299,17 @@ class ConversationArcModel:
         self._last_macro: str | None = None
         self._last_transition: HabitTransition | None = None
         self._recent_categories: deque[str] = deque(maxlen=6)
+        self._phase_affinity: dict[str, dict[str, float]] = {}
+        self._laplace_alpha = max(0.0, float(laplace_alpha))
+        self._prior_weight = max(1.0, float(prior_weight))
+        self._community_blend_weight = max(0.0, min(1.0, float(community_blend_weight)))
+        self._community_transitions: dict[str, dict[str, float]] = {}
+        if transition_priors:
+            self._seed_transition_priors(transition_priors)
+        if phase_affinity_priors:
+            self._seed_phase_affinity(phase_affinity_priors)
+        if community_priors:
+            self._community_transitions = {str(k): dict(v) for k, v in community_priors.items()}
 
     def observe(self, query_text: str) -> str:
         return self.observe_detail(query_text).category
@@ -183,6 +367,61 @@ class ConversationArcModel:
         predictions = self.rank_next(category, top_k=top_k, recent_queries=recent_queries)
         return [(item.category, item.confidence) for item in predictions]
 
+    def describe_next(
+        self,
+        category: str,
+        top_k: int = 3,
+        *,
+        recent_queries: list[str] | None = None,
+    ) -> list[ArcPredictionDescription]:
+        """UX-shaped view of rank_next: each category prediction gains a label,
+        hypothesis_type, specificity, and description. Consumed by Phase A's
+        prediction registry and Phase D's desktop pane.
+
+        Label synthesis echoes the user's raw prompt (via
+        :func:`_noun_phrase_from_query`) when ``specificity=="concrete"``, so
+        the UI shows a natural-reading row instead of a bag-of-tokens macro.
+        """
+        ranked = self.rank_next(category, top_k=top_k, recent_queries=recent_queries)
+        if not ranked:
+            return []
+        macro: str | None
+        recent_query: str | None = None
+        if recent_queries:
+            recent_query = recent_queries[-1]
+            macro = derive_prompt_macro(recent_query)
+        else:
+            macro = self._last_macro
+        phase_summary = self.summarize_workflow_phase(recent_queries or [])
+        out: list[ArcPredictionDescription] = []
+        for prediction in ranked:
+            hypothesis = _hypothesis_type_for(prediction.confidence)
+            anchor = macro if macro and macro != "general" else phase_summary.phase
+            specificity = _specificity_for(anchor, macro)
+            label = _label_for(
+                prediction.category,
+                macro,
+                hypothesis,
+                specificity=specificity,
+                recent_query=recent_query,
+            )
+            description = (
+                f"Predicted next step: {prediction.category} after {phase_summary.phase}; "
+                f"confidence {prediction.confidence:.2f}. Reason: {prediction.reason or 'rank_next'}."
+            )
+            out.append(
+                ArcPredictionDescription(
+                    category=prediction.category,
+                    confidence=prediction.confidence,
+                    label=label,
+                    description=description,
+                    hypothesis_type=hypothesis,
+                    specificity=specificity,
+                    anchor=anchor or category,
+                )
+            )
+        return out
+
     def rank_next(
         self,
         category: str,
@@ -201,7 +440,10 @@ class ConversationArcModel:
                 scores[label] += weight * (count / total)
                 reasons[label].append(reason)
 
-        add_normalized(self._transitions.get(category, Counter()), 0.55, f"category:{category}")
+        community_scale = self._community_blend_weight if self._community_transitions else 0.0
+        local_scale = 1.0 - community_scale
+
+        add_normalized(self._transitions.get(category, Counter()), 0.55 * local_scale, f"category:{category}")
 
         macro = None
         if recent_queries:
@@ -209,10 +451,14 @@ class ConversationArcModel:
         elif self._last_macro is not None:
             macro = self._last_macro
         if macro is not None:
-            add_normalized(self._macro_to_category.get(macro, Counter()), 0.30, f"macro:{macro}")
+            add_normalized(self._macro_to_category.get(macro, Counter()), 0.30 * local_scale, f"macro:{macro}")
 
         phase_summary = self.summarize_workflow_phase(recent_queries or [])
-        add_normalized(self._phase_transitions.get(phase_summary.phase, Counter()), 0.15, f"phase:{phase_summary.phase}")
+        add_normalized(self._phase_transitions.get(phase_summary.phase, Counter()), 0.15 * local_scale, f"phase:{phase_summary.phase}")
+
+        if community_scale > 0.0 and category in self._community_transitions:
+            community_counts: Counter[str] = Counter({k: int(v * 100) for k, v in self._community_transitions[category].items()})
+            add_normalized(community_counts, community_scale, "community_prior")
 
         if not scores:
             return []
@@ -323,6 +569,17 @@ class ConversationArcModel:
     def _infer_phase(self, categories: tuple[str, ...]) -> str:
         if not categories:
             return "exploring"
+        if self._phase_affinity:
+            recent = categories[-4:]
+            category_counts = Counter(recent)
+            phase_scores: dict[str, float] = {}
+            for phase, affinity in self._phase_affinity.items():
+                score = 0.0
+                for category, count in category_counts.items():
+                    score += float(affinity.get(category, 0.0)) * float(count)
+                phase_scores[phase] = score
+            if phase_scores:
+                return max(phase_scores.items(), key=lambda item: item[1])[0]
         recent = categories[-4:]
         counts = Counter(recent)
         if counts["testing"] + counts["review"] >= 2:
@@ -350,3 +607,43 @@ class ConversationArcModel:
             if current_macro in counter:
                 return previous_macro
         return None
+
+    def _seed_transition_priors(self, transitions: dict[str, dict[str, float]]) -> None:
+        categories = sorted(
+            {str(from_cat) for from_cat in transitions.keys()}
+            | {str(to_cat) for mapping in transitions.values() if isinstance(mapping, dict) for to_cat in mapping.keys()}
+        )
+        if not categories:
+            return
+        for from_cat in categories:
+            row = transitions.get(from_cat, {})
+            if not isinstance(row, dict):
+                continue
+            for to_cat in categories:
+                raw_prob = float(row.get(to_cat, 0.0))
+                smoothed = max(0.0, raw_prob) + self._laplace_alpha
+                pseudo_count = smoothed * self._prior_weight
+                self._transitions[from_cat][to_cat] += pseudo_count
+                self._phase_transitions[from_cat][to_cat] += pseudo_count
+                macro_key = f"prior:{from_cat}"
+                self._macro_to_category[macro_key][to_cat] += pseudo_count
+                self._macro_categories[macro_key][to_cat] += pseudo_count
+                self._macro_counts[macro_key] += pseudo_count
+                self._macro_examples.setdefault(macro_key, f"follow {from_cat} with {to_cat}")
+
+    def _seed_phase_affinity(self, phase_affinity: dict[str, dict[str, float]]) -> None:
+        cleaned: dict[str, dict[str, float]] = {}
+        for phase, weights in phase_affinity.items():
+            if not isinstance(weights, dict):
+                continue
+            normalized: dict[str, float] = {}
+            total = 0.0
+            for category, value in weights.items():
+                prob = max(0.0, float(value))
+                normalized[str(category)] = prob
+                total += prob
+            if total > 0.0:
+                for category in list(normalized.keys()):
+                    normalized[category] = normalized[category] / total
+            cleaned[str(phase)] = normalized
+        self._phase_affinity = cleaned

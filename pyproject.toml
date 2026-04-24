@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vaner"
-version = "0.7.1"
+version = "0.8.0"
 description = "Predictive context middleware layer for AI workflows."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -98,6 +98,19 @@ mypy_path = "src"
 [[tool.mypy.overrides]]
 module = ["vaner.__init__", "vaner.server", "vaner.cli.main"]
 strict = true
+
+# Third-party runtime-optional modules without bundled type stubs. CI's
+# pinned requirements.txt does not include them (they are declared as
+# extras); mypy would otherwise emit import-not-found against imports
+# that work fine at runtime when the relevant extra is installed.
+[[tool.mypy.overrides]]
+module = [
+  "mcp",
+  "mcp.*",
+  "torch",
+  "torch.*",
+]
+ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["src/vaner"]

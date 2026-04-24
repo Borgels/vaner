@@ -1,0 +1,10 @@
+[
+  {"idle_before_s": 0,   "query": "Plan the implementation steps for this feature"},
+  {"idle_before_s": 180, "query": "Implement the API handler for the feature"},
+  {"idle_before_s": 420, "query": "Write tests for the new API handler"},
+  {"idle_before_s": 120, "query": "Fix failing test in the API handler"},
+  {"idle_before_s": 300, "query": "Review the patch and call out regressions"},
+  {"idle_before_s": 60,  "query": "Plan follow-up cleanup work"},
+  {"idle_before_s": 240, "query": "Implement the cleanup refactor"},
+  {"idle_before_s": 150, "query": "Validate the refactor with tests"}
+]

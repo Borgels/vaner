@@ -7,6 +7,118 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-23
+
+### Added
+
+#### Persistent prediction pool (WS6)
+- **Registry survives across cycles.** `VanerEngine._merge_prediction_specs` now merges new specs into a long-lived `PredictionRegistry` instead of rebuilding one per cycle. Existing predictions keep their accumulated `evidence_score`, `scenarios_complete`, `prepared_briefing`, `draft_answer`, `thinking_traces`, and `file_content_hashes`.
+- **Signal-driven invalidation.** New `src/vaner/intent/invalidation.py` emits `file_change`, `commit`, `category_shift`, and `adoption` signals from git + observation state. `PredictionRegistry.apply_invalidation_signals()` applies them: file-change halves weight and clears the briefing, commit stales phase-anchored predictions, category-shift demotes anchored predictions.
+- **Per-path content hashes.** `src/vaner/daemon/signals/git_reader.py` gains `read_head_sha`, `read_commit_subjects`, and `read_content_hashes` (git `hash-object` with SHA-256 fallback). Briefing-attach sites capture hashes so invalidation can compare against disk state.
+
+#### BriefingAssembler (WS9)
+- `src/vaner/intent/briefing.py` — new `Briefing` / `BriefingSection` / `BriefingAssembler` with `from_prediction` / `from_paths` / `from_artefacts` builders. Single canonical briefing assembler; approximation warning latched so operators know when heuristic token counts are in play. Wired into the engine's evidence-threshold path (replaces the deleted `_synthesise_briefing_from_scenarios`) and MCP `_build_adopt_resolution`.
+
+#### Drafter (WS10)
+- `src/vaner/intent/drafter.py` — single `Drafter` class owning the rewrite + draft LLM templates and gate arithmetic. `VanerEngine._precompute_predicted_responses` routes through it; arc / pattern / history / goal-sourced predictions all drive the same path.
+
+#### Workspace Goals (WS7)
+- New `src/vaner/intent/goals.py` (`WorkspaceGoal`, `GoalEvidence`, `GoalSource`, `GoalStatus`) and `src/vaner/intent/branch_parser.py` (heuristic goal extractor from branch names like `feat/jwt-migration`).
+- New `workspace_goals` SQLite table with indexes on `status` and `created_at`; `ArtefactStore.upsert_workspace_goal`, `list_workspace_goals`, `update_workspace_goal_status`, `delete_workspace_goal`.
+- `VanerEngine._merge_prediction_specs` seeds `PredictionSpec(source="goal")` from active goals; goal-anchored predictions surface in `get_active_predictions()` and flow through the full readiness lifecycle.
+- Four new MCP tools: `vaner.goals.list`, `vaner.goals.declare`, `vaner.goals.update_status`, `vaner.goals.delete`.
+
+#### Unified resolution path (WS8)
+- `VanerEngine.resolve_query(query, *, context, include_briefing, include_predicted_response) -> Resolution` — single canonical `query → Resolution` entry. Consults the prediction registry for a label-match (populating `predicted_response` from the cached draft and `alternatives_considered` from runners-up) and falls back to the heuristic `query()` path, building the Resolution from the returned ContextPackage via `BriefingAssembler.from_artefacts`.
+- `Resolution.predicted_response`, `alternatives_considered`, and `briefing_token_used` / `briefing_token_budget` are now populated honestly on the adopt path; briefing rendering comes from `BriefingAssembler`.
+
+#### Calibrated predictions
+- `IsotonicCalibrator` in `src/vaner/intent/calibration.py` — pure-Python isotonic curve consumer, no scikit-learn at inference. Loaded from `calibration_curve.json` in the defaults bundle, applied after `IntentScorer._predict()` to convert raw GBDT scores into calibrated probabilities.
+- Fail-closed: malformed curve JSON → uncalibrated fallback (same as pre-0.8.0 bundles).
+
+#### Bundle integrity enforcement
+- `DefaultsIntegrityError` — SHA256 mismatches in the defaults manifest now **raise** instead of silently returning a sentinel path. Set `VANER_DEFAULTS_ALLOW_MISMATCH=1` for permissive mode with a telemetry log accessible via `drain_checksum_mismatches()`.
+- `DefaultsVersionError` — manifests can now declare `min_reader_version`; loader refuses bundles that require a newer vaner than the current runtime.
+
+#### Event stream
+- `scenarios` stage is now emitted by default alongside `prediction`, `calibration`, `draft`, `budget`. Operators can opt stages out with `VANER_EVENT_STAGES` env var or the `?stages=` query param.
+
+### Changed
+- Manifests in `src/vaner/defaults/*/manifest.json` are regenerated to match shipped file contents; checksum drift is now a hard error rather than a silent skip.
+- `_version_tuple` in the defaults loader parses version strings robustly (stops at first non-digit per segment).
+
+### Internal
+- Tests: +28 across `test_defaults/test_loader_checksum.py` and `test_intent/test_calibration.py`.
+- **0.8.0 architectural cleanup tests (+~100 across WS6–WS10 + WS7 + WS8):** `tests/test_intent/test_prediction_invalidation.py` (17), `tests/test_intent/test_briefing.py` (9), `tests/test_intent/test_drafter.py` (15), `tests/test_intent/test_goals.py` (28), `tests/test_engine/test_goal_seeded_predictions.py` (2), `tests/test_engine/test_resolve_query.py` (4), `tests/test_engine/test_file_change_invalidates_persistent_briefing.py` (2, WS6 end-to-end file-edit invalidation), extended `tests/test_daemon/test_signals.py` (+3), plus MCP-surface updates in `test_mcp/test_protocol_roundtrip.py`, `test_mcp/test_scenario_tools.py`, `test_mcp/test_server_boot.py`, and `tests/test_mcp_v2/test_goals_tool.py` (8). Full suite: 780 passing.
+
+### Evaluation — three delivery modes, three validation tracks
+
+Vaner has three independent delivery modes. The 0.8.0 evaluation validates each one on its own terms rather than asking a single metric to underwrite all three.
+
+- **(A) Context augmentation for a backend LLM.** User prompts their frontier LLM → LLM calls Vaner via MCP → Vaner returns a prepared briefing → LLM answers. *Quality* claim.
+- **(B) Instant-answer delivery via the predictive cache.** User sees ready predictions, clicks one, Vaner's prepared package is served directly — the frontier may not be called at all. *UX + performance + marginal-cost* claim.
+- **(C) Persistent preparation engine.** Vaner accumulates evidence across cycles and invalidates only on real signals (file edits, commits, category shifts, adoption). *Architecture correctness* claim.
+
+The framing is **not** "Vaner beats frontier models." It is: Vaner improves frontier-model responses through precomputed context (mode A), and sometimes bypasses the frontier call entirely by serving prepared work (mode B), with persistence (mode C) as the foundation that makes A and B compound across successive user turns.
+
+#### Track A — answer-quality uplift (MCP-assisted flow)
+
+Harness: `Vaner-train/eval/session_replay_bench.py` with `--judge-answer-quality --include-rag`. Naked (no context) vs RAG (naive top-K embedding retrieval) vs Vaner (prepared briefing). Blind shuffled judge, 1–10 absolute scores + preference.
+
+Config: `qwen3.5:35b` ponder on local RTX 5090 via Ollama; `gpt-5.3-chat-latest` answer via OpenAI; `gpt-5` judge via OpenAI. 4 archetype sessions (developer / researcher / writer / learner), realistic trace idle (15-min cap, ranges 90s–780s per turn, total precompute ~3h wall-clock).
+
+**Results (bench: `ws4-realdeploy-3way-20260423T210832Z.json`):**
+
+| archetype | naked | RAG | Vaner | Δ (V−R) | wins: V / R / naked / tie |
+|---|---|---|---|---|---|
+| developer | 2.50 | **6.38** | 5.62 | −0.76 | 1 / 4 / 1 / 2 |
+| researcher | 1.00 | 4.25 | **6.75** | **+2.50** | 5 / 1 / 0 / 2 |
+| writer | 1.00 | 3.86 | **5.29** | **+1.43** | 4 / 1 / 0 / 2 |
+| learner | 1.00 | **5.88** | 2.38 | −3.50 | 0 / 5 / 0 / 3 |
+| **overall** | **1.38** | **5.09** | **5.01** | **−0.08** | 10 / 11 / 1 / 9 |
+
+Vaner beats naked on every archetype (so context value is real) and roughly matches RAG overall, but **archetype variance is large**. Vaner wins clearly on researcher (+2.50) and writer (+1.43) — the archetypes where multi-turn semantic intent and cross-file context matter. Vaner loses on developer (−0.76, small) and learner (−3.50, large). Interpretation: naive embedding retrieval is hard to beat when the user's question has a clearly-matching passage in the corpus (algorithms textbook; Flask API docs in the dev's memory), and Vaner's strength is in synthesizing *across* evidence for narrative/research work.
+
+**0.8.0 Track A ship-posture:** *do not* claim a blanket "Vaner beats RAG." Instead: "Vaner is competitive with RAG overall and wins clearly on long-horizon document and narrative work. On algorithms-study and code-reference queries, naive RAG retrieval is a strong baseline Vaner does not yet beat — WS8 unified resolve is the 0.8.1 focus that addresses this."
+
+#### Track B — instant-adopt UX/perf (predictive cache)
+
+Harness: same bench run, `--test-adopt` fields aggregated by `Vaner-train/eval/aggregate_track_b.py`. Measures adoption hit-rate (fraction of turns with a matching ready/drafting prediction), adopted-answer quality vs naked + vs Vaner-heuristic, and latency ratio (adopt path vs live heuristic path, both under the bench's judge-a-fresh-answer constraint).
+
+**Results:**
+
+| archetype | hit-rate | adopt | naked (adopted turns) | Vaner-heuristic (adopted turns) | latency adopt / Vaner |
+|---|---|---|---|---|---|
+| developer | 0% | — | — | — | — |
+| researcher | 87.5% | 3.71 | 1.00 | 6.29 | 1701ms / 2351ms |
+| writer | 50% | 3.00 | 1.00 | 4.00 | 2527ms / 2420ms |
+| learner | 62.5% | 1.40 | 1.00 | 3.20 | 1672ms / 2386ms |
+| **overall** | **50%** | **2.81** | **1.00** | **4.75** | **1898ms / 2379ms (ratio 0.80)** |
+
+Hit-rate is above the 40% ship-gate floor — the adopt surface has real content half the time. Adopt quality is above naked (+1.81) but meaningfully below Vaner-heuristic (−1.94) — meaning the label-match heuristic in `VanerEngine.resolve_query` is often selecting a prediction whose prepared draft is close but not quite the user's actual prompt. WS8.1's unified resolve (semantic matching, not just label overlap) is designed to close this gap.
+
+Bench-mode latency ratio 0.80 → adopt is ~20% faster than Vaner-heuristic because the briefing is already built; **production** latency ratio with a verbatim-draft-served adopt (no frontier call at all) would be ~0.01 (milliseconds vs seconds). The bench can't measure that directly because it always calls the answer model so the judge can score.
+
+**0.8.0 Track B ship-posture:** adopt UX available for ~50% of prompts, produces better-than-naked answers, and is a latency improvement over the live pipeline even when still calling the frontier. Production prepared-draft-serving is a UX-side 0.8.1 follow-up.
+
+Developer 0% hit-rate is a surprise worth investigation — likely a mismatch between the developer session's prompt vocabulary (Flask-specific verbs like "implement", "add", "debug") and the prediction labels synthesised by `_merge_prediction_specs`. Filed as WS8.1 investigation.
+
+#### Track C — persistent preparation correctness (architecture)
+
+Test-driven. 27 unit tests across `test_prediction_invalidation.py` + `test_prediction_persistence.py` cover the WS6 invariants: merge preserves accumulated state across cycles; file_change demotes + clears briefing; commit stales phase-anchored; category-shift demotes anchored; adoption marks spent; no-hash predictions untouched.
+
+End-to-end integration smoke: `test_file_change_invalidates_persistent_briefing.py` runs two consecutive `precompute_cycle` calls on a real engine with a file edit in between and asserts the captured briefing is cleared and the invalidation reason recorded — plus the inverse that no edits means no clearing.
+
+**Track C ship-gate:** all unit + integration tests green (status: 29 tests, all passing).
+
+### Known limitations / deferred to 0.8.1
+
+- **True agent-with-search baseline.** The Track A "naked" arm is zero-context, not "frontier model with its own search tool." Deferred: a harness that runs multi-call agent loops so Vaner's uplift can be measured against a realistic code-assistant control.
+- **Same-family judge.** Track A uses `gpt-5` to judge `gpt-5.3-chat-latest` answers. Claude-as-judge (or another family) independence check is an 0.8.1 follow-up.
+- **Workspace Goals.** Ships with branch-name inference and MCP declaration; commit-subject clustering and query-embedding clustering deferred.
+- **MCP resolve convergence.** MCP `vaner.resolve` still uses its own scenario-store path; `VanerEngine.resolve_query` is the canonical Python API and both will converge in 0.8.1 via a thin daemon-HTTP wrapper.
+- **SWE-Bench Verified.** Task-completion metric is 0.8.1+ — requires an Agentless-style harness replacing localization with Vaner, not yet built.
+
 ## [0.7.1] - 2026-04-22
 
 ### Added

@@ -14,6 +14,10 @@ htmlcov/
 .vaner/
 .vaner_data/
 
+# Cockpit (frontend) build + dependency caches
+node_modules/
+.vite/
+
 # Secrets: ignore every .env variant, globally and under subtrees.
 # Only sanitized *.env.sample templates are allowed to be committed.
 .env
@@ -33,3 +37,11 @@ scripts/*
 !scripts/bump-plugin-version.sh
 infra/
 apps/vaner-daemon/
+
+# Local engineering scratchpad (handover docs, review notes)
+docs/engineering/
+
+# Claude Code personal state — project CLAUDE.md is committed, personal
+# overrides and session locks are not.
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

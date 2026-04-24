@@ -158,7 +158,8 @@ async def test_predicted_response_respects_max_per_cycle(temp_repo: Path):
         recent_queries=[],
     )
     assert generated == 1
-    assert call_count["n"] == 1
+    # Each macro triggers two LLM calls: Stage A (prompt rewrite) + Stage B (draft).
+    assert call_count["n"] == 2
 
 
 @pytest.mark.asyncio

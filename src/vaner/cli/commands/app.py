@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -683,12 +684,25 @@ def daemon_serve_http(
     path: str | None = typer.Option(None, help="Repository root"),
     host: str = typer.Option("127.0.0.1", "--host", help="Cockpit host"),
     port: int = typer.Option(8473, "--port", help="Cockpit port"),
+    with_engine: bool = typer.Option(
+        True,
+        "--with-engine/--no-engine",
+        help=(
+            "Instantiate a live VanerEngine in the daemon process and run "
+            "periodic precompute cycles. Required for the /predictions/* "
+            "surface and the vaner.predictions.* MCP tools. Disable with "
+            "--no-engine if you only need the static cockpit endpoints."
+        ),
+    ),
 ) -> None:
     import uvicorn
 
+    from vaner.engine import build_default_engine
+
     repo_root = _repo_root(path)
     config = load_config(repo_root)
-    app_instance = create_daemon_http_app(config)
+    engine = build_default_engine(repo_root, config) if with_engine else None
+    app_instance = create_daemon_http_app(config, engine=engine)
     write_pid(repo_root, COCKPIT_PROCESS, os.getpid())
     try:
         uvicorn.run(app_instance, host=host, port=port)
@@ -1151,6 +1165,126 @@ def metrics_cmd(
         for mode, count in usage.items():
             typer.echo(f"  {mode:<14} {count:>5}")
     typer.echo("")
+
+
+# Counter prefixes allowed into the contributed-priors export. Everything
+# else is considered internal decision signal and is dropped.
+# When extending, prefer transition-, hit-rate-, or category-level keys over
+# fine-grained operational counters.
+_CONTRIB_COUNTER_PREFIXES: tuple[str, ...] = (
+    "arc_transition_",
+    "prompt_macro_",
+    "category_hit_",
+    "next_prompt_",
+    "draft_",
+    "calibration_",
+    "bucket_budget_",
+)
+_CONTRIB_EXPORT_SCHEMA_VERSION = "1"
+
+
+def _hash_category(name: str) -> str:
+    """SHA256 category names before export so federation contributors leak only hashes."""
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()
+
+
+@app.command("prior-export", rich_help_panel="Inspect and debug")
+def prior_export(
+    path: str | None = typer.Option(None, help="Repository root"),
+    out: str = typer.Option("contrib.jsonl", "--out", help="Output JSONL file path"),
+) -> None:
+    """Export aggregate prior signals without raw prompt text.
+
+    The export is a versioned JSONL stream suitable for ingestion by the
+    community-priors aggregator. Schema:
+
+    Line 1: ``{"kind": "header", "schema_version": "1", ...}``
+    Then: ``calibration`` rows, ``quality`` rows, narrowed ``counters``,
+    and ``arc_transitions`` with hashed category names.
+    """
+    import asyncio
+    import time
+
+    repo_root = _repo_root(path)
+    db_path = repo_root / ".vaner" / "metrics.db"
+    store = MetricsStore(db_path)
+
+    async def _load() -> tuple[
+        dict[str, float],
+        list[dict[str, object]],
+        list[dict[str, object]],
+        list[dict[str, object]],
+    ]:
+        await store.initialize()
+        counters = await store._counters_map()  # noqa: SLF001 - internal export helper
+        calibration = await store.calibration_snapshot()
+        quality = await store.memory_quality_snapshot()
+        arc_transitions = await _load_arc_transitions(repo_root)
+        return counters, calibration, [quality], arc_transitions
+
+    counters, calibration, quality_rows, arc_transitions = asyncio.run(_load())
+
+    # Narrow counters to the allowlist prefixes — drop internal signals.
+    filtered_counters = {
+        key: value for key, value in counters.items() if any(key.startswith(prefix) for prefix in _CONTRIB_COUNTER_PREFIXES)
+    }
+
+    output_path = Path(out).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    header = {
+        "kind": "header",
+        "schema_version": _CONTRIB_EXPORT_SCHEMA_VERSION,
+        "vaner_version": _resolve_vaner_version(),
+        "exported_at": time.time(),
+    }
+    with output_path.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(header, sort_keys=True) + "\n")
+        handle.write(json.dumps({"kind": "counters", "counters": filtered_counters}, sort_keys=True) + "\n")
+        handle.write(json.dumps({"kind": "calibration", "rows": calibration}, sort_keys=True) + "\n")
+        for row in quality_rows:
+            handle.write(json.dumps({"kind": "quality", "row": row}, sort_keys=True) + "\n")
+        if arc_transitions:
+            handle.write(json.dumps({"kind": "arc_transitions", "edges": arc_transitions}, sort_keys=True) + "\n")
+    typer.echo(f"Wrote prior export: {output_path}")
+
+
+async def _load_arc_transitions(repo_root: Path) -> list[dict[str, object]]:
+    """Read hashed arc-transition edges from habit_transitions. Returns [] on any failure."""
+    try:
+        from vaner.store.artefacts import ArtefactStore
+
+        db_path = repo_root / ".vaner" / "vaner.db"
+        if not db_path.exists():
+            return []
+        store = ArtefactStore(db_path)
+        await store.initialize()
+        rows = await store.list_habit_transitions(limit=5000)
+        edges: list[dict[str, object]] = []
+        for row in rows:
+            src = str(row.get("previous_category", ""))
+            dst = str(row.get("category", ""))
+            count = float(row.get("transition_count", 0) or 0)
+            if not src or not dst or count <= 0:
+                continue
+            edges.append(
+                {
+                    "src_hash": _hash_category(src),
+                    "dst_hash": _hash_category(dst),
+                    "weight": round(count, 6),
+                }
+            )
+        return edges
+    except Exception:
+        return []
+
+
+def _resolve_vaner_version() -> str:
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        return _pkg_version("vaner")
+    except Exception:
+        return "unknown"
 
 
 @app.command("impact", rich_help_panel="Inspect and debug")

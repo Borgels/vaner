@@ -1,0 +1,20 @@
+{
+  "schema_version": "1",
+  "__future_compat__": {},
+  "rows": [
+    {
+      "macro_key": "review architecture",
+      "example_query": "Review the architecture changes and call out risks.",
+      "category": "review",
+      "use_count": 0,
+      "confidence": 0.72
+    },
+    {
+      "macro_key": "implement feature",
+      "example_query": "Implement the requested feature end to end.",
+      "category": "implementation",
+      "use_count": 0,
+      "confidence": 0.78
+    }
+  ]
+}

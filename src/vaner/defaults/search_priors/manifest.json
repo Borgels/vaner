@@ -1,0 +1,36 @@
+{
+  "schema_version": "1",
+  "description": "Search priors shipped from the training pipeline.",
+  "files": {
+    "intent_scorer_model": {
+      "path": "../intent_scorer.json",
+      "sha256": "61dc6b3d021c608d93c245ac0cf68a594f53ca38f1d72e622191e82f51f885dc",
+      "size_bytes": 1302605
+    },
+    "intent_scorer_metadata": {
+      "path": "../intent_scorer_metadata.json",
+      "sha256": "3d7aa79fbdf82d9236349d0c7b9f4cfa92bec728696962c602495a74b1b48eee",
+      "size_bytes": 310
+    },
+    "skill_path_priors": {
+      "path": "../skill_path_priors.json",
+      "sha256": "ea9d87c714c3151fabc85831be8d83447e0997c181f1405af9a575985b263c1a",
+      "size_bytes": 195
+    },
+    "training_summary": {
+      "path": "../summary.json",
+      "sha256": "9b64b9ba2cdf2a43a1a6038a8a6d050ba3983f5f79ed51a2535fc5c0d667b1f7",
+      "size_bytes": 196
+    },
+    "training_quality": {
+      "path": "../training_quality.json",
+      "sha256": "a5d62863e511cd5df04d71adcc0549a7e9a2d22d9e8897399cd6144ea718a3b7",
+      "size_bytes": 923
+    },
+    "validation_report": {
+      "path": "../validation_report.json",
+      "sha256": "32ad923fb480f9a36cf3ab7786ced5a71c62e6846f31753c45499b65600626cf",
+      "size_bytes": 152
+    }
+  }
+}

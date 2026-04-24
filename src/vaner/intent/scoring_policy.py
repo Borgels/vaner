@@ -17,7 +17,6 @@ Design notes
 from __future__ import annotations
 
 import json
-import math
 import time
 from dataclasses import dataclass, field
 
@@ -336,10 +335,19 @@ class ScoringPolicy:
                 continue
         self.updated_at = time.time()
 
+    @classmethod
+    def from_policy_defaults(cls, defaults: dict[str, object] | None) -> ScoringPolicy:
+        """Build from shipped policy defaults.
 
-# ---------------------------------------------------------------------------
-# Module-level helpers (preserve backward-compat call sites in frontier.py)
-# ---------------------------------------------------------------------------
+        These are cold-start hints only. Local online policy state should
+        supersede them after first-run adaptation.
+        """
+        if not defaults:
+            return cls()
+        try:
+            return cls.deserialize(json.dumps(defaults))
+        except Exception:
+            return cls()
 
 
 def depth_discount_from_policy(depth: int, policy: ScoringPolicy) -> float:
@@ -348,16 +356,3 @@ def depth_discount_from_policy(depth: int, policy: ScoringPolicy) -> float:
 
 def freshness_decay_from_policy(last_access_ts: float, policy: ScoringPolicy) -> float:
     return policy.freshness_factor(last_access_ts)
-
-
-# Backward-compatible aliases so existing import-site calls still work during
-# the transition when policy is not yet available.
-def depth_discount(depth: int, _decay_rate: float = 0.35) -> float:  # noqa: D401
-    return max(0.1, 1.0 / (1.0 + depth * _decay_rate))
-
-
-def freshness_decay(last_access_ts: float, _half_life: float = 300.0) -> float:  # noqa: D401
-    age = time.time() - last_access_ts
-    if age <= 0:
-        return 1.0
-    return max(0.1, math.pow(2.0, -age / _half_life))

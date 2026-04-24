@@ -62,10 +62,22 @@ class ScenarioStore:
                 )
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prompt_macro_clusters (
+                    macro_key TEXT PRIMARY KEY,
+                    centroid_label TEXT NOT NULL,
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    support_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_kind ON scenarios(kind)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_score ON scenarios(score DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_freshness ON scenarios(freshness)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenario_evidence_sid ON scenario_evidence(scenario_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_macro_clusters_centroid ON prompt_macro_clusters(centroid_label)")
             await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN context_envelope_json TEXT NOT NULL DEFAULT '{}'")
             await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN memory_state TEXT NOT NULL DEFAULT 'candidate'")
             await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN memory_confidence REAL NOT NULL DEFAULT 0.0")
@@ -76,6 +88,45 @@ class ScenarioStore:
             await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_memory_state ON scenarios(memory_state)")
             await db.commit()
+
+    async def upsert_prompt_macro_cluster(
+        self,
+        *,
+        macro_key: str,
+        centroid_label: str,
+        confidence: float,
+        support_count: int,
+    ) -> None:
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO prompt_macro_clusters (macro_key, centroid_label, confidence, support_count, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(macro_key) DO UPDATE SET
+                    centroid_label=excluded.centroid_label,
+                    confidence=excluded.confidence,
+                    support_count=excluded.support_count,
+                    updated_at=excluded.updated_at
+                """,
+                (macro_key, centroid_label, float(confidence), int(support_count), now),
+            )
+            await db.commit()
+
+    async def list_prompt_macro_clusters(self, limit: int = 200) -> list[dict[str, object]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT macro_key, centroid_label, confidence, support_count, updated_at
+                FROM prompt_macro_clusters
+                ORDER BY support_count DESC, confidence DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            )
+            rows = await cur.fetchall()
+        return [dict(row) for row in rows]
 
     async def upsert(self, scenario: Scenario) -> None:
         async with aiosqlite.connect(self.db_path) as db:

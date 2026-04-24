@@ -314,6 +314,29 @@ class ArtefactStore:
                 )
                 """
             )
+            # WS7 — workspace_goals: long-horizon intent spanning many
+            # prompts / cycles. Keyed by the goal's deterministic id
+            # (sha1 over source|title). ``evidence_json`` carries the
+            # supporting observations (commits, queries, paths) as an
+            # opaque JSON blob so the goal row stays compact.
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workspace_goals (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at REAL NOT NULL,
+                    last_observed_at REAL NOT NULL,
+                    evidence_json TEXT NOT NULL DEFAULT '[]',
+                    related_files_json TEXT NOT NULL DEFAULT '[]'
+                )
+                """
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_workspace_goals_status ON workspace_goals(status)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_workspace_goals_created_at ON workspace_goals(created_at DESC)")
             async with db.execute("PRAGMA table_info(signal_events)") as cursor:
                 signal_columns = [row[1] for row in await cursor.fetchall()]
             if "corpus_id" not in signal_columns:
@@ -663,8 +686,10 @@ class ArtefactStore:
         token_used: int | None,
         feedback_score: float | None = None,
         corpus_id: str = "default",
+        timestamp: float | None = None,
     ) -> str:
         query_id = str(uuid.uuid4())
+        ts = float(timestamp) if timestamp is not None else time.time()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -675,7 +700,7 @@ class ArtefactStore:
                 (
                     query_id,
                     session_id,
-                    time.time(),
+                    ts,
                     query_text,
                     json.dumps(selected_paths),
                     int(hit_precomputed),
@@ -1410,6 +1435,13 @@ class ArtefactStore:
                 )
             await db.commit()
 
+    async def bootstrap_habit_transitions(self, rows: list[dict[str, object]]) -> bool:
+        existing = await self.list_habit_transitions(limit=1)
+        if existing:
+            return False
+        await self.replace_habit_transitions(rows)
+        return True
+
     async def record_habit_transition(
         self,
         *,
@@ -1488,6 +1520,13 @@ class ArtefactStore:
                     ),
                 )
             await db.commit()
+
+    async def bootstrap_prompt_macros(self, rows: list[dict[str, object]]) -> bool:
+        existing = await self.list_prompt_macros(limit=1)
+        if existing:
+            return False
+        await self.replace_prompt_macros(rows)
+        return True
 
     async def bump_prompt_macro(
         self,
@@ -1774,3 +1813,112 @@ class ArtefactStore:
             )
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # -----------------------------------------------------------------------
+    # WS7 — workspace_goals
+    # -----------------------------------------------------------------------
+
+    async def upsert_workspace_goal(
+        self,
+        *,
+        id: str,
+        title: str,
+        description: str,
+        source: str,
+        confidence: float,
+        status: str,
+        evidence_json: str,
+        related_files_json: str,
+    ) -> None:
+        """Insert or update a goal by id.
+
+        On conflict, preserves the original ``created_at`` (goals don't
+        change their creation timestamp when re-observed) and refreshes
+        everything else including ``last_observed_at``.
+        """
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO workspace_goals(
+                    id, title, description, source, confidence, status,
+                    created_at, last_observed_at, evidence_json, related_files_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    description = excluded.description,
+                    source = excluded.source,
+                    confidence = excluded.confidence,
+                    status = excluded.status,
+                    last_observed_at = excluded.last_observed_at,
+                    evidence_json = excluded.evidence_json,
+                    related_files_json = excluded.related_files_json
+                """,
+                (
+                    id,
+                    title,
+                    description,
+                    source,
+                    float(confidence),
+                    status,
+                    now,
+                    now,
+                    evidence_json,
+                    related_files_json,
+                ),
+            )
+            await db.commit()
+
+    async def list_workspace_goals(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        query = (
+            "SELECT id, title, description, source, confidence, status, "
+            "created_at, last_observed_at, evidence_json, related_files_json "
+            "FROM workspace_goals WHERE 1=1"
+        )
+        params: list[object] = []
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY confidence DESC, created_at DESC LIMIT ?"
+        params.append(int(limit))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_workspace_goal(self, goal_id: str) -> dict[str, object] | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT id, title, description, source, confidence, status, "
+                "created_at, last_observed_at, evidence_json, related_files_json "
+                "FROM workspace_goals WHERE id = ?",
+                (goal_id,),
+            )
+            row = await cursor.fetchone()
+        return dict(row) if row is not None else None
+
+    async def update_workspace_goal_status(self, goal_id: str, status: str) -> bool:
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE workspace_goals SET status = ?, last_observed_at = ? WHERE id = ?",
+                (status, now, goal_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def delete_workspace_goal(self, goal_id: str) -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM workspace_goals WHERE id = ?",
+                (goal_id,),
+            )
+            await db.commit()
+            return cursor.rowcount > 0

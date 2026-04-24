@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -116,6 +117,63 @@ class TieredPredictionCache:
     # Backward-compat alias
     _path_overlap_score = _unit_overlap_score
 
+    async def candidate_anchor_units(self, prompt: str, *, top_k: int = 5) -> set[str]:
+        """Return anchor_units from top-K prediction-cache entries most similar to *prompt*.
+
+        Lets the caller merge precompute-predicted file paths into the heuristic
+        ``_quick_paths`` before calling ``match()`` so precompute's speculative
+        entries can participate in path-overlap scoring.
+
+        Scoring preference (most specific → least):
+          1. token similarity of *prompt* vs ``semantic_intent`` — precompute
+             writes rich descriptions here (e.g. "class-based dependencies and
+             their use cases") even when ``prompt_hint`` is a scenario hash.
+          2. embedding cosine of *prompt* vs the stored ``_prompt_embedding``
+             (only reliable when prompt_hint is a real sentence).
+          3. filename overlap between *prompt* tokens and the anchor_unit
+             basenames — a last-resort structural match.
+
+        Taking the top-K unconditionally (no absolute floor) — if the cache
+        has nothing relevant, the added paths are few and low-signal; if it
+        has good predictions, they get to compete on path-overlap scoring.
+        """
+        records = await self.store.list_prediction_cache(limit=64)
+        if not records:
+            return set()
+        scored: list[tuple[float, list[str]]] = []
+        for record in records:
+            enrichment = record.get("enrichment") if isinstance(record.get("enrichment"), dict) else {}
+            enrichment = enrichment or {}
+            # Only consider intentional predictions (LLM scenarios, arc-model
+            # phase hints). Graph-walk "dependency neighbourhood" entries are
+            # mechanical file-expansion and add noise when unioned into the
+            # query's relevant_paths — benchmark shows that including them
+            # regresses learner/researcher archetypes.
+            exploration_source = str(enrichment.get("exploration_source") or "")
+            if exploration_source not in ("llm_branch", "arc"):
+                continue
+            units: list[str] = []
+            for key in ("anchor_units", "source_units", "anchor_files", "source_paths"):
+                raw = enrichment.get(key)
+                if isinstance(raw, list) and raw:
+                    units = [str(p) for p in raw if isinstance(p, str) and p]
+                    break
+            if not units:
+                continue
+            semantic_intent = str(enrichment.get("semantic_intent") or "")
+            hint = str(record.get("prompt_hint") or "")
+            sim_intent = _token_similarity(prompt, semantic_intent) if semantic_intent else 0.0
+            sim_hint = _token_similarity(prompt, hint) if hint and not hint.startswith("context:") else 0.0
+            sim = max(sim_intent, sim_hint)
+            if sim <= 0.0:
+                continue
+            scored.append((sim, units))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        merged: set[str] = set()
+        for _, units in scored[:top_k]:
+            merged.update(units)
+        return merged
+
     async def match(self, prompt: str, *, relevant_paths: set[str] | None = None) -> CacheMatchResult:
         records = await self.store.list_prediction_cache(limit=512)
         prompt_vector = await self._embed_prompt(prompt)
@@ -157,6 +215,15 @@ class TieredPredictionCache:
                 # No path overlap: fall back purely to semantic similarity,
                 # discounted slightly so heuristic-path hits still rank higher.
                 similarity = embedding_sim * 0.85
+
+            # Query write-through entries (no exploration_source metadata) are
+            # a record of the prior turn's selections. They often have high
+            # semantic similarity to the next turn's prompt (same session
+            # topic) yet contain files the current turn doesn't need. Downweight
+            # them so intentional predictions (precompute scenarios) and fresh
+            # heuristic selection are preferred when available.
+            if isinstance(enrichment, dict) and not enrichment.get("exploration_source"):
+                similarity *= 0.55
 
             if similarity > best_similarity:
                 best_similarity = similarity
@@ -244,6 +311,7 @@ class TieredPredictionCache:
         ttl_seconds: int = 600,
     ) -> str:
         payload = dict(enrichment)
+        payload.setdefault("generated_at", time.time())
         # Prefer canonical keys when present, then fall back to legacy ones.
         anchor_units: list[str] = []
         source_units: list[str] = []

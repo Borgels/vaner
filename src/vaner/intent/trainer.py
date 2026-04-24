@@ -68,6 +68,10 @@ class IntentTrainer:
         self.scorer = scorer
         self.config = config or TrainingConfig()
         self.last_train_metrics: dict[str, float | str | int | bool] = {}
+        # Populated by ``train_batch`` so callers (e.g. calibration fit) can
+        # access the validation split without re-computing it.
+        self.last_valid_vectors: list[list[float]] = []
+        self.last_valid_labels: list[float] = []
 
     async def online_update(
         self,
@@ -162,6 +166,9 @@ class IntentTrainer:
             else:
                 train_x.append(vec)
                 train_y.append(labels[idx])
+        # Stash for downstream calibration fitting.
+        self.last_valid_vectors = valid_x
+        self.last_valid_labels = valid_y
 
         backend = self.config.scorer_backend
         extension = ".txt"

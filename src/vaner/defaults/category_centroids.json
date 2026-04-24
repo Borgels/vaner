@@ -1,0 +1,18 @@
+{
+  "schema_version": "1",
+  "__future_compat__": {},
+  "domain_centroids": {
+    "coding": ["implement", "debug", "test", "function", "module"],
+    "research": ["investigate", "analyze", "compare", "evidence"],
+    "writing": ["draft", "edit", "explain", "narrative"],
+    "ops": ["deploy", "runbook", "incident", "monitoring"]
+  },
+  "mode_centroids": {
+    "understand": ["explain", "what", "why", "overview"],
+    "implement": ["add", "create", "build", "implement"],
+    "debug": ["error", "fix", "trace", "failing"],
+    "validate": ["test", "verify", "assert", "check"],
+    "plan": ["plan", "roadmap", "steps", "approach"],
+    "explain": ["document", "summarize", "communicate", "clarify"]
+  }
+}

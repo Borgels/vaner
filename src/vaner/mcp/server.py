@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# mypy: ignore-errors
 
 from __future__ import annotations
 
@@ -9,46 +8,64 @@ import logging
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-try:
+if TYPE_CHECKING:
     from mcp.server import NotificationOptions, Server
     from mcp.server.models import InitializationOptions
     from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
+
+try:
+    from mcp.server import NotificationOptions, Server  # type: ignore[import-not-found]
+    from mcp.server.models import InitializationOptions  # type: ignore[import-not-found]
+    from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool  # type: ignore[import-not-found]
 
     _MCP_IMPORT_ERROR: ModuleNotFoundError | None = None
 except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency path
     _MCP_IMPORT_ERROR = exc
 
-    class NotificationOptions:  # type: ignore[no-redef]
+    class NotificationOptions:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             pass
 
-    class Server:  # type: ignore[no-redef]
+    class Server:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             raise ImportError("import error in vaner.mcp.server: No module named 'mcp'") from _MCP_IMPORT_ERROR
 
-    class InitializationOptions(dict):  # type: ignore[no-redef]
+    class InitializationOptions(dict[str, Any]):
         pass
 
-    class CallToolResult(dict):  # type: ignore[no-redef]
+    class CallToolResult(dict[str, Any]):
         pass
 
-    class ListToolsResult(dict):  # type: ignore[no-redef]
+    class ListToolsResult(dict[str, Any]):
         pass
 
-    class TextContent(dict):  # type: ignore[no-redef]
+    class TextContent(dict[str, Any]):
         pass
 
-    class Tool(dict):  # type: ignore[no-redef]
+    class Tool(dict[str, Any]):
         pass
 
 
 from vaner.api import aprecompute
 from vaner.cli.commands.config import load_config
 from vaner.cli.commands.init import init_repo
+from vaner.daemon.signals.git_reader import read_git_state
+from vaner.intent.briefing import BriefingAssembler
+from vaner.intent.volatility import semantic_volatility
 from vaner.learning.reward import RewardInput, compute_reward
-from vaner.mcp.contracts import CACHE_TIER_TO_PROVENANCE, Abstain, ConflictSignal, ContextEnvelope, MemoryMeta, Resolution
+from vaner.mcp.contracts import (
+    CACHE_TIER_TO_PROVENANCE,
+    Abstain,
+    ConflictSignal,
+    ContextEnvelope,
+    EvidenceItem,
+    MemoryMeta,
+    Provenance,
+    Resolution,
+    ResolutionMetrics,
+)
 from vaner.mcp.lint import run_lint
 from vaner.mcp.memory_log import append_log, write_index
 from vaner.memory.policy import (
@@ -171,7 +188,130 @@ def _scenario_penalty(scenario: Scenario, query_tokens: set[str]) -> float:
     return 0.0
 
 
-def build_server(repo_root: Path) -> Server:
+# Phase 4 / WS3.c: daemon-forwarding for MCP → daemon bridge.
+# The MCP server runs as a subprocess (stdio transport) and does not hold an
+# engine directly. When invoked without an injected engine, the predictions
+# tools HTTP-forward to a daemon on 127.0.0.1:8473 via VanerDaemonClient.
+# The client is the shared contract layer Vaner's own surfaces use; the
+# fresh-per-call construction keeps the MCP subprocess stateless. Tests can
+# inject a pre-configured client via the ``daemon_client`` kwarg on
+# :func:`build_server`.
+
+
+def _serialize_prediction_for_mcp(prompt: Any) -> dict[str, Any]:
+    """Render a PredictedPrompt into the shape returned by vaner.predictions.active."""
+    spec = prompt.spec
+    run = prompt.run
+    artifacts = prompt.artifacts
+    return {
+        "id": spec.id,
+        "label": spec.label,
+        "description": spec.description,
+        "source": spec.source,
+        "confidence": spec.confidence,
+        "hypothesis_type": spec.hypothesis_type,
+        "specificity": spec.specificity,
+        "readiness": run.readiness,
+        "weight": run.weight,
+        "token_budget": run.token_budget,
+        "tokens_used": run.tokens_used,
+        "scenarios_complete": run.scenarios_complete,
+        "evidence_score": artifacts.evidence_score,
+        "has_draft": artifacts.draft_answer is not None,
+        "has_briefing": artifacts.prepared_briefing is not None,
+    }
+
+
+_ADOPT_BRIEFING_ASSEMBLER = BriefingAssembler()
+"""Module-level assembler for the adopt path.
+
+Kept here (not per-request) so the approximation-warning latch fires at
+most once per server lifetime. No per-process tokenizer is attached
+today; when the resolve path gets a structured LLM client (WS8), the
+same assembler instance can be reconfigured via
+``_ADOPT_BRIEFING_ASSEMBLER._tokenizer = ...``.
+"""
+
+
+def _build_adopt_resolution(prompt: Any) -> Resolution:
+    """Assemble a Resolution from a PredictedPrompt's prepared artifacts.
+
+    Uses the same Resolution shape ``vaner.resolve`` returns so downstream
+    agents can treat adopt results interchangeably.
+    ``adopted_from_prediction_id`` carries the source prediction's id for
+    provenance.
+
+    WS3.d: evidence is populated from the prediction's attached scenarios (one
+    EvidenceItem per scenario_id pointing at the scenario's file set).
+
+    WS9: briefing assembly routes through the shared
+    :class:`BriefingAssembler` so the rendering matches what the engine
+    produced in-cycle. When the prediction already carries a
+    ``prepared_briefing``, the assembler incorporates it as the
+    evidence section; otherwise a minimal summary + provenance briefing
+    is synthesised. Token counts come from the assembler — which in turn
+    delegates to a real tokenizer when one is registered, or falls back
+    to the four-char heuristic with a one-time warning.
+    """
+    spec = prompt.spec
+    artifacts = prompt.artifacts
+    run = prompt.run
+    briefing_obj = _ADOPT_BRIEFING_ASSEMBLER.from_prediction(prompt)
+    provenance = Provenance(mode="predictive_hit", cache="warm", freshness="fresh")
+    evidence: list[EvidenceItem] = [
+        EvidenceItem(
+            id=scenario_id,
+            source=spec.source,
+            kind="record",
+            locator={"prediction_id": spec.id, "scenario_id": scenario_id},
+            reason=f"scenario explored under prediction {spec.label!r}",
+        )
+        for scenario_id in artifacts.scenario_ids
+    ]
+    return Resolution(
+        intent=spec.label,
+        confidence=float(spec.confidence),
+        summary=spec.description or spec.label,
+        evidence=evidence,
+        provenance=provenance,
+        resolution_id=f"adopt-{spec.id}",
+        prepared_briefing=briefing_obj.text or None,
+        predicted_response=artifacts.draft_answer,
+        briefing_token_used=briefing_obj.token_count,
+        briefing_token_budget=run.token_budget,
+        adopted_from_prediction_id=spec.id,
+    )
+
+
+def build_server(
+    repo_root: Path,
+    *,
+    engine: Any | None = None,
+    daemon_client: Any | None = None,
+) -> Server:
+    """Construct the MCP server.
+
+    ``engine`` is an optional live VanerEngine reference. When supplied,
+    ``vaner.predictions.*`` tools operate on the engine's in-memory
+    PredictionRegistry directly.
+
+    ``daemon_client`` is an optional :class:`VanerDaemonClient` injected for
+    testing. When absent the server constructs a default client on each
+    prediction-tool invocation pointing at ``127.0.0.1:8473``. This is the
+    shared HTTP contract Vaner's own surfaces (cockpit, desktop, CLI, and
+    this MCP subprocess) use to reach the daemon.
+    """
+    # Lazy import keeps MCP server import-free of pydantic/httpx when the
+    # tools surface is unused (e.g. CLI --help).
+    from vaner.clients.daemon import (
+        VanerDaemonClient,
+        VanerDaemonNotFound,
+        VanerDaemonUnavailable,
+    )
+
+    def _daemon() -> Any:
+        return daemon_client if daemon_client is not None else VanerDaemonClient()
+
     if not (repo_root / ".vaner" / "config.toml").exists():
         init_repo(repo_root)
     suggestion_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
@@ -295,6 +435,98 @@ def build_server(repo_root: Path) -> Server:
                     description="Debug trace of recent decision and memory quality state.",
                     inputSchema={"type": "object", "properties": {"resolution_id": {"type": "string"}}},
                 ),
+                Tool(
+                    name="vaner.predictions.active",
+                    description=(
+                        "List active PredictedPrompts from the current precompute cycle. "
+                        "Each entry carries a human-readable label, readiness state, and "
+                        "per-prediction compute contract so callers can pick the most "
+                        "advanced prediction to adopt."
+                    ),
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.predictions.adopt",
+                    description=(
+                        "Adopt a specific prediction as the user's next intent. Returns a "
+                        "Resolution with the prepared briefing + draft answer + evidence "
+                        "(same shape as vaner.resolve) plus adopted_from_prediction_id "
+                        "populated for provenance."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"prediction_id": {"type": "string"}},
+                        "required": ["prediction_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.goals.list",
+                    description=(
+                        "List workspace goals. Goals are long-horizon workspace "
+                        'aspirations ("implement JWT migration") that seed '
+                        "predictions and bias scenario scoring. Filter by status "
+                        "('active'/'paused'/'abandoned'/'achieved')."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": ["active", "paused", "abandoned", "achieved"],
+                            },
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                        },
+                    },
+                ),
+                Tool(
+                    name="vaner.goals.declare",
+                    description=(
+                        "Declare a new workspace goal. Confidence is fixed at 1.0 for "
+                        "user-declared goals (the user is authoritative). The goal "
+                        "begins in 'active' status and starts seeding predictions on "
+                        "the next precompute cycle."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "related_files": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["title"],
+                    },
+                ),
+                Tool(
+                    name="vaner.goals.update_status",
+                    description=(
+                        "Update a goal's status. When set to 'achieved' / 'abandoned', "
+                        "goal-anchored predictions for this goal will be invalidated "
+                        "on the next cycle."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "goal_id": {"type": "string"},
+                            "status": {
+                                "type": "string",
+                                "enum": ["active", "paused", "abandoned", "achieved"],
+                            },
+                        },
+                        "required": ["goal_id", "status"],
+                    },
+                ),
+                Tool(
+                    name="vaner.goals.delete",
+                    description=("Delete a goal. Prefer update_status over delete — deletion loses the goal's evidence trail."),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"goal_id": {"type": "string"}},
+                        "required": ["goal_id"],
+                    },
+                ),
             ]
         )
 
@@ -341,6 +573,7 @@ def build_server(repo_root: Path) -> Server:
             freshness = await scenario_store.freshness_counts()
             memory_counts = await scenario_store.memory_state_counts()
             quality = await metrics_store.memory_quality_snapshot()
+            calibration = await metrics_store.calibration_snapshot()
             scenarios = await scenario_store.list_top(limit=50)
             write_index(repo_root, scenarios)
             latest = DecisionRecord.read_latest(repo_root)
@@ -370,7 +603,7 @@ def build_server(repo_root: Path) -> Server:
                     "orphan_entities": lint_report.orphan_entities,
                     "coverage_gaps": lint_report.coverage_gaps,
                 },
-                "memory": {"counts": memory_counts, "quality": quality},
+                "memory": {"counts": memory_counts, "quality": quality, "calibration": calibration},
             }
             append_log(repo_root, tool=name, label="status", decision_id=None, provenance_mode=None, memory_state=None)
             await _record("ok")
@@ -415,6 +648,7 @@ def build_server(repo_root: Path) -> Server:
             if not _ensure_backend(config):
                 await _record("error")
                 return _backend_error(degradable=False)
+            resolve_started_monotonic = time.monotonic()
             query = str(args.get("query", "")).strip()
             if not query:
                 await _record("error")
@@ -456,15 +690,23 @@ def build_server(repo_root: Path) -> Server:
             fresh_fingerprints = set(_scenario_fingerprints(candidate))
             evidence_fresh = expected.issubset(fresh_fingerprints) if expected else candidate.freshness != "stale"
             invalidated_this_request = False
+            git_state = read_git_state(repo_root)
+            changed_paths = {
+                line.strip()
+                for line in (str(git_state.get("recent_diff", "")) + "\n" + str(git_state.get("staged", ""))).splitlines()
+                if line.strip()
+            }
+            volatility = semantic_volatility(sorted(changed_paths))
             if candidate.memory_state in {"trusted", "candidate"} and expected and not evidence_fresh:
-                await scenario_store.mark_stale_by_evidence(candidate.id, evidence_hashes_now=list(fresh_fingerprints))
-                invalidated_this_request = True
-                refreshed_after_invalidation = await scenario_store.get(candidate.id)
-                if refreshed_after_invalidation is not None:
-                    candidate = refreshed_after_invalidation
-                    expected = set(json.loads(candidate.memory_evidence_hashes_json or "[]"))
-                    fresh_fingerprints = set(_scenario_fingerprints(candidate))
-                    evidence_fresh = expected.issubset(fresh_fingerprints) if expected else candidate.freshness != "stale"
+                if volatility >= 0.2:
+                    await scenario_store.mark_stale_by_evidence(candidate.id, evidence_hashes_now=list(fresh_fingerprints))
+                    invalidated_this_request = True
+                    refreshed_after_invalidation = await scenario_store.get(candidate.id)
+                    if refreshed_after_invalidation is not None:
+                        candidate = refreshed_after_invalidation
+                        expected = set(json.loads(candidate.memory_evidence_hashes_json or "[]"))
+                        fresh_fingerprints = set(_scenario_fingerprints(candidate))
+                        evidence_fresh = expected.issubset(fresh_fingerprints) if expected else candidate.freshness != "stale"
             similarity = _env_similarity(candidate.context_envelope_json, context)
             reuse = decide_reuse(
                 ReuseInput(
@@ -632,10 +874,47 @@ def build_server(repo_root: Path) -> Server:
                     }
                 )
 
+            include_briefing = bool(args.get("include_briefing", False))
+            include_predicted_response = bool(args.get("include_predicted_response", False))
+            include_metrics = bool(args.get("include_metrics", False))
+            briefing_text = candidate.prepared_context or ""
+            prepared_briefing: str | None = briefing_text if include_briefing and briefing_text else None
+            # The scenario MCP path doesn't wire to the engine's predicted_response
+            # cache directly. Field is part of the contract for forward-compat; a
+            # future resolve path that consults VanerEngine's prediction_cache
+            # will populate it. Until then it remains None even when opted in.
+            predicted_response: str | None = None
+            # Rough token accounting: ≈4 chars per token is a conservative proxy
+            # used elsewhere in Vaner for budget estimation; good enough for
+            # callers sizing their downstream prompts.
+            briefing_token_used = (len(briefing_text) // 4) if prepared_briefing else 0
+            briefing_token_budget = briefing_token_used
+
+            metrics_payload: ResolutionMetrics | None = None
+            if include_metrics:
+                evidence_text_chars = sum(len(ev.get("reason", "") or "") + len(str(ev.get("locator") or "")) for ev in evidence_items)
+                evidence_tokens = evidence_text_chars // 4
+                total_context_tokens = briefing_token_used + evidence_tokens
+                # Map cache tiers to provenance-relevant labels, plus freshness
+                # derived from the scenario candidate's state.
+                metrics_freshness = str(freshness) if freshness in {"fresh", "recent", "stale"} else "fresh"
+                estimated_cost_per_1k = float(args.get("estimated_cost_per_1k_tokens", 0.0) or 0.0)
+                estimated_cost_usd = (total_context_tokens / 1000.0) * estimated_cost_per_1k
+                metrics_payload = ResolutionMetrics(
+                    briefing_tokens=briefing_token_used,
+                    evidence_tokens=evidence_tokens,
+                    total_context_tokens=total_context_tokens,
+                    cache_tier=cache_tier if cache_tier in {"miss", "warm_start", "partial_hit", "full_hit"} else "miss",
+                    freshness=metrics_freshness,
+                    elapsed_ms=(time.monotonic() - resolve_started_monotonic) * 1000.0,
+                    estimated_cost_per_1k_tokens=estimated_cost_per_1k,
+                    estimated_cost_usd=estimated_cost_usd,
+                )
+
             resolution = Resolution(
                 intent=f"{candidate.kind}::{candidate.id}",
                 confidence=float(confidence),
-                summary=candidate.prepared_context[:400] or "No summary available.",
+                summary=briefing_text[:400] or "No summary available.",
                 evidence=evidence_items,
                 alternatives_considered=[],
                 gaps=sorted(set(gaps)),
@@ -663,7 +942,15 @@ def build_server(repo_root: Path) -> Server:
                     ),
                 },
                 resolution_id=decision.id,
+                prepared_briefing=prepared_briefing,
+                predicted_response=predicted_response,
+                briefing_token_used=briefing_token_used,
+                briefing_token_budget=briefing_token_budget,
+                metrics=metrics_payload,
             )
+            # Silence unused-variable lint on the opt-in flag; the field is
+            # returned as None today but consumers can opt in now.
+            _ = include_predicted_response
             await metrics_store.increment_counter("resolves_total")
             if cache_tier == "full_hit":
                 await metrics_store.increment_counter("predictive_hit_total")
@@ -912,6 +1199,15 @@ def build_server(repo_root: Path) -> Server:
             except Exception:
                 pass
             await metrics_store.increment_counter("feedback_total")
+            try:
+                if rating == "useful":
+                    await metrics_store.record_draft_event(status="useful", directional_correct=True, metadata={"source": "feedback"})
+                elif rating in {"wrong", "irrelevant"}:
+                    await metrics_store.record_draft_event(status="wrong", directional_correct=False, metadata={"source": "feedback"})
+                else:
+                    await metrics_store.record_draft_event(status="unused", directional_correct=False, metadata={"source": "feedback"})
+            except Exception:
+                pass
             if rating == "useful" and scenario.memory_state == "trusted":
                 await metrics_store.increment_counter("promotions_still_trusted_total")
             if rating == "useful" and scenario.last_outcome == "wrong":
@@ -989,6 +1285,208 @@ def build_server(repo_root: Path) -> Server:
             append_log(repo_root, tool=name, label=item_id, decision_id=None, provenance_mode=None, memory_state=scenario.memory_state)
             await _record("ok", scenario_id=scenario.id)
             return _json_result(payload)
+
+        if name == "vaner.predictions.active":
+            # In-process engine wins when present (used by tests + embedders).
+            if engine is not None:
+                active = engine.get_active_predictions()
+                await _record("ok")
+                return _json_result({"predictions": [_serialize_prediction_for_mcp(p) for p in active]})
+            # Fall back to forwarding via the shared daemon HTTP client.
+            # When the daemon is up with `--with-engine`, this returns live
+            # predictions from its background precompute task.
+            try:
+                body = await _daemon().get_predictions_active()
+            except VanerDaemonUnavailable:
+                await _record("ok")
+                return _json_result(
+                    {
+                        "predictions": [],
+                        "engine_unavailable": True,
+                        "hint": "start the daemon with `vaner daemon serve-http` to see live predictions",
+                    }
+                )
+            await _record("ok")
+            return _json_result(body)
+
+        if name == "vaner.predictions.adopt":
+            prediction_id_arg = str(args.get("prediction_id", "")).strip()
+            if not prediction_id_arg:
+                await _record("error")
+                return _json_result(
+                    {"code": "invalid_input", "message": "prediction_id is required"},
+                    is_error=True,
+                )
+            # In-process engine path first.
+            if engine is not None and engine.prediction_registry is not None:
+                prompt = engine.prediction_registry.get(prediction_id_arg)
+                if prompt is None:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such prediction: {prediction_id_arg}"},
+                        is_error=True,
+                    )
+                resolution = _build_adopt_resolution(prompt)
+                # WS3.d: record adoption so the next rebalance has a signal.
+                try:
+                    async with engine.prediction_registry.lock:
+                        engine.prediction_registry.record_adoption(prediction_id_arg)
+                except Exception:
+                    pass
+                await _record("ok")
+                return _json_result(resolution.model_dump(mode="json"))
+            # Forward to daemon via the shared client.
+            try:
+                resolution = await _daemon().adopt_prediction(prediction_id_arg)
+            except VanerDaemonNotFound:
+                await _record("error")
+                return _json_result(
+                    {"code": "not_found", "message": f"no such prediction: {prediction_id_arg}"},
+                    is_error=True,
+                )
+            except VanerDaemonUnavailable as exc:
+                await _record("error")
+                return _json_result(
+                    {
+                        "code": "engine_unavailable",
+                        "message": str(exc)
+                        or "vaner.predictions.adopt needs either an in-process engine or a running `vaner daemon serve-http --with-engine`",
+                    },
+                    is_error=True,
+                )
+            except ValueError as exc:
+                await _record("error")
+                return _json_result(
+                    {"code": "invalid_input", "message": str(exc)},
+                    is_error=True,
+                )
+            await _record("ok")
+            return _json_result(resolution.model_dump(mode="json"))
+
+        if name in {
+            "vaner.goals.list",
+            "vaner.goals.declare",
+            "vaner.goals.update_status",
+            "vaner.goals.delete",
+        }:
+            # WS7: goals live in the ArtefactStore so MCP and the daemon
+            # share the same state without extra plumbing. Lazy-init so
+            # legacy repos get the new table on first use.
+            from vaner.intent.branch_parser import parse_branch_name
+            from vaner.intent.goals import WorkspaceGoal
+            from vaner.store.artefacts import ArtefactStore
+
+            artefact_db_path = active_repo_root / ".vaner" / "artefacts.db"
+            goals_store = ArtefactStore(artefact_db_path)
+            await goals_store.initialize()
+
+            if name == "vaner.goals.list":
+                status = args.get("status")
+                limit = int(args.get("limit", 50))
+                rows: list[dict[str, object]] = await goals_store.list_workspace_goals(
+                    status=status if isinstance(status, str) else None,
+                    limit=max(1, min(200, limit)),
+                )
+                # Parse JSON-blob columns for clients.
+                out: list[dict[str, Any]] = []
+                for row in rows:
+                    payload_row = dict(row)
+                    try:
+                        payload_row["evidence"] = json.loads(str(row.get("evidence_json") or "[]"))
+                    except Exception:
+                        payload_row["evidence"] = []
+                    try:
+                        payload_row["related_files"] = json.loads(str(row.get("related_files_json") or "[]"))
+                    except Exception:
+                        payload_row["related_files"] = []
+                    payload_row.pop("evidence_json", None)
+                    payload_row.pop("related_files_json", None)
+                    out.append(payload_row)
+                await _record("ok")
+                return _json_result({"goals": out})
+
+            if name == "vaner.goals.declare":
+                title = str(args.get("title", "")).strip()
+                if not title:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "title is required"},
+                        is_error=True,
+                    )
+                description = str(args.get("description", "")).strip()
+                related_files = args.get("related_files") or []
+                if not isinstance(related_files, list):
+                    related_files = []
+                related_files = [str(p) for p in related_files if isinstance(p, str) and p.strip()]
+                goal = WorkspaceGoal.from_hint(
+                    title=title,
+                    source="user_declared",
+                    confidence=1.0,
+                    description=description,
+                    related_files=related_files,
+                )
+                await goals_store.upsert_workspace_goal(
+                    id=goal.id,
+                    title=goal.title,
+                    description=goal.description,
+                    source=goal.source,
+                    confidence=goal.confidence,
+                    status=goal.status,
+                    evidence_json=json.dumps([{"kind": e.kind, "value": e.value, "weight": e.weight} for e in goal.evidence]),
+                    related_files_json=json.dumps(goal.related_files),
+                )
+                await _record("ok")
+                return _json_result({"goal_id": goal.id, "status": goal.status})
+
+            if name == "vaner.goals.update_status":
+                goal_id_arg = str(args.get("goal_id", "")).strip()
+                new_status = str(args.get("status", "")).strip()
+                if not goal_id_arg or not new_status:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "goal_id and status are required"},
+                        is_error=True,
+                    )
+                if new_status not in {"active", "paused", "abandoned", "achieved"}:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": f"unknown status: {new_status}"},
+                        is_error=True,
+                    )
+                changed = await goals_store.update_workspace_goal_status(goal_id_arg, new_status)
+                if not changed:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such goal: {goal_id_arg}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result({"goal_id": goal_id_arg, "status": new_status})
+
+            if name == "vaner.goals.delete":
+                goal_id_arg = str(args.get("goal_id", "")).strip()
+                if not goal_id_arg:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "goal_id is required"},
+                        is_error=True,
+                    )
+                deleted = await goals_store.delete_workspace_goal(goal_id_arg)
+                if not deleted:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such goal: {goal_id_arg}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result({"goal_id": goal_id_arg, "deleted": True})
+            # Defensive fallthrough — unreachable because of the set check above.
+            _ = parse_branch_name  # reserved for branch-seeded declare flow
+            await _record("error")
+            return _json_result(
+                {"code": "invalid_input", "message": f"unknown goals tool: {name}"},
+                is_error=True,
+            )
 
         if name == "vaner.debug.trace":
             if str(__import__("os").environ.get("VANER_MCP_DEBUG", "0")) != "1":
