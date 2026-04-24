@@ -1112,7 +1112,15 @@ class VanerEngine:
         # cycle-start git HEAD + category tail + per-prediction file hashes
         # against whatever the registry captured on its last touch. No
         # wall-clock decay: if no signal fires, nothing is invalidated.
-        self._apply_cycle_invalidation(recent_query_text)
+        cycle_signals = self._apply_cycle_invalidation(recent_query_text)
+        # 0.8.2 WS3 — reconciliation runs on every cycle that saw at
+        # least one commit or file_change signal. Best-effort: a
+        # reconciliation failure is logged and swallowed so it never
+        # breaks the precompute cycle.
+        try:
+            await self._apply_artefact_reconciliation(cycle_signals)
+        except Exception:
+            pass
 
         # WS7 (0.8.2 WS2): run unified goal inference — branch name,
         # commit clustering, query clustering, and intent-bearing
@@ -2000,6 +2008,91 @@ class VanerEngine:
             except Exception:
                 continue
 
+    async def _apply_artefact_reconciliation(self, cycle_signals: list) -> None:
+        """0.8.2 WS3 — run reconciliation for every active artefact when
+        a ``commit`` or ``file_change`` signal fires this cycle.
+
+        Per spec §10.1, reconciliation is gated on *any* relevant signal
+        arrival, not on pure time. This preserves the no-wall-clock-
+        decay invariant — a cycle with no underlying state change never
+        runs a reconciliation pass.
+
+        Writes one :class:`ReconciliationOutcome` per artefact,
+        emits a ``progress_reconciled`` ``SignalEvent`` into the signal
+        log, and applies the resulting item-state deltas to the
+        prediction registry. Runs best-effort: a per-artefact failure
+        is logged but does not stop reconciliation for other artefacts.
+        """
+
+        from vaner.intent.reconcile import ReconcileContext, reconcile_artefact
+
+        # Only proceed when a structural signal actually fired.
+        relevant = [s for s in cycle_signals if getattr(s, "kind", "") in ("commit", "file_change")]
+        if not relevant:
+            return
+
+        # Collect triggering information for the reconcile context.
+        changed_files: set[str] = set()
+        for sig in relevant:
+            if getattr(sig, "kind", "") == "file_change":
+                payload = getattr(sig, "payload", {}) or {}
+                changed_files.update(str(p) for p in payload.get("changed_paths", []) or [])
+
+        # Fetch recent commit subjects for commit-correlation matcher.
+        from vaner.daemon.signals.git_reader import read_commit_subjects
+
+        try:
+            commit_subjects = tuple(read_commit_subjects(self.config.repo_root, last_n=5))
+        except Exception:
+            commit_subjects = ()
+
+        # Iterate active artefacts and reconcile each.
+        try:
+            artefact_rows = await self.store.list_intent_artefacts(status="active", limit=50)
+        except Exception:
+            return
+
+        for artefact_row in artefact_rows:
+            artefact_id = str(artefact_row["id"])
+            context = ReconcileContext(
+                artefact_id=artefact_id,
+                triggering_signal_id=None,
+                changed_files=frozenset(changed_files),
+                commit_subjects=commit_subjects,
+            )
+            try:
+                result = await reconcile_artefact(context, store=self.store)
+            except Exception:
+                continue
+            if result is None:
+                continue
+            if result.signal_event is not None:
+                try:
+                    await self.store.insert_signal_event(result.signal_event)
+                except Exception:
+                    pass
+            # Route item-state deltas through the registry so artefact-
+            # item-anchored predictions get adopted / demoted / staled.
+            registry = self._prediction_registry
+            if registry is not None and result.item_state_deltas:
+                for delta in result.item_state_deltas:
+                    try:
+                        registry.apply_item_state_delta(
+                            item_id=delta.item_id,
+                            from_state=delta.from_state,
+                            to_state=delta.to_state,
+                        )
+                    except Exception:
+                        continue
+            # Apply the progress_reconciled signal to the registry too
+            # — today a no-op per WS3 design (pointer-only payload), but
+            # kept for symmetry with the other invalidation sweeps.
+            if registry is not None and result.signal is not None:
+                try:
+                    registry.apply_invalidation_signals([result.signal])
+                except Exception:
+                    pass
+
     def _emit_artefact_item_specs(
         self,
         goal_rows: list[dict[str, object]],
@@ -2095,7 +2188,7 @@ class VanerEngine:
     # Phase 4: prediction enrolment
     # ------------------------------------------------------------------
 
-    def _apply_cycle_invalidation(self, recent_query_text: list[str]) -> None:
+    def _apply_cycle_invalidation(self, recent_query_text: list[str]) -> list:
         """WS6 — sweep the registry for invalidation signals before each cycle's merge.
 
         Runs at cycle top. Compares:
@@ -2110,6 +2203,10 @@ class VanerEngine:
 
         The method is a no-op on the very first cycle (nothing has been
         observed yet) and also when there are no predictions to touch.
+
+        Returns the list of :class:`InvalidationSignal` records it
+        emitted this cycle. The engine's WS3 reconciliation step reads
+        this list to decide which artefacts need a reconcile pass.
         """
         registry = self._prediction_registry
         if registry is None or len(registry) == 0:
@@ -2120,7 +2217,7 @@ class VanerEngine:
             except Exception:
                 self._last_observed_head_sha = ""
             self._last_observed_categories = [classify_query_category(q) for q in recent_query_text if q]
-            return
+            return []
 
         signals = []
 
@@ -2171,6 +2268,7 @@ class VanerEngine:
         # Refresh observations for the next cycle's diff.
         self._last_observed_head_sha = current_head
         self._last_observed_categories = current_categories
+        return signals
 
     def _merge_prediction_specs(
         self,

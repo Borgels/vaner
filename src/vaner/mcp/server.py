@@ -1548,14 +1548,29 @@ def build_server(
                         )
                 # Recent reconciliation outcomes for this artefact.
                 outcome_rows = await artefact_store.list_reconciliation_outcomes(artefact_id=artefact_id_arg, limit=10)
-                outcomes_payload = [
-                    {
-                        "id": row.get("id"),
-                        "pass_at": row.get("pass_at"),
-                        "triggering_signal_id": row.get("triggering_signal_id"),
-                    }
-                    for row in outcome_rows
-                ]
+                # 0.8.2 WS3 — surface item_state and goal_status delta
+                # counts alongside each outcome's pointer. Full deltas
+                # stay in the store; this summary lets users see at a
+                # glance which reconciliation passes produced change.
+                outcomes_payload: list[dict[str, Any]] = []
+                for outcome_row in outcome_rows:
+                    try:
+                        item_deltas = json.loads(str(outcome_row.get("item_state_deltas_json") or "[]"))
+                    except Exception:
+                        item_deltas = []
+                    try:
+                        goal_deltas = json.loads(str(outcome_row.get("goal_status_deltas_json") or "[]"))
+                    except Exception:
+                        goal_deltas = []
+                    outcomes_payload.append(
+                        {
+                            "id": outcome_row.get("id"),
+                            "pass_at": outcome_row.get("pass_at"),
+                            "triggering_signal_id": outcome_row.get("triggering_signal_id"),
+                            "item_state_delta_count": (len(item_deltas) if isinstance(item_deltas, list) else 0),
+                            "goal_status_delta_count": (len(goal_deltas) if isinstance(goal_deltas, list) else 0),
+                        }
+                    )
                 await _record("ok")
                 return _json_result(
                     {
