@@ -1494,7 +1494,7 @@ def build_server(
                 # (artefact_refs_json) is the single source of truth; this
                 # avoids double-bookkeeping that could drift. Cost is
                 # bounded by the active goal limit (20–50 rows).
-                all_goals = await artefact_store.list_workspace_goals(status=None, limit=200)
+                all_goals: list[dict[str, object]] = await artefact_store.list_workspace_goals(status=None, limit=200)
                 backing_goals_payload: list[dict[str, Any]] = []
                 for goal_row in all_goals:
                     refs_json = goal_row.get("artefact_refs_json")
@@ -1529,7 +1529,7 @@ def build_server(
                 latest_snapshot_id = str(artefact_row.get("latest_snapshot") or "")
                 anchored_predictions_payload: list[dict[str, Any]] = []
                 if latest_snapshot_id:
-                    eligible_items = await artefact_store.list_intent_artefact_items(
+                    eligible_items: list[dict[str, object]] = await artefact_store.list_intent_artefact_items(
                         artefact_id=artefact_id_arg,
                         snapshot_id=latest_snapshot_id,
                     )
@@ -1547,7 +1547,9 @@ def build_server(
                             }
                         )
                 # Recent reconciliation outcomes for this artefact.
-                outcome_rows = await artefact_store.list_reconciliation_outcomes(artefact_id=artefact_id_arg, limit=10)
+                outcome_rows: list[dict[str, object]] = await artefact_store.list_reconciliation_outcomes(
+                    artefact_id=artefact_id_arg, limit=10
+                )
                 # 0.8.2 WS3 — surface item_state and goal_status delta
                 # counts alongside each outcome's pointer. Full deltas
                 # stay in the store; this summary lets users see at a
@@ -1587,7 +1589,7 @@ def build_server(
                 # actually considering.
                 sources_cfg = getattr(config, "sources", None)
                 intent_cfg = getattr(sources_cfg, "intent_artefacts", None) if sources_cfg else None
-                artefacts_all = await artefact_store.list_intent_artefacts(limit=200)
+                artefacts_all: list[dict[str, object]] = await artefact_store.list_intent_artefacts(limit=200)
                 counts_by_connector: dict[str, int] = {}
                 counts_by_tier: dict[str, int] = {}
                 for row in artefacts_all:
