@@ -5,7 +5,18 @@ description: Show the top candidate next moves Vaner has prepared context for. U
 
 When the user invokes `/vaner:next`, surface the most-ready next candidates Vaner has prepared:
 
-1. **First, try `mcp__vaner__predictions_active`** (Phase 4+ engines). It returns first-class `PredictedPrompt` objects — each with a human-readable `label`, `readiness` state, `hypothesis_type`, and budget/progress metrics. Prefer this when available because the labels and readiness states are produced by Vaner's prediction layer, not re-synthesised client-side.
+0. **First, check the desktop handoff file.** The Vaner desktop apps (`vaner-desktop-macos`, `vaner-desktop-linux`) drop the full `Resolution` of an adopted prediction at a well-known path when the user clicks **Adopt**. If that's what happened, the user has already picked a candidate — inject it and skip the listing step.
+
+   - Look for the handoff file at:
+     - Linux: `$XDG_STATE_HOME/vaner/pending-adopt.json` (fall back to `~/.local/state/vaner/pending-adopt.json` when unset).
+     - macOS: `~/Library/Application Support/Vaner/pending-adopt.json`.
+     - Windows: `%LOCALAPPDATA%\Vaner\pending-adopt.json`.
+   - If the file exists and its top-level `stashed_at` is within the last 10 minutes (`time.time() - stashed_at < 600`), parse it. The body IS a `Resolution` — identical shape to what `mcp__vaner__predictions_adopt` returns, plus `stashed_at` and possibly extra server-side fields the desktop's decoded model didn't know about (the raw payload was preserved on the file-drop).
+   - Render a single card using the Resolution's `intent`, `prepared_briefing`, `predicted_response`, and `adopted_from_prediction_id`. Inject the `prepared_briefing` into the next prompt exactly as you would from a freshly-returned adopt result.
+   - Delete the file after reading so the same handoff isn't served twice on the next `/vaner:next` call.
+   - If the file is absent, older than 10 minutes, or not valid JSON, fall through to step 1.
+
+1. **Next, try `mcp__vaner__predictions_active`** (Phase 4+ engines). It returns first-class `PredictedPrompt` objects — each with a human-readable `label`, `readiness` state, `hypothesis_type`, and budget/progress metrics. Prefer this when available because the labels and readiness states are produced by Vaner's prediction layer, not re-synthesised client-side.
 
    - If the response includes `"engine_unavailable": true` or an empty predictions list, fall back to step 2.
    - Filter for `readiness in {"drafting", "ready"}` when possible — those are actionable. Queued / grounding predictions are still warming up.
