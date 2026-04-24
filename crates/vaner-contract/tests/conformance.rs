@@ -119,7 +119,10 @@ fn adopt_minimal_response_decodes() {
 fn error_fixtures_decode_with_expected_codes() {
     for (file, expected_code) in [
         ("error_codes/adopt_not_found.json", "not_found"),
-        ("error_codes/adopt_engine_unavailable.json", "engine_unavailable"),
+        (
+            "error_codes/adopt_engine_unavailable.json",
+            "engine_unavailable",
+        ),
         ("error_codes/adopt_invalid_input.json", "invalid_input"),
     ] {
         let body = load(file);
