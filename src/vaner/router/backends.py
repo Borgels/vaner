@@ -85,6 +85,51 @@ def _is_local_backend(base_url: str) -> bool:
     return "localhost" in lowered or "127.0.0.1" in lowered or "0.0.0.0" in lowered
 
 
+# 0.8.3 WS2 — Deep-Run remote-call gate. Pre-call check that consults
+# the active Deep-Run session (if any) and blocks remote calls that
+# violate locality or cost constraints. Local-URL calls are never
+# gated. When no Deep-Run session is active, this function is a
+# zero-cost no-op — router behaviour is unchanged.
+_DEEP_RUN_DEFAULT_REMOTE_CALL_ESTIMATE_USD = 0.01
+
+
+class DeepRunRemoteCallBlockedError(RuntimeError):
+    """Raised when a remote backend call is blocked by an active
+    Deep-Run session's locality or cost gate. The error message names
+    the session id and the constraint so surfaces can render a clear
+    "Deep-Run blocked this call" notice."""
+
+
+def _enforce_deep_run_gates_for_remote(
+    base_url: str,
+    *,
+    estimated_usd: float = _DEEP_RUN_DEFAULT_REMOTE_CALL_ESTIMATE_USD,
+) -> None:
+    """Raise :class:`DeepRunRemoteCallBlockedError` if the active Deep-Run
+    session blocks this remote call. No-op for local URLs and for the
+    case where no session is active."""
+
+    if _is_local_backend(base_url):
+        return
+    # Imports are deferred so the router does not pull in the intent
+    # layer at module load (keeps the import graph cycle-safe).
+    from vaner.intent.deep_run_gates import (
+        get_active_session_for_routing,
+        is_remote_call_allowed,
+        try_consume_cost,
+    )
+
+    session = get_active_session_for_routing()
+    if session is None:
+        return
+    if not is_remote_call_allowed(base_url):
+        raise DeepRunRemoteCallBlockedError(f"Deep-Run session {session.id} is local_only; remote call to {base_url} blocked.")
+    if not try_consume_cost(estimated_usd):
+        raise DeepRunRemoteCallBlockedError(
+            f"Deep-Run session {session.id} cost cap (${session.cost_cap_usd:.2f}) would be exceeded by this call."
+        )
+
+
 def _budget_state_path(repo_root: Path) -> Path:
     return repo_root / ".vaner" / "runtime" / "remote_budget.json"
 
@@ -225,12 +270,15 @@ async def forward_chat_completion_with_request(
     try:
         # If no primary credentials exist and fallback is configured, skip straight to fallback.
         if api_key or _is_local_backend(backend.base_url):
+            _enforce_deep_run_gates_for_remote(backend.base_url)
             return await _post_chat(backend, payload, use_fallback=False)
         primary_error = RuntimeError("Primary backend credentials are missing.")
     except Exception as exc:
         primary_error = exc
 
     if _should_use_fallback(config, primary_failed=True):
+        fallback_url = backend.fallback_base_url or backend.base_url
+        _enforce_deep_run_gates_for_remote(fallback_url)
         if not _consume_remote_budget(config.repo_root, backend.remote_budget_per_hour):
             raise RuntimeError("Remote fallback budget exhausted for this hour.") from primary_error
         return await _post_chat(backend, payload, use_fallback=True)
@@ -315,12 +363,15 @@ async def stream_chat_completion_with_request(
     api_key = os.getenv(backend.api_key_env, "")
     try:
         if api_key or _is_local_backend(backend.base_url):
+            _enforce_deep_run_gates_for_remote(backend.base_url)
             async for chunk in _stream_chat(backend, payload, use_fallback=False):
                 yield chunk
             return
         raise RuntimeError("Primary backend credentials are missing.")
     except Exception as exc:
         if _should_use_fallback(config, primary_failed=True):
+            fallback_url = backend.fallback_base_url or backend.base_url
+            _enforce_deep_run_gates_for_remote(fallback_url)
             if not _consume_remote_budget(config.repo_root, backend.remote_budget_per_hour):
                 raise RuntimeError("Remote fallback budget exhausted for this hour.") from exc
             async for chunk in _stream_chat(backend, payload, use_fallback=True):

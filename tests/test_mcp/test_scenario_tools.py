@@ -73,6 +73,12 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
             "vaner.artefacts.set_status",
             "vaner.artefacts.influence",
             "vaner.sources.status",
+            # 0.8.3 WS4: Deep-Run lifecycle.
+            "vaner.deep_run.start",
+            "vaner.deep_run.stop",
+            "vaner.deep_run.status",
+            "vaner.deep_run.list",
+            "vaner.deep_run.show",
         }
 
         monkeypatch.setattr("vaner.mcp.server.aprecompute", lambda *args, **kwargs: asyncio.sleep(0, result=1))

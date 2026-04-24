@@ -124,6 +124,98 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             }
         )
 
+    # ------------------------------------------------------------------
+    # 0.8.3 WS4 — Deep-Run lifecycle HTTP endpoints. Cockpit + desktop
+    # consume these. When the daemon is wired to a live engine, calls
+    # route through engine methods so the routing singleton + cost gate
+    # update in-process. When the engine is None (serve-http only),
+    # calls fall back to vaner.server helpers that build a default
+    # engine per call — durable but does not arm in-process gates.
+    # ------------------------------------------------------------------
+
+    def _serialize_session(session: Any) -> dict[str, Any] | None:
+        from vaner.cli.commands.deep_run import _session_to_dict
+
+        return _session_to_dict(session) if session is not None else None
+
+    def _serialize_summary(summary: Any) -> dict[str, Any] | None:
+        from vaner.cli.commands.deep_run import _summary_to_dict
+
+        return _summary_to_dict(summary) if summary is not None else None
+
+    @app.post("/deep-run/start")
+    async def deep_run_start(request: Request) -> JSONResponse:
+        body = await request.json() if request.headers.get("content-length") else {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="JSON object body required")
+        ends_at = body.get("ends_at")
+        if not isinstance(ends_at, (int, float)):
+            raise HTTPException(status_code=400, detail="ends_at (epoch number) is required")
+        kwargs: dict[str, Any] = {
+            "ends_at": float(ends_at),
+            "preset": str(body.get("preset", "balanced")),
+            "focus": str(body.get("focus", "active_goals")),
+            "horizon_bias": str(body.get("horizon_bias", "balanced")),
+            "locality": str(body.get("locality", "local_preferred")),
+            "cost_cap_usd": float(body.get("cost_cap_usd", 0.0)),
+            "metadata": dict(body.get("metadata") or {}) | {"caller": "http"},
+        }
+        try:
+            if engine is not None:
+                session = await engine.start_deep_run(**kwargs)
+            else:
+                from vaner.server import astart_deep_run
+
+                session = await astart_deep_run(config.repo_root, **kwargs)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(_serialize_session(session))
+
+    @app.post("/deep-run/stop")
+    async def deep_run_stop(request: Request) -> JSONResponse:
+        body = await request.json() if request.headers.get("content-length") else {}
+        if not isinstance(body, dict):
+            body = {}
+        kill = bool(body.get("kill", False))
+        reason = body.get("reason") if isinstance(body.get("reason"), str) else None
+        if engine is not None:
+            summary = await engine.stop_deep_run(kill=kill, reason=reason)
+        else:
+            from vaner.server import astop_deep_run
+
+            summary = await astop_deep_run(config.repo_root, kill=kill, reason=reason)
+        return JSONResponse({"summary": _serialize_summary(summary)})
+
+    @app.get("/deep-run/status")
+    async def deep_run_status_endpoint() -> JSONResponse:
+        if engine is not None:
+            session = await engine.current_deep_run()
+        else:
+            from vaner.server import astatus_deep_run
+
+            session = await astatus_deep_run(config.repo_root)
+        return JSONResponse({"session": _serialize_session(session)})
+
+    @app.get("/deep-run/sessions")
+    async def deep_run_list_sessions(limit: int = 20) -> JSONResponse:
+        limit = max(1, min(200, int(limit)))
+        if engine is not None:
+            sessions = await engine.list_deep_run_sessions(limit=limit)
+        else:
+            from vaner.server import alist_deep_run_sessions
+
+            sessions = await alist_deep_run_sessions(config.repo_root, limit=limit)
+        return JSONResponse({"sessions": [_serialize_session(s) for s in sessions]})
+
+    @app.get("/deep-run/sessions/{session_id}")
+    async def deep_run_show(session_id: str) -> JSONResponse:
+        from vaner.server import aresolve_deep_run_session
+
+        session = await aresolve_deep_run_session(config.repo_root, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"session {session_id!r} not found")
+        return JSONResponse(_serialize_session(session))
+
     @app.get("/compute/devices")
     async def compute_devices() -> JSONResponse:
         devices: list[dict[str, Any]] = [{"id": "cpu", "label": "CPU", "kind": "cpu"}]

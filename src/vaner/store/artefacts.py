@@ -430,6 +430,12 @@ class ArtefactStore:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_intent_reconciliation_outcomes_pass_at ON intent_reconciliation_outcomes(pass_at DESC)"
             )
+            # 0.8.3 WS1 — Deep-Run sessions + pass log. Owned by
+            # vaner.store.deep_run; declared here so all artefact-DB tables
+            # share one initialize() call and one connection lifecycle.
+            from vaner.store.deep_run import create_deep_run_tables
+
+            await create_deep_run_tables(db)
             async with db.execute("PRAGMA table_info(signal_events)") as cursor:
                 signal_columns = [row[1] for row in await cursor.fetchall()]
             if "corpus_id" not in signal_columns:
