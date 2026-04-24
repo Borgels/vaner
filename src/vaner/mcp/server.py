@@ -1487,21 +1487,24 @@ def build_server(
                         {"code": "not_found", "message": f"no such artefact: {artefact_id_arg}"},
                         is_error=True,
                     )
-                # Backing goals: WS1 seeds linked_goals during ingestion
-                # (empty for now — WS2 populates). We enumerate goals that
-                # declare this artefact in their artefact_refs_json as a
-                # reverse index; the linked_goals_json on the artefact is
-                # the forward index.
-                try:
-                    linked_goal_ids = json.loads(str(artefact_row.get("linked_goals_json") or "[]"))
-                    if not isinstance(linked_goal_ids, list):
-                        linked_goal_ids = []
-                except Exception:
-                    linked_goal_ids = []
+                # Backing goals (0.8.2 WS2): scan workspace_goals for rows
+                # whose artefact_refs_json names this artefact. The reverse
+                # index — artefact → goal — is derived rather than stored
+                # because the forward index on the goal row
+                # (artefact_refs_json) is the single source of truth; this
+                # avoids double-bookkeeping that could drift. Cost is
+                # bounded by the active goal limit (20–50 rows).
+                all_goals = await artefact_store.list_workspace_goals(status=None, limit=200)
                 backing_goals_payload: list[dict[str, Any]] = []
-                for goal_id in linked_goal_ids:
-                    goal_row = await artefact_store.get_workspace_goal(str(goal_id))
-                    if goal_row is None:
+                for goal_row in all_goals:
+                    refs_json = goal_row.get("artefact_refs_json")
+                    if not refs_json:
+                        continue
+                    try:
+                        refs = json.loads(str(refs_json))
+                    except Exception:
+                        continue
+                    if artefact_id_arg not in refs:
                         continue
                     backing_goals_payload.append(
                         {
@@ -1514,10 +1517,35 @@ def build_server(
                             "freshness": goal_row.get("pc_freshness"),
                         }
                     )
-                # Anchored predictions: WS2 populates source="artefact_item"
-                # prediction specs. WS1 returns an empty list so the shape
-                # is stable. Comment explicit so the reader knows why.
+                # Anchored predictions (0.8.2 WS2): enumerate the artefact's
+                # current-snapshot items in a state that would emit a
+                # ``source="artefact_item"`` prediction spec
+                # (pending/in_progress/stalled). The daemon's in-memory
+                # prediction registry isn't reachable from the MCP handler,
+                # so this returns the *anchor points* the engine would
+                # emit specs for — which is the inspectability the spec
+                # requires: the user can see which items are currently
+                # driving prediction preparation.
+                latest_snapshot_id = str(artefact_row.get("latest_snapshot") or "")
                 anchored_predictions_payload: list[dict[str, Any]] = []
+                if latest_snapshot_id:
+                    eligible_items = await artefact_store.list_intent_artefact_items(
+                        artefact_id=artefact_id_arg,
+                        snapshot_id=latest_snapshot_id,
+                    )
+                    for item_row in eligible_items:
+                        state = str(item_row.get("state") or "")
+                        if state not in ("pending", "in_progress", "stalled"):
+                            continue
+                        anchored_predictions_payload.append(
+                            {
+                                "item_id": item_row.get("id"),
+                                "text": item_row.get("text"),
+                                "state": state,
+                                "section_path": item_row.get("section_path"),
+                                "source": "artefact_item",
+                            }
+                        )
                 # Recent reconciliation outcomes for this artefact.
                 outcome_rows = await artefact_store.list_reconciliation_outcomes(artefact_id=artefact_id_arg, limit=10)
                 outcomes_payload = [

@@ -1950,44 +1950,120 @@ class ArtefactStore:
         status: str,
         evidence_json: str,
         related_files_json: str,
+        artefact_refs_json: str | None = None,
+        subgoal_of: str | None = None,
+        pc_freshness: float | None = None,
+        pc_reconciliation_state: str | None = None,
+        pc_unfinished_item_state: str | None = None,
     ) -> None:
         """Insert or update a goal by id.
 
         On conflict, preserves the original ``created_at`` (goals don't
         change their creation timestamp when re-observed) and refreshes
         everything else including ``last_observed_at``.
+
+        The five WS2 keyword arguments default to ``None``; when *any*
+        of them is set the extended SQL path writes all 0.8.2
+        ``workspace_goals`` columns added in the v8 migration. When all
+        five are unset, the legacy SQL path runs — it touches only the
+        pre-0.8.2 columns, so existing callers (``vaner.goals.declare``,
+        branch-name inference) don't accidentally overwrite
+        artefact-set metadata a prior WS2 cycle may have written.
         """
+
         now = time.time()
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT INTO workspace_goals(
-                    id, title, description, source, confidence, status,
-                    created_at, last_observed_at, evidence_json, related_files_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    title = excluded.title,
-                    description = excluded.description,
-                    source = excluded.source,
-                    confidence = excluded.confidence,
-                    status = excluded.status,
-                    last_observed_at = excluded.last_observed_at,
-                    evidence_json = excluded.evidence_json,
-                    related_files_json = excluded.related_files_json
-                """,
-                (
-                    id,
-                    title,
-                    description,
-                    source,
-                    float(confidence),
-                    status,
-                    now,
-                    now,
-                    evidence_json,
-                    related_files_json,
-                ),
+        extended = any(
+            value is not None
+            for value in (
+                artefact_refs_json,
+                subgoal_of,
+                pc_freshness,
+                pc_reconciliation_state,
+                pc_unfinished_item_state,
             )
+        )
+        async with aiosqlite.connect(self.db_path) as db:
+            if not extended:
+                # Legacy path — preserves pre-0.8.2 semantics exactly.
+                await db.execute(
+                    """
+                    INSERT INTO workspace_goals(
+                        id, title, description, source, confidence, status,
+                        created_at, last_observed_at, evidence_json, related_files_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        title = excluded.title,
+                        description = excluded.description,
+                        source = excluded.source,
+                        confidence = excluded.confidence,
+                        status = excluded.status,
+                        last_observed_at = excluded.last_observed_at,
+                        evidence_json = excluded.evidence_json,
+                        related_files_json = excluded.related_files_json
+                    """,
+                    (
+                        id,
+                        title,
+                        description,
+                        source,
+                        float(confidence),
+                        status,
+                        now,
+                        now,
+                        evidence_json,
+                        related_files_json,
+                    ),
+                )
+            else:
+                # WS2 path — writes the extended column set. Columns that
+                # the caller left as ``None`` fall back to the schema
+                # defaults on INSERT; on UPDATE the CASE blocks preserve
+                # any prior value so a follow-up inference cycle that
+                # only updates a subset doesn't stomp the others.
+                await db.execute(
+                    """
+                    INSERT INTO workspace_goals(
+                        id, title, description, source, confidence, status,
+                        created_at, last_observed_at, evidence_json, related_files_json,
+                        artefact_refs_json, subgoal_of, pc_freshness,
+                        pc_reconciliation_state, pc_unfinished_item_state
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        title = excluded.title,
+                        description = excluded.description,
+                        source = excluded.source,
+                        confidence = excluded.confidence,
+                        status = excluded.status,
+                        last_observed_at = excluded.last_observed_at,
+                        evidence_json = excluded.evidence_json,
+                        related_files_json = excluded.related_files_json,
+                        artefact_refs_json = excluded.artefact_refs_json,
+                        subgoal_of = CASE
+                            WHEN excluded.subgoal_of IS NULL
+                            THEN workspace_goals.subgoal_of
+                            ELSE excluded.subgoal_of END,
+                        pc_freshness = excluded.pc_freshness,
+                        pc_reconciliation_state = excluded.pc_reconciliation_state,
+                        pc_unfinished_item_state = excluded.pc_unfinished_item_state
+                    """,
+                    (
+                        id,
+                        title,
+                        description,
+                        source,
+                        float(confidence),
+                        status,
+                        now,
+                        now,
+                        evidence_json,
+                        related_files_json,
+                        artefact_refs_json if artefact_refs_json is not None else "[]",
+                        subgoal_of,
+                        1.0 if pc_freshness is None else float(pc_freshness),
+                        pc_reconciliation_state or "unreconciled",
+                        pc_unfinished_item_state or "none",
+                    ),
+                )
             await db.commit()
 
     async def list_workspace_goals(
@@ -1998,7 +2074,9 @@ class ArtefactStore:
     ) -> list[dict[str, object]]:
         query = (
             "SELECT id, title, description, source, confidence, status, "
-            "created_at, last_observed_at, evidence_json, related_files_json "
+            "created_at, last_observed_at, evidence_json, related_files_json, "
+            "artefact_refs_json, subgoal_of, pc_freshness, "
+            "pc_reconciliation_state, pc_unfinished_item_state "
             "FROM workspace_goals WHERE 1=1"
         )
         params: list[object] = []
@@ -2018,7 +2096,9 @@ class ArtefactStore:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT id, title, description, source, confidence, status, "
-                "created_at, last_observed_at, evidence_json, related_files_json "
+                "created_at, last_observed_at, evidence_json, related_files_json, "
+                "artefact_refs_json, subgoal_of, pc_freshness, "
+                "pc_reconciliation_state, pc_unfinished_item_state "
                 "FROM workspace_goals WHERE id = ?",
                 (goal_id,),
             )

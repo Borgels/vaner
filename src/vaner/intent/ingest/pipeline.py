@@ -131,13 +131,20 @@ async def ingest_artefact(
     now = time.time()
     is_new_snapshot = prior_row is None or str(prior_row.get("latest_snapshot") or "") != snap_id
 
+    # Prefer the artefact's first H1 heading as the human-readable title
+    # when the extractor found one — the filename (``title_hint``) is a
+    # fallback. WS2 goal inference shows the title to the user via
+    # ``vaner.goals.list``, so a meaningful heading beats ``plan.md``.
+    extracted_title = _first_heading_title(extraction.items)
+    preferred_title = extracted_title or raw.title_hint or raw.source_uri
+
     if prior_row is None:
         artefact = IntentArtefact.new(
             source_uri=raw.source_uri,
             source_tier=raw.tier,
             connector=raw.connector,
             kind=kind,
-            title=raw.title_hint or raw.source_uri,
+            title=preferred_title,
             confidence=classification.confidence,
         )
         artefact.id = art_id  # paranoia: align with deterministic id
@@ -152,7 +159,7 @@ async def ingest_artefact(
             source_tier=str(prior_row["source_tier"]),  # type: ignore[arg-type]
             connector=str(prior_row["connector"]),
             kind=kind,
-            title=raw.title_hint or str(prior_row.get("title") or ""),
+            title=preferred_title or str(prior_row.get("title") or ""),
             status=str(prior_row.get("status") or "active"),  # type: ignore[arg-type]
             confidence=classification.confidence,
             created_at=float(prior_row.get("created_at") or now),
@@ -247,6 +254,21 @@ async def ingest_artefact(
         is_new_snapshot=is_new_snapshot,
         emitted_signal_id=signal_id,
     )
+
+
+def _first_heading_title(items: list[IntentArtefactItem]) -> str | None:
+    """Return the text of the earliest top-level section item, if any.
+
+    "Top-level" = an extractor-produced section whose ``section_path``
+    has exactly one segment (the extractor sets this to the heading text
+    itself for an H1). Used to give :class:`IntentArtefact` records
+    readable titles when the connector only supplied a filename hint.
+    """
+
+    for item in items:
+        if item.kind == "section" and item.section_path.count("/") == 0 and item.text:
+            return item.text.strip() or None
+    return None
 
 
 def _collect_linked_files(items: list[IntentArtefactItem]) -> list[str]:

@@ -21,8 +21,34 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
-GoalSource = Literal["branch_name", "commit_cluster", "query_cluster", "user_declared"]
-GoalStatus = Literal["active", "paused", "abandoned", "achieved"]
+GoalSource = Literal[
+    "branch_name",
+    "commit_cluster",
+    "query_cluster",
+    "user_declared",
+    # 0.8.2 WS2 additions. ``artefact_declared`` means an intent-bearing
+    # artefact (see :mod:`vaner.intent.artefacts`) explicitly names this
+    # goal in its top-level heading or title. ``artefact_inferred`` means
+    # the artefact's item structure implies the goal but doesn't state it
+    # verbatim. The distinction drives confidence calibration in
+    # :func:`vaner.intent.goal_inference.merge_hints`.
+    "artefact_declared",
+    "artefact_inferred",
+]
+GoalStatus = Literal[
+    "active",
+    "paused",
+    "abandoned",
+    "achieved",
+    # 0.8.2 WS2/WS3 additions for reconciliation-driven lifecycle
+    # states. ``dormant`` — no corroborating signal for N cycles;
+    # ``stale`` — a newer artefact supersedes; ``contradicted`` —
+    # reconciliation flagged a divergence between plan and observed
+    # progress. Spec §6.2.
+    "dormant",
+    "stale",
+    "contradicted",
+]
 
 
 def goal_id(source: str, title: str) -> str:
@@ -41,7 +67,16 @@ class GoalEvidence:
     of evidence supports the goal — higher is more supportive.
     """
 
-    kind: Literal["commit_sha", "query_id", "file_path", "branch_name"]
+    kind: Literal[
+        "commit_sha",
+        "query_id",
+        "file_path",
+        "branch_name",
+        # 0.8.2 WS2: evidence drawn from an intent-bearing artefact item
+        # (spec §8). Value is the ``IntentArtefactItem.id``; weight
+        # reflects the item's own confidence × state weight.
+        "artefact_item",
+    ]
     value: str
     weight: float = 1.0
 
@@ -75,6 +110,17 @@ class WorkspaceGoal:
     last_observed_at: float = field(default_factory=time.time)
     evidence: list[GoalEvidence] = field(default_factory=list)
     related_files: list[str] = field(default_factory=list)
+    # 0.8.2 WS2 additions. ``artefact_refs`` lists
+    # :class:`IntentArtefact` ids backing this goal; ``subgoal_of`` is
+    # the parent goal id when this goal was decomposed from an outline
+    # item; the ``pc_*`` fields implement the §6.6 policy-consumer
+    # metadata block (``status`` and ``confidence`` above already serve
+    # the block directly, so they aren't duplicated here).
+    artefact_refs: list[str] = field(default_factory=list)
+    subgoal_of: str | None = None
+    pc_freshness: float = 1.0
+    pc_reconciliation_state: str = "unreconciled"
+    pc_unfinished_item_state: str = "none"
 
     @classmethod
     def from_hint(
@@ -86,9 +132,16 @@ class WorkspaceGoal:
         description: str = "",
         evidence: list[GoalEvidence] | None = None,
         related_files: list[str] | None = None,
+        artefact_refs: list[str] | None = None,
+        subgoal_of: str | None = None,
     ) -> WorkspaceGoal:
         """Build a goal from inference-layer output. Factory helper so
-        callers don't have to compute the id themselves."""
+        callers don't have to compute the id themselves.
+
+        ``artefact_refs`` / ``subgoal_of`` are 0.8.2 WS2 additions; omit
+        them for non-artefact-backed sources.
+        """
+
         gid = goal_id(source, title)
         return cls(
             id=gid,
@@ -98,4 +151,6 @@ class WorkspaceGoal:
             confidence=confidence,
             evidence=list(evidence or []),
             related_files=list(related_files or []),
+            artefact_refs=list(artefact_refs or []),
+            subgoal_of=subgoal_of,
         )
