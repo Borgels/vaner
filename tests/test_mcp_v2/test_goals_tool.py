@@ -7,7 +7,8 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-from tests.test_mcp_v2.conftest import call_tool, parse_content
+
+from .conftest import call_tool, parse_content
 
 
 def _make_server(temp_repo: Path):

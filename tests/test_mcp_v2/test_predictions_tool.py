@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from tests.test_mcp_v2.conftest import call_tool, parse_content
 
 from vaner.intent.prediction import PredictionSpec, prediction_id
 from vaner.intent.prediction_registry import PredictionRegistry
+
+from .conftest import call_tool, parse_content
 
 
 @dataclass
