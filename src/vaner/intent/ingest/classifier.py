@@ -432,10 +432,17 @@ def classify_structural(raw: RawArtefact) -> ClassificationResult:
     elif signals.planning_keyword_hits >= 2:
         trace.add(0.10, f"planning vocabulary ×{signals.planning_keyword_hits}")
 
-    if signals.max_heading_depth >= 3 and signals.heading_count >= 4:
-        trace.add(0.15, f"deep outline (depth {signals.max_heading_depth}, {signals.heading_count} headings)")
+    # Hierarchical outline shape. Deep outlines with many headings are
+    # the strongest non-checkbox signal for intent (chapter outlines,
+    # paper outlines, syllabi, scene lists, comparison tables).
+    if signals.max_heading_depth >= 2 and signals.heading_count >= 7:
+        trace.add(0.40, f"extensive outline ({signals.heading_count} headings)")
+    elif signals.max_heading_depth >= 3 and signals.heading_count >= 4:
+        trace.add(0.30, f"deep outline (depth {signals.max_heading_depth}, {signals.heading_count} headings)")
+    elif signals.max_heading_depth >= 2 and signals.heading_count >= 5:
+        trace.add(0.20, f"hierarchical outline ({signals.heading_count} headings)")
     elif signals.max_heading_depth >= 2 and signals.heading_count >= 3:
-        trace.add(0.05, "hierarchical headings")
+        trace.add(0.10, "hierarchical headings")
 
     if signals.ordered_list_count >= 5 and signals.checkbox_count < 3:
         # Procedural steps with no checkboxes are the runbook / recipe
@@ -443,12 +450,29 @@ def classify_structural(raw: RawArtefact) -> ClassificationResult:
         # a small runbook clears the accept threshold without needing
         # title-keyword support.
         if signals.ordered_list_count >= signals.heading_count and signals.total_words < 800:
-            trace.add(0.30, f"procedural runbook shape ×{signals.ordered_list_count}")
+            trace.add(0.45, f"procedural runbook shape ×{signals.ordered_list_count}")
         else:
-            trace.add(0.15, f"procedural numbered steps ×{signals.ordered_list_count}")
+            trace.add(0.20, f"procedural numbered steps ×{signals.ordered_list_count}")
+
+    # Bullet-dominant structures under hierarchical headings (flat queues,
+    # agendas, OKR lists). When many bullets live under ≥2 h2-level
+    # headings, that is explicit structural intent.
+    if signals.unordered_list_count >= 5 and signals.max_heading_depth >= 2 and signals.checkbox_count < 3:
+        trace.add(0.25, f"bullet-dominant structure ×{signals.unordered_list_count}")
 
     if signals.kanban_column_count >= 2:
         trace.add(0.20, f"kanban columns ×{signals.kanban_column_count}")
+
+    # Narrative brief shape — very short intent-bearing documents that
+    # declare direction in prose rather than structure. Requires title or
+    # strong planning vocabulary to distinguish from generic prose.
+    if (
+        signals.total_words < 150
+        and signals.checkbox_count == 0
+        and signals.ordered_list_count < 3
+        and (signals.title_keyword_hits >= 1 or signals.planning_keyword_hits >= 3)
+    ):
+        trace.add(0.35, "narrative brief shape")
 
     # Small size-normalized negative pressure when *nothing* plan-shaped
     # appears. Prevents arbitrary prose from sneaking in on planning-keyword
