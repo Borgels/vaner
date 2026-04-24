@@ -44,6 +44,13 @@ jobs:
       - name: Pre-commit
         run: pre-commit run --all-files
       - name: Type check
+        # Force bash on every runner — the multi-line mypy invocations
+        # below use ``\`` line continuations, which PowerShell (the
+        # default shell on ``windows-latest``) parses as a unary
+        # operator and fails with "Missing expression after unary
+        # operator '--'". ``shell: bash`` picks Git Bash on Windows
+        # and the system bash elsewhere, so the script is portable.
+        shell: bash
         run: |
           mypy src/vaner/__init__.py src/vaner/server.py src/vaner/cli/main.py
           # 0.8.0 modules — strict scope, only 4 disables (untyped-def/call
@@ -145,9 +152,14 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install build + pipx
+        # Hash-pin the bootstrap tools so Scorecard's Pinned-Dependencies
+        # check passes (prior ``pip==X.Y.Z`` version-only pin was
+        # flagged as #219/#220 — not strong enough for the "pin by
+        # hash" rule). The requirements file is generated via
+        # ``pip-compile --generate-hashes --allow-unsafe`` so pip
+        # itself is included alongside build + pipx.
         run: |
-          python -m pip install "pip==26.0.1"
-          python -m pip install "build==1.4.3" "pipx==1.11.1"
+          python -m pip install --require-hashes -r requirements/release-smoke.txt
           python -m pipx ensurepath
       - name: Build wheel
         run: |

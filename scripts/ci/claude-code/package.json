@@ -1,0 +1,9 @@
+{
+  "name": "vaner-ci-claude-code",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Isolated package.json pinning @anthropic-ai/claude-code for CI's validate-claude-plugin workflow. Scorecard Pinned-Dependencies (alert #212) requires integrity-hash pinning, which npm only provides via a committed package-lock.json. Running 'npm ci' here produces a hermetic, hash-verified install.",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.117"
+  }
+}

@@ -1,2 +1,8 @@
 build==1.4.3
 cyclonedx-bom==7.3.0
+# Pin lxml transitively — GHSA-vfmq-68hx-4jfw (CVE-2026-41066): lxml < 6.1.0
+# ships iterparse/ETCompatXMLParser with resolve_entities=True by default,
+# allowing XXE to local files. 6.1.0 changes the default to 'internal'.
+# cyclonedx-bom pulls lxml in transitively so we pin it here rather than
+# waiting for an upstream bump.
+lxml>=6.1.0
