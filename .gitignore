@@ -18,6 +18,15 @@ htmlcov/
 node_modules/
 .vite/
 
+# Rust workspace (crates/vaner-contract). We commit Cargo.toml files at
+# workspace + crate level, but not the lockfile (library crate; the
+# Tauri app that consumes it has its own Cargo.lock) nor build outputs.
+target/
+# Generated TypeScript bindings from `cargo test --features ts-rs` —
+# the SvelteKit app vendors these on demand; the Rust crate treats them
+# as transient.
+crates/vaner-contract/bindings/
+
 # Secrets: ignore every .env variant, globally and under subtrees.
 # Only sanitized *.env.sample templates are allowed to be committed.
 .env

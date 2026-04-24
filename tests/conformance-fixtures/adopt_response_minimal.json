@@ -1,0 +1,17 @@
+{
+  "intent": "Something about OAuth refresh tokens",
+  "confidence": 0.14,
+  "summary": "Something about OAuth refresh tokens",
+  "evidence": [],
+  "provenance": {
+    "mode": "predictive_hit",
+    "cache": "warm",
+    "freshness": "fresh"
+  },
+  "resolution_id": "adopt-pred-queued-0003",
+  "prepared_briefing": null,
+  "predicted_response": null,
+  "briefing_token_used": 0,
+  "briefing_token_budget": 1024,
+  "adopted_from_prediction_id": "pred-queued-0003"
+}
