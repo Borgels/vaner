@@ -2,12 +2,23 @@
 
 Protocols
 ---------
-SignalSource   -- produces context-signal events (file changes, git state, …)
-ContextSource  -- stores retrievable context items with relationships
-CorpusAdapter  -- legacy unified protocol (= SignalSource + ContextSource)
+SignalSource         -- produces context-signal events (file changes, git …)
+ContextSource        -- stores retrievable context items with relationships
+CorpusAdapter        -- legacy unified protocol (= SignalSource + ContextSource)
+IntentArtefactSource -- WS1 0.8.2, produces intent-bearing artefact candidates
+                        (plans, outlines, task lists, briefs, …) for the
+                        ingestion pipeline to classify + extract + persist
 
-CodeRepoAdapter implements all three for backward compatibility.  Third-party
-adapters only need to implement the two focused protocols.
+CodeRepoAdapter implements the first three for backward compatibility.
+Third-party adapters only need to implement the two focused protocols for
+their role.
+
+IntentArtefactSource is separate from SignalSource because intent-bearing
+artefacts are discovered and fetched on their own cadence (opt-in per tier,
+rate-limited for remote sources, classifier-gated) rather than streamed as
+raw mutations. Connectors that carry *both* roles (e.g. a local-plan
+connector that also emits ``file_seen`` signals when a plan is saved) simply
+implement both protocols.
 """
 
 # SPDX-License-Identifier: Apache-2.0
@@ -16,12 +27,14 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from vaner.daemon.signals.fs_watcher import scan_repo_files
 from vaner.daemon.signals.git_reader import read_git_state
+from vaner.intent.artefacts import SourceTier
 from vaner.intent.skills_discovery import discover_skills
 from vaner.models.signal import SignalEvent
 
@@ -276,3 +289,97 @@ class CodeRepoAdapter:
             timestamp=event.timestamp,
             payload=payload,
         )
+
+
+# --------------------------------------------------------------------------
+# 0.8.2 WS1 — IntentArtefactSource protocol
+# --------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class ArtefactCandidate:
+    """Lightweight discovery result from an :class:`IntentArtefactSource`.
+
+    Carries just enough to decide whether to fetch: a stable ``source_uri``
+    (the identity handle), ``connector`` name, optional ``hint_kind`` if the
+    source can pre-guess the artefact kind, and a cheap
+    ``last_modified`` timestamp used to skip fetches on unchanged sources.
+    Full content is deferred to :meth:`IntentArtefactSource.fetch` so
+    discovery passes stay cheap on large source trees.
+    """
+
+    source_uri: str
+    connector: str
+    tier: SourceTier
+    hint_kind: str | None = None
+    last_modified: float = 0.0
+    title_hint: str | None = None
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class RawArtefact:
+    """Fetched artefact content before classification / extraction.
+
+    The pipeline classifier operates on ``text`` + ``metadata``; the
+    extractor operates on ``text`` + ``hint_kind``. Connectors are the only
+    code path that talks to external systems; downstream stages treat
+    ``RawArtefact`` as a pure value.
+    """
+
+    source_uri: str
+    connector: str
+    tier: SourceTier
+    text: str
+    last_modified: float
+    hint_kind: str | None = None
+    title_hint: str | None = None
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+DiscoveryMode = Literal["poll", "signal"]
+
+
+class IntentArtefactSource(Protocol):
+    """Source of intent-bearing artefact candidates (plans, outlines, task
+    lists, briefs, roadmaps, runbooks).
+
+    Separate from :class:`SignalSource` because artefacts are classified +
+    extracted + persisted on their own cadence rather than streamed as raw
+    mutations. A connector carrying both roles (e.g. a local-plan watcher
+    that also emits ``file_seen`` signals) simply implements both protocols.
+
+    Implementation contract
+    -----------------------
+    - ``tier`` — source trust tier (T1 auto-enabled; T2+ opt-in).
+    - ``connector`` — stable short name (``local_plan``, ``markdown_outline``,
+      ``github_issues``, …) that appears in the store row and MCP responses.
+    - ``discover()`` — enumerate candidate sources cheaply. Must be safe to
+      call on every cycle; expensive work (fetching content, API calls with
+      body bytes) belongs in ``fetch``.
+    - ``fetch(candidate)`` — materialize the raw content. May be async-blocking
+      on network I/O; the pipeline rate-limits the call sites.
+    - ``identify(raw)`` — return a stable ``source_uri`` for the raw artefact.
+      Used as the artefact's identity key across snapshots. Must be
+      deterministic for a given logical source (same file path, same issue
+      id, same doc id) so revisions produce a new *snapshot* rather than a
+      new *artefact*.
+    """
+
+    tier: SourceTier
+    connector: str
+
+    async def discover(self) -> Iterable[ArtefactCandidate]:
+        """Enumerate artefact candidates from this source. Cheap — no body
+        fetches, no LLM calls. Must respect the tier / allowlist config
+        (the pipeline will *not* filter a second time)."""
+        ...
+
+    async def fetch(self, candidate: ArtefactCandidate) -> RawArtefact:
+        """Fetch the raw content for a candidate. May perform network I/O."""
+        ...
+
+    def identify(self, raw: RawArtefact) -> str:
+        """Return the stable ``source_uri`` for this artefact. Deterministic
+        across runs; same logical source → same uri."""
+        ...
