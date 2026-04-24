@@ -14,6 +14,8 @@ Public contract (keep stable across 0.8.x):
     get_predictions_active() -> dict                          # {"predictions": [...]}
     get_prediction(id, *, include=["draft", "briefing", ...])  # may include content
     adopt_prediction(id) -> Resolution                         # parsed pydantic model
+    resolve(query, *, context=..., include_briefing=...,
+            include_predicted_response=...) -> Resolution      # 0.8.1: MCP/HTTP forward
 
 Errors surface as exceptions so callers can distinguish "daemon is down"
 from "daemon rejected the request". Fire-and-forget style callers
@@ -174,6 +176,56 @@ class VanerDaemonClient:
                 raise ValueError(body.get("message", "invalid adopt request"))
             if response.status_code == 404:
                 raise VanerDaemonNotFound(f"no such prediction: {prediction_id}")
+            if response.status_code == 409:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = {}
+                raise VanerDaemonUnavailable(body.get("message", "daemon engine unavailable"))
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return Resolution.model_validate(response.json())
+
+    async def resolve(
+        self,
+        query: str,
+        *,
+        context: dict[str, Any] | None = None,
+        include_briefing: bool = False,
+        include_predicted_response: bool = False,
+    ) -> Resolution:
+        """POST /resolve — forward a query to the daemon's engine.resolve_query.
+
+        The daemon wraps :meth:`VanerEngine.resolve_query` so the MCP
+        surface ``vaner.resolve`` can delegate to the engine without
+        running its own scenario-store path (0.8.1 convergence — see
+        :func:`VanerEngine.resolve_query` for the canonical query →
+        Resolution contract).
+
+        Error mapping:
+            - 400 (empty query) → ``ValueError``
+            - 409 (engine unavailable) → :class:`VanerDaemonUnavailable`
+            - 5xx / transport → :class:`VanerDaemonUnavailable`
+        """
+        payload: dict[str, Any] = {
+            "query": query,
+            "include_briefing": include_briefing,
+            "include_predicted_response": include_predicted_response,
+        }
+        if context is not None:
+            payload["context"] = context
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/resolve", json=payload)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 400:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = {}
+                raise ValueError(body.get("message", "invalid resolve request"))
             if response.status_code == 409:
                 try:
                     body = response.json()

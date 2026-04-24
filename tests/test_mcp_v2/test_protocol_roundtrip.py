@@ -64,7 +64,16 @@ def test_mcp_v2_protocol_roundtrip(temp_repo, monkeypatch) -> None:
 
             resolved = await session.call_tool("vaner.resolve", {"query": "auth middleware"})
             resolved_payload = json.loads(resolved.content[0].text)
-            assert ("resolution_id" in resolved_payload) or (resolved_payload.get("abstained") is True)
+            # v0.8.1 convergence: resolve delegates to engine.resolve_query. This
+            # roundtrip has neither an injected engine nor a running daemon, so
+            # ``engine_unavailable`` is the expected outcome — the point of the
+            # smoke test is that the MCP framing produces a well-formed response
+            # for every tool, not that resolve finds a scenario.
+            assert (
+                "resolution_id" in resolved_payload
+                or resolved_payload.get("abstained") is True
+                or resolved_payload.get("code") == "engine_unavailable"
+            )
 
             expanded = await session.call_tool("vaner.expand", {"target_id": "scn_roundtrip_v2", "mode": "details"})
             expanded_text = expanded.content[0].text
