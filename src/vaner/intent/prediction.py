@@ -27,7 +27,21 @@ ReadinessState = Literal[
     "stale",
 ]
 
-Source = Literal["arc", "pattern", "llm_branch", "macro", "history", "goal"]
+Source = Literal[
+    "arc",
+    "pattern",
+    "llm_branch",
+    "macro",
+    "history",
+    "goal",
+    # 0.8.2 WS2 — a prediction anchored to a specific
+    # :class:`IntentArtefactItem` (rather than a whole goal). ``anchor``
+    # carries the item id; ``_merge_prediction_specs`` iterates items of
+    # active artefact-backed goals where state ∈ {pending, in_progress,
+    # stalled} and emits one spec per eligible item. Carries richer
+    # ``anchor_units`` (related files + entities) than goal-level specs.
+    "artefact_item",
+]
 HypothesisType = Literal["likely_next", "possible_branch", "long_tail"]
 Specificity = Literal["concrete", "category", "anchor"]
 

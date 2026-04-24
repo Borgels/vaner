@@ -553,7 +553,113 @@ class PredictionRegistry:
                     self.record_adoption(pid)
                     outcomes[pid] = "spent"
 
+            # 0.8.2 WS3 — intent-artefact signals. The actual state
+            # transitions and confidence updates live on the persisted
+            # :class:`ReconciliationOutcome`; the registry's job here is
+            # to reflect item-level transitions into the artefact-item-
+            # anchored predictions that were emitted in WS2.
+            elif kind == "artefact_seen":
+                # Cycle-top emit: a new/updated snapshot landed. Don't
+                # touch predictions here — the next ``merge`` pass in
+                # ``_merge_prediction_specs`` re-emits the specs with
+                # fresh confidence. We record it as a no-op for
+                # observability only.
+                continue
+
+            elif kind == "artefact_superseded":
+                old_id = str(payload.get("old_artefact_id") or "")
+                if not old_id:
+                    continue
+                for prompt in list(self._predictions.values()):
+                    if prompt.is_terminal() or prompt.spec.source != "artefact_item":
+                        continue
+                    # ``anchor`` on artefact_item specs is the item id;
+                    # we don't store a reverse artefact_id lookup here,
+                    # so we demote predictions whose
+                    # ``invalidation_reason`` already names the old
+                    # artefact or stale them outright when the old
+                    # artefact dominates the description.
+                    if old_id in prompt.spec.description:
+                        self._transition(
+                            prompt,
+                            "stale",
+                            reason=f"artefact_superseded: {old_id}",
+                        )
+                        prompt.run.invalidation_reason = f"artefact_superseded: {old_id}"
+                        outcomes[prompt.spec.id] = "staled"
+
+            elif kind == "progress_reconciled":
+                # Pointer-only payload — full detail lives on the
+                # persisted ``ReconciliationOutcome``. The registry
+                # alone can't load it (the store is async and not
+                # injected here), so the engine's cycle-top loop is
+                # responsible for calling ``apply_item_state_delta``
+                # per delta after fetching the outcome record. This
+                # branch exists so the signal kind is recognized and
+                # doesn't fall through as an unknown signal.
+                continue
+
         return outcomes
+
+    # ---------------------------------------------------------------
+    # 0.8.2 WS3 — item-state delta application
+    # ---------------------------------------------------------------
+
+    def apply_item_state_delta(
+        self,
+        *,
+        item_id: str,
+        from_state: str,
+        to_state: str,
+    ) -> str | None:
+        """Translate one reconciliation item-state transition into the
+        right effect on any artefact-item-anchored prediction.
+
+        Returns the outcome label (``"spent"``, ``"demoted"``,
+        ``"staled"``, ``"flipped_possible_branch"``) or ``None`` when
+        no such prediction exists. The engine drains its per-cycle
+        outcome list through this method after calling
+        :func:`vaner.intent.reconcile.reconcile_artefact`.
+
+        State-transition → registry effect:
+
+        - ``* → complete``: spec is adopted / done; prediction goes
+          ``spent`` so it stops resurfacing until the evidence
+          invalidates.
+        - ``* → contradicted``: demote weight and stale; confidence
+          decays to the floor.
+        - ``* → stalled``: flip the spec's hypothesis_type to
+          ``possible_branch`` via demotion — pure in-registry effect.
+        - ``* → in_progress``: no-op (the spec is still likely_next).
+        """
+
+        for prompt in self._predictions.values():
+            if prompt.spec.source != "artefact_item":
+                continue
+            if prompt.spec.anchor != item_id:
+                continue
+            if to_state == "complete":
+                self.record_adoption(prompt.spec.id)
+                return "spent"
+            if to_state == "contradicted":
+                prompt.run.weight = max(0.0, prompt.run.weight * 0.25)
+                prompt.run.invalidation_reason = f"item state {from_state!r} → {to_state!r}"
+                self._transition(
+                    prompt,
+                    "stale",
+                    reason=f"contradicted: {item_id}",
+                )
+                return "staled"
+            if to_state == "stalled":
+                prompt.run.weight = max(0.0, prompt.run.weight * 0.5)
+                prompt.run.invalidation_reason = f"item state {from_state!r} → {to_state!r}"
+                return "demoted"
+            if to_state == "in_progress":
+                # Still on the critical path — leave the spec alone;
+                # the next cycle's merge will re-emit it with fresh
+                # confidence from the §6.6 metadata block.
+                return None
+        return None
 
     # -----------------------------------------------------------------------
     # Introspection

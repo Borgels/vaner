@@ -337,6 +337,99 @@ class ArtefactStore:
             )
             await db.execute("CREATE INDEX IF NOT EXISTS idx_workspace_goals_status ON workspace_goals(status)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_workspace_goals_created_at ON workspace_goals(created_at DESC)")
+            # 0.8.2 WS1 — intent-bearing artefacts (plans, outlines, task lists,
+            # briefs, roadmaps, runbooks). See src/vaner/intent/artefacts.py for
+            # the companion dataclasses; per the release spec §6.5 the store
+            # layer owns identity + versioned snapshots + flattened items +
+            # persisted reconciliation outcomes. All tables are declared here
+            # unconditionally so fresh databases get the full schema; legacy
+            # databases pick up the workspace_goals column additions from the
+            # v8 migration block below.
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intent_artefacts (
+                    id TEXT PRIMARY KEY,
+                    source_uri TEXT NOT NULL,
+                    source_tier TEXT NOT NULL,
+                    connector TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    confidence REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    last_observed_at REAL NOT NULL,
+                    last_reconciled_at REAL,
+                    latest_snapshot TEXT NOT NULL DEFAULT '',
+                    linked_goals_json TEXT NOT NULL DEFAULT '[]',
+                    linked_files_json TEXT NOT NULL DEFAULT '[]',
+                    supersedes TEXT
+                )
+                """
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_intent_artefacts_status ON intent_artefacts(status)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_intent_artefacts_connector ON intent_artefacts(connector)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_intent_artefacts_source_uri ON intent_artefacts(source_uri)")
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intent_artefact_snapshots (
+                    id TEXT PRIMARY KEY,
+                    artefact_id TEXT NOT NULL,
+                    captured_at REAL NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    text TEXT NOT NULL
+                )
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_intent_artefact_snapshots_artefact_id ON intent_artefact_snapshots(artefact_id)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_intent_artefact_snapshots_captured_at ON intent_artefact_snapshots(captured_at DESC)"
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intent_artefact_items (
+                    id TEXT NOT NULL,
+                    artefact_id TEXT NOT NULL,
+                    snapshot_id TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    section_path TEXT NOT NULL DEFAULT '',
+                    parent_item TEXT,
+                    related_files_json TEXT NOT NULL DEFAULT '[]',
+                    related_entities_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    PRIMARY KEY (id, snapshot_id)
+                )
+                """
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_intent_artefact_items_artefact_id ON intent_artefact_items(artefact_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_intent_artefact_items_state ON intent_artefact_items(state)")
+            # Reconciliation outcomes are first-class persisted state (spec
+            # §10.3). The ``progress_reconciled`` invalidation signal carries
+            # only a pointer (outcome_id + artefact_id); downstream scoring /
+            # explanation paths fetch full detail from here.
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intent_reconciliation_outcomes (
+                    id TEXT PRIMARY KEY,
+                    artefact_id TEXT NOT NULL,
+                    pass_at REAL NOT NULL,
+                    triggering_signal_id TEXT,
+                    item_state_deltas_json TEXT NOT NULL DEFAULT '[]',
+                    goal_status_deltas_json TEXT NOT NULL DEFAULT '[]',
+                    supersedes_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]'
+                )
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_intent_reconciliation_outcomes_artefact_id ON intent_reconciliation_outcomes(artefact_id)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_intent_reconciliation_outcomes_pass_at ON intent_reconciliation_outcomes(pass_at DESC)"
+            )
             async with db.execute("PRAGMA table_info(signal_events)") as cursor:
                 signal_columns = [row[1] for row in await cursor.fetchall()]
             if "corpus_id" not in signal_columns:
@@ -472,6 +565,32 @@ class ArtefactStore:
                 if "last_accessed_at" not in prediction_columns:
                     await db.execute("ALTER TABLE prediction_cache ADD COLUMN last_accessed_at REAL NOT NULL DEFAULT 0")
                 await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (7)")
+
+            # v8: extend workspace_goals with artefact back-refs + the §6.6
+            # policy-consumer metadata block so downstream scheduling /
+            # allocation / abstention / explanation policies read one
+            # canonical representation of goal state (0.8.2 WS1/WS2).
+            # ``artefact_refs_json`` lists artefact ids backing this goal;
+            # ``subgoal_of`` is the parent goal id when the goal was
+            # decomposed from an outline item. ``pc_freshness``,
+            # ``pc_reconciliation_state``, ``pc_unfinished_item_state``
+            # complete the §6.6 block (``status`` and ``confidence`` already
+            # exist as native columns and serve the block directly).
+            if current_schema_version < 8:
+                async with db.execute("PRAGMA table_info(workspace_goals)") as cursor:
+                    goal_columns = [row[1] for row in await cursor.fetchall()]
+                if "artefact_refs_json" not in goal_columns:
+                    await db.execute("ALTER TABLE workspace_goals ADD COLUMN artefact_refs_json TEXT NOT NULL DEFAULT '[]'")
+                if "subgoal_of" not in goal_columns:
+                    await db.execute("ALTER TABLE workspace_goals ADD COLUMN subgoal_of TEXT")
+                if "pc_freshness" not in goal_columns:
+                    await db.execute("ALTER TABLE workspace_goals ADD COLUMN pc_freshness REAL NOT NULL DEFAULT 1.0")
+                if "pc_reconciliation_state" not in goal_columns:
+                    await db.execute("ALTER TABLE workspace_goals ADD COLUMN pc_reconciliation_state TEXT NOT NULL DEFAULT 'unreconciled'")
+                if "pc_unfinished_item_state" not in goal_columns:
+                    await db.execute("ALTER TABLE workspace_goals ADD COLUMN pc_unfinished_item_state TEXT NOT NULL DEFAULT 'none'")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_workspace_goals_subgoal_of ON workspace_goals(subgoal_of)")
+                await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (8)")
 
             # FTS5 index on artefact source_path + content for sub-millisecond
             # candidate retrieval; the full scorer then re-ranks the top-N hits.
@@ -1829,44 +1948,120 @@ class ArtefactStore:
         status: str,
         evidence_json: str,
         related_files_json: str,
+        artefact_refs_json: str | None = None,
+        subgoal_of: str | None = None,
+        pc_freshness: float | None = None,
+        pc_reconciliation_state: str | None = None,
+        pc_unfinished_item_state: str | None = None,
     ) -> None:
         """Insert or update a goal by id.
 
         On conflict, preserves the original ``created_at`` (goals don't
         change their creation timestamp when re-observed) and refreshes
         everything else including ``last_observed_at``.
+
+        The five WS2 keyword arguments default to ``None``; when *any*
+        of them is set the extended SQL path writes all 0.8.2
+        ``workspace_goals`` columns added in the v8 migration. When all
+        five are unset, the legacy SQL path runs — it touches only the
+        pre-0.8.2 columns, so existing callers (``vaner.goals.declare``,
+        branch-name inference) don't accidentally overwrite
+        artefact-set metadata a prior WS2 cycle may have written.
         """
+
         now = time.time()
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT INTO workspace_goals(
-                    id, title, description, source, confidence, status,
-                    created_at, last_observed_at, evidence_json, related_files_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    title = excluded.title,
-                    description = excluded.description,
-                    source = excluded.source,
-                    confidence = excluded.confidence,
-                    status = excluded.status,
-                    last_observed_at = excluded.last_observed_at,
-                    evidence_json = excluded.evidence_json,
-                    related_files_json = excluded.related_files_json
-                """,
-                (
-                    id,
-                    title,
-                    description,
-                    source,
-                    float(confidence),
-                    status,
-                    now,
-                    now,
-                    evidence_json,
-                    related_files_json,
-                ),
+        extended = any(
+            value is not None
+            for value in (
+                artefact_refs_json,
+                subgoal_of,
+                pc_freshness,
+                pc_reconciliation_state,
+                pc_unfinished_item_state,
             )
+        )
+        async with aiosqlite.connect(self.db_path) as db:
+            if not extended:
+                # Legacy path — preserves pre-0.8.2 semantics exactly.
+                await db.execute(
+                    """
+                    INSERT INTO workspace_goals(
+                        id, title, description, source, confidence, status,
+                        created_at, last_observed_at, evidence_json, related_files_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        title = excluded.title,
+                        description = excluded.description,
+                        source = excluded.source,
+                        confidence = excluded.confidence,
+                        status = excluded.status,
+                        last_observed_at = excluded.last_observed_at,
+                        evidence_json = excluded.evidence_json,
+                        related_files_json = excluded.related_files_json
+                    """,
+                    (
+                        id,
+                        title,
+                        description,
+                        source,
+                        float(confidence),
+                        status,
+                        now,
+                        now,
+                        evidence_json,
+                        related_files_json,
+                    ),
+                )
+            else:
+                # WS2 path — writes the extended column set. Columns that
+                # the caller left as ``None`` fall back to the schema
+                # defaults on INSERT; on UPDATE the CASE blocks preserve
+                # any prior value so a follow-up inference cycle that
+                # only updates a subset doesn't stomp the others.
+                await db.execute(
+                    """
+                    INSERT INTO workspace_goals(
+                        id, title, description, source, confidence, status,
+                        created_at, last_observed_at, evidence_json, related_files_json,
+                        artefact_refs_json, subgoal_of, pc_freshness,
+                        pc_reconciliation_state, pc_unfinished_item_state
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        title = excluded.title,
+                        description = excluded.description,
+                        source = excluded.source,
+                        confidence = excluded.confidence,
+                        status = excluded.status,
+                        last_observed_at = excluded.last_observed_at,
+                        evidence_json = excluded.evidence_json,
+                        related_files_json = excluded.related_files_json,
+                        artefact_refs_json = excluded.artefact_refs_json,
+                        subgoal_of = CASE
+                            WHEN excluded.subgoal_of IS NULL
+                            THEN workspace_goals.subgoal_of
+                            ELSE excluded.subgoal_of END,
+                        pc_freshness = excluded.pc_freshness,
+                        pc_reconciliation_state = excluded.pc_reconciliation_state,
+                        pc_unfinished_item_state = excluded.pc_unfinished_item_state
+                    """,
+                    (
+                        id,
+                        title,
+                        description,
+                        source,
+                        float(confidence),
+                        status,
+                        now,
+                        now,
+                        evidence_json,
+                        related_files_json,
+                        artefact_refs_json if artefact_refs_json is not None else "[]",
+                        subgoal_of,
+                        1.0 if pc_freshness is None else float(pc_freshness),
+                        pc_reconciliation_state or "unreconciled",
+                        pc_unfinished_item_state or "none",
+                    ),
+                )
             await db.commit()
 
     async def list_workspace_goals(
@@ -1877,7 +2072,9 @@ class ArtefactStore:
     ) -> list[dict[str, object]]:
         query = (
             "SELECT id, title, description, source, confidence, status, "
-            "created_at, last_observed_at, evidence_json, related_files_json "
+            "created_at, last_observed_at, evidence_json, related_files_json, "
+            "artefact_refs_json, subgoal_of, pc_freshness, "
+            "pc_reconciliation_state, pc_unfinished_item_state "
             "FROM workspace_goals WHERE 1=1"
         )
         params: list[object] = []
@@ -1897,7 +2094,9 @@ class ArtefactStore:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT id, title, description, source, confidence, status, "
-                "created_at, last_observed_at, evidence_json, related_files_json "
+                "created_at, last_observed_at, evidence_json, related_files_json, "
+                "artefact_refs_json, subgoal_of, pc_freshness, "
+                "pc_reconciliation_state, pc_unfinished_item_state "
                 "FROM workspace_goals WHERE id = ?",
                 (goal_id,),
             )
@@ -1922,3 +2121,428 @@ class ArtefactStore:
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    async def update_workspace_goal_artefact_metadata(
+        self,
+        goal_id: str,
+        *,
+        artefact_refs_json: str | None = None,
+        subgoal_of: str | None = None,
+        pc_freshness: float | None = None,
+        pc_reconciliation_state: str | None = None,
+        pc_unfinished_item_state: str | None = None,
+    ) -> bool:
+        """Update the 0.8.2 goal columns: artefact refs + §6.6 metadata.
+
+        Kept separate from :meth:`upsert_workspace_goal` so the existing
+        WS7 callers (`vaner.goals.declare`, branch-name inference) keep
+        their simple signature. Artefact-driven and reconciliation-driven
+        updaters use this method instead.
+        """
+
+        updates: list[str] = []
+        params: list[object] = []
+        if artefact_refs_json is not None:
+            updates.append("artefact_refs_json = ?")
+            params.append(artefact_refs_json)
+        if subgoal_of is not None:
+            updates.append("subgoal_of = ?")
+            params.append(subgoal_of)
+        if pc_freshness is not None:
+            updates.append("pc_freshness = ?")
+            params.append(float(pc_freshness))
+        if pc_reconciliation_state is not None:
+            updates.append("pc_reconciliation_state = ?")
+            params.append(pc_reconciliation_state)
+        if pc_unfinished_item_state is not None:
+            updates.append("pc_unfinished_item_state = ?")
+            params.append(pc_unfinished_item_state)
+        if not updates:
+            return False
+        params.append(goal_id)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                f"UPDATE workspace_goals SET {', '.join(updates)} WHERE id = ?",
+                tuple(params),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    # -----------------------------------------------------------------------
+    # 0.8.2 WS1 — intent-bearing artefacts
+    # -----------------------------------------------------------------------
+
+    async def upsert_intent_artefact(
+        self,
+        *,
+        id: str,
+        source_uri: str,
+        source_tier: str,
+        connector: str,
+        kind: str,
+        title: str,
+        status: str,
+        confidence: float,
+        created_at: float,
+        last_observed_at: float,
+        last_reconciled_at: float | None,
+        latest_snapshot: str,
+        linked_goals_json: str,
+        linked_files_json: str,
+        supersedes: str | None,
+    ) -> None:
+        """Insert or update an intent artefact by id.
+
+        On conflict, preserves the original ``created_at`` and refreshes
+        everything else. ``latest_snapshot`` points at the current
+        snapshot id; callers are expected to write the snapshot row
+        first.
+        """
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO intent_artefacts(
+                    id, source_uri, source_tier, connector, kind, title, status,
+                    confidence, created_at, last_observed_at, last_reconciled_at,
+                    latest_snapshot, linked_goals_json, linked_files_json, supersedes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    source_uri = excluded.source_uri,
+                    source_tier = excluded.source_tier,
+                    connector = excluded.connector,
+                    kind = excluded.kind,
+                    title = excluded.title,
+                    status = excluded.status,
+                    confidence = excluded.confidence,
+                    last_observed_at = excluded.last_observed_at,
+                    last_reconciled_at = excluded.last_reconciled_at,
+                    latest_snapshot = excluded.latest_snapshot,
+                    linked_goals_json = excluded.linked_goals_json,
+                    linked_files_json = excluded.linked_files_json,
+                    supersedes = excluded.supersedes
+                """,
+                (
+                    id,
+                    source_uri,
+                    source_tier,
+                    connector,
+                    kind,
+                    title,
+                    status,
+                    float(confidence),
+                    float(created_at),
+                    float(last_observed_at),
+                    None if last_reconciled_at is None else float(last_reconciled_at),
+                    latest_snapshot,
+                    linked_goals_json,
+                    linked_files_json,
+                    supersedes,
+                ),
+            )
+            await db.commit()
+
+    async def list_intent_artefacts(
+        self,
+        *,
+        status: str | None = None,
+        connector: str | None = None,
+        source_tier: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        query = (
+            "SELECT id, source_uri, source_tier, connector, kind, title, status, "
+            "confidence, created_at, last_observed_at, last_reconciled_at, "
+            "latest_snapshot, linked_goals_json, linked_files_json, supersedes "
+            "FROM intent_artefacts WHERE 1=1"
+        )
+        params: list[object] = []
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        if connector is not None:
+            query += " AND connector = ?"
+            params.append(connector)
+        if source_tier is not None:
+            query += " AND source_tier = ?"
+            params.append(source_tier)
+        query += " ORDER BY last_observed_at DESC LIMIT ?"
+        params.append(int(limit))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_intent_artefact(self, artefact_id: str) -> dict[str, object] | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT id, source_uri, source_tier, connector, kind, title, status, "
+                "confidence, created_at, last_observed_at, last_reconciled_at, "
+                "latest_snapshot, linked_goals_json, linked_files_json, supersedes "
+                "FROM intent_artefacts WHERE id = ?",
+                (artefact_id,),
+            )
+            row = await cursor.fetchone()
+        return dict(row) if row is not None else None
+
+    async def update_intent_artefact_status(self, artefact_id: str, status: str) -> bool:
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE intent_artefacts SET status = ?, last_observed_at = ? WHERE id = ?",
+                (status, now, artefact_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def upsert_intent_artefact_snapshot(
+        self,
+        *,
+        id: str,
+        artefact_id: str,
+        captured_at: float,
+        content_hash: str,
+        text: str,
+    ) -> None:
+        """Insert or update a snapshot by id.
+
+        Snapshots are content-hash-addressed (``id == content_hash``), so
+        the on-conflict path is only reached for retries; it leaves
+        ``text`` and ``captured_at`` as-is to preserve first-seen-time
+        ordering.
+        """
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO intent_artefact_snapshots(id, artefact_id, captured_at, content_hash, text)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (id, artefact_id, float(captured_at), content_hash, text),
+            )
+            await db.commit()
+
+    async def list_intent_artefact_snapshots(
+        self,
+        artefact_id: str,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT id, artefact_id, captured_at, content_hash, text "
+                "FROM intent_artefact_snapshots WHERE artefact_id = ? "
+                "ORDER BY captured_at DESC LIMIT ?",
+                (artefact_id, int(limit)),
+            )
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_intent_artefact_snapshot(self, snapshot_id: str) -> dict[str, object] | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT id, artefact_id, captured_at, content_hash, text FROM intent_artefact_snapshots WHERE id = ?",
+                (snapshot_id,),
+            )
+            row = await cursor.fetchone()
+        return dict(row) if row is not None else None
+
+    async def replace_intent_artefact_items(
+        self,
+        *,
+        snapshot_id: str,
+        artefact_id: str,
+        items: list[dict[str, object]],
+    ) -> None:
+        """Replace the full item set for a snapshot.
+
+        Called from the extraction pipeline once per snapshot. Each
+        ``items`` entry must carry: ``id``, ``text``, ``kind``, ``state``,
+        ``section_path``, ``parent_item`` (optional), plus the three JSON
+        fields ``related_files_json``, ``related_entities_json``,
+        ``evidence_refs_json``. Reconciliation (WS3) updates item state
+        via :meth:`update_intent_artefact_item_state` without going
+        through this method.
+        """
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "DELETE FROM intent_artefact_items WHERE snapshot_id = ?",
+                (snapshot_id,),
+            )
+            await db.executemany(
+                """
+                INSERT INTO intent_artefact_items(
+                    id, artefact_id, snapshot_id, text, kind, state, section_path,
+                    parent_item, related_files_json, related_entities_json, evidence_refs_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(item["id"]),
+                        artefact_id,
+                        snapshot_id,
+                        str(item["text"]),
+                        str(item["kind"]),
+                        str(item.get("state", "pending")),
+                        str(item.get("section_path", "")),
+                        item.get("parent_item"),
+                        str(item.get("related_files_json", "[]")),
+                        str(item.get("related_entities_json", "[]")),
+                        str(item.get("evidence_refs_json", "[]")),
+                    )
+                    for item in items
+                ],
+            )
+            await db.commit()
+
+    async def list_intent_artefact_items(
+        self,
+        *,
+        artefact_id: str | None = None,
+        snapshot_id: str | None = None,
+        state: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, object]]:
+        """List items filtered by artefact, snapshot, and/or state.
+
+        When ``snapshot_id`` is omitted but ``artefact_id`` is given, the
+        query returns items from **all** snapshots of that artefact.
+        Callers that want only the current items should pass
+        ``snapshot_id`` = the artefact's ``latest_snapshot``.
+        """
+
+        query = (
+            "SELECT id, artefact_id, snapshot_id, text, kind, state, section_path, "
+            "parent_item, related_files_json, related_entities_json, evidence_refs_json "
+            "FROM intent_artefact_items WHERE 1=1"
+        )
+        params: list[object] = []
+        if artefact_id is not None:
+            query += " AND artefact_id = ?"
+            params.append(artefact_id)
+        if snapshot_id is not None:
+            query += " AND snapshot_id = ?"
+            params.append(snapshot_id)
+        if state is not None:
+            query += " AND state = ?"
+            params.append(state)
+        query += " LIMIT ?"
+        params.append(int(limit))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def update_intent_artefact_item_state(
+        self,
+        *,
+        item_id: str,
+        snapshot_id: str,
+        state: str,
+        evidence_refs_json: str | None = None,
+    ) -> bool:
+        """Update a single item's state (WS3 reconciliation path).
+
+        ``item_id`` and ``snapshot_id`` form the composite primary key;
+        items are pinned to the snapshot they were extracted from so
+        state history is preserved when a new snapshot supersedes.
+        """
+
+        async with aiosqlite.connect(self.db_path) as db:
+            if evidence_refs_json is not None:
+                cursor = await db.execute(
+                    "UPDATE intent_artefact_items SET state = ?, evidence_refs_json = ? WHERE id = ? AND snapshot_id = ?",
+                    (state, evidence_refs_json, item_id, snapshot_id),
+                )
+            else:
+                cursor = await db.execute(
+                    "UPDATE intent_artefact_items SET state = ? WHERE id = ? AND snapshot_id = ?",
+                    (state, item_id, snapshot_id),
+                )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def insert_reconciliation_outcome(
+        self,
+        *,
+        id: str,
+        artefact_id: str,
+        pass_at: float,
+        triggering_signal_id: str | None,
+        item_state_deltas_json: str,
+        goal_status_deltas_json: str,
+        supersedes_json: str,
+        evidence_refs_json: str,
+    ) -> None:
+        """Write one reconciliation outcome record (WS3, spec §10.3).
+
+        Authoritative persisted state for what a reconciliation pass
+        decided. The ``progress_reconciled`` invalidation signal carries
+        only ``{outcome_id, artefact_id}``; every consumer resolves full
+        detail via :meth:`get_reconciliation_outcome`.
+        """
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO intent_reconciliation_outcomes(
+                    id, artefact_id, pass_at, triggering_signal_id,
+                    item_state_deltas_json, goal_status_deltas_json,
+                    supersedes_json, evidence_refs_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (
+                    id,
+                    artefact_id,
+                    float(pass_at),
+                    triggering_signal_id,
+                    item_state_deltas_json,
+                    goal_status_deltas_json,
+                    supersedes_json,
+                    evidence_refs_json,
+                ),
+            )
+            await db.commit()
+
+    async def list_reconciliation_outcomes(
+        self,
+        *,
+        artefact_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, object]]:
+        query = (
+            "SELECT id, artefact_id, pass_at, triggering_signal_id, "
+            "item_state_deltas_json, goal_status_deltas_json, supersedes_json, "
+            "evidence_refs_json FROM intent_reconciliation_outcomes WHERE 1=1"
+        )
+        params: list[object] = []
+        if artefact_id is not None:
+            query += " AND artefact_id = ?"
+            params.append(artefact_id)
+        query += " ORDER BY pass_at DESC LIMIT ?"
+        params.append(int(limit))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_reconciliation_outcome(self, outcome_id: str) -> dict[str, object] | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT id, artefact_id, pass_at, triggering_signal_id, "
+                "item_state_deltas_json, goal_status_deltas_json, supersedes_json, "
+                "evidence_refs_json FROM intent_reconciliation_outcomes WHERE id = ?",
+                (outcome_id,),
+            )
+            row = await cursor.fetchone()
+        return dict(row) if row is not None else None

@@ -32,6 +32,21 @@ SignalKind = Literal[
     "commit",
     "category_shift",
     "adoption",
+    # 0.8.2 WS3 — intent-artefact lifecycle signals.
+    # ``artefact_seen``: emitted by the ingestion pipeline when a new
+    # snapshot is persisted; payload carries ``{artefact_id, snapshot_id,
+    # kind, confidence, tier, supersedes_snapshot}``.
+    # ``artefact_superseded``: emitted when a new artefact replaces an
+    # older one; payload carries ``{new_artefact_id, old_artefact_id}``.
+    # ``progress_reconciled``: emitted *after* a reconciliation pass has
+    # written its :class:`ReconciliationOutcome` record; payload is a
+    # minimal pointer (``{outcome_id, artefact_id}``) so consumers fetch
+    # full detail via :meth:`ArtefactStore.get_reconciliation_outcome`.
+    # This split is the first-class-persisted-state design in spec §10.3
+    # — the signal is the notification, the outcome record is the data.
+    "artefact_seen",
+    "artefact_superseded",
+    "progress_reconciled",
 ]
 
 

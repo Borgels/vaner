@@ -198,6 +198,17 @@ class ExplorationFrontier:
         # Adaptive depth budget: starts at max_depth, can be temporarily lowered
         # for breadth-first phases; overridable via set_effective_max_depth()
         self._effective_max_depth: int = max_depth
+        # 0.8.2 WS2 — set of file paths the currently-active intent-
+        # bearing artefacts reference, used by the artefact_alignment
+        # scoring term (spec §9). Scenarios whose ``file_paths``
+        # intersect this set earn a small multiplicative boost at push
+        # time so prepared context aligns with the user's declared
+        # direction. Empty set → no effect.
+        self._artefact_aligned_paths: frozenset[str] = frozenset()
+        # Multiplicative boost applied when a scenario's file set
+        # intersects ``_artefact_aligned_paths``. Conservative default
+        # (1.1x) — alignment is a tie-breaker, not a dominating signal.
+        self._artefact_alignment_boost: float = 1.10
 
     # -----------------------------------------------------------------------
     # Seeding
@@ -542,6 +553,31 @@ class ExplorationFrontier:
         """
         self._effective_max_depth = depth
 
+    def set_artefact_aligned_paths(
+        self,
+        paths: set[str] | frozenset[str],
+        *,
+        boost: float | None = None,
+    ) -> None:
+        """Configure the ``artefact_alignment`` scoring term (0.8.2 WS2,
+        spec §9).
+
+        ``paths`` is the union of file paths referenced by items under
+        active artefact-backed goals. Scenarios whose ``file_paths``
+        intersect this set earn a multiplicative ``boost`` (default
+        1.10x) at push time, giving prepared context a gentle pull
+        toward the user's declared next step.
+
+        Pass an empty set to disable the term. ``boost`` is clamped to
+        at least 1.0 so the term is always non-negative — a value below
+        1.0 would demote aligned scenarios, which is explicitly not
+        the design.
+        """
+
+        self._artefact_aligned_paths = frozenset(paths)
+        if boost is not None:
+            self._artefact_alignment_boost = max(1.0, float(boost))
+
     def push(self, scenario: ExplorationScenario) -> bool:
         """Attempt to admit a scenario.
 
@@ -563,6 +599,13 @@ class ExplorationFrontier:
             return False
 
         effective_priority = scenario.priority * self._multipliers.get(scenario.source, 1.0)
+        # 0.8.2 WS2 — artefact_alignment boost. Gentle multiplicative
+        # bonus for scenarios touching files currently listed under
+        # active artefact-backed goals. Cheap set intersection check;
+        # skipped entirely when no artefact paths are configured.
+        if self._artefact_aligned_paths and scenario.file_paths:
+            if any(p in self._artefact_aligned_paths for p in scenario.file_paths):
+                effective_priority *= self._artefact_alignment_boost
 
         # Upgrade existing pending entry if the new effective priority is higher
         if scenario.id in self._pending:

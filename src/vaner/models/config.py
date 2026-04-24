@@ -465,6 +465,86 @@ class ExplorationConfig(BaseModel):
         )
 
 
+TierPolicy = Literal["auto", "opt_in", "off"]
+
+
+class IntentArtefactTiersConfig(BaseModel):
+    """Source-tier policies for intent-bearing artefacts (spec §12).
+
+    ``auto`` — the tier's connectors run without extra opt-in.
+    ``opt_in`` — connectors only run when their per-connector ``enabled``
+    flag is set. ``off`` — disables the tier entirely regardless of
+    per-connector flags.
+
+    Defaults: T1 ``auto`` (repo-local plans), T2/T3/T4 ``opt_in``.
+    """
+
+    T1: TierPolicy = "auto"
+    T2: TierPolicy = "opt_in"
+    T3: TierPolicy = "opt_in"
+    T4: TierPolicy = "opt_in"
+
+
+class LocalPlanSourceConfig(BaseModel):
+    """``[sources.intent_artefacts.local_plan]`` (T1).
+
+    Empty ``allowlist`` / ``excludelist`` mean the connector falls back
+    to its module-level defaults (see
+    :mod:`vaner.intent.connectors.local_plan`).
+    """
+
+    allowlist: list[str] = Field(default_factory=list)
+    excludelist: list[str] = Field(default_factory=list)
+
+
+class MarkdownOutlineSourceConfig(BaseModel):
+    """``[sources.intent_artefacts.markdown_outline]`` (T2, opt-in)."""
+
+    enabled: bool = False
+    excludelist: list[str] = Field(default_factory=list)
+    max_candidates: int = 500
+
+
+class GitHubIssuesSourceConfig(BaseModel):
+    """``[sources.intent_artefacts.github_issues]`` (T3, opt-in).
+
+    ``repos`` is the explicit per-repo allowlist; no wildcard access.
+    Empty ``repos`` disables the connector even when ``enabled`` is
+    True.
+    """
+
+    enabled: bool = False
+    repos: list[str] = Field(default_factory=list)
+    include_closed: bool = False
+    max_issues: int = 200
+
+
+class IntentArtefactsConfig(BaseModel):
+    """``[sources.intent_artefacts]`` — 0.8.2 intent-bearing artefact
+    ingestion (spec §12).
+
+    ``enabled`` is the master switch. When ``False`` the pipeline and
+    all connectors are inert — no discovery, no fetches, no persistence,
+    no signals.
+    """
+
+    enabled: bool = True
+    tiers: IntentArtefactTiersConfig = Field(default_factory=IntentArtefactTiersConfig)
+    local_plan: LocalPlanSourceConfig = Field(default_factory=LocalPlanSourceConfig)
+    markdown_outline: MarkdownOutlineSourceConfig = Field(default_factory=MarkdownOutlineSourceConfig)
+    github_issues: GitHubIssuesSourceConfig = Field(default_factory=GitHubIssuesSourceConfig)
+
+
+class SourcesConfig(BaseModel):
+    """``[sources]`` — source-discipline controls.
+
+    Today this carries only the 0.8.2 intent-artefact ingestion config.
+    WS4 (0.8.3+) extends this with notes-tool and cloud-doc connectors.
+    """
+
+    intent_artefacts: IntentArtefactsConfig = Field(default_factory=IntentArtefactsConfig)
+
+
 class VanerConfig(BaseModel):
     repo_root: Path
     store_path: Path
@@ -480,3 +560,4 @@ class VanerConfig(BaseModel):
     intent: IntentConfig = Field(default_factory=IntentConfig)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)
+    sources: SourcesConfig = Field(default_factory=SourcesConfig)

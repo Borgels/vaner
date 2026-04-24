@@ -41,7 +41,13 @@ from vaner.intent.invalidation import (
     build_file_change_signal,
 )
 from vaner.intent.maturity import MaturityTracker
-from vaner.intent.prediction import PredictedPrompt, PredictionSpec, prediction_id
+from vaner.intent.prediction import (
+    HypothesisType,
+    PredictedPrompt,
+    PredictionSpec,
+    Specificity,
+    prediction_id,
+)
 from vaner.intent.prediction_registry import PredictionRegistry
 from vaner.intent.profile import UserProfile
 from vaner.intent.reasoner import CorpusReasoner, PredictionScenario
@@ -70,6 +76,18 @@ EmbedCallable = Callable[[list[str]], Awaitable[list[list[float]]]]
 # ``LLMResponse`` (thinking + content + raw). The engine prefers this when
 # available so reasoning-model preambles are captured rather than discarded.
 StructuredLLMCallable = Callable[[str], Awaitable["LLMResponse"]]
+
+# 0.8.2 WS2 — confidence multiplier per artefact-item state for the
+# ``source="artefact_item"`` prediction-spec emitter. Pending items are
+# the user's "declared next step" and get highest weight; in_progress
+# gets a slight discount to avoid monopolising attention once the work
+# has been observed starting; stalled items are demoted but retained as
+# possible-branch coverage.
+_ITEM_STATE_WEIGHTS: dict[str, float] = {
+    "pending": 0.9,
+    "in_progress": 0.8,
+    "stalled": 0.4,
+}
 
 
 @dataclass(slots=True)
@@ -191,9 +209,17 @@ class VanerEngine:
         # around it.
         self._drafter = Drafter(llm=self.llm, assembler=self._briefing_assembler)
         # WS7: per-cycle cache of active workspace goals. Refreshed at the
-        # top of precompute_cycle via ``_load_active_goals``; consumed by
-        # ``_merge_prediction_specs`` to seed goal-anchored predictions.
+        # top of precompute_cycle via ``_refresh_inferred_goals``;
+        # consumed by ``_merge_prediction_specs`` to seed goal-anchored
+        # predictions.
         self._active_goals_cache: list[dict[str, object]] = []
+        # 0.8.2 WS2: per-cycle cache of active intent-artefact items,
+        # grouped by artefact id. Refreshed at the top of
+        # ``precompute_cycle``; consumed by ``_emit_artefact_item_specs``
+        # to emit ``source="artefact_item"`` prediction specs for every
+        # pending/in_progress/stalled item under an active artefact-
+        # backed goal.
+        self._active_artefact_items_cache: dict[str, list[dict[str, object]]] = {}
         # Working set: maps source_path -> last interaction timestamp.
         # Seeded by every query() call; used as graph-walk anchor.
         self._working_set: dict[str, float] = {}
@@ -1086,13 +1112,28 @@ class VanerEngine:
         # cycle-start git HEAD + category tail + per-prediction file hashes
         # against whatever the registry captured on its last touch. No
         # wall-clock decay: if no signal fires, nothing is invalidated.
-        self._apply_cycle_invalidation(recent_query_text)
-
-        # WS7: refresh active-goals cache so the merge below can seed
-        # goal-anchored predictions alongside arc / pattern / history.
-        # Best-effort: a missing table or legacy DB falls back to an
-        # empty list without failing the cycle.
+        cycle_signals = self._apply_cycle_invalidation(recent_query_text)
+        # 0.8.2 WS3 — reconciliation runs on every cycle that saw at
+        # least one commit or file_change signal. Best-effort: a
+        # reconciliation failure is logged and swallowed so it never
+        # breaks the precompute cycle.
         try:
+            await self._apply_artefact_reconciliation(cycle_signals)
+        except Exception:
+            # Best-effort: a reconciliation failure (e.g. transient DB
+            # lock, corrupt item row) must not abort the precompute
+            # cycle. The next cycle retries automatically.
+            pass
+
+        # WS7 (0.8.2 WS2): run unified goal inference — branch name,
+        # commit clustering, query clustering, and intent-bearing
+        # artefacts all feed the same merge_hints coordinator. Inferred
+        # goals are upserted so they participate in prediction seeding
+        # alongside user-declared ones. Best-effort: a missing table or
+        # legacy DB falls back to an empty list without failing the
+        # cycle.
+        try:
+            await self._refresh_inferred_goals(recent_query_text)
             self._active_goals_cache = await self.store.list_workspace_goals(status="active", limit=20)
         except Exception:
             self._active_goals_cache = []
@@ -1110,6 +1151,23 @@ class VanerEngine:
             prompt_macros=prompt_macros,
             patterns=patterns,
         )
+
+        # 0.8.2 WS2 — configure the artefact_alignment scoring term
+        # before seeding. Collect the union of file paths referenced by
+        # items under active artefact-backed goals so scenarios that
+        # touch them earn the push-time boost. Empty set → no effect.
+        aligned_paths: set[str] = set()
+        for _item_rows in (self._active_artefact_items_cache or {}).values():
+            for _item_row in _item_rows:
+                import json as _json
+
+                try:
+                    paths = _json.loads(str(_item_row.get("related_files_json") or "[]"))
+                    if isinstance(paths, list):
+                        aligned_paths.update(str(p) for p in paths if p)
+                except Exception:
+                    continue
+        frontier.set_artefact_aligned_paths(aligned_paths)
 
         # Order matters: Jaccard-dedup is first-admitted-wins, and
         # seed_from_workflow_phase produces arc-sourced scenarios whose file
@@ -1797,10 +1855,358 @@ class VanerEngine:
         )
 
     # ------------------------------------------------------------------
+    # 0.8.2 WS2: unified goal inference
+    # ------------------------------------------------------------------
+
+    async def _refresh_inferred_goals(self, recent_query_text: list[str]) -> None:
+        """Run the unified goal-inference pipeline and upsert the output.
+
+        Four candidate sources feed :func:`goal_inference.merge_hints`:
+
+        1. Branch name (existing pre-0.8.2 behaviour).
+        2. Recent commit subjects (0.8.2 WS2, deferred from 0.8.1).
+        3. Recent query history (0.8.2 WS2, deferred from 0.8.1).
+        4. Intent-bearing artefacts + their items (0.8.2 WS2).
+
+        User-declared goals are preserved exactly as they are (the
+        merge coordinator ranks ``user_declared`` above every inferred
+        source). Inferred goals are upserted with their
+        artefact_refs / subgoal_of / §6.6 policy-consumer metadata so
+        downstream consumers read one canonical representation.
+
+        Best-effort — any source that raises is dropped from the
+        candidate stream rather than failing the cycle. The cycle-top
+        caller catches exceptions from this method and continues with
+        whatever persisted goals already exist.
+        """
+
+        import json as _json
+
+        from vaner.daemon.signals.git_reader import (
+            read_commit_subjects,
+            read_git_state,
+        )
+        from vaner.intent.branch_parser import parse_branch_name
+        from vaner.intent.goal_inference import GoalCandidate, merge_hints
+        from vaner.intent.goal_inference_artefacts import hints_from_artefacts
+        from vaner.intent.goal_inference_commits import cluster_commit_subjects
+        from vaner.intent.goal_inference_queries import cluster_query_history
+        from vaner.intent.goals import GoalEvidence
+
+        candidates: list[GoalCandidate] = []
+
+        # Source 1: branch name.
+        try:
+            git_state = read_git_state(self.config.repo_root)
+            branch = str(git_state.get("branch", "") or "").strip()
+            hint = parse_branch_name(branch) if branch else None
+            if hint is not None:
+                candidates.append(
+                    GoalCandidate(
+                        title=hint.title,
+                        source="branch_name",
+                        confidence=hint.confidence,
+                        description=f"Inferred from branch {branch!r}.",
+                        evidence=(GoalEvidence(kind="branch_name", value=branch, weight=1.0),),
+                    )
+                )
+        except Exception:
+            # Best-effort per source: any producer that throws is
+            # dropped from the candidate stream for this cycle rather
+            # than failing the whole inference pass. The other three
+            # sources still contribute.
+            pass
+
+        # Source 2: commit clustering.
+        try:
+            subjects = read_commit_subjects(self.config.repo_root, last_n=30)
+            candidates.extend(cluster_commit_subjects(subjects))
+        except Exception:
+            # Best-effort per source — see branch-name comment above.
+            pass
+
+        # Source 3: query-history clustering.
+        try:
+            query_rows = await self.store.list_query_history(limit=50)
+            candidates.extend(cluster_query_history(query_rows))
+        except Exception:
+            # Best-effort per source — see branch-name comment above.
+            pass
+
+        # Source 4: intent-bearing artefacts. Also populates the per-
+        # cycle item cache that ``_emit_artefact_item_specs`` reads to
+        # emit artefact-item-anchored prediction specs.
+        self._active_artefact_items_cache = {}
+        try:
+            artefact_rows = await self.store.list_intent_artefacts(status="active", limit=50)
+            from vaner.intent.artefacts import IntentArtefact, IntentArtefactItem
+
+            bundle: list[tuple[IntentArtefact, list[IntentArtefactItem]]] = []
+            for row in artefact_rows:
+                artefact = IntentArtefact(
+                    id=str(row["id"]),
+                    source_uri=str(row["source_uri"]),
+                    source_tier=str(row["source_tier"]),  # type: ignore[arg-type]
+                    connector=str(row["connector"]),
+                    kind=str(row["kind"]),  # type: ignore[arg-type]
+                    title=str(row["title"]),
+                    status=str(row["status"]),  # type: ignore[arg-type]
+                    confidence=float(row["confidence"] or 0.0),
+                    created_at=float(row["created_at"] or 0.0),
+                    last_observed_at=float(row["last_observed_at"] or 0.0),
+                    last_reconciled_at=(float(row["last_reconciled_at"]) if row.get("last_reconciled_at") is not None else None),
+                    latest_snapshot=str(row.get("latest_snapshot") or ""),
+                )
+                snap_id = artefact.latest_snapshot
+                if not snap_id:
+                    continue
+                item_rows = await self.store.list_intent_artefact_items(
+                    artefact_id=artefact.id,
+                    snapshot_id=snap_id,
+                )
+                items = [
+                    IntentArtefactItem(
+                        id=str(ir["id"]),
+                        artefact_id=artefact.id,
+                        text=str(ir["text"]),
+                        kind=str(ir["kind"]),  # type: ignore[arg-type]
+                        state=str(ir["state"]),  # type: ignore[arg-type]
+                        section_path=str(ir.get("section_path") or ""),
+                        parent_item=(str(ir["parent_item"]) if ir.get("parent_item") else None),
+                        related_files=_json.loads(str(ir.get("related_files_json") or "[]")),
+                        related_entities=_json.loads(str(ir.get("related_entities_json") or "[]")),
+                        evidence_refs=_json.loads(str(ir.get("evidence_refs_json") or "[]")),
+                    )
+                    for ir in item_rows
+                ]
+                bundle.append((artefact, items))
+                # Cache raw item rows for the per-cycle artefact_item
+                # prediction-spec emitter. Storing the raw dicts avoids
+                # reparsing the dataclasses there.
+                self._active_artefact_items_cache[artefact.id] = list(item_rows)
+            candidates.extend(hints_from_artefacts(bundle))
+        except Exception:
+            # Best-effort per source — see branch-name comment above.
+            pass
+
+        merged = merge_hints(candidates)
+        if not merged:
+            return
+
+        # Upsert each inferred goal. User-declared goals are unaffected
+        # (the merge coordinator would have priority-picked user_declared
+        # if any was present in the candidate stream; this code path
+        # skips them because we only emit candidates from inference
+        # sources above).
+        for goal in merged:
+            try:
+                await self.store.upsert_workspace_goal(
+                    id=goal.id,
+                    title=goal.title,
+                    description=goal.description,
+                    source=goal.source,
+                    confidence=goal.confidence,
+                    status=goal.status,
+                    evidence_json=_json.dumps([{"kind": ev.kind, "value": ev.value, "weight": ev.weight} for ev in goal.evidence]),
+                    related_files_json=_json.dumps(goal.related_files),
+                    artefact_refs_json=(_json.dumps(goal.artefact_refs) if goal.artefact_refs else None),
+                    subgoal_of=goal.subgoal_of,
+                    pc_freshness=goal.pc_freshness,
+                    pc_reconciliation_state=goal.pc_reconciliation_state,
+                    pc_unfinished_item_state=goal.pc_unfinished_item_state,
+                )
+            except Exception:
+                continue
+
+    async def _apply_artefact_reconciliation(self, cycle_signals: list) -> None:
+        """0.8.2 WS3 — run reconciliation for every active artefact when
+        a ``commit`` or ``file_change`` signal fires this cycle.
+
+        Per spec §10.1, reconciliation is gated on *any* relevant signal
+        arrival, not on pure time. This preserves the no-wall-clock-
+        decay invariant — a cycle with no underlying state change never
+        runs a reconciliation pass.
+
+        Writes one :class:`ReconciliationOutcome` per artefact,
+        emits a ``progress_reconciled`` ``SignalEvent`` into the signal
+        log, and applies the resulting item-state deltas to the
+        prediction registry. Runs best-effort: a per-artefact failure
+        is logged but does not stop reconciliation for other artefacts.
+        """
+
+        from vaner.intent.reconcile import ReconcileContext, reconcile_artefact
+
+        # Only proceed when a structural signal actually fired.
+        relevant = [s for s in cycle_signals if getattr(s, "kind", "") in ("commit", "file_change")]
+        if not relevant:
+            return
+
+        # Collect triggering information for the reconcile context.
+        changed_files: set[str] = set()
+        for sig in relevant:
+            if getattr(sig, "kind", "") == "file_change":
+                payload = getattr(sig, "payload", {}) or {}
+                changed_files.update(str(p) for p in payload.get("changed_paths", []) or [])
+
+        # Fetch recent commit subjects for commit-correlation matcher.
+        from vaner.daemon.signals.git_reader import read_commit_subjects
+
+        try:
+            commit_subjects = tuple(read_commit_subjects(self.config.repo_root, last_n=5))
+        except Exception:
+            commit_subjects = ()
+
+        # Iterate active artefacts and reconcile each.
+        try:
+            artefact_rows = await self.store.list_intent_artefacts(status="active", limit=50)
+        except Exception:
+            return
+
+        for artefact_row in artefact_rows:
+            artefact_id = str(artefact_row["id"])
+            context = ReconcileContext(
+                artefact_id=artefact_id,
+                triggering_signal_id=None,
+                changed_files=frozenset(changed_files),
+                commit_subjects=commit_subjects,
+            )
+            try:
+                result = await reconcile_artefact(context, store=self.store)
+            except Exception:
+                continue
+            if result is None:
+                continue
+            if result.signal_event is not None:
+                try:
+                    await self.store.insert_signal_event(result.signal_event)
+                except Exception:
+                    # Best-effort: dropping the signal-event insert here
+                    # only costs external observers (signal_events table)
+                    # the reconciliation notification. The authoritative
+                    # ReconciliationOutcome record already persisted.
+                    pass
+            # Route item-state deltas through the registry so artefact-
+            # item-anchored predictions get adopted / demoted / staled.
+            registry = self._prediction_registry
+            if registry is not None and result.item_state_deltas:
+                for delta in result.item_state_deltas:
+                    try:
+                        registry.apply_item_state_delta(
+                            item_id=delta.item_id,
+                            from_state=delta.from_state,
+                            to_state=delta.to_state,
+                        )
+                    except Exception:
+                        continue
+            # Apply the progress_reconciled signal to the registry too
+            # — today a no-op per WS3 design (pointer-only payload), but
+            # kept for symmetry with the other invalidation sweeps.
+            if registry is not None and result.signal is not None:
+                try:
+                    registry.apply_invalidation_signals([result.signal])
+                except Exception:
+                    # Best-effort: progress_reconciled is a no-op in the
+                    # WS3 registry today (pointer-only payload); a
+                    # throw here would only mean the symmetric sweep
+                    # was skipped, which is harmless.
+                    pass
+
+    def _emit_artefact_item_specs(
+        self,
+        goal_rows: list[dict[str, object]],
+    ) -> list[PredictionSpec]:
+        """Produce ``source="artefact_item"`` prediction specs for every
+        eligible item under an active artefact-backed goal.
+
+        Iterates goals whose ``artefact_refs_json`` names one or more
+        :class:`IntentArtefact` ids in the engine's per-cycle item
+        cache. For each item with state ∈ {pending, in_progress,
+        stalled} emits a single :class:`PredictionSpec`. The spec's
+        anchor is the item id so reconciliation (WS3) can route
+        ``progress_reconciled`` signals directly at the owning
+        predictions.
+
+        Hypothesis type follows item state: ``pending`` /
+        ``in_progress`` → ``likely_next`` (the user's declared next
+        step); ``stalled`` → ``possible_branch`` (still in scope but
+        demoted). Specificity defaults to ``concrete`` when the item
+        names ≥1 related file, else ``category``.
+
+        Confidence = goal.confidence × item_state_weight × artefact
+        freshness (read from ``pc_freshness`` on the goal row;
+        defaults to 1.0 on legacy rows). Bounded to [0, 1].
+        """
+
+        import json as _json
+
+        if not goal_rows:
+            return []
+
+        item_cache = getattr(self, "_active_artefact_items_cache", None) or {}
+        if not item_cache:
+            return []
+
+        specs: list[PredictionSpec] = []
+        seen_item_ids: set[str] = set()
+        for goal_row in goal_rows:
+            refs_json = goal_row.get("artefact_refs_json")
+            if not refs_json:
+                continue
+            try:
+                refs = _json.loads(str(refs_json))
+            except Exception:
+                continue
+            if not isinstance(refs, list) or not refs:
+                continue
+            goal_confidence = float(goal_row.get("confidence") or 0.0)
+            goal_freshness = float(goal_row.get("pc_freshness") or 1.0)
+            goal_title = str(goal_row.get("title") or "").strip()
+            for artefact_id in refs:
+                artefact_id_str = str(artefact_id)
+                item_rows = item_cache.get(artefact_id_str, [])
+                for item_row in item_rows:
+                    state = str(item_row.get("state") or "").strip()
+                    if state not in ("pending", "in_progress", "stalled"):
+                        continue
+                    item_id = str(item_row.get("id") or "").strip()
+                    if not item_id or item_id in seen_item_ids:
+                        continue
+                    seen_item_ids.add(item_id)
+                    text = str(item_row.get("text") or "").strip()
+                    if not text:
+                        continue
+                    weight = _ITEM_STATE_WEIGHTS.get(state, 0.5)
+                    confidence = min(1.0, max(0.0, goal_confidence * weight * goal_freshness))
+                    if confidence <= 0.0:
+                        continue
+                    label = f"Step: {text[:60]}"
+                    description = f"Artefact item under goal {goal_title!r}: {text}"
+                    hypothesis_type: HypothesisType = "likely_next" if state in ("pending", "in_progress") else "possible_branch"
+                    try:
+                        related_files = _json.loads(str(item_row.get("related_files_json") or "[]"))
+                    except Exception:
+                        related_files = []
+                    specificity: Specificity = "concrete" if isinstance(related_files, list) and related_files else "category"
+                    pid = prediction_id("artefact_item", item_id, label)
+                    specs.append(
+                        PredictionSpec(
+                            id=pid,
+                            label=label,
+                            description=description,
+                            source="artefact_item",
+                            anchor=item_id,
+                            confidence=confidence,
+                            hypothesis_type=hypothesis_type,
+                            specificity=specificity,
+                        )
+                    )
+        return specs
+
+    # ------------------------------------------------------------------
     # Phase 4: prediction enrolment
     # ------------------------------------------------------------------
 
-    def _apply_cycle_invalidation(self, recent_query_text: list[str]) -> None:
+    def _apply_cycle_invalidation(self, recent_query_text: list[str]) -> list:
         """WS6 — sweep the registry for invalidation signals before each cycle's merge.
 
         Runs at cycle top. Compares:
@@ -1815,6 +2221,10 @@ class VanerEngine:
 
         The method is a no-op on the very first cycle (nothing has been
         observed yet) and also when there are no predictions to touch.
+
+        Returns the list of :class:`InvalidationSignal` records it
+        emitted this cycle. The engine's WS3 reconciliation step reads
+        this list to decide which artefacts need a reconcile pass.
         """
         registry = self._prediction_registry
         if registry is None or len(registry) == 0:
@@ -1825,7 +2235,7 @@ class VanerEngine:
             except Exception:
                 self._last_observed_head_sha = ""
             self._last_observed_categories = [classify_query_category(q) for q in recent_query_text if q]
-            return
+            return []
 
         signals = []
 
@@ -1876,6 +2286,7 @@ class VanerEngine:
         # Refresh observations for the next cycle's diff.
         self._last_observed_head_sha = current_head
         self._last_observed_categories = current_categories
+        return signals
 
     def _merge_prediction_specs(
         self,
@@ -2023,6 +2434,15 @@ class VanerEngine:
                     specificity="anchor",
                 )
             )
+
+        # 0.8.2 WS2: artefact_item source — intent-bearing artefacts of
+        # active goals emit one prediction per pending/in_progress/stalled
+        # item. Carries richer anchors (item id + related files) than the
+        # goal-level spec above, so scoring can prefer prepared context
+        # that touches the user's declared next step. Best-effort — the
+        # pre-0.8.2 fallback is the goal-level spec already emitted
+        # above.
+        specs.extend(self._emit_artefact_item_specs(goal_rows))
 
         # Deduplicate by id (two sources can collide on identical anchor/label).
         seen_ids: set[str] = set()
