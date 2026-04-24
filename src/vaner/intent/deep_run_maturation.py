@@ -827,6 +827,11 @@ async def mature_one(
     )
 
     if verdict.kept:
+        # 0.8.4 WS4 — snapshot pre-maturation values so a probation
+        # rollback can restore them. Cleared by rollback_kept_maturation
+        # once consumed. Bounded in time by the probation window.
+        prediction.artifacts.pre_maturation_draft_answer = old_draft
+        prediction.artifacts.pre_maturation_evidence_score = before_evidence
         prediction.artifacts.draft_answer = new_draft
         prediction.artifacts.evidence_score = before_evidence + on_kept_evidence_increment
         prediction.run.revision += 1
@@ -890,6 +895,10 @@ def rollback_kept_maturation(
 
     prediction.artifacts.draft_answer = rollback_to_draft
     prediction.artifacts.evidence_score = rollback_to_evidence_score
+    # Consume the snapshot so a follow-up maturation can snapshot fresh
+    # values without ambiguity about which pass the snapshot belongs to.
+    prediction.artifacts.pre_maturation_draft_answer = None
+    prediction.artifacts.pre_maturation_evidence_score = None
     prediction.run.revision = max(0, prediction.run.revision - 1)
     prediction.run.probationary_until_cycle = None
     prediction.run.last_matured_cycle = None

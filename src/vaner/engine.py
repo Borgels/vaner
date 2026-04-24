@@ -215,11 +215,19 @@ class VanerEngine:
         # created on the first ``precompute_cycle``; thereafter reused and
         # updated in place via ``merge()`` + ``apply_invalidation_signals()``.
         self._prediction_registry: PredictionRegistry | None = None
-        # 0.8.4 hardening (BLOCK-1 partial): staled prediction ids from
-        # the most recent ``_apply_cycle_invalidation`` pass. Consumed
-        # by the async caller in ``precompute_cycle`` to flip pending
-        # adoption outcomes to ``stale``. Empty list between cycles.
+        # 0.8.4 hardening (BLOCK-1): staled prediction ids from the most
+        # recent ``_apply_cycle_invalidation`` pass — consumed by the
+        # async caller in ``precompute_cycle`` to flip pending adoption
+        # outcomes to ``stale``. Empty list between cycles.
         self._last_staled_prediction_ids: list[str] = []
+        # 0.8.4 hardening (BLOCK-1 completion): rolled-back prediction
+        # ids from the same pass. A rollback fires when an invalidation
+        # signal touches a prediction that is currently inside its
+        # probation window; the kept maturation is undone and the
+        # pending adoption outcome is flipped to ``rejected`` (not
+        # ``stale`` — the user adopted something that turned out wrong,
+        # not "the world moved"). Empty list between cycles.
+        self._last_rolled_back_prediction_ids: list[str] = []
         # 0.8.4 WS3: optional drafter injected for background refinement.
         # Default is None — the refinement hook is a no-op. 0.8.5 wires
         # a production drafter; tests inject stubs. Keeping this as an
@@ -1165,12 +1173,13 @@ class VanerEngine:
         # against whatever the registry captured on its last touch. No
         # wall-clock decay: if no signal fires, nothing is invalidated.
         cycle_signals = self._apply_cycle_invalidation(recent_query_text)
-        # 0.8.4 hardening (BLOCK-1 partial): bridge the invalidation
-        # sweep's staled-prediction list to the adoption-outcome log.
-        # ``_apply_cycle_invalidation`` is sync; we do the async DB
-        # write here so WS4's outcome log captures ``stale`` rows on
-        # every invalidation cycle. Without this the log would only
-        # ever contain ``pending`` + ``confirmed`` in production.
+        # 0.8.4 hardening (BLOCK-1): bridge the invalidation sweep's
+        # staled + rolled-back prediction lists to the adoption-outcome
+        # log. ``_apply_cycle_invalidation`` is sync; we do the async
+        # DB writes here so WS4's outcome log captures ``stale`` +
+        # ``rejected`` rows on every invalidation cycle. Without this
+        # bridge the log would only ever contain ``pending`` +
+        # ``confirmed`` in production.
         if self._last_staled_prediction_ids:
             try:
                 await self._resolve_pending_adoptions_for_predictions(
@@ -1181,6 +1190,16 @@ class VanerEngine:
             except Exception:  # pragma: no cover — defensive: never crash cycle
                 pass
             self._last_staled_prediction_ids = []
+        if self._last_rolled_back_prediction_ids:
+            try:
+                await self._resolve_pending_adoptions_for_predictions(
+                    self._last_rolled_back_prediction_ids,
+                    outcome="rejected",
+                    reason="probation_rollback",
+                )
+            except Exception:  # pragma: no cover — defensive: never crash cycle
+                pass
+            self._last_rolled_back_prediction_ids = []
         # 0.8.2 WS3 — reconciliation runs on every cycle that saw at
         # least one commit or file_change signal. Best-effort: a
         # reconciliation failure is logged and swallowed so it never
@@ -2611,18 +2630,61 @@ class VanerEngine:
         if cat_sig is not None:
             signals.append(cat_sig)
 
-        # 0.8.4 hardening (BLOCK-1 partial): capture the staled
-        # prediction ids so the async caller (precompute_cycle) can
-        # flip the corresponding adoption outcomes to ``stale``. The
-        # apply_invalidation_signals call itself is sync, but the
-        # adoption-outcome DAO needs async, so we stash the ids for
-        # the caller rather than performing the DB write here. See
-        # docs/reviews/0.8.4-hardening.md.
+        # 0.8.4 hardening (BLOCK-1 completion): detect probation
+        # contradictions alongside ordinary staleness.
+        #
+        # Before applying signals, snapshot every prediction currently
+        # in its probation window plus its pre-maturation draft /
+        # evidence so ``rollback_kept_maturation`` can restore them.
+        # After the signals run, any probationary prediction that was
+        # touched is rolled back — the kept maturation was contradicted
+        # by a real-world signal inside its probation window, which is
+        # precisely the condition WS4 treats as "the user adopted this
+        # but it turned out wrong". The same prediction is excluded
+        # from the ``stale`` list (rollback takes priority for the
+        # adoption-outcome log; otherwise a single prediction would
+        # flip to both ``stale`` and ``rejected``). See
+        # docs/reviews/0.8.4-hardening.md BLOCK-1.
         if signals:
+            probation_snapshots: dict[str, tuple[str | None, float]] = {}
+            current_cycle = int(self._precompute_cycles)
+            for pid, prompt in registry._predictions.items():
+                prob_until = prompt.run.probationary_until_cycle
+                if prob_until is None or prob_until < current_cycle:
+                    continue
+                rollback_draft = prompt.artifacts.pre_maturation_draft_answer
+                rollback_score_raw = prompt.artifacts.pre_maturation_evidence_score
+                rollback_score = float(rollback_score_raw) if rollback_score_raw is not None else 0.0
+                probation_snapshots[pid] = (rollback_draft, rollback_score)
+
             invalidation_outcomes = registry.apply_invalidation_signals(signals)
-            self._last_staled_prediction_ids = [pid for pid, verdict in invalidation_outcomes.items() if verdict == "staled"]
+
+            rolled_back_ids: list[str] = []
+            if probation_snapshots:
+                from vaner.intent.deep_run_maturation import rollback_kept_maturation
+
+                for pid in probation_snapshots:
+                    if pid not in invalidation_outcomes:
+                        continue
+                    prompt = registry._predictions.get(pid)
+                    if prompt is None:
+                        continue
+                    rollback_draft, rollback_score = probation_snapshots[pid]
+                    rollback_kept_maturation(
+                        prompt,
+                        rollback_to_draft=rollback_draft,
+                        rollback_to_evidence_score=rollback_score,
+                    )
+                    rolled_back_ids.append(pid)
+
+            rolled_back_set = set(rolled_back_ids)
+            self._last_staled_prediction_ids = [
+                pid for pid, verdict in invalidation_outcomes.items() if verdict == "staled" and pid not in rolled_back_set
+            ]
+            self._last_rolled_back_prediction_ids = rolled_back_ids
         else:
             self._last_staled_prediction_ids = []
+            self._last_rolled_back_prediction_ids = []
 
         # Refresh observations for the next cycle's diff.
         self._last_observed_head_sha = current_head

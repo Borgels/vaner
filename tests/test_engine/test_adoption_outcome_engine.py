@@ -252,6 +252,75 @@ async def test_reject_no_op_for_empty_prediction_list(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def test_invalidation_during_probation_rolls_back_and_rejects_adoption(tmp_path) -> None:
+    """0.8.4 BLOCK-1 completion: an invalidation signal on a prediction
+    currently in its probation window must (a) invoke
+    ``rollback_kept_maturation`` — restoring the pre-maturation draft
+    and decrementing revision — and (b) flip the pending adoption
+    outcome to ``rejected`` (not ``stale``). Rollback takes priority
+    for the adoption-outcome log because the user adopted a matured
+    draft that was then contradicted by real-world signal."""
+
+    engine = _make_engine(tmp_path / "repo")
+    await engine.initialize()
+
+    pred = _ready_prediction(label="probationary", revision=1)
+    # Simulate: the prediction is inside its probation window and has
+    # a snapshot of its pre-maturation state ready for rollback.
+    pred.run.probationary_until_cycle = 3
+    pred.run.last_matured_cycle = 2
+    pred.artifacts.pre_maturation_draft_answer = "pre-maturation draft"
+    pred.artifacts.pre_maturation_evidence_score = 0.20
+    pred.artifacts.draft_answer = "matured draft"
+    pred.artifacts.evidence_score = 0.55
+    # Tie the file-change signal to a concrete hash so
+    # ``apply_invalidation_signals`` touches this prediction.
+    pred.artifacts.file_content_hashes = {"sample.py": "stale-sha-aaaaaaaaaaaaaaaa"}
+
+    registry = _attach_registry(engine, [pred])
+    registry.record_adoption(pred.spec.id)
+    await engine._flush_pending_adoption_outcomes()  # noqa: SLF001
+
+    engine._precompute_cycles = 2  # noqa: SLF001  - inside the probation window
+
+    # Change the tracked file on disk so the file_change signal fires.
+    (tmp_path / "repo" / "sample.py").write_text("def hi():\n    return 'bye'\n")
+
+    signals = engine._apply_cycle_invalidation([])  # noqa: SLF001
+    assert signals  # at least the file_change signal was emitted
+
+    # Rolled-back queue populated, stale queue empty (rollback wins).
+    assert engine._last_rolled_back_prediction_ids == [pred.spec.id]  # noqa: SLF001
+    assert engine._last_staled_prediction_ids == []  # noqa: SLF001
+
+    # Rollback mutated the prediction in-place.
+    assert pred.artifacts.draft_answer == "pre-maturation draft"
+    assert pred.artifacts.evidence_score == pytest.approx(0.20)
+    assert pred.run.revision == 0
+    assert pred.run.probationary_until_cycle is None
+    assert pred.run.last_matured_cycle is None
+    assert pred.artifacts.pre_maturation_draft_answer is None
+    assert pred.artifacts.pre_maturation_evidence_score is None
+
+    # Flush the rejection to the adoption-outcome store.
+    rejected = await engine._resolve_pending_adoptions_for_predictions(  # noqa: SLF001
+        engine._last_rolled_back_prediction_ids,  # noqa: SLF001
+        outcome="rejected",
+        reason="probation_rollback",
+    )
+    assert rejected == 1
+
+    from vaner.models.prediction_adoption_outcome import prediction_label_hash
+
+    counts = await pao_store.count_by_outcome_for_label(
+        engine.store.db_path,
+        prediction_label_hash(pred.spec.label, pred.spec.anchor),
+    )
+    assert counts["rejected"] == 1
+    assert counts["stale"] == 0
+    assert counts["confirmed"] == 0
+
+
 async def test_full_outcome_lifecycle_end_to_end(tmp_path) -> None:
     engine = _make_engine(tmp_path / "repo")
     engine.config.refinement.adoption_pending_confirm_seconds = 30.0

@@ -359,6 +359,10 @@ async def test_mature_one_kept_path_persists_and_arms_probation() -> None:
     assert pred.run.last_matured_cycle == 5
     assert pred.run.probationary_until_cycle == 5 + 3  # _PROBATION_CYCLES
     assert pred.run.failed_revisits == 0
+    # 0.8.4 WS4 (BLOCK-1 completion): pre-maturation snapshot captured
+    # so a probation rollback can restore the prior draft + score.
+    assert pred.artifacts.pre_maturation_draft_answer == "initial draft"
+    assert pred.artifacts.pre_maturation_evidence_score == pytest.approx(0.10)
 
 
 async def test_mature_one_discarded_path_keeps_old_draft_and_increments_failures() -> None:
@@ -429,6 +433,9 @@ def test_rollback_restores_prior_draft_and_decrements_revision() -> None:
         failed_revisits=0,
         probationary_until_cycle=12,
     )
+    # Simulate a prior mature_one pass having stashed the snapshot.
+    pred.artifacts.pre_maturation_draft_answer = "prior-draft"
+    pred.artifacts.pre_maturation_evidence_score = 0.4
     rollback_kept_maturation(
         pred,
         rollback_to_draft="prior-draft",
@@ -444,6 +451,10 @@ def test_rollback_restores_prior_draft_and_decrements_revision() -> None:
     # 0.8.4 hardening: last_matured_cycle cleared on rollback (the
     # last matured cycle just got undone). See HIGH-2 in the hardening doc.
     assert pred.run.last_matured_cycle is None
+    # 0.8.4 WS4 (BLOCK-1 completion): snapshot consumed so a future
+    # maturation pass can snapshot fresh values without ambiguity.
+    assert pred.artifacts.pre_maturation_draft_answer is None
+    assert pred.artifacts.pre_maturation_evidence_score is None
 
 
 def test_rollback_floors_revision_at_zero() -> None:
