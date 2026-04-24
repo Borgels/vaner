@@ -281,6 +281,7 @@
         try {
           const result = await app.callTool("vaner.predictions.adopt", {
             prediction_id: card.id,
+            source: "mcp_app",
           });
           if (result && result.isError) {
             throw new Error(result.error?.message || "Adopt failed");

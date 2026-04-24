@@ -215,6 +215,42 @@ def _serialize_prediction_for_mcp(prompt: Any, *, rank: int | None = None) -> di
     return payload
 
 
+_RESOURCE_METRIC_TASKS: set[Any] = set()
+"""Keep strong refs to background metric tasks until they settle.
+
+Without this, `asyncio.run()` can tear the loop down before the task
+completes, producing `Event loop is closed` warnings. Tracked via
+`add_done_callback(discard)` so entries clear themselves when the task
+finishes.
+"""
+
+
+def _increment_resource_metric(name: str, repo_root: Path) -> None:
+    """Fire-and-forget metric increment for resource-read events.
+
+    0.8.5 WS8: `read_resource` is a sync entry point in the SDK API, so we
+    can't `await` on `MetricsStore`. Spawn an asyncio task when a loop is
+    running; otherwise silently drop — metrics are best-effort.
+    """
+    import asyncio as _asyncio
+
+    async def _do() -> None:
+        try:
+            store = MetricsStore(repo_root / ".vaner" / "metrics.db")
+            await store.initialize()
+            await store.increment_counter(name)
+        except Exception:  # pragma: no cover - defensive metrics
+            pass
+
+    try:
+        loop = _asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_do())
+    _RESOURCE_METRIC_TASKS.add(task)
+    task.add_done_callback(_RESOURCE_METRIC_TASKS.discard)
+
+
 def _dashboard_fallback_text(cards: list[dict[str, Any]]) -> str:
     """Render a plain-text Vaner dashboard for non-UI MCP clients.
 
@@ -509,7 +545,15 @@ def build_server(
                     ),
                     inputSchema={
                         "type": "object",
-                        "properties": {"prediction_id": {"type": "string"}},
+                        "properties": {
+                            "prediction_id": {"type": "string"},
+                            "source": {
+                                "type": "string",
+                                "description": "Where the adopt request came from (for metrics): mcp_app, mcp_tool, cli, desktop, unknown.",
+                                "enum": ["mcp_app", "mcp_tool", "cli", "desktop", "unknown"],
+                                "default": "mcp_tool",
+                            },
+                        },
                         "required": ["prediction_id"],
                     },
                 ),
@@ -862,6 +906,7 @@ def build_server(
 
         # MCP Apps UI bundle.
         if uri_str == ACTIVE_PREDICTIONS_URI:
+            _increment_resource_metric("mcp_apps_bundle_read", repo_root)
             return [
                 ReadResourceContents(
                     content=ACTIVE_PREDICTIONS_HTML,
@@ -890,6 +935,7 @@ def build_server(
         if variant is None:
             raise ValueError(f"unknown vaner resource: {uri_str!r}")
         body = load_guidance(variant).as_text()  # type: ignore[arg-type]
+        _increment_resource_metric(f"guidance_resource_read_{variant}", repo_root)
         return [ReadResourceContents(content=body, mime_type="text/markdown")]
 
     @server.call_tool()
@@ -1653,12 +1699,21 @@ def build_server(
 
         if name == "vaner.predictions.adopt":
             prediction_id_arg = str(args.get("prediction_id", "")).strip()
+            adopt_source = str(args.get("source", "")).strip() or "unknown"
             if not prediction_id_arg:
                 await _record("error")
                 return _json_result(
                     {"code": "invalid_input", "message": "prediction_id is required"},
                     is_error=True,
                 )
+            # 0.8.5 WS8: track adopts coming from the MCP Apps UI separately
+            # from tool-initiated adopts so we can measure UI value.
+            try:
+                if adopt_source == "mcp_app":
+                    await metrics_store.increment_counter("mcp_apps_adopt_clicked")
+                await metrics_store.increment_counter(f"mcp_adopt_source_{adopt_source}")
+            except Exception:  # pragma: no cover - defensive metrics
+                pass
             # In-process engine path first.
             if engine is not None and engine.prediction_registry is not None:
                 prompt = engine.prediction_registry.get(prediction_id_arg)
