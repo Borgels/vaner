@@ -1383,7 +1383,7 @@ def build_server(
             if name == "vaner.goals.list":
                 status = args.get("status")
                 limit = int(args.get("limit", 50))
-                rows = await goals_store.list_workspace_goals(
+                rows: list[dict[str, object]] = await goals_store.list_workspace_goals(
                     status=status if isinstance(status, str) else None,
                     limit=max(1, min(200, limit)),
                 )
