@@ -319,7 +319,16 @@ def build_server(
                 ),
                 Tool(
                     name="vaner.resolve",
-                    description="Resolve the best context package with confidence, evidence, and provenance.",
+                    description=(
+                        "Build a context package for an explicit query when no prepared prediction matches. "
+                        "Returns briefing + draft answer + ranked evidence with provenance. "
+                        "Call this when (a) you've checked vaner.predictions.active and no 'ready' prediction "
+                        "matches the user's actual intent, or (b) the user asked for something Vaner couldn't "
+                        "have anticipated. Do NOT call vaner.resolve in parallel with vaner.predictions.adopt "
+                        "for the same intent — adopt already returns a Resolution. If the conversation context "
+                        "already contains a fresh <VANER_ADOPTED_PACKAGE> block, answer from that block rather "
+                        "than calling this tool."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -409,20 +418,26 @@ def build_server(
                 Tool(
                     name="vaner.predictions.active",
                     description=(
-                        "List active PredictedPrompts from the current precompute cycle. "
-                        "Each entry carries a human-readable label, readiness state, and "
-                        "per-prediction compute contract so callers can pick the most "
-                        "advanced prediction to adopt."
+                        "Return the predictions Vaner has already prepared for this workspace, ranked by readiness. "
+                        "Each entry includes a label, readiness state (queued/grounding/evidence_gathering/drafting/ready/stale), "
+                        "confidence, compute_contract, and when populated — readiness_label, eta_bucket, adoptable, rank. "
+                        "Call this when (a) the user starts a new turn and intent is unclear, (b) the request is vague or "
+                        "implicit, or (c) you're about to call vaner.resolve and want to check for a fresher prepared package. "
+                        "Do NOT call mechanically — Vaner refreshes on its own cycle, so calling more than once per ~30s wastes "
+                        "budget. If a prediction is 'ready' and matches intent, prefer vaner.predictions.adopt over "
+                        "vaner.resolve to reuse cached compute."
                     ),
                     inputSchema={"type": "object", "properties": {}},
                 ),
                 Tool(
                     name="vaner.predictions.adopt",
                     description=(
-                        "Adopt a specific prediction as the user's next intent. Returns a "
-                        "Resolution with the prepared briefing + draft answer + evidence "
-                        "(same shape as vaner.resolve) plus adopted_from_prediction_id "
-                        "populated for provenance."
+                        "Adopt a specific prediction by id, marking it as the user's actual intent and returning the prepared "
+                        "Resolution (briefing + draft + evidence + adopted_from_prediction_id). Call this instead of "
+                        "vaner.resolve when vaner.predictions.active or the MCP Apps dashboard surfaced a 'ready'/'drafting' "
+                        "prediction whose label matches the user's request — adoption is faster (cached) and improves Vaner's "
+                        "future predictions via the adoption-outcome feedback loop. Adopt at most one prediction per user "
+                        "turn. If no prediction matches, fall through to vaner.resolve."
                     ),
                     inputSchema={
                         "type": "object",
@@ -673,6 +688,58 @@ def build_server(
                 ),
             ]
         )
+
+    @server.list_resources()
+    async def list_resources() -> list[Any]:
+        """Advertise the canonical guidance asset as an MCP resource."""
+        try:
+            from mcp.types import Resource as _Resource
+        except ModuleNotFoundError:  # pragma: no cover - optional dependency path
+            return []
+        from vaner.integrations.guidance import current_version
+
+        return [
+            _Resource(
+                uri="vaner://guidance/current",  # type: ignore[arg-type]
+                name="Vaner Guidance",
+                title="Vaner operational guidance (canonical)",
+                description=(
+                    "Canonical operational guidance for agents using Vaner. "
+                    "Version " + str(current_version()) + ". Embed this text in the system/developer prompt so the agent "
+                    "calls Vaner tools correctly."
+                ),
+                mimeType="text/markdown",
+            )
+        ]
+
+    @server.read_resource()
+    async def read_resource(uri: Any) -> list[Any]:
+        """Serve the guidance asset body for `vaner://guidance/current`."""
+        from mcp.server.lowlevel.helper_types import ReadResourceContents
+
+        from vaner.integrations.guidance import available_variants, load_guidance
+
+        uri_str = str(uri)
+        variant: str | None = None
+        if uri_str == "vaner://guidance/current":
+            variant = "canonical"
+        elif uri_str.startswith("vaner://guidance/"):
+            tail = uri_str.split("vaner://guidance/", 1)[1]
+            name, _, query = tail.partition("?")
+            v = "canonical"
+            if query:
+                for pair in query.split("&"):
+                    k, _, val = pair.partition("=")
+                    if k == "variant":
+                        v = val
+            if v not in available_variants():
+                raise ValueError(f"unknown guidance variant: {v!r}")
+            if name in ("current", ""):
+                variant = v
+        if variant is None:
+            raise ValueError(f"unknown vaner resource: {uri_str!r}")
+        body = load_guidance(variant).as_text()  # type: ignore[arg-type]
+        return [ReadResourceContents(content=body, mime_type="text/markdown")]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any] | None) -> CallToolResult:

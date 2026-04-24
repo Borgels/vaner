@@ -44,6 +44,7 @@ scripts/*
 !scripts/sync-plugin-skill.sh
 !scripts/sync-plugin-primer.sh
 !scripts/bump-plugin-version.sh
+!scripts/sync_agents_primer.py
 # CI-only bootstrap lockfiles — tracked so Scorecard's Pinned-Dependencies
 # check can verify integrity hashes on npm installs (alert #212).
 !scripts/ci/
