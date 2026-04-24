@@ -16,7 +16,7 @@ use ts_rs::TS;
 /// `Unknown` catch-all keeps decoding from failing. The Swift mirror
 /// collapses unknown values to `.history`; the Rust side exposes a
 /// dedicated variant so callers can tell them apart if they want.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-rs", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum PredictionSource {
@@ -24,6 +24,7 @@ pub enum PredictionSource {
     Pattern,
     LlmBranch,
     Macro,
+    #[default]
     History,
     /// 0.8.0 WS7: prediction anchored to a `WorkspaceGoal`.
     Goal,
@@ -33,58 +34,43 @@ pub enum PredictionSource {
     Unknown,
 }
 
-impl Default for PredictionSource {
-    fn default() -> Self {
-        Self::History
-    }
-}
-
 /// Hypothesis shape. Drives the prefix rendered in the UI row
 /// (`Next ›`, `Maybe ›`, `If… ›`).
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-rs", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum HypothesisType {
     LikelyNext,
     PossibleBranch,
+    #[default]
     LongTail,
     #[serde(other)]
     Unknown,
 }
 
-impl Default for HypothesisType {
-    fn default() -> Self {
-        Self::LongTail
-    }
-}
-
 /// How precise the prediction is. Interacts with `HypothesisType` in the
 /// row prefix matrix.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-rs", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Specificity {
     Concrete,
     Category,
+    #[default]
     Anchor,
     #[serde(other)]
     Unknown,
-}
-
-impl Default for Specificity {
-    fn default() -> Self {
-        Self::Anchor
-    }
 }
 
 /// Readiness lifecycle for a prediction. Only `Drafting` and `Ready` are
 /// adoptable — anything else renders in the row but shows a disabled
 /// Adopt button. Matches the Swift `Readiness` enum's `isAdoptable`
 /// computed property.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-rs", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Readiness {
+    #[default]
     Queued,
     Grounding,
     EvidenceGathering,
@@ -93,12 +79,6 @@ pub enum Readiness {
     Stale,
     #[serde(other)]
     Unknown,
-}
-
-impl Default for Readiness {
-    fn default() -> Self {
-        Self::Queued
-    }
 }
 
 impl Readiness {
