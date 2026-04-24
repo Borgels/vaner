@@ -27,7 +27,7 @@ ReadinessState = Literal[
     "stale",
 ]
 
-Source = Literal["arc", "pattern", "llm_branch", "macro", "history"]
+Source = Literal["arc", "pattern", "llm_branch", "macro", "history", "goal"]
 HypothesisType = Literal["likely_next", "possible_branch", "long_tail"]
 Specificity = Literal["concrete", "category", "anchor"]
 

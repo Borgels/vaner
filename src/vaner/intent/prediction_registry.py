@@ -298,6 +298,7 @@ class PredictionRegistry:
         draft: str | None = None,
         briefing: str | None = None,
         thinking: str | None = None,
+        file_content_hashes: dict[str, str] | None = None,
     ) -> None:
         prompt = self._require(prediction_id)
         kinds: list[str] = []
@@ -317,6 +318,12 @@ class PredictionRegistry:
                 overflow = len(prompt.artifacts.thinking_traces) - self.MAX_THINKING_TRACES
                 del prompt.artifacts.thinking_traces[:overflow]
             kinds.append("thinking")
+        if file_content_hashes:
+            # WS6: capture which file contents the briefing/draft were
+            # synthesised against. The invalidation sweep compares these
+            # to the current git_state at cycle-start; mismatches demote
+            # the prediction and clear its briefing.
+            prompt.artifacts.file_content_hashes.update(file_content_hashes)
         if not kinds:
             return
         prompt.run.updated_at = self._clock()
@@ -394,6 +401,159 @@ class PredictionRegistry:
             prompt.run.updated_at = self._clock()
             new_weights[prompt.id] = weight
         return new_weights
+
+    # -----------------------------------------------------------------------
+    # WS6 — invalidation
+    # -----------------------------------------------------------------------
+
+    FILE_CHANGE_WEIGHT_DECAY = 0.5
+    """On a file_change signal, demote prediction weight by this multiplicative
+    factor. Post-decay weight below ``MIN_FLOOR_WEIGHT`` triggers a stale
+    transition — the prediction has been starved enough that the registry
+    shouldn't keep pretending to work on it."""
+
+    CATEGORY_SHIFT_CONFIDENCE_DECAY = 0.1
+    """On a category_shift signal, subtract this from each affected
+    prediction's spec.confidence per shift. Predictions with confidence <
+    0.1 after decay are staled."""
+
+    def apply_invalidation_signals(self, signals: list) -> dict[str, str]:
+        """Apply a batch of :class:`InvalidationSignal` records to the population.
+
+        Returns a ``{prediction_id: outcome}`` map describing what was done to
+        each touched prediction (``"demoted"``, ``"cleared_briefing"``,
+        ``"staled"``, ``"spent"``). Predictions not mentioned in the return
+        map were untouched this round.
+
+        Semantics per signal kind:
+
+        - ``file_change``: for each prediction whose ``artifacts
+          .file_content_hashes`` contains any changed path, halve its weight
+          (see ``FILE_CHANGE_WEIGHT_DECAY``), clear ``prepared_briefing`` +
+          ``draft_answer`` (evidence needs re-derivation), record the
+          ``invalidation_reason``, and stale when the post-decay weight
+          falls below ``MIN_FLOOR_WEIGHT``.
+        - ``commit``: stale predictions whose ``spec.specificity != "concrete"``
+          — these are phase/category-anchored and most likely resolved by the
+          commit itself. Concrete file-anchored predictions are covered by
+          the file_change signal.
+        - ``category_shift``: subtract
+          ``CATEGORY_SHIFT_CONFIDENCE_DECAY`` from the spec.confidence of
+          each prediction whose ``spec.anchor`` equals the
+          ``payload["from"]`` category. Stale when the decayed confidence
+          falls below 0.1.
+        - ``adoption``: routes through ``record_adoption``.
+
+        This method is a no-op when ``signals`` is empty.
+        """
+        outcomes: dict[str, str] = {}
+        if not signals:
+            return outcomes
+
+        for sig in signals:
+            kind = getattr(sig, "kind", None)
+            payload = getattr(sig, "payload", {}) or {}
+
+            if kind == "file_change":
+                changed = set(payload.get("changed_paths", []) or [])
+                new_hashes = payload.get("new_hashes", {}) or {}
+                if not changed:
+                    continue
+                for prompt in list(self._predictions.values()):
+                    if prompt.is_terminal():
+                        continue
+                    captured = prompt.artifacts.file_content_hashes
+                    if not captured:
+                        continue
+                    if not any(path in captured for path in changed):
+                        continue
+                    prompt.run.weight = max(0.0, prompt.run.weight * self.FILE_CHANGE_WEIGHT_DECAY)
+                    prompt.run.token_budget = max(
+                        self.MIN_TOKEN_BUDGET,
+                        int(self._cycle_token_pool * max(self.MIN_FLOOR_WEIGHT, prompt.run.weight)),
+                    )
+                    prompt.artifacts.prepared_briefing = None
+                    prompt.artifacts.draft_answer = None
+                    prompt.run.invalidation_reason = f"file_change: {len(changed & set(captured.keys()))} path(s) changed"
+                    # Refresh captured hashes with the new values we have,
+                    # so subsequent no-op cycles don't re-trigger on the
+                    # same change. Paths no longer in new_hashes are
+                    # removed (file deleted) so the prediction doesn't
+                    # keep referencing ghost paths.
+                    refreshed: dict[str, str] = {}
+                    for path, sha in captured.items():
+                        if path in new_hashes:
+                            refreshed[path] = new_hashes[path]
+                        elif path not in changed:
+                            refreshed[path] = sha
+                    prompt.artifacts.file_content_hashes = refreshed
+                    if prompt.run.weight < self.MIN_FLOOR_WEIGHT:
+                        try:
+                            self._transition(prompt, "stale", reason=prompt.run.invalidation_reason)
+                        except InvalidTransitionError:
+                            pass
+                        outcomes[prompt.id] = "staled"
+                    else:
+                        outcomes[prompt.id] = "cleared_briefing"
+                    prompt.run.updated_at = self._clock()
+
+            elif kind == "commit":
+                to_sha = payload.get("to_sha", "")
+                for prompt in list(self._predictions.values()):
+                    if prompt.is_terminal():
+                        continue
+                    # Concrete file-anchored predictions are left to the
+                    # file_change signal. Phase/category predictions (arc,
+                    # history at category specificity) are the ones a commit
+                    # most likely resolves.
+                    if prompt.spec.specificity == "concrete":
+                        continue
+                    prompt.run.invalidation_reason = f"commit: HEAD → {str(to_sha)[:12]}"
+                    try:
+                        self._transition(prompt, "stale", reason=prompt.run.invalidation_reason)
+                        outcomes[prompt.id] = "staled"
+                    except InvalidTransitionError:
+                        pass
+
+            elif kind == "category_shift":
+                from_cat = str(payload.get("from", ""))
+                if not from_cat:
+                    continue
+                for prompt in list(self._predictions.values()):
+                    if prompt.is_terminal():
+                        continue
+                    if prompt.spec.anchor != from_cat:
+                        continue
+                    # confidence is on the frozen spec; we mirror the decay
+                    # by directly demoting weight instead. Same practical
+                    # effect: the prediction gets proportionally less of
+                    # this cycle's compute and eventually stales out.
+                    decayed = max(0.0, prompt.run.weight - self.CATEGORY_SHIFT_CONFIDENCE_DECAY)
+                    prompt.run.weight = decayed
+                    prompt.run.invalidation_reason = f"category_shift: {from_cat} → {payload.get('to')}"
+                    if decayed < self.MIN_FLOOR_WEIGHT:
+                        try:
+                            self._transition(prompt, "stale", reason=prompt.run.invalidation_reason)
+                            outcomes[prompt.id] = "staled"
+                        except InvalidTransitionError:
+                            pass
+                    else:
+                        prompt.run.token_budget = max(
+                            self.MIN_TOKEN_BUDGET,
+                            int(self._cycle_token_pool * max(self.MIN_FLOOR_WEIGHT, decayed)),
+                        )
+                        outcomes[prompt.id] = "demoted"
+                    prompt.run.updated_at = self._clock()
+
+            elif kind == "adoption":
+                pid = str(payload.get("prediction_id", ""))
+                if not pid:
+                    continue
+                if pid in self._predictions:
+                    self.record_adoption(pid)
+                    outcomes[pid] = "spent"
+
+        return outcomes
 
     # -----------------------------------------------------------------------
     # Introspection

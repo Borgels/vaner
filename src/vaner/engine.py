@@ -21,18 +21,25 @@ from vaner.broker.selector import select_artefacts, select_artefacts_fts
 from vaner.cli.commands.config import load_config
 from vaner.clients.llm_response import LLMResponse
 from vaner.daemon.runner import VanerDaemon
-from vaner.daemon.signals.git_reader import read_git_state
+from vaner.daemon.signals.git_reader import read_content_hashes, read_git_state, read_head_sha
 from vaner.defaults.loader import load_defaults_bundle
 from vaner.intent.abstain import AbstentionPolicy
 from vaner.intent.adapter import CodeRepoAdapter, ContextSource, CorpusAdapter, RelationshipEdge, SignalSource
 from vaner.intent.allocator import PortfolioAllocator
 from vaner.intent.arcs import ArcObservation, ConversationArcModel, classify_query_category, derive_prompt_macro
+from vaner.intent.briefing import BriefingAssembler
 from vaner.intent.cache import TieredPredictionCache
+from vaner.intent.drafter import Drafter
 from vaner.intent.ev import jaccard_reuse
 from vaner.intent.features import extract_hybrid_features
 from vaner.intent.frontier import ExplorationFrontier, ExplorationScenario, file_set_fingerprint
 from vaner.intent.governor import PredictionGovernor
 from vaner.intent.graph import RelationshipGraph
+from vaner.intent.invalidation import (
+    build_category_shift_signal,
+    build_commit_signal,
+    build_file_change_signal,
+)
 from vaner.intent.maturity import MaturityTracker
 from vaner.intent.prediction import PredictedPrompt, PredictionSpec, prediction_id
 from vaner.intent.prediction_registry import PredictionRegistry
@@ -162,10 +169,31 @@ class VanerEngine:
         self._applied_prefer_source_deltas: dict[str, float] = {}
         self._last_heuristic_paths: set[str] = set()
         self._last_explored_scenarios: list[ExploredScenario] = []
-        # Phase 4: prediction registry for the active cycle. A fresh registry
-        # is built per cycle so stale predictions don't leak across turns.
-        # ``None`` before the first cycle runs.
+        # Phase 4 / WS6: prediction registry persists across cycles. First
+        # created on the first ``precompute_cycle``; thereafter reused and
+        # updated in place via ``merge()`` + ``apply_invalidation_signals()``.
         self._prediction_registry: PredictionRegistry | None = None
+        # WS6: snapshot the most recent git HEAD and category tail so each
+        # cycle can diff against them to build invalidation signals. Empty
+        # string / list means "no prior observation", which yields no signals.
+        self._last_observed_head_sha: str = ""
+        self._last_observed_categories: list[str] = []
+        # WS9: single canonical briefing assembler. Engine holds it so the
+        # approximation-warning latch is shared across call sites (draft path
+        # + evidence-threshold synthesis). A real tokenizer can be injected
+        # later via ``set_briefing_tokenizer`` once the structured LLM client
+        # exposes one.
+        self._briefing_assembler = BriefingAssembler()
+        # WS10: single drafting module. Owns the rewrite + draft LLM
+        # templates and the gate arithmetic so arc / pattern / history /
+        # future goal-sourced (WS7) predictions all drive through the same
+        # path. Engine holds the draft/briefing cache + registry bookkeeping
+        # around it.
+        self._drafter = Drafter(llm=self.llm, assembler=self._briefing_assembler)
+        # WS7: per-cycle cache of active workspace goals. Refreshed at the
+        # top of precompute_cycle via ``_load_active_goals``; consumed by
+        # ``_merge_prediction_specs`` to seed goal-anchored predictions.
+        self._active_goals_cache: list[dict[str, object]] = []
         # Working set: maps source_path -> last interaction timestamp.
         # Seeded by every query() call; used as graph-walk anchor.
         self._working_set: dict[str, float] = {}
@@ -1053,6 +1081,22 @@ class VanerEngine:
         prompt_macros = await self.store.list_prompt_macros(limit=25)
         patterns = await self.store.list_validated_patterns(limit=50)
 
+        # WS6 invalidation sweep — run BEFORE merge so staled predictions
+        # don't get their state accidentally refreshed. The sweep compares
+        # cycle-start git HEAD + category tail + per-prediction file hashes
+        # against whatever the registry captured on its last touch. No
+        # wall-clock decay: if no signal fires, nothing is invalidated.
+        self._apply_cycle_invalidation(recent_query_text)
+
+        # WS7: refresh active-goals cache so the merge below can seed
+        # goal-anchored predictions alongside arc / pattern / history.
+        # Best-effort: a missing table or legacy DB falls back to an
+        # empty list without failing the cycle.
+        try:
+            self._active_goals_cache = await self.store.list_workspace_goals(status="active", limit=20)
+        except Exception:
+            self._active_goals_cache = []
+
         # Phase 4 / WS1.d: build the prediction registry BEFORE seeding the
         # frontier so we can tag every admitted scenario with its parent
         # prediction_id. The maps route category/macro-keyed scenarios back
@@ -1317,7 +1361,17 @@ class VanerEngine:
                                 and prompt_obj.artifacts.evidence_score >= 0.5
                                 and prompt_obj.artifacts.prepared_briefing is None
                             ):
-                                synthesised = _synthesise_briefing_from_scenarios(prompt_obj, effective_paths)
+                                # WS9: route through the BriefingAssembler.
+                                synthesised = self._briefing_assembler.from_paths(
+                                    label=prompt_obj.spec.label,
+                                    description=prompt_obj.spec.description,
+                                    paths=list(effective_paths),
+                                    source=prompt_obj.spec.source,
+                                    anchor=prompt_obj.spec.anchor,
+                                    confidence=prompt_obj.spec.confidence,
+                                    scenarios_complete=prompt_obj.run.scenarios_complete,
+                                    evidence_score=prompt_obj.artifacts.evidence_score,
+                                ).text
                                 registry.transition(
                                     pid,
                                     "drafting",
@@ -1327,7 +1381,18 @@ class VanerEngine:
                                         f"score={prompt_obj.artifacts.evidence_score:.2f})"
                                     ),
                                 )
-                                registry.attach_artifact(pid, briefing=synthesised)
+                                # WS6: capture per-path content hashes so the
+                                # next cycle's invalidation sweep can tell when
+                                # the briefing's evidence moved on disk.
+                                try:
+                                    hashes_now = read_content_hashes(self.config.repo_root, list(effective_paths))
+                                except Exception:
+                                    hashes_now = {}
+                                registry.attach_artifact(
+                                    pid,
+                                    briefing=synthesised,
+                                    file_content_hashes=hashes_now or None,
+                                )
                                 registry.transition(
                                     pid,
                                     "ready",
@@ -1557,8 +1622,260 @@ class VanerEngine:
         return self._last_decision_record
 
     # ------------------------------------------------------------------
+    # WS8: unified resolve_query — single canonical query → Resolution entry
+    # ------------------------------------------------------------------
+
+    async def resolve_query(
+        self,
+        query: str,
+        *,
+        context: dict | None = None,
+        include_briefing: bool = True,
+        include_predicted_response: bool = True,
+    ) -> Any:
+        """Single canonical ``query → Resolution`` path.
+
+        WS8 replaces the two parallel implementations (engine.query
+        returning ``ContextPackage`` and MCP ``vaner.resolve`` building
+        its own Resolution from scenario-store rows) with one method
+        that:
+
+        1. Consults the :class:`PredictionRegistry` for a ready /
+           drafting prediction whose label matches the query — if found,
+           returns a Resolution built via the shared
+           :class:`BriefingAssembler`, with ``predicted_response``
+           populated from the prediction's cached draft and
+           ``alternatives_considered`` populated from runner-up
+           predictions.
+        2. Falls back to :meth:`query` (heuristic + tiered cache) when
+           no prediction matches, building a Resolution from the
+           returned :class:`ContextPackage`.
+
+        The Resolution populated here is honest about provenance
+        (``predicted_hit`` / ``cached_result`` / ``fresh_resolution``)
+        and reports real token counts via the assembler's tokenizer
+        path.
+
+        ``context`` is accepted for symmetry with the MCP surface but
+        not consumed here; future goal-aware biasing (WS7 scoring
+        integration) can read from it. ``include_briefing`` /
+        ``include_predicted_response`` mirror the MCP opt-in flags.
+        """
+        await self.initialize()
+        # Late import keeps the engine module free of pydantic at
+        # import time for callers that only need precompute_cycle.
+        from vaner.mcp.contracts import (
+            Alternative,
+            EvidenceItem,
+            Provenance,
+            Resolution,
+        )
+
+        resolution_id = f"resolve-{uuid.uuid4().hex[:12]}"
+
+        # Step 1: prediction-registry match on label similarity.
+        matched_prediction: PredictedPrompt | None = None
+        alternatives: list[Alternative] = []
+        if self._prediction_registry is not None:
+            active = self._prediction_registry.active()
+            # Only consider predictions that actually have artefacts to
+            # return — otherwise the MCP caller would see a "matched"
+            # row with empty briefing. The label-match is a cheap
+            # contains-check in both directions; a more refined
+            # similarity score is a WS8.1 follow-up.
+            query_lower = query.lower()
+            candidates: list[tuple[float, PredictedPrompt]] = []
+            for prompt in active:
+                label_lower = prompt.spec.label.lower()
+                overlap = 0.0
+                if query_lower in label_lower or label_lower in query_lower:
+                    overlap = 1.0
+                else:
+                    # Simple word-overlap heuristic so "add tests for
+                    # parser" and "write parser tests" still match.
+                    q_tokens = set(w for w in query_lower.split() if len(w) > 2)
+                    l_tokens = set(w for w in label_lower.split() if len(w) > 2)
+                    if q_tokens and l_tokens:
+                        overlap = len(q_tokens & l_tokens) / max(1, len(q_tokens | l_tokens))
+                if overlap > 0:
+                    candidates.append((overlap, prompt))
+            candidates.sort(key=lambda pair: pair[0], reverse=True)
+            if candidates and candidates[0][0] >= 0.5:
+                matched_prediction = candidates[0][1]
+                # Runners-up → Alternative rows for honest provenance.
+                for score, prompt in candidates[1:4]:
+                    alternatives.append(
+                        Alternative(
+                            source=prompt.spec.source,
+                            reason_rejected=(f"runner-up prediction (overlap={score:.2f}): {prompt.spec.label}"),
+                        )
+                    )
+
+        if matched_prediction is not None:
+            briefing = self._briefing_assembler.from_prediction(matched_prediction)
+            predicted_response = matched_prediction.artifacts.draft_answer if include_predicted_response else None
+            evidence = [
+                EvidenceItem(
+                    id=sid,
+                    source=matched_prediction.spec.source,
+                    kind="record",
+                    locator={
+                        "prediction_id": matched_prediction.spec.id,
+                        "scenario_id": sid,
+                    },
+                    reason=(f"scenario explored under prediction {matched_prediction.spec.label!r}"),
+                )
+                for sid in matched_prediction.artifacts.scenario_ids
+            ]
+            return Resolution(
+                intent=matched_prediction.spec.label,
+                confidence=float(matched_prediction.spec.confidence),
+                summary=matched_prediction.spec.description or matched_prediction.spec.label,
+                evidence=evidence,
+                alternatives_considered=alternatives,
+                provenance=Provenance(
+                    mode="predictive_hit",
+                    cache="warm",
+                    freshness="fresh",
+                ),
+                resolution_id=resolution_id,
+                prepared_briefing=briefing.text if include_briefing else None,
+                predicted_response=predicted_response,
+                briefing_token_used=briefing.token_count,
+                briefing_token_budget=matched_prediction.run.token_budget,
+            )
+
+        # Step 2: heuristic fallback via existing query() path.
+        package = await self.query(query, top_n=8)
+        paths = [sel.source_path for sel in package.selections]
+        artefacts_by_key = {a.key: a for a in await self.store.list(limit=2000)}
+        artefacts_for_briefing = [artefacts_by_key[sel.artefact_key] for sel in package.selections if sel.artefact_key in artefacts_by_key]
+        briefing = self._briefing_assembler.from_artefacts(
+            intent=query,
+            artefacts=artefacts_for_briefing,
+            paths=paths,
+        )
+        tier = package.cache_tier or "miss"
+        provenance_mode = {
+            "full_hit": "predictive_hit",
+            "partial_hit": "cached_result",
+            "warm_start": "fresh_resolution",
+            "miss": "retrieval_fallback",
+        }.get(tier, "retrieval_fallback")
+        cache_label = {
+            "full_hit": "hot",
+            "partial_hit": "warm",
+            "warm_start": "warm",
+            "miss": "cold",
+        }.get(tier, "cold")
+        evidence = [
+            EvidenceItem(
+                id=sel.artefact_key,
+                source=tier,
+                kind="file",
+                locator={"path": sel.source_path, "artefact_key": sel.artefact_key},
+                reason=sel.rationale or f"selected by tier={tier}",
+            )
+            for sel in package.selections[:8]
+        ]
+        return Resolution(
+            intent=query,
+            confidence=0.5 if tier == "miss" else 0.7,
+            summary=f"Heuristic context for: {query}",
+            evidence=evidence,
+            alternatives_considered=alternatives,
+            provenance=Provenance(
+                mode=provenance_mode,  # type: ignore[arg-type]
+                cache=cache_label,  # type: ignore[arg-type]
+                freshness="fresh",
+            ),
+            resolution_id=resolution_id,
+            prepared_briefing=briefing.text if include_briefing else None,
+            predicted_response=None,
+            briefing_token_used=briefing.token_count,
+            briefing_token_budget=max(package.token_budget, briefing.token_count),
+        )
+
+    # ------------------------------------------------------------------
     # Phase 4: prediction enrolment
     # ------------------------------------------------------------------
+
+    def _apply_cycle_invalidation(self, recent_query_text: list[str]) -> None:
+        """WS6 — sweep the registry for invalidation signals before each cycle's merge.
+
+        Runs at cycle top. Compares:
+          - **git HEAD SHA** against ``self._last_observed_head_sha`` —
+            a moved HEAD stales phase/category-anchored predictions.
+          - **Per-prediction file content hashes** against the current
+            disk state — changed paths demote the owning prediction's
+            weight and clear its briefing.
+          - **Recent category streak** against the prediction population
+            — a persistent switch away from an anchor category stales
+            predictions anchored on that category.
+
+        The method is a no-op on the very first cycle (nothing has been
+        observed yet) and also when there are no predictions to touch.
+        """
+        registry = self._prediction_registry
+        if registry is None or len(registry) == 0:
+            # Nothing to invalidate yet. Still capture head SHA + categories
+            # so the next cycle has a baseline to diff against.
+            try:
+                self._last_observed_head_sha = read_head_sha(self.config.repo_root)
+            except Exception:
+                self._last_observed_head_sha = ""
+            self._last_observed_categories = [classify_query_category(q) for q in recent_query_text if q]
+            return
+
+        signals = []
+
+        # 1) Commit signal — HEAD moved.
+        try:
+            current_head = read_head_sha(self.config.repo_root)
+        except Exception:
+            current_head = ""
+        commit_sig = build_commit_signal(self._last_observed_head_sha, current_head)
+        if commit_sig is not None:
+            signals.append(commit_sig)
+
+        # 2) File-change signal — the union of hashes captured by any
+        #    active prediction's briefing is the set we need to compare
+        #    against disk. Paths never captured aren't interesting here.
+        watched_paths: set[str] = set()
+        captured_all: dict[str, str] = {}
+        for prompt in registry.all():
+            if prompt.is_terminal():
+                continue
+            for path, sha in prompt.artifacts.file_content_hashes.items():
+                watched_paths.add(path)
+                # Last-write-wins on the aggregated map is fine — all
+                # predictions watching the same path captured it at the
+                # same time (they share the same cycle's disk state).
+                captured_all[path] = sha
+        if watched_paths:
+            try:
+                fresh_hashes = read_content_hashes(self.config.repo_root, sorted(watched_paths))
+            except Exception:
+                fresh_hashes = {}
+            file_sig = build_file_change_signal(captured_all, fresh_hashes)
+            if file_sig is not None:
+                signals.append(file_sig)
+
+        # 3) Category-shift signal — sustained move away from a previous
+        #    anchor. We compare the current cycle's recent categories
+        #    against what we saw last cycle so the shift has to be
+        #    observable-persistent, not a one-prompt dip.
+        current_categories = [classify_query_category(q) for q in recent_query_text if q]
+        cat_sig = build_category_shift_signal(current_categories)
+        if cat_sig is not None:
+            signals.append(cat_sig)
+
+        if signals:
+            registry.apply_invalidation_signals(signals)
+
+        # Refresh observations for the next cycle's diff.
+        self._last_observed_head_sha = current_head
+        self._last_observed_categories = current_categories
 
     def _merge_prediction_specs(
         self,
@@ -1673,6 +1990,39 @@ class VanerEngine:
                 )
             )
             category_to_pid.setdefault(last_category, pid)
+
+        # WS7: goal source — active workspace goals seed predictions with
+        # long-horizon anchors. Each goal becomes a prediction whose
+        # scenarios can accumulate across many cycles (WS6 persistence
+        # makes this pay off). Goals are fetched best-effort — a missing
+        # table on legacy DBs falls back to the pre-WS7 behaviour.
+        try:
+            goal_rows = self._active_goals_cache
+        except AttributeError:
+            goal_rows = []
+        for row in goal_rows:
+            title = str(row.get("title", "")).strip()
+            if not title:
+                continue
+            confidence = float(row.get("confidence", 0.5))
+            label = f"Goal: {title[:60]}"
+            anchor = str(row.get("id", "")).strip() or title
+            pid = prediction_id("goal", anchor, label)
+            specs.append(
+                PredictionSpec(
+                    id=pid,
+                    label=label,
+                    description=str(row.get("description", "")) or f"Workspace goal: {title}",
+                    source="goal",
+                    anchor=anchor,
+                    confidence=min(1.0, max(0.0, confidence)),
+                    # Long-horizon by nature — a workspace-scale goal is
+                    # rarely the literal next prompt, but it's the right
+                    # anchor for invested preparation.
+                    hypothesis_type="possible_branch",
+                    specificity="anchor",
+                )
+            )
 
         # Deduplicate by id (two sources can collide on identical anchor/label).
         seen_ids: set[str] = set()
@@ -2006,8 +2356,8 @@ class VanerEngine:
                 content = getattr(artefact, "content", "")
                 snippet = content[:400].replace("\n", " ")
                 file_summaries.append(f"- {path}: {snippet}")
-            summaries_text = "\n".join(file_summaries) or "(no artefact summaries available)"
-            recent_hint = "\n".join(recent_queries[-5:]) or "(no recent queries)"
+            "\n".join(file_summaries) or "(no artefact summaries available)"
+            "\n".join(recent_queries[-5:]) or "(no recent queries)"
             posterior_confidence = min(1.0, float(macro.get("confidence", 0.0)))
             # Fraction of the paths we actually tried to look up that had indexed
             # summaries. Divide by the pool size, not a hardcoded max, so a small
@@ -2018,20 +2368,21 @@ class VanerEngine:
             evidence_volatility = float(self._cycle_policy_state.get("volatility_score", 0.0))
             draft_budget_min_s = float(self._cycle_policy_state.get("draft_budget_min_ms", 2000.0)) / 1000.0
             has_budget = deadline is None or (deadline - time.monotonic()) >= draft_budget_min_s
-            if (
-                posterior_confidence < float(self._cycle_policy_state.get("draft_posterior_threshold", 0.55))
-                or evidence_quality < float(self._cycle_policy_state.get("draft_evidence_threshold", 0.45))
-                or evidence_volatility > float(self._cycle_policy_state.get("draft_volatility_ceiling", 0.40))
-                or prior_draft_usefulness < 0.0
-                or not has_budget
+            # WS10: gates consolidated into the Drafter.
+            if not self._drafter.passes_gates(
+                posterior_confidence=posterior_confidence,
+                evidence_quality=evidence_quality,
+                evidence_volatility=evidence_volatility,
+                prior_draft_usefulness=prior_draft_usefulness,
+                has_budget=has_budget,
+                gates=self._cycle_policy_state,
             ):
                 continue
 
-            predicted_prompt = example_query or macro_key
             # Partial regeneration: if a recent draft cached a rewritten prompt
             # for this macro AND volatility is low, reuse the rewrite and skip
             # Stage A — halves LLM cost on stable codebases.
-            reused_rewrite = False
+            reuse_rewrite: str | None = None
             if evidence_volatility < 0.2:
                 try:
                     prior = await self._cache.match(example_query or macro_key)
@@ -2043,55 +2394,66 @@ class VanerEngine:
                 if isinstance(prior_enrichment, dict):
                     cached_prompt = prior_enrichment.get("predicted_prompt")
                     if isinstance(cached_prompt, str) and cached_prompt.strip():
-                        predicted_prompt = cached_prompt.strip()[:500]
-                        reused_rewrite = True
+                        reuse_rewrite = cached_prompt.strip()[:500]
 
-            if not reused_rewrite:
-                rewrite_prompt = (
-                    "Rewrite the likely next developer prompt as one concrete sentence.\n"
-                    "Stay semantically equivalent and concise.\n\n"
-                    f"Candidate prompt: {predicted_prompt}\n"
-                    f"Recent queries:\n{recent_hint}\n\n"
-                    "Return plain text only."
+            # WS10: we need a PredictedPrompt to pass to the Drafter so the
+            # briefing carries correct provenance (label, anchor, confidence,
+            # scenarios_complete, evidence_score). When a real registry
+            # entry exists (normal precompute_cycle path) we use it;
+            # otherwise (direct test-harness call to this method) we
+            # construct a synthetic prompt from the macro fields so the
+            # drafting pipeline still runs.
+            prompt_obj_for_draft = None
+            pid_for_macro: str | None = None
+            if prediction_id_for_macro and self._prediction_registry is not None:
+                pid_for_macro = prediction_id_for_macro.get(macro_key)
+                if pid_for_macro is not None:
+                    prompt_obj_for_draft = self._prediction_registry.get(pid_for_macro)
+            if prompt_obj_for_draft is None:
+                from vaner.intent.prediction import (
+                    PredictedPrompt,
+                    PredictionArtifacts,
+                    PredictionRun,
+                    PredictionSpec,
                 )
-                try:
-                    rewritten = await self.llm(rewrite_prompt)  # type: ignore[misc]
-                    if isinstance(rewritten, str) and rewritten.strip():
-                        predicted_prompt = rewritten.strip()[:500]
-                except Exception:
-                    pass
-            else:
+
+                synthetic_spec = PredictionSpec(
+                    id=prediction_id("pattern", macro_key, macro_key),
+                    label=f"Recurring: {macro_key[:60]}",
+                    description=f"Prompt macro '{macro_key}' in category {category}",
+                    source="pattern",
+                    anchor=macro_key,
+                    confidence=posterior_confidence,
+                    hypothesis_type="likely_next" if posterior_confidence >= 0.6 else "possible_branch",
+                    specificity="concrete",
+                )
+                prompt_obj_for_draft = PredictedPrompt(
+                    spec=synthetic_spec,
+                    run=PredictionRun(weight=0.5, token_budget=2048),
+                    artifacts=PredictionArtifacts(),
+                )
+
+            draft_result = await self._drafter.draft_for_prediction(
+                prompt_obj_for_draft,
+                candidate_prompt=example_query or macro_key,
+                category=category,
+                recent_queries=recent_queries,
+                file_summaries=file_summaries,
+                available_paths=recent_path_pool[:6],
+                reuse_rewrite=reuse_rewrite,
+                deadline=deadline,
+            )
+            if draft_result is None:
+                continue
+            if reuse_rewrite is not None:
                 try:
                     await self._metrics_store.increment_counter("draft_partial_regenerated_total")
                 except Exception:
                     pass
-
-            prompt = (
-                "You are Vaner, a context engine drafting a speculative answer for a\n"
-                "prompt the developer is likely to send next. Stay honest: if the\n"
-                "evidence below is insufficient to produce a confident draft, say so\n"
-                "explicitly instead of hallucinating content.\n\n"
-                f"Likely next prompt (category: {category}):\n"
-                f"  {predicted_prompt}\n\n"
-                f"Recent developer queries for context:\n{recent_hint}\n\n"
-                f"Recently touched files and their summaries:\n{summaries_text}\n\n"
-                "Draft a concise response (<= 400 words) that directly addresses the\n"
-                "likely prompt. Reference specific file paths, functions, or code\n"
-                "lines from the summaries above when relevant. If the draft is\n"
-                "speculative, prefix each uncertain claim with 'TENTATIVE:' so the\n"
-                "agent consuming this draft can flag it for the user.\n\n"
-                "Return the draft as plain text, no JSON, no code fences."
-            )
-            try:
-                draft = await self.llm(prompt)  # type: ignore[misc]
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                _log.debug("Vaner: predicted-response LLM call failed for %r: %s", macro_key, exc)
+            predicted_prompt = draft_result.predicted_prompt
+            draft = draft_result.draft_answer or ""
+            if not draft:
                 continue
-            if not isinstance(draft, str) or not draft.strip():
-                continue
-            draft = draft.strip()
 
             question = f"predicted_response:{macro_key}"
             package, keys = await self._build_package_for_paths(
@@ -2155,10 +2517,20 @@ class VanerEngine:
                                     )
                                     state = "drafting"
                                 briefing_text = "\n".join(file_summaries) or None
+                                # WS6: capture per-path content hashes for the
+                                # files this draft/briefing leans on so the
+                                # invalidation sweep can spot disk edits and
+                                # demote the prediction when the evidence moves.
+                                try:
+                                    briefing_paths = recent_path_pool[:6]
+                                    hashes_now = read_content_hashes(self.config.repo_root, list(briefing_paths))
+                                except Exception:
+                                    hashes_now = {}
                                 registry.attach_artifact(
                                     pid,
                                     draft=draft[:4000],
                                     briefing=briefing_text,
+                                    file_content_hashes=hashes_now or None,
                                 )
                                 if state == "drafting":
                                     registry.transition(
@@ -3833,42 +4205,6 @@ def _record_idle_usage_seconds(config: VanerConfig, seconds: float) -> None:
             pass
     payload["idle_seconds_used"] = round(payload["idle_seconds_used"] + max(0.0, seconds), 3)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def _synthesise_briefing_from_scenarios(prompt_obj: Any, latest_paths: list[str]) -> str:
-    """Build a lightweight briefing from a PredictedPrompt's completed scenarios.
-
-    Used by the evidence-threshold drafting transition in ``_process_scenario``
-    so arc/history/macro predictions that never trigger
-    ``_precompute_predicted_responses`` can still reach ``ready`` state with
-    an adopt-usable prepared_briefing.
-
-    The synthesised briefing is deliberately minimal — just the predicted
-    label, the current scenarios' file paths, and the most recent exploration
-    context. A richer template lives in ``_precompute_predicted_responses``
-    when the draft LLM is actually invoked.
-    """
-    spec = prompt_obj.spec
-    # Dedupe latest scenario paths; keep order so the most-recent exploration
-    # shows up first.
-    seen: set[str] = set()
-    paths: list[str] = []
-    for path in latest_paths:
-        if path and path not in seen:
-            seen.add(path)
-            paths.append(path)
-    path_lines = "\n".join(f"- {p}" for p in paths[:10]) or "(no paths)"
-    return (
-        f"# Predicted next step: {spec.label}\n\n"
-        f"{spec.description or ''}\n\n"
-        f"## Relevant files\n{path_lines}\n\n"
-        f"## Provenance\n"
-        f"- source: {spec.source}\n"
-        f"- anchor: {spec.anchor}\n"
-        f"- confidence: {spec.confidence:.2f}\n"
-        f"- scenarios_complete: {prompt_obj.run.scenarios_complete}\n"
-        f"- evidence_score: {prompt_obj.artifacts.evidence_score:.2f}\n"
-    )
 
 
 def build_default_engine(repo: Path | str | None = None, config: VanerConfig | None = None) -> VanerEngine:

@@ -154,7 +154,14 @@ def test_adopt_returns_resolution_with_prepared_package(temp_repo):
     body = response.json()
     assert body["adopted_from_prediction_id"] == pid
     assert body["resolution_id"].startswith("adopt-")
-    assert body["prepared_briefing"].startswith("## Context")
+    # WS9: the adopt path now routes through BriefingAssembler, which wraps
+    # the prediction's attached briefing in summary + Prepared evidence +
+    # Provenance sections. The original text still appears verbatim inside
+    # the Prepared evidence section.
+    assert body["prepared_briefing"] is not None
+    assert "## Context" in body["prepared_briefing"]
+    assert "foo.py: bar()" in body["prepared_briefing"]
+    assert "## Provenance" in body["prepared_briefing"]
     assert body["predicted_response"] == "Here is a suggested answer."
     assert body["intent"] == "Write the next test"
     assert body["provenance"]["mode"] == "predictive_hit"

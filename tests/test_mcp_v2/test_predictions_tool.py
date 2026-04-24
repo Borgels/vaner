@@ -169,7 +169,16 @@ def test_adopt_returns_resolution_with_prediction_provenance(temp_repo):
     # Resolution-shaped response
     assert body["adopted_from_prediction_id"] == pid
     assert body["resolution_id"].startswith("adopt-")
-    assert body["prepared_briefing"].startswith("## Context")
+    # WS9: the MCP adopt path routes through BriefingAssembler, which wraps
+    # the prediction's attached briefing in summary + evidence + provenance
+    # sections. The attached text still appears inside the Prepared evidence
+    # section; we just no longer assume it's at position 0.
+    assert body["prepared_briefing"] is not None
+    assert "## Context" in body["prepared_briefing"]
+    assert "foo.py: bar()" in body["prepared_briefing"]
+    # Provenance section is always last and cites the prediction's source.
+    assert "## Provenance" in body["prepared_briefing"]
+    assert "source: arc" in body["prepared_briefing"]
     assert body["predicted_response"] == "Here is a suggested answer."
     assert body["intent"] == "Write the next test"
     assert body["provenance"]["mode"] == "predictive_hit"

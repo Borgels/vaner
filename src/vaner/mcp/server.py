@@ -52,6 +52,7 @@ from vaner.api import aprecompute
 from vaner.cli.commands.config import load_config
 from vaner.cli.commands.init import init_repo
 from vaner.daemon.signals.git_reader import read_git_state
+from vaner.intent.briefing import BriefingAssembler
 from vaner.intent.volatility import semantic_volatility
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.mcp.contracts import (
@@ -221,6 +222,17 @@ def _serialize_prediction_for_mcp(prompt: Any) -> dict[str, Any]:
     }
 
 
+_ADOPT_BRIEFING_ASSEMBLER = BriefingAssembler()
+"""Module-level assembler for the adopt path.
+
+Kept here (not per-request) so the approximation-warning latch fires at
+most once per server lifetime. No per-process tokenizer is attached
+today; when the resolve path gets a structured LLM client (WS8), the
+same assembler instance can be reconfigured via
+``_ADOPT_BRIEFING_ASSEMBLER._tokenizer = ...``.
+"""
+
+
 def _build_adopt_resolution(prompt: Any) -> Resolution:
     """Assemble a Resolution from a PredictedPrompt's prepared artifacts.
 
@@ -230,16 +242,21 @@ def _build_adopt_resolution(prompt: Any) -> Resolution:
     provenance.
 
     WS3.d: evidence is populated from the prediction's attached scenarios (one
-    EvidenceItem per scenario_id pointing at the scenario's file set). Token
-    accounting uses the shared :func:`_approx_tokens_for_briefing` helper so
-    the number matches what the rest of the MCP surface reports — the crude
-    ``len(briefing) // 4`` stub is gone.
+    EvidenceItem per scenario_id pointing at the scenario's file set).
+
+    WS9: briefing assembly routes through the shared
+    :class:`BriefingAssembler` so the rendering matches what the engine
+    produced in-cycle. When the prediction already carries a
+    ``prepared_briefing``, the assembler incorporates it as the
+    evidence section; otherwise a minimal summary + provenance briefing
+    is synthesised. Token counts come from the assembler — which in turn
+    delegates to a real tokenizer when one is registered, or falls back
+    to the four-char heuristic with a one-time warning.
     """
     spec = prompt.spec
     artifacts = prompt.artifacts
     run = prompt.run
-    briefing = artifacts.prepared_briefing or ""
-    draft = artifacts.draft_answer
+    briefing_obj = _ADOPT_BRIEFING_ASSEMBLER.from_prediction(prompt)
     provenance = Provenance(mode="predictive_hit", cache="warm", freshness="fresh")
     evidence: list[EvidenceItem] = [
         EvidenceItem(
@@ -258,25 +275,12 @@ def _build_adopt_resolution(prompt: Any) -> Resolution:
         evidence=evidence,
         provenance=provenance,
         resolution_id=f"adopt-{spec.id}",
-        prepared_briefing=briefing or None,
-        predicted_response=draft,
-        briefing_token_used=_approx_tokens_for_briefing(briefing),
+        prepared_briefing=briefing_obj.text or None,
+        predicted_response=artifacts.draft_answer,
+        briefing_token_used=briefing_obj.token_count,
         briefing_token_budget=run.token_budget,
         adopted_from_prediction_id=spec.id,
     )
-
-
-def _approx_tokens_for_briefing(briefing: str) -> int:
-    """Rough token count matching Vaner's other token-accounting helpers.
-
-    Four-char-per-token heuristic — imprecise but consistent with
-    :func:`vaner.clients.llm_response.approx_tokens`. Callers that need real
-    token counts should route through the structured-client path where
-    provider-reported counts are available.
-    """
-    if not briefing:
-        return 0
-    return max(1, len(briefing) // 4)
 
 
 def build_server(
@@ -453,6 +457,74 @@ def build_server(
                         "type": "object",
                         "properties": {"prediction_id": {"type": "string"}},
                         "required": ["prediction_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.goals.list",
+                    description=(
+                        "List workspace goals. Goals are long-horizon workspace "
+                        'aspirations ("implement JWT migration") that seed '
+                        "predictions and bias scenario scoring. Filter by status "
+                        "('active'/'paused'/'abandoned'/'achieved')."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": ["active", "paused", "abandoned", "achieved"],
+                            },
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                        },
+                    },
+                ),
+                Tool(
+                    name="vaner.goals.declare",
+                    description=(
+                        "Declare a new workspace goal. Confidence is fixed at 1.0 for "
+                        "user-declared goals (the user is authoritative). The goal "
+                        "begins in 'active' status and starts seeding predictions on "
+                        "the next precompute cycle."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "related_files": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["title"],
+                    },
+                ),
+                Tool(
+                    name="vaner.goals.update_status",
+                    description=(
+                        "Update a goal's status. When set to 'achieved' / 'abandoned', "
+                        "goal-anchored predictions for this goal will be invalidated "
+                        "on the next cycle."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "goal_id": {"type": "string"},
+                            "status": {
+                                "type": "string",
+                                "enum": ["active", "paused", "abandoned", "achieved"],
+                            },
+                        },
+                        "required": ["goal_id", "status"],
+                    },
+                ),
+                Tool(
+                    name="vaner.goals.delete",
+                    description=("Delete a goal. Prefer update_status over delete — deletion loses the goal's evidence trail."),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"goal_id": {"type": "string"}},
+                        "required": ["goal_id"],
                     },
                 ),
             ]
@@ -1290,6 +1362,131 @@ def build_server(
                 )
             await _record("ok")
             return _json_result(resolution.model_dump(mode="json"))
+
+        if name in {
+            "vaner.goals.list",
+            "vaner.goals.declare",
+            "vaner.goals.update_status",
+            "vaner.goals.delete",
+        }:
+            # WS7: goals live in the ArtefactStore so MCP and the daemon
+            # share the same state without extra plumbing. Lazy-init so
+            # legacy repos get the new table on first use.
+            from vaner.intent.branch_parser import parse_branch_name
+            from vaner.intent.goals import WorkspaceGoal
+            from vaner.store.artefacts import ArtefactStore
+
+            artefact_db_path = active_repo_root / ".vaner" / "artefacts.db"
+            goals_store = ArtefactStore(artefact_db_path)
+            await goals_store.initialize()
+
+            if name == "vaner.goals.list":
+                status = args.get("status")
+                limit = int(args.get("limit", 50))
+                rows = await goals_store.list_workspace_goals(
+                    status=status if isinstance(status, str) else None,
+                    limit=max(1, min(200, limit)),
+                )
+                # Parse JSON-blob columns for clients.
+                out: list[dict[str, Any]] = []
+                for row in rows:
+                    payload_row = dict(row)
+                    try:
+                        payload_row["evidence"] = json.loads(str(row.get("evidence_json") or "[]"))
+                    except Exception:
+                        payload_row["evidence"] = []
+                    try:
+                        payload_row["related_files"] = json.loads(str(row.get("related_files_json") or "[]"))
+                    except Exception:
+                        payload_row["related_files"] = []
+                    payload_row.pop("evidence_json", None)
+                    payload_row.pop("related_files_json", None)
+                    out.append(payload_row)
+                await _record("ok")
+                return _json_result({"goals": out})
+
+            if name == "vaner.goals.declare":
+                title = str(args.get("title", "")).strip()
+                if not title:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "title is required"},
+                        is_error=True,
+                    )
+                description = str(args.get("description", "")).strip()
+                related_files = args.get("related_files") or []
+                if not isinstance(related_files, list):
+                    related_files = []
+                related_files = [str(p) for p in related_files if isinstance(p, str) and p.strip()]
+                goal = WorkspaceGoal.from_hint(
+                    title=title,
+                    source="user_declared",
+                    confidence=1.0,
+                    description=description,
+                    related_files=related_files,
+                )
+                await goals_store.upsert_workspace_goal(
+                    id=goal.id,
+                    title=goal.title,
+                    description=goal.description,
+                    source=goal.source,
+                    confidence=goal.confidence,
+                    status=goal.status,
+                    evidence_json=json.dumps([{"kind": e.kind, "value": e.value, "weight": e.weight} for e in goal.evidence]),
+                    related_files_json=json.dumps(goal.related_files),
+                )
+                await _record("ok")
+                return _json_result({"goal_id": goal.id, "status": goal.status})
+
+            if name == "vaner.goals.update_status":
+                goal_id_arg = str(args.get("goal_id", "")).strip()
+                new_status = str(args.get("status", "")).strip()
+                if not goal_id_arg or not new_status:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "goal_id and status are required"},
+                        is_error=True,
+                    )
+                if new_status not in {"active", "paused", "abandoned", "achieved"}:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": f"unknown status: {new_status}"},
+                        is_error=True,
+                    )
+                changed = await goals_store.update_workspace_goal_status(goal_id_arg, new_status)
+                if not changed:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such goal: {goal_id_arg}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result({"goal_id": goal_id_arg, "status": new_status})
+
+            if name == "vaner.goals.delete":
+                goal_id_arg = str(args.get("goal_id", "")).strip()
+                if not goal_id_arg:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "goal_id is required"},
+                        is_error=True,
+                    )
+                deleted = await goals_store.delete_workspace_goal(goal_id_arg)
+                if not deleted:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such goal: {goal_id_arg}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result({"goal_id": goal_id_arg, "deleted": True})
+            # Defensive fallthrough — unreachable because of the set check above.
+            _ = parse_branch_name  # reserved for branch-seeded declare flow
+            await _record("error")
+            return _json_result(
+                {"code": "invalid_input", "message": f"unknown goals tool: {name}"},
+                is_error=True,
+            )
 
         if name == "vaner.debug.trace":
             if str(__import__("os").environ.get("VANER_MCP_DEBUG", "0")) != "1":
