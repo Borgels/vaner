@@ -19,6 +19,7 @@ from vaner.intent.deep_run import DeepRunSession
 from vaner.intent.deep_run_maturation import (
     MaturationContract,
     MaturationVerdict,
+    RefinementContext,
     build_contract,
     default_rubric_judge,
     mature_one,
@@ -51,6 +52,15 @@ def _session(**overrides: object) -> DeepRunSession:
     }
     defaults.update(overrides)
     return DeepRunSession.new(**defaults)  # type: ignore[arg-type]
+
+
+def _ctx(cycle_index: int = 10, **session_overrides: object) -> RefinementContext:
+    """Helper: build a RefinementContext equivalent to
+    ``RefinementContext.from_deep_run_session(session, cycle_index=cycle_index)``
+    for tests that exercise Deep-Run semantics. Test-only convenience;
+    production code constructs contexts via the two class methods."""
+
+    return RefinementContext.from_deep_run_session(_session(**session_overrides), cycle_index=cycle_index)
 
 
 def _prediction(
@@ -251,19 +261,17 @@ def test_maturation_value_scales_with_goal_confidence_and_alignment() -> None:
 
 
 def test_selection_excludes_non_ready_predictions() -> None:
-    session = _session()
     drafting = _prediction(readiness="drafting")
     ready = _prediction(readiness="ready")
-    candidates = select_maturation_candidates([drafting, ready], session=session, cycle_index=10, max_candidates=10)
+    candidates = select_maturation_candidates([drafting, ready], context=_ctx(cycle_index=10), max_candidates=10)
     eligible_ids = {c.prediction.spec.id for c in candidates if c.eligible}
     assert ready.spec.id in eligible_ids
     assert drafting.spec.id not in eligible_ids
 
 
 def test_selection_excludes_probationary_predictions() -> None:
-    session = _session()
     p = _prediction(probationary_until_cycle=12)
-    candidates = select_maturation_candidates([p], session=session, cycle_index=10, max_candidates=10)
+    candidates = select_maturation_candidates([p], context=_ctx(cycle_index=10), max_candidates=10)
     eligible = [c for c in candidates if c.eligible]
     assert eligible == []
     skipped = [c for c in candidates if not c.eligible]
@@ -271,9 +279,8 @@ def test_selection_excludes_probationary_predictions() -> None:
 
 
 def test_selection_admits_after_probation_window_closes() -> None:
-    session = _session()
     p = _prediction(probationary_until_cycle=8)
-    candidates = select_maturation_candidates([p], session=session, cycle_index=10, max_candidates=10)
+    candidates = select_maturation_candidates([p], context=_ctx(cycle_index=10), max_candidates=10)
     eligible = [c for c in candidates if c.eligible]
     assert len(eligible) == 1
 
@@ -281,39 +288,34 @@ def test_selection_admits_after_probation_window_closes() -> None:
 def test_selection_excludes_at_revision_cap() -> None:
     """Balanced preset has max_revisits_per_prediction=4; a prediction
     with revision=4 must be excluded from further maturation."""
-    session = _session(preset="balanced")
     p = _prediction(revision=4)
-    candidates = select_maturation_candidates([p], session=session, cycle_index=10, max_candidates=10)
+    candidates = select_maturation_candidates([p], context=_ctx(cycle_index=10, preset="balanced"), max_candidates=10)
     assert all(not c.eligible for c in candidates)
 
 
 def test_selection_excludes_at_failure_cap() -> None:
-    session = _session(preset="balanced")
     p = _prediction(failed_revisits=4)
-    candidates = select_maturation_candidates([p], session=session, cycle_index=10, max_candidates=10)
+    candidates = select_maturation_candidates([p], context=_ctx(cycle_index=10, preset="balanced"), max_candidates=10)
     assert all(not c.eligible for c in candidates)
 
 
 def test_selection_respects_maturation_eligible_opt_out() -> None:
-    session = _session()
     p = _prediction(maturation_eligible=False)
-    candidates = select_maturation_candidates([p], session=session, cycle_index=10, max_candidates=10)
+    candidates = select_maturation_candidates([p], context=_ctx(cycle_index=10), max_candidates=10)
     assert all(not c.eligible for c in candidates)
 
 
 def test_selection_orders_by_score_descending() -> None:
-    session = _session()
     weak = _prediction(evidence_score=0.1, label="weak")
     strong = _prediction(evidence_score=0.8, label="strong")
-    candidates = select_maturation_candidates([strong, weak], session=session, cycle_index=10, max_candidates=10)
+    candidates = select_maturation_candidates([strong, weak], context=_ctx(cycle_index=10), max_candidates=10)
     eligible = [c for c in candidates if c.eligible]
     assert [c.prediction.spec.label for c in eligible] == ["weak", "strong"]
 
 
 def test_selection_caps_at_max_candidates() -> None:
-    session = _session()
     preds = [_prediction(label=f"p{i}", evidence_score=0.1 * i) for i in range(10)]
-    candidates = select_maturation_candidates(preds, session=session, cycle_index=10, max_candidates=3)
+    candidates = select_maturation_candidates(preds, context=_ctx(cycle_index=10), max_candidates=3)
     eligible = [c for c in candidates if c.eligible]
     assert len(eligible) == 3
 
@@ -322,8 +324,8 @@ def test_aggressive_preset_allows_more_revisits_than_conservative() -> None:
     """Aggressive max_revisits=8, Conservative=2. Same prediction at
     revision=4 should be eligible under Aggressive but not Conservative."""
     p = _prediction(revision=4)
-    cons = select_maturation_candidates([p], session=_session(preset="conservative"), cycle_index=10, max_candidates=10)
-    agg = select_maturation_candidates([p], session=_session(preset="aggressive"), cycle_index=10, max_candidates=10)
+    cons = select_maturation_candidates([p], context=_ctx(cycle_index=10, preset="conservative"), max_candidates=10)
+    agg = select_maturation_candidates([p], context=_ctx(cycle_index=10, preset="aggressive"), max_candidates=10)
     assert all(not c.eligible for c in cons)
     assert any(c.eligible for c in agg)
 
@@ -346,9 +348,8 @@ async def test_mature_one_kept_path_persists_and_arms_probation() -> None:
     drafter = await _drafter_returning("initial draft. with refinement.", ["ref-a", "ref-b"])
     outcome = await mature_one(
         pred,
-        session=session,
+        context=RefinementContext.from_deep_run_session(session, cycle_index=5),
         drafter=drafter,
-        cycle_index=5,
         pass_id="p1",
     )
     assert outcome.action == "matured_kept"
@@ -366,9 +367,8 @@ async def test_mature_one_discarded_path_keeps_old_draft_and_increments_failures
     drafter = await _drafter_returning("initial draft. plus refinement.", [])
     outcome = await mature_one(
         pred,
-        session=session,
+        context=RefinementContext.from_deep_run_session(session, cycle_index=5),
         drafter=drafter,
-        cycle_index=5,
         pass_id="p1",
     )
     assert outcome.action == "matured_discarded"
@@ -385,9 +385,8 @@ async def test_mature_one_kept_resets_failed_revisits_counter() -> None:
     drafter = await _drafter_returning(pred.artifacts.draft_answer + " plus refinement.", ["a", "b"])
     await mature_one(
         pred,
-        session=session,
+        context=RefinementContext.from_deep_run_session(session, cycle_index=1),
         drafter=drafter,
-        cycle_index=1,
         pass_id="px",
     )
     assert pred.run.failed_revisits == 0
@@ -408,10 +407,9 @@ async def test_mature_one_uses_custom_judge() -> None:
     drafter = await _drafter_returning("anything", [])
     outcome = await mature_one(
         pred,
-        session=_session(),
+        context=_ctx(cycle_index=1),
         drafter=drafter,
         judge=_always_kept_judge,
-        cycle_index=1,
         pass_id="p",
     )
     assert outcome.verdict.kept is True

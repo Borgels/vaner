@@ -47,6 +47,11 @@ from vaner.intent.deep_run_gates import (
     reset_cost_gate,
     set_active_session_for_routing,
 )
+from vaner.intent.deep_run_maturation import (
+    RefinementContext,
+    mature_one,
+    select_maturation_candidates,
+)
 from vaner.intent.drafter import Drafter
 from vaner.intent.ev import jaccard_reuse
 from vaner.intent.features import extract_hybrid_features
@@ -210,6 +215,16 @@ class VanerEngine:
         # created on the first ``precompute_cycle``; thereafter reused and
         # updated in place via ``merge()`` + ``apply_invalidation_signals()``.
         self._prediction_registry: PredictionRegistry | None = None
+        # 0.8.4 WS3: optional drafter injected for background refinement.
+        # Default is None — the refinement hook is a no-op. 0.8.5 wires
+        # a production drafter; tests inject stubs. Keeping this as an
+        # engine-level attribute rather than a constructor param avoids
+        # churn on every VanerEngine() call site.
+        from vaner.intent.deep_run_maturation import (
+            MaturationDrafterCallable as _MaturationDrafterCallable,
+        )
+
+        self._refinement_drafter: _MaturationDrafterCallable | None = None
         # WS6: snapshot the most recent git HEAD and category tail so each
         # cycle can diff against them to build invalidation signals. Empty
         # string / list means "no prior observation", which yields no signals.
@@ -1641,6 +1656,29 @@ class VanerEngine:
                 prediction_id_for_macro=_pid_by_macro,
             )
 
+        # 0.8.4 WS4 — Flush any pending adoption descriptors from the
+        # registry into the adoption-outcome log, and sweep pending
+        # outcomes that have aged past the confirm window into
+        # ``confirmed``. Both steps run unconditionally (not behind the
+        # refinement.enabled flag) so the log accumulates from day one
+        # and is ready for 0.8.5 activation of the scoring consumer.
+        await self._flush_pending_adoption_outcomes()
+        await self._sweep_pending_adoption_outcomes()
+
+        # 0.8.4 WS3 — Background refinement pass. Runs on spare compute
+        # post-frontier, post-predicted-response, if (a) the feature flag
+        # is on, (b) a drafter callable has been injected, (c) the
+        # prediction registry has candidates, and (d) the user is not
+        # actively requesting. Generalises the 0.8.3 Deep-Run maturation
+        # loop to ordinary idle cycles using the same skeptical-default
+        # judge + probation + rollback machinery. Default-off in 0.8.4;
+        # 0.8.5 flips the default after the κ bench gate passes.
+        if self.config.refinement.enabled and self._refinement_drafter is not None:
+            await self._run_background_refinement_pass(
+                governor=governor,
+                cycle_deadline=cycle_deadline,
+            )
+
         retention_seconds = max(3600, int(self.config.max_age_seconds))
         await self.store.purge_old_signal_events(max_age_seconds=retention_seconds)
         await self.store.purge_old_replay_entries(max_age_seconds=retention_seconds)
@@ -1707,6 +1745,195 @@ class VanerEngine:
     def prediction_registry(self) -> PredictionRegistry | None:
         """Active prediction registry — None before the first cycle."""
         return self._prediction_registry
+
+    # ------------------------------------------------------------------
+    # 0.8.4 WS4 — Adoption-outcome log (flush + sweep)
+    # ------------------------------------------------------------------
+
+    async def _flush_pending_adoption_outcomes(self) -> int:
+        """Drain the prediction registry's pending-adoption queue and
+        persist each descriptor as a ``pending`` outcome row.
+
+        Runs unconditionally at end-of-cycle — the adoption log
+        accumulates signal regardless of whether ``refinement.enabled``
+        is set. Returns the number of rows written.
+        """
+
+        if self._prediction_registry is None:
+            return 0
+        descriptors = self._prediction_registry.consume_pending_adoption_descriptors()
+        if not descriptors:
+            return 0
+        from vaner.models.prediction_adoption_outcome import (
+            PredictionAdoptionOutcome,
+        )
+        from vaner.store import prediction_adoption_outcomes as _pao_store
+
+        workspace_root = str(self.config.repo_root)
+        written = 0
+        for d in descriptors:
+            try:
+                outcome = PredictionAdoptionOutcome.new_pending(
+                    prediction_id=str(d["prediction_id"]),
+                    label=str(d["label"]),
+                    anchor=str(d["anchor"]),
+                    revision_at_adoption=int(d["revision_at_adoption"]),  # type: ignore[arg-type]
+                    workspace_root=workspace_root,
+                    source=str(d["source"]),
+                )
+                await _pao_store.create_outcome(self.store.db_path, outcome)
+                written += 1
+            except Exception:  # pragma: no cover - defensive: never crash cycle
+                continue
+        return written
+
+    async def _sweep_pending_adoption_outcomes(self) -> int:
+        """Resolve pending adoption outcomes older than the configured
+        confirm window to ``confirmed``. Returns the number updated.
+
+        Runs unconditionally at end-of-cycle (cheap single-table scan
+        bounded by ``LIMIT 500``). Resolution is cycle-count-based via
+        ``adopted_at`` vs. a synthetic ``adopted_at_cutoff`` derived
+        from the current cycle index + an assumed mean cycle time —
+        conservative in that it only confirms outcomes whose adoption
+        predates the cutoff by a wide margin. Rollback-driven
+        ``rejected`` transitions happen via
+        :meth:`_reject_pending_adoptions_for_predictions`, invoked by
+        the rollback path.
+        """
+
+        if self._prediction_registry is None:
+            return 0
+        cfg = self.config.refinement
+        # Use wall-clock as the aging signal — simpler and more honest
+        # than synthetic cycle counts (which can diverge between idle
+        # and active phases). Assume a nominal 30s cycle; the cutoff
+        # is adoption_pending_confirm_cycles × 30s before now.
+        nominal_cycle_seconds = 30.0
+        cutoff = time.time() - cfg.adoption_pending_confirm_cycles * nominal_cycle_seconds
+
+        from vaner.store import prediction_adoption_outcomes as _pao_store
+
+        pending = await _pao_store.list_pending_outcomes(self.store.db_path, limit=500)
+        resolved = 0
+        now = time.time()
+        for outcome in pending:
+            if outcome.adopted_at <= cutoff:
+                try:
+                    ok = await _pao_store.update_outcome_state(
+                        self.store.db_path,
+                        outcome.id,
+                        outcome="confirmed",
+                        resolved_at=now,
+                    )
+                    if ok:
+                        resolved += 1
+                except Exception:  # pragma: no cover - defensive
+                    continue
+        return resolved
+
+    async def _reject_pending_adoptions_for_predictions(self, prediction_ids: list[str], *, reason: str) -> int:
+        """Mark any pending adoption outcomes for the named predictions
+        as ``rejected``. Called from the ``rollback_kept_maturation()``
+        path and from the invalidation sweep when a staled prediction
+        had a pending adoption outcome.
+
+        Returns the number of rows updated.
+        """
+
+        if not prediction_ids:
+            return 0
+        from vaner.store import prediction_adoption_outcomes as _pao_store
+
+        return await _pao_store.update_pending_by_prediction_id(
+            self.store.db_path,
+            prediction_ids,
+            outcome="rejected",
+            resolved_at=time.time(),
+            rollback_reason=reason,
+        )
+
+    # ------------------------------------------------------------------
+    # 0.8.4 WS3 — Background refinement
+    # ------------------------------------------------------------------
+
+    def set_refinement_drafter(self, drafter: object) -> None:
+        """Inject the :class:`MaturationDrafterCallable` used by background
+        refinement. Default is ``None`` — the refinement pass is a no-op
+        until a drafter is set. Typed as ``object`` to avoid forcing
+        callers to import the Protocol; the engine treats it as a duck-typed
+        async callable matching the Protocol signature."""
+
+        from vaner.intent.deep_run_maturation import MaturationDrafterCallable
+
+        self._refinement_drafter = drafter  # type: ignore[assignment]
+        _ = MaturationDrafterCallable  # keep the import alive for type-checkers
+
+    async def _run_background_refinement_pass(
+        self,
+        *,
+        governor: PredictionGovernor | None,
+        cycle_deadline: float | None,
+    ) -> int:
+        """Run one background-refinement pass over the top-K ready predictions.
+
+        Selects candidates via :func:`select_maturation_candidates`, then
+        invokes :func:`mature_one` on each (stopping immediately if the
+        governor signals a user request or the cycle deadline expires).
+        Returns the number of maturation passes actually attempted.
+
+        No audit log is written for background passes — the
+        :class:`RefinementContext` carries ``session_id=None`` so the
+        ``deep_run_pass_log`` path is bypassed by design.
+        """
+
+        if self._prediction_registry is None:
+            return 0
+        if self._refinement_drafter is None:
+            return 0
+        refinement_cfg = self.config.refinement
+        if not refinement_cfg.enabled:
+            return 0
+
+        # Deadline floor — don't start a pass if there's less than the
+        # configured minimum headroom; the drafter + judge round-trip
+        # alone typically exceeds a few hundred ms.
+        if cycle_deadline is not None:
+            remaining = cycle_deadline - time.monotonic()
+            if remaining < refinement_cfg.min_remaining_deadline_seconds:
+                return 0
+
+        active = self._prediction_registry.active()
+        if not active:
+            return 0
+
+        context = RefinementContext.background_default(cycle_index=self._precompute_cycles)
+        candidates = select_maturation_candidates(
+            active,
+            context=context,
+            max_candidates=refinement_cfg.max_candidates_per_cycle,
+        )
+
+        attempted = 0
+        for candidate in candidates:
+            if not candidate.eligible:
+                continue
+            if governor is not None and not governor.should_continue():
+                break
+            if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
+                break
+            pass_id = f"bg-{self._precompute_cycles}-{candidate.prediction.spec.id}"
+            try:
+                await mature_one(
+                    candidate.prediction,
+                    context=context,
+                    drafter=self._refinement_drafter,  # type: ignore[arg-type]
+                    pass_id=pass_id,
+                )
+            except Exception:  # pragma: no cover — defensive: never crash cycle
+                continue
+            attempted += 1
+        return attempted
 
     def get_last_decision_record(self) -> DecisionRecord | None:
         return self._last_decision_record
