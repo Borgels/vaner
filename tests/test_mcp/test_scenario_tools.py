@@ -67,6 +67,12 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
             "vaner.goals.declare",
             "vaner.goals.update_status",
             "vaner.goals.delete",
+            # 0.8.2 WS1: intent-bearing artefacts.
+            "vaner.artefacts.list",
+            "vaner.artefacts.inspect",
+            "vaner.artefacts.set_status",
+            "vaner.artefacts.influence",
+            "vaner.sources.status",
         }
 
         monkeypatch.setattr("vaner.mcp.server.aprecompute", lambda *args, **kwargs: asyncio.sleep(0, result=1))

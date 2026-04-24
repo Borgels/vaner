@@ -498,6 +498,89 @@ def build_server(
                         "required": ["goal_id"],
                     },
                 ),
+                Tool(
+                    name="vaner.artefacts.list",
+                    description=(
+                        "List intent-bearing artefacts Vaner has ingested "
+                        "(plans, outlines, task lists, briefs, roadmaps, "
+                        "runbooks). Filter by status, connector, or source "
+                        "tier. 0.8.2 WS1."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": ["active", "dormant", "stale", "superseded", "archived"],
+                            },
+                            "connector": {"type": "string"},
+                            "source_tier": {
+                                "type": "string",
+                                "enum": ["T1", "T2", "T3", "T4"],
+                            },
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                        },
+                    },
+                ),
+                Tool(
+                    name="vaner.artefacts.inspect",
+                    description=(
+                        "Return full detail on one intent-bearing artefact: "
+                        "metadata, current snapshot items (state + text + "
+                        "section_path + related_files), and classifier "
+                        "confidence. 0.8.2 WS1."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"artefact_id": {"type": "string"}},
+                        "required": ["artefact_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.artefacts.set_status",
+                    description=(
+                        "Manually set an artefact's lifecycle status. Typical use: "
+                        "archive an artefact the user no longer wants Vaner to "
+                        "treat as active intent. User-override; bypasses "
+                        "reconciliation heuristics."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "artefact_id": {"type": "string"},
+                            "status": {
+                                "type": "string",
+                                "enum": ["active", "dormant", "stale", "superseded", "archived"],
+                            },
+                        },
+                        "required": ["artefact_id", "status"],
+                    },
+                ),
+                Tool(
+                    name="vaner.artefacts.influence",
+                    description=(
+                        "Show an artefact's downstream influence: which "
+                        "WorkspaceGoals it backs, which active PredictionSpecs "
+                        "are anchored to its items, and the most recent "
+                        "ReconciliationOutcome ids that touched either. Hard "
+                        "requirement from the 0.8.2 spec (§MCP inspectability) "
+                        "— shape stable across 0.8.2 WS1/WS2/WS3."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"artefact_id": {"type": "string"}},
+                        "required": ["artefact_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.sources.status",
+                    description=(
+                        "Per-source status for the intent-artefact ingestion "
+                        "pipeline: tier policy, enabled flag, repo / path "
+                        "allowlist, and ingest counts by connector. 0.8.2 WS1."
+                    ),
+                    inputSchema={"type": "object", "properties": {}},
+                ),
             ]
         )
 
@@ -1257,6 +1340,257 @@ def build_server(
                 return _json_result({"goal_id": goal_id_arg, "deleted": True})
             # Defensive fallthrough — unreachable because of the set check above.
             _ = parse_branch_name  # reserved for branch-seeded declare flow
+
+        # ---------------------------------------------------------------
+        # 0.8.2 WS1 — intent-bearing artefacts
+        # ---------------------------------------------------------------
+        if name in {
+            "vaner.artefacts.list",
+            "vaner.artefacts.inspect",
+            "vaner.artefacts.set_status",
+            "vaner.artefacts.influence",
+            "vaner.sources.status",
+        }:
+            from vaner.store.artefacts import ArtefactStore
+
+            artefact_db_path = active_repo_root / ".vaner" / "artefacts.db"
+            artefact_store = ArtefactStore(artefact_db_path)
+            await artefact_store.initialize()
+
+            if name == "vaner.artefacts.list":
+                list_status = args.get("status")
+                list_connector = args.get("connector")
+                list_tier = args.get("source_tier")
+                list_limit = int(args.get("limit", 50))
+                rows = await artefact_store.list_intent_artefacts(
+                    status=list_status if isinstance(list_status, str) else None,
+                    connector=list_connector if isinstance(list_connector, str) else None,
+                    source_tier=list_tier if isinstance(list_tier, str) else None,
+                    limit=max(1, min(200, list_limit)),
+                )
+                artefacts_payload: list[dict[str, Any]] = []
+                for row in rows:
+                    entry = dict(row)
+                    try:
+                        entry["linked_goals"] = json.loads(str(row.get("linked_goals_json") or "[]"))
+                    except Exception:
+                        entry["linked_goals"] = []
+                    try:
+                        entry["linked_files"] = json.loads(str(row.get("linked_files_json") or "[]"))
+                    except Exception:
+                        entry["linked_files"] = []
+                    entry.pop("linked_goals_json", None)
+                    entry.pop("linked_files_json", None)
+                    artefacts_payload.append(entry)
+                await _record("ok")
+                return _json_result({"artefacts": artefacts_payload})
+
+            if name == "vaner.artefacts.inspect":
+                artefact_id_arg = str(args.get("artefact_id", "")).strip()
+                if not artefact_id_arg:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "artefact_id is required"},
+                        is_error=True,
+                    )
+                artefact_row = await artefact_store.get_intent_artefact(artefact_id_arg)
+                if artefact_row is None:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such artefact: {artefact_id_arg}"},
+                        is_error=True,
+                    )
+                latest_snapshot_id = str(artefact_row.get("latest_snapshot") or "")
+                item_rows = (
+                    await artefact_store.list_intent_artefact_items(
+                        artefact_id=artefact_id_arg,
+                        snapshot_id=latest_snapshot_id or None,
+                    )
+                    if latest_snapshot_id
+                    else []
+                )
+                items_payload: list[dict[str, Any]] = []
+                for item_row in item_rows:
+                    item_entry = dict(item_row)
+                    for json_field, friendly in (
+                        ("related_files_json", "related_files"),
+                        ("related_entities_json", "related_entities"),
+                        ("evidence_refs_json", "evidence_refs"),
+                    ):
+                        try:
+                            item_entry[friendly] = json.loads(str(item_row.get(json_field) or "[]"))
+                        except Exception:
+                            item_entry[friendly] = []
+                        item_entry.pop(json_field, None)
+                    items_payload.append(item_entry)
+                artefact_payload = dict(artefact_row)
+                try:
+                    artefact_payload["linked_goals"] = json.loads(str(artefact_row.get("linked_goals_json") or "[]"))
+                except Exception:
+                    artefact_payload["linked_goals"] = []
+                try:
+                    artefact_payload["linked_files"] = json.loads(str(artefact_row.get("linked_files_json") or "[]"))
+                except Exception:
+                    artefact_payload["linked_files"] = []
+                artefact_payload.pop("linked_goals_json", None)
+                artefact_payload.pop("linked_files_json", None)
+                await _record("ok")
+                return _json_result(
+                    {
+                        "artefact": artefact_payload,
+                        "items": items_payload,
+                        "snapshot_id": latest_snapshot_id,
+                    }
+                )
+
+            if name == "vaner.artefacts.set_status":
+                artefact_id_arg = str(args.get("artefact_id", "")).strip()
+                new_status = str(args.get("status", "")).strip()
+                allowed_statuses = {"active", "dormant", "stale", "superseded", "archived"}
+                if not artefact_id_arg or new_status not in allowed_statuses:
+                    await _record("error")
+                    return _json_result(
+                        {
+                            "code": "invalid_input",
+                            "message": "artefact_id is required and status must be one of " + ", ".join(sorted(allowed_statuses)),
+                        },
+                        is_error=True,
+                    )
+                changed = await artefact_store.update_intent_artefact_status(artefact_id_arg, new_status)
+                if not changed:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such artefact: {artefact_id_arg}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result({"artefact_id": artefact_id_arg, "status": new_status})
+
+            if name == "vaner.artefacts.influence":
+                # Spec §MCP inspectability: return which goals the artefact
+                # backs, which active PredictionSpecs are anchored to its
+                # items, and the most recent ReconciliationOutcome ids that
+                # touched either. WS1 lands the shape; WS2 populates
+                # backing_goals + anchored_predictions; WS3 populates
+                # recent_reconciliation_outcomes.
+                artefact_id_arg = str(args.get("artefact_id", "")).strip()
+                if not artefact_id_arg:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "artefact_id is required"},
+                        is_error=True,
+                    )
+                artefact_row = await artefact_store.get_intent_artefact(artefact_id_arg)
+                if artefact_row is None:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such artefact: {artefact_id_arg}"},
+                        is_error=True,
+                    )
+                # Backing goals: WS1 seeds linked_goals during ingestion
+                # (empty for now — WS2 populates). We enumerate goals that
+                # declare this artefact in their artefact_refs_json as a
+                # reverse index; the linked_goals_json on the artefact is
+                # the forward index.
+                try:
+                    linked_goal_ids = json.loads(str(artefact_row.get("linked_goals_json") or "[]"))
+                    if not isinstance(linked_goal_ids, list):
+                        linked_goal_ids = []
+                except Exception:
+                    linked_goal_ids = []
+                backing_goals_payload: list[dict[str, Any]] = []
+                for goal_id in linked_goal_ids:
+                    goal_row = await artefact_store.get_workspace_goal(str(goal_id))
+                    if goal_row is None:
+                        continue
+                    backing_goals_payload.append(
+                        {
+                            "id": goal_row.get("id"),
+                            "title": goal_row.get("title"),
+                            "status": goal_row.get("status"),
+                            "confidence": goal_row.get("confidence"),
+                            "reconciliation_state": goal_row.get("pc_reconciliation_state"),
+                            "unfinished_item_state": goal_row.get("pc_unfinished_item_state"),
+                            "freshness": goal_row.get("pc_freshness"),
+                        }
+                    )
+                # Anchored predictions: WS2 populates source="artefact_item"
+                # prediction specs. WS1 returns an empty list so the shape
+                # is stable. Comment explicit so the reader knows why.
+                anchored_predictions_payload: list[dict[str, Any]] = []
+                # Recent reconciliation outcomes for this artefact.
+                outcome_rows = await artefact_store.list_reconciliation_outcomes(artefact_id=artefact_id_arg, limit=10)
+                outcomes_payload = [
+                    {
+                        "id": row.get("id"),
+                        "pass_at": row.get("pass_at"),
+                        "triggering_signal_id": row.get("triggering_signal_id"),
+                    }
+                    for row in outcome_rows
+                ]
+                await _record("ok")
+                return _json_result(
+                    {
+                        "artefact_id": artefact_id_arg,
+                        "backing_goals": backing_goals_payload,
+                        "anchored_predictions": anchored_predictions_payload,
+                        "recent_reconciliation_outcomes": outcomes_payload,
+                    }
+                )
+
+            if name == "vaner.sources.status":
+                # Surface the 0.8.2 sources.intent_artefacts config + per-
+                # connector ingest counts so the user can see what Vaner is
+                # actually considering.
+                sources_cfg = getattr(config, "sources", None)
+                intent_cfg = getattr(sources_cfg, "intent_artefacts", None) if sources_cfg else None
+                artefacts_all = await artefact_store.list_intent_artefacts(limit=200)
+                counts_by_connector: dict[str, int] = {}
+                counts_by_tier: dict[str, int] = {}
+                for row in artefacts_all:
+                    connector_name = str(row.get("connector") or "unknown")
+                    tier_name = str(row.get("source_tier") or "unknown")
+                    counts_by_connector[connector_name] = counts_by_connector.get(connector_name, 0) + 1
+                    counts_by_tier[tier_name] = counts_by_tier.get(tier_name, 0) + 1
+
+                sources_payload: dict[str, Any]
+                if intent_cfg is None:
+                    sources_payload = {"enabled": False, "note": "sources config not available"}
+                else:
+                    sources_payload = {
+                        "enabled": intent_cfg.enabled,
+                        "tiers": {
+                            "T1": intent_cfg.tiers.T1,
+                            "T2": intent_cfg.tiers.T2,
+                            "T3": intent_cfg.tiers.T3,
+                            "T4": intent_cfg.tiers.T4,
+                        },
+                        "local_plan": {
+                            "allowlist": list(intent_cfg.local_plan.allowlist),
+                            "excludelist": list(intent_cfg.local_plan.excludelist),
+                        },
+                        "markdown_outline": {
+                            "enabled": intent_cfg.markdown_outline.enabled,
+                            "max_candidates": intent_cfg.markdown_outline.max_candidates,
+                        },
+                        "github_issues": {
+                            "enabled": intent_cfg.github_issues.enabled,
+                            "repos": list(intent_cfg.github_issues.repos),
+                            "include_closed": intent_cfg.github_issues.include_closed,
+                            "max_issues": intent_cfg.github_issues.max_issues,
+                        },
+                    }
+                await _record("ok")
+                return _json_result(
+                    {
+                        "sources": sources_payload,
+                        "ingest_counts": {
+                            "by_connector": counts_by_connector,
+                            "by_tier": counts_by_tier,
+                            "total": len(artefacts_all),
+                        },
+                    }
+                )
             await _record("error")
             return _json_result(
                 {"code": "invalid_input", "message": f"unknown goals tool: {name}"},
