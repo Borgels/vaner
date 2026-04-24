@@ -1,0 +1,44 @@
+{
+  "intent": "Write the next test for webhook signing",
+  "confidence": 0.86,
+  "summary": "You just edited webhook.js; next move is almost certainly a test.",
+  "evidence": [
+    {
+      "id": "scn_webhook_test.ev0",
+      "source": "payments-svc/tests/test_webhook.py",
+      "kind": "file",
+      "locator": { "start_line": 1, "end_line": 42 },
+      "reason": "most recent test file in this module",
+      "fingerprint": "sha256:abc123"
+    }
+  ],
+  "alternatives_considered": [
+    {
+      "source": "scn_webhook_docs",
+      "reason_rejected": "lower score than the test draft"
+    }
+  ],
+  "gaps": ["no integration coverage for v4 signing"],
+  "next_actions": [
+    "add a pytest parametrised case for tampered payloads",
+    "run the test module against the staging fixture"
+  ],
+  "context_envelope": {
+    "domain": "code",
+    "current_artifact": "payments-svc/webhook.js",
+    "selection": null,
+    "recent_queries": ["how does verifySignature work"],
+    "agent_goal": "finish the JWT migration"
+  },
+  "provenance": {
+    "mode": "predictive_hit",
+    "cache": "warm",
+    "freshness": "fresh"
+  },
+  "resolution_id": "adopt-pred-ready-0001",
+  "prepared_briefing": "Briefing\n\npayments-svc/webhook.js: verifySignature() uses HMAC-SHA256 over the raw body with X-Signature as the expected header. v4 changes the signing flow to include the timestamp.\n\nProvenance\n\nSourced from arc-prediction pred-ready-0001 (readiness=ready).\n",
+  "predicted_response": "Here is a test skeleton using the existing webhook signing harness...",
+  "briefing_token_used": 612,
+  "briefing_token_budget": 2048,
+  "adopted_from_prediction_id": "pred-ready-0001"
+}

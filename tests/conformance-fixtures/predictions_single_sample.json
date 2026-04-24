@@ -1,0 +1,30 @@
+{
+  "id": "pred-ready-0001",
+  "spec": {
+    "label": "Write the next test for webhook signing",
+    "description": "You just edited webhook.js; next move is almost certainly a test.",
+    "source": "arc",
+    "anchor": "testing",
+    "confidence": 0.86,
+    "hypothesis_type": "likely_next",
+    "specificity": "concrete",
+    "created_at": 1000000000.0
+  },
+  "run": {
+    "weight": 0.9,
+    "token_budget": 2048,
+    "tokens_used": 1840,
+    "model_calls": 4,
+    "scenarios_spawned": 2,
+    "scenarios_complete": 2,
+    "readiness": "ready",
+    "updated_at": 1000000120.0
+  },
+  "artifacts": {
+    "scenario_ids": ["scn_webhook_test"],
+    "evidence_score": 0.78,
+    "has_draft": true,
+    "has_briefing": true,
+    "thinking_trace_count": 3
+  }
+}
