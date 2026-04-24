@@ -7,6 +7,48 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-04-24
+
+### Added
+
+#### Refinement generalization architecture (WS3)
+- **`RefinementContext`** (`src/vaner/intent/deep_run_maturation.py`) replaces the `DeepRunSession` parameter on `mature_one()` and `select_maturation_candidates()`. Two factory methods: `from_deep_run_session()` (preserves 0.8.3 behaviour exactly) and `background_default()` (new, for ordinary-cycle refinement). `session_id=None` on the background path suppresses `deep_run_pass_log` writes, so background passes are audit-log-free by design.
+- **Engine hook** (`_run_background_refinement_pass()`) in `src/vaner/engine.py` runs `mature_one()` over the top-K READY predictions post-frontier, gated on `refinement.enabled` + presence of an injected drafter + user-idle (via `PredictionGovernor.should_continue()`) + remaining cycle deadline ≥ `min_remaining_deadline_seconds`. Ships **default-off** in 0.8.4; 0.8.5 flips the default after the κ anti-self-judging bench gate passes.
+- **`RefinementConfig`** added to `VanerConfig` (`src/vaner/models/config.py`) — six fields: `enabled`, `max_candidates_per_cycle`, `min_remaining_deadline_seconds`, `require_idle_cpu`, `adoption_pending_confirm_cycles`, `adoption_rejection_on_stale`.
+- **Injectable drafter** via `engine.set_refinement_drafter()` — default `None` = no-op. Production wiring lands in 0.8.5 alongside flag activation; tests inject stubs.
+
+#### Adoption-outcome feedback log (WS4)
+- **`PredictionAdoptionOutcome`** (`src/vaner/models/prediction_adoption_outcome.py`) + a new `prediction_adoption_outcomes` SQLite table (owned by `ArtefactStore.initialize()` alongside the 0.8.2/0.8.3 tables). Rows transition `pending → {confirmed, rejected, stale}`.
+- **Write points**: `PredictionRegistry.record_adoption()` queues a pending descriptor (sync path); engine's `_flush_pending_adoption_outcomes()` drains the queue to the store at end-of-cycle. **Writes happen unconditionally** — not gated on `refinement.enabled` — so the log accumulates from day one.
+- **Resolution**: engine's `_sweep_pending_adoption_outcomes()` flips outcomes to `confirmed` after a wall-clock cutoff (`adoption_pending_confirm_cycles × 30s` nominal). Rollback integration: `_reject_pending_adoptions_for_predictions()` batch-rejects when `rollback_kept_maturation()` fires during probation or when a prediction is invalidated while its adoption is still pending.
+- **Scoring**: `adoption_success_factor(confirmed, rejected)` helper uses a symmetric Beta(1, 1) prior so cold-start → neutral 1.0; `score_maturation_value()` accepts an `adoption_success_factor_value` multiplier (default 1.0 = pre-WS4 behaviour). 0.8.5 wires the per-label-hash lookup; 0.8.4 seeds the data only.
+- **Judge-field-accuracy metric**: `P(outcome=confirmed | had_kept_maturation=1) - P(outcome=confirmed | had_kept_maturation=0)` becomes computable against the log, providing an in-the-wild approximation of the 0.8.3 κ agreement gate that compounds over time.
+- **Stable identity across cycles**: `prediction_label_hash(label, anchor)` — sha1 of the label+anchor tuple — keys aggregation so "the same question asked across sessions" aggregates in one bucket.
+
+#### Labelled fixture corpus + external judge scaffolding (WS1+WS2)
+- **`LabelledSession` schema** (`Vaner-train/tests/fixtures/deep_run/schema.py`) — dataclass + JSON round-trip for the labelled morning-briefing corpus required by the §14.1 cross-archetype ship gate (≥10 sessions per archetype × 4 archetypes = ≥40 labelled). Schema + harness ship in 0.8.4; labelled content lands through 0.8.4.x as labellers produce it.
+- **`ExternalJudgeCallable` Protocol** (`Vaner-train/eval/deep_run_external_judge.py`) + baseline `reference_match_external_judge` (programmatic, LLM-free). Scaffolding ensures the bench pipeline is exercisable before labelled content lands; stronger-model external judge plugs in at the same Protocol boundary in 0.8.4.x.
+- **Bench runner entrypoint** (`Vaner-train/eval/run_deep_run_bench.py`) — `--corpus <path> --external-judge reference_match --out <report>.md`. Feeds into the existing `compute_maturation_metrics()` + `evaluate_ship_gates()` (shipped in 0.8.3 WS5). Returns exit code 0 on pass, 1 on fail, 2 on empty corpus, 3 on unknown judge.
+
+#### Contract crate (WS5, via merge of `feat/vaner-contract-crate`)
+- **`vaner-contract` Rust crate** (`crates/vaner-contract/`) — cross-language contract definitions for Vaner API / MCP / SSE / handoff payloads. L1 (Linux desktop baseline) + L2 (cross-language fixtures). Source: `lib.rs`, `models.rs`, `reducer.rs`, `sse.rs`, `ts.rs`, `http.rs`, `enums.rs`, `errors.rs`, `handoff.rs`.
+- **Conformance fixtures** at `tests/conformance-fixtures/` — shared JSON samples validated by both the Rust crate's conformance tests (`crates/vaner-contract/tests/conformance.rs`) and a Python side (`tests/test_conformance/test_fixtures_match.py`, 8 tests). Any future cross-language consumer of the Vaner API can validate against the same fixture set.
+- **New CI workflow**: `.github/workflows/rust.yml` — `cargo fmt --check` + `cargo clippy` + `cargo test --workspace --all-targets`. Path-filtered to fire only when the Rust workspace or fixtures change; the Python CI remains authoritative for everything else.
+
+### Changed
+- **`mature_one()` and `select_maturation_candidates()` signatures** now accept `context: RefinementContext` instead of `session: DeepRunSession`. The public API surface is stable on the **outcome side** (`MaturationOutcome.session_id` is now `str | None`); callers migrate by replacing `session=session, cycle_index=N` with `context=RefinementContext.from_deep_run_session(session, cycle_index=N)`. No behavioural change for 0.8.3 call sites; only signature shape.
+
+### Security
+- **Dependabot alerts #3, #4, #5 dismissed as `tolerable_risk`** (GHSA-58qw-9mgm-455v / CVE-2026-3219 against `pip <= 26.0.1`). No upstream patch available (pip 26.0.1 is both the latest and the vulnerable version as of ship date). Compensating control: CI uses `pip --require-hashes` against `requirements/ci.txt`, bounding archive-parsing drift. Re-open when pip ships a patch.
+
+### Internal
+- **Cleanup**: removed hardcoded `/home/abo/` paths from `.cursor/mcp.json` (now uses `vaner` on `$PATH`) and purged three outdated testing docs (`docs/cockpit-dogfood-report.md`, `docs/testing/2026-04-v0.6.0-install-findings.md`, `docs/testing/2026-04-v0.6.1-install-findings.md`) from git — all referenced v0.6.x install flows superseded by the 0.8 release line.
+- Tests: +51 new Vaner tests (12 WS3 engine + 21 WS4 store + 10 WS4 engine + 11 WS1 schema round-trip + a few MCP smoke updates for the 0.8.3 tool-list carried forward). Vaner-train: +4 external-judge scaffolding tests. Full Vaner suite: 1071 passing, 14 skipped (zero new skips).
+
+### Safety gate behaviour in 0.8.4
+- Background refinement **stays off by default**. Adoption-outcome log **writes unconditionally** — data accumulates from day one so 0.8.5 activation has real numbers to consume.
+- 0.8.3 Deep-Run behaviour preserved exactly. All 0.8.3 maturation tests pass post-refactor (regression invariant: 1020-baseline).
+
 ## [0.8.3] - 2026-04-24
 
 ### Added
