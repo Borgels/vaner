@@ -2080,6 +2080,10 @@ class VanerEngine:
                 try:
                     await self.store.insert_signal_event(result.signal_event)
                 except Exception:
+                    # Best-effort: dropping the signal-event insert here
+                    # only costs external observers (signal_events table)
+                    # the reconciliation notification. The authoritative
+                    # ReconciliationOutcome record already persisted.
                     pass
             # Route item-state deltas through the registry so artefact-
             # item-anchored predictions get adopted / demoted / staled.
@@ -2101,6 +2105,10 @@ class VanerEngine:
                 try:
                     registry.apply_invalidation_signals([result.signal])
                 except Exception:
+                    # Best-effort: progress_reconciled is a no-op in the
+                    # WS3 registry today (pointer-only payload); a
+                    # throw here would only mean the symmetric sweep
+                    # was skipped, which is harmless.
                     pass
 
     def _emit_artefact_item_specs(
