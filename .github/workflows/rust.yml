@@ -1,0 +1,70 @@
+name: Rust (vaner-contract)
+
+# Only fire when the Rust workspace actually changes. The Python CI
+# remains the authoritative check for everything else.
+on:
+  push:
+    paths:
+      - "Cargo.toml"
+      - "crates/**"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "crates/**"
+      - ".github/workflows/rust.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          persist-credentials: false
+
+      # TODO(security): Scorecard requires all external actions to be
+      # SHA-pinned. Before merging this workflow to main, replace the
+      # tag refs below with the exact commit SHAs (dependabot can take
+      # over maintenance). dtolnay/rust-toolchain and Swatinem/rust-cache
+      # are widely reviewed and low-risk, but policy is policy.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test (default features)
+        run: cargo test --workspace --all-targets
+
+      - name: test (no default features)
+        run: cargo test --workspace --all-targets --no-default-features
+
+      - name: test (ts-rs feature)
+        run: cargo test --workspace --all-targets --features ts-rs
+
+      # If the generated TypeScript bindings are ever committed (the
+      # SvelteKit vendor lands at a later phase), uncomment this step so
+      # the committed copy can't drift from the Rust source of truth.
+      # - name: bindings drift check
+      #   run: |
+      #     if [ -n "$(git status --porcelain crates/vaner-contract/bindings)" ]; then
+      #       echo "ts-rs bindings are stale. Run:"
+      #       echo "  cargo test --features ts-rs --package vaner-contract"
+      #       echo "and commit the diff."
+      #       git diff crates/vaner-contract/bindings
+      #       exit 1
+      #     fi
