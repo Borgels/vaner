@@ -71,6 +71,12 @@ def test_mcp_protocol_roundtrip(temp_repo: Path, monkeypatch: pytest.MonkeyPatch
                 "vaner.artefacts.set_status",
                 "vaner.artefacts.influence",
                 "vaner.sources.status",
+                # 0.8.3 WS4: Deep-Run lifecycle.
+                "vaner.deep_run.start",
+                "vaner.deep_run.stop",
+                "vaner.deep_run.status",
+                "vaner.deep_run.list",
+                "vaner.deep_run.show",
             }
 
             status = await session.call_tool("vaner.status", {})

@@ -581,6 +581,96 @@ def build_server(
                     ),
                     inputSchema={"type": "object", "properties": {}},
                 ),
+                # 0.8.3 WS4 — Deep-Run lifecycle MCP surface.
+                Tool(
+                    name="vaner.deep_run.start",
+                    description=(
+                        "Start a Deep-Run session declaring a long uninterrupted "
+                        "preparation window. Cost cap defaults to 0 (no remote "
+                        "spend). Returns the persisted session record."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "ends_at": {
+                                "type": "number",
+                                "description": "Absolute epoch end timestamp.",
+                            },
+                            "preset": {
+                                "type": "string",
+                                "enum": ["conservative", "balanced", "aggressive"],
+                                "default": "balanced",
+                            },
+                            "focus": {
+                                "type": "string",
+                                "enum": ["active_goals", "current_workspace", "all_recent"],
+                                "default": "active_goals",
+                            },
+                            "horizon_bias": {
+                                "type": "string",
+                                "enum": [
+                                    "likely_next",
+                                    "long_horizon",
+                                    "finish_partials",
+                                    "balanced",
+                                ],
+                                "default": "balanced",
+                            },
+                            "locality": {
+                                "type": "string",
+                                "enum": ["local_only", "local_preferred", "allow_cloud"],
+                                "default": "local_preferred",
+                            },
+                            "cost_cap_usd": {"type": "number", "default": 0.0},
+                            "metadata": {"type": "object"},
+                        },
+                        "required": ["ends_at"],
+                    },
+                ),
+                Tool(
+                    name="vaner.deep_run.stop",
+                    description=(
+                        "Stop the active Deep-Run session. Returns the summary "
+                        "(four-counter honesty: kept / discarded / rolled_back "
+                        "/ failed) or null if no session was active."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "kill": {"type": "boolean", "default": False},
+                            "reason": {"type": "string"},
+                        },
+                    },
+                ),
+                Tool(
+                    name="vaner.deep_run.status",
+                    description="Return the active Deep-Run session, or null.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.deep_run.list",
+                    description="List recent Deep-Run sessions, newest first.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "default": 20,
+                                "minimum": 1,
+                                "maximum": 200,
+                            },
+                        },
+                    },
+                ),
+                Tool(
+                    name="vaner.deep_run.show",
+                    description="Show one Deep-Run session by id (active or historical).",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"session_id": {"type": "string"}},
+                        "required": ["session_id"],
+                    },
+                ),
             ]
         )
 
@@ -659,6 +749,20 @@ def build_server(
                 },
                 "memory": {"counts": memory_counts, "quality": quality, "calibration": calibration},
             }
+            # 0.8.3 WS4: surface active Deep-Run session state under
+            # ``deep_run`` so cockpit / desktop / agents can render the
+            # current policy mode without a second round-trip.
+            try:
+                from vaner.cli.commands.deep_run import _session_to_dict
+                from vaner.server import astatus_deep_run
+
+                deep_run_session = await astatus_deep_run(active_repo_root)
+                payload["deep_run"] = {
+                    "active": deep_run_session is not None,
+                    "session": _session_to_dict(deep_run_session) if deep_run_session else None,
+                }
+            except Exception:
+                payload["deep_run"] = {"active": False, "session": None}
             append_log(repo_root, tool=name, label="status", decision_id=None, provenance_mode=None, memory_state=None)
             await _record("ok")
             return _json_result(payload)
@@ -1641,6 +1745,96 @@ def build_server(
                 {"code": "invalid_input", "message": f"unknown goals tool: {name}"},
                 is_error=True,
             )
+
+        # ------------------------------------------------------------------
+        # 0.8.3 WS4 — Deep-Run lifecycle MCP tools.
+        # ------------------------------------------------------------------
+        if name.startswith("vaner.deep_run."):
+            from vaner.cli.commands.deep_run import (
+                _session_to_dict,
+                _summary_to_dict,
+            )
+            from vaner.server import (
+                alist_deep_run_sessions,
+                aresolve_deep_run_session,
+                astart_deep_run,
+                astatus_deep_run,
+                astop_deep_run,
+            )
+
+            if name == "vaner.deep_run.start":
+                ends_at = args.get("ends_at")
+                if not isinstance(ends_at, (int, float)):
+                    await _record("error")
+                    return _json_result(
+                        {
+                            "code": "invalid_input",
+                            "message": "ends_at (epoch number) is required",
+                        },
+                        is_error=True,
+                    )
+                try:
+                    session = await astart_deep_run(
+                        active_repo_root,
+                        ends_at=float(ends_at),
+                        preset=str(args.get("preset", "balanced")),
+                        focus=str(args.get("focus", "active_goals")),
+                        horizon_bias=str(args.get("horizon_bias", "balanced")),
+                        locality=str(args.get("locality", "local_preferred")),
+                        cost_cap_usd=float(args.get("cost_cap_usd", 0.0)),
+                        metadata=(dict(args.get("metadata") or {}) | {"caller": "mcp"}),
+                    )
+                except Exception as exc:
+                    await _record("error")
+                    return _json_result(
+                        {
+                            "code": "deep_run_start_failed",
+                            "message": str(exc),
+                        },
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result(_session_to_dict(session))
+
+            if name == "vaner.deep_run.stop":
+                summary = await astop_deep_run(
+                    active_repo_root,
+                    kill=bool(args.get("kill", False)),
+                    reason=args.get("reason") if isinstance(args.get("reason"), str) else None,
+                )
+                await _record("ok")
+                if summary is None:
+                    return _json_result({"summary": None})
+                return _json_result({"summary": _summary_to_dict(summary)})
+
+            if name == "vaner.deep_run.status":
+                session = await astatus_deep_run(active_repo_root)
+                await _record("ok")
+                return _json_result({"session": _session_to_dict(session) if session else None})
+
+            if name == "vaner.deep_run.list":
+                limit = max(1, min(200, int(args.get("limit", 20))))
+                sessions = await alist_deep_run_sessions(active_repo_root, limit=limit)
+                await _record("ok")
+                return _json_result({"sessions": [_session_to_dict(s) for s in sessions]})
+
+            if name == "vaner.deep_run.show":
+                session_id = str(args.get("session_id", "")).strip()
+                if not session_id:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "session_id required"},
+                        is_error=True,
+                    )
+                session = await aresolve_deep_run_session(active_repo_root, session_id)
+                if session is None:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"session {session_id!r} not found"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result(_session_to_dict(session))
 
         if name == "vaner.debug.trace":
             if str(__import__("os").environ.get("VANER_MCP_DEBUG", "0")) != "1":

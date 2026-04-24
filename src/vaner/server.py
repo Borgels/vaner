@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 from vaner.cli.commands.config import load_config
 from vaner.engine import build_default_engine
+from vaner.intent.deep_run import DeepRunSession, DeepRunSummary
 from vaner.models.config import VanerConfig
 from vaner.models.context import ContextPackage
 from vaner.models.decision import DecisionRecord
@@ -86,6 +88,116 @@ async def aprecompute(
         pass
     engine = build_default_engine(repo_root, _resolve_config(repo_root, config))
     return await engine.precompute_cycle()
+
+
+# ---------------------------------------------------------------------------
+# 0.8.3 WS4 — Deep-Run lifecycle helpers (async + sync)
+# ---------------------------------------------------------------------------
+
+
+async def astart_deep_run(
+    repo: Path | str | None = None,
+    *,
+    ends_at: float,
+    preset: str = "balanced",
+    focus: str = "active_goals",
+    horizon_bias: str = "balanced",
+    locality: str = "local_preferred",
+    cost_cap_usd: float = 0.0,
+    workspace_root: str | None = None,
+    metadata: dict[str, str] | None = None,
+    config: VanerConfig | None = None,
+) -> DeepRunSession:
+    """Start a Deep-Run session and return the persisted record.
+
+    Literal validation for ``preset`` / ``focus`` / ``horizon_bias`` /
+    ``locality`` happens at the engine boundary; this wrapper accepts
+    plain ``str`` so CLI / MCP / HTTP surfaces don't have to import
+    the literal types.
+    """
+    repo_root = _resolve_repo_root(repo)
+    engine = build_default_engine(repo_root, _resolve_config(repo_root, config))
+    return await engine.start_deep_run(
+        ends_at=ends_at,
+        preset=preset,  # type: ignore[arg-type]
+        focus=focus,  # type: ignore[arg-type]
+        horizon_bias=horizon_bias,  # type: ignore[arg-type]
+        locality=locality,  # type: ignore[arg-type]
+        cost_cap_usd=cost_cap_usd,
+        workspace_root=workspace_root,
+        metadata=metadata,
+    )
+
+
+async def astop_deep_run(
+    repo: Path | str | None = None,
+    *,
+    kill: bool = False,
+    reason: str | None = None,
+    config: VanerConfig | None = None,
+) -> DeepRunSummary | None:
+    """Stop the currently active Deep-Run session and return the summary."""
+    repo_root = _resolve_repo_root(repo)
+    engine = build_default_engine(repo_root, _resolve_config(repo_root, config))
+    return await engine.stop_deep_run(kill=kill, reason=reason)
+
+
+async def astatus_deep_run(
+    repo: Path | str | None = None,
+    *,
+    config: VanerConfig | None = None,
+) -> DeepRunSession | None:
+    """Return the active Deep-Run session, or ``None``."""
+    repo_root = _resolve_repo_root(repo)
+    engine = build_default_engine(repo_root, _resolve_config(repo_root, config))
+    return await engine.current_deep_run()
+
+
+async def alist_deep_run_sessions(
+    repo: Path | str | None = None,
+    *,
+    limit: int = 20,
+    config: VanerConfig | None = None,
+) -> list[DeepRunSession]:
+    """List recent Deep-Run sessions, newest first."""
+    repo_root = _resolve_repo_root(repo)
+    engine = build_default_engine(repo_root, _resolve_config(repo_root, config))
+    return await engine.list_deep_run_sessions(limit=limit)
+
+
+async def aresolve_deep_run_session(
+    repo: Path | str | None,
+    session_id: str,
+    *,
+    config: VanerConfig | None = None,
+) -> DeepRunSession | None:
+    """Look up a Deep-Run session by id (active or historical)."""
+    from vaner.store import deep_run as deep_run_store
+
+    repo_root = _resolve_repo_root(repo)
+    engine = build_default_engine(repo_root, _resolve_config(repo_root, config))
+    await engine.initialize()
+    return await deep_run_store.get_session(engine.store.db_path, session_id)
+
+
+def start_deep_run(*args: Any, **kwargs: Any) -> DeepRunSession:
+    return asyncio.run(astart_deep_run(*args, **kwargs))
+
+
+def stop_deep_run(*args: Any, **kwargs: Any) -> DeepRunSummary | None:
+    return asyncio.run(astop_deep_run(*args, **kwargs))
+
+
+def status_deep_run(*args: Any, **kwargs: Any) -> DeepRunSession | None:
+    return asyncio.run(astatus_deep_run(*args, **kwargs))
+
+
+def list_deep_run_sessions(*args: Any, **kwargs: Any) -> list[DeepRunSession]:
+    return asyncio.run(alist_deep_run_sessions(*args, **kwargs))
+
+
+def resolve_deep_run_session(*args: Any, **kwargs: Any) -> DeepRunSession | None:
+    return asyncio.run(aresolve_deep_run_session(*args, **kwargs))
 
 
 async def ainspect(repo: Path | str | None = None, config: VanerConfig | None = None) -> str:
