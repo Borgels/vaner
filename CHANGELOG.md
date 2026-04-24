@@ -7,6 +7,57 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-04-24
+
+### Added
+
+#### Overnight / Deep-Run Mode (WS1–WS3)
+- **Policy layer** distinguishing intent ("user is away for the night") from incidental idleness. Introduces a persisted `DeepRunSession` record (`src/vaner/intent/deep_run.py`, `src/vaner/store/deep_run.py`) with single-active-session enforced by a UNIQUE partial index on `status='active'` plus a defensive store-layer check. Sessions resume on daemon restart; expired sessions auto-close with `cancelled_reason="expired_on_restart"`.
+- **Three presets** (Conservative / Balanced / Aggressive) compose the existing engine knobs (exploit/invest/no-regret ratio biases, drafter thresholds, frontier weights, `idle_curve_multiplier`, per-cycle utilisation). `src/vaner/intent/deep_run_policy.py` ships the immutable preset table + four horizon biases (`likely_next` / `long_horizon` / `finish_partials` / `balanced`) + the focus admission gate (`active_goals` / `current_workspace` / `all_recent`).
+- **`PredictionGovernor.Mode.DEEP_RUN`** added alongside BACKGROUND / DEDICATED / BUDGET. Continues unless explicitly stopped; pause/resume gating is delegated to the engine via gate probes.
+- **Resource / cost / locality gates** (`src/vaner/intent/deep_run_gates.py`):
+  - `ResourceGateProbe` Protocol + `NoOpResourceGateProbe` default for tests; `evaluate_resource_gates()` returns the active pause-reason set (battery / thermal / user-input / engine-error-rate).
+  - `try_consume_cost()` — thread-safe in-memory cumulative spend counter, gates remote calls when `cost_cap_usd > 0`. `cost_cap_usd = 0` (the default) means *no remote spend permitted* — a hard router-layer block, not a budget warning.
+  - `is_remote_call_allowed()` — `local_only` blocks remote URLs.
+  - Routing-state singleton (`set_active_session_for_routing()` / `get_active_session_for_routing()`) lets the router consult the active session without parameter-passing through every LLM call.
+- **Router-layer enforcement** (`src/vaner/router/backends.py`): new `_enforce_deep_run_gates_for_remote()` helper plus `DeepRunRemoteCallBlockedError` raised when locality or cost gates fire. Wired into the four remote-call paths (sync + streaming, primary + fallback). Zero behaviour change when no Deep-Run session is active.
+- **Maturation revisiting** (`src/vaner/intent/deep_run_maturation.py`) — the central new mechanism. A maturation pass re-enters the drafter on already-`READY` predictions to deepen evidence, refine drafts, and resolve contradictions. Critical defenses against the well-known same-model self-judging anti-pattern (per Anthropic Engineering's *Harness design for long-running apps*):
+  - **Generator/judge role separation.** Drafter and judge are distinct callables with distinct prompts. Default `JudgeCallable` is a programmatic, skeptical, rubric-based judge — `kept=False` unless concrete contract clauses are satisfied.
+  - **Per-pass `MaturationContract`** built from the prediction's current weakness signal *before* the drafter runs. Universal forbidden clauses (no length-only growth, no silent evidence-ref removal, anchor preserved) plus weakness-specific must-clauses (e.g. "≥2 new evidence_refs not in the prior set").
+  - **Probationary persistence + diminishing-returns thresholds.** Kept maturations are probationary for N cycles; subsequent reconciliation contradictions roll them back via `rollback_kept_maturation()`. Persistence threshold tightens with each `revision`.
+  - `select_maturation_candidates()` ranks READY predictions by goal-confidence × evidence-room × revision decay × state factor, respecting per-prediction failure caps and probation windows.
+- **Honest 4-counter discipline** (spec §9.2 / §14.1): `DeepRunSession` and `DeepRunSummary` carry `matured_kept`, `matured_discarded`, `matured_rolled_back`, `matured_failed` as four separate values. Every surface (CLI, MCP, HTTP, cockpit) renders all four; never collapses into a single inflated "matured" total.
+- **`PredictionRun` extension** with `revision`, `last_matured_cycle`, `probationary_until_cycle`, `failed_revisits`, `maturation_eligible`.
+
+#### Surfaces (WS4)
+- **CLI** — `vaner deep-run start | stop | status | list | show` (`src/vaner/cli/commands/deep_run.py`). `--until` accepts duration (`8h`, `45m`), time-of-day (`07:00`), or ISO-8601. Dual output: human Rich rendering + `--json` for machine consumers.
+- **MCP** — five new tools (`vaner.deep_run.start`, `.stop`, `.status`, `.list`, `.show`); `vaner.status` extended with a `deep_run` field carrying the active session record.
+- **Daemon HTTP** — `POST /deep-run/start`, `POST /deep-run/stop`, `GET /deep-run/status`, `GET /deep-run/sessions`, `GET /deep-run/sessions/{id}` (`src/vaner/daemon/http.py`).
+- **Cockpit (React)** — `ui/cockpit/src/types/deepRun.ts` (TS schema mirrors), `ui/cockpit/src/api/deepRun.ts` (fetch helpers), `ui/cockpit/src/components/DeepRunPanel.tsx` (status pill + start card + history table). All four maturation counters surfaced separately.
+- **Desktop hand-off** — `docs/0.8.3/desktop-hand-off.md` documents the wire format, SwiftUI scope, and integration points for the separate `vaner-desktop` repo (popover quick action, menu-bar indicator, preferences card).
+- **Single canonical record across surfaces.** `DeepRunSession` row is the one source of truth; CLI / MCP / HTTP / cockpit all read it. Stable-schema serializers (`_session_to_dict` / `_summary_to_dict`) shared between CLI and MCP and HTTP.
+
+#### Bench primitives + ship gates (WS5)
+- `Vaner-train/eval/deep_run_bench.py` — `MaturationBenchOutcome`, `MaturationBenchMetrics`, `compute_maturation_metrics()`, `evaluate_ship_gates()`. Five binding ship gates encoded in `SHIP_GATES`:
+  - `maturation_effectiveness` — external-judged mean improvement Δ ≥ +0.30 per kept pass.
+  - `judge_external_agreement` — Cohen's κ ≥ 0.70 between in-engine and external judges. The anti-self-judging gate.
+  - `persistence_rate_in_band` — kept fraction in [0.25, 0.55].
+  - `probationary_rollback_rate` — ≤ 0.15.
+  - `stale_by_morning_rate` — ≤ 0.15.
+- Per-archetype floor: no archetype's mean Δ may be below +0.15; all four of writer/researcher/developer/planner must have ≥1 session in the fixture.
+- Validation report at `docs/benchmarks/0.8.3-deep-run-validation.md` documents the gates + lists the remaining follow-up work (labelled fixture corpus, external judge wiring, bench run).
+
+### Internal
+- Tests: +211 across WS1–WS5. Full Vaner suite: 1020 passing, 14 skipped (zero new skips).
+- Pre-existing tool-list assertions in `tests/test_mcp/test_protocol_roundtrip.py`, `test_scenario_tools.py`, `test_server_boot.py` updated to include the five new `vaner.deep_run.*` tools (26 tools total, up from 21).
+- Hard safety gates verified in code + tests: cost-cap compliance (no overshoot under 100-thread concurrency), local-only fidelity (zero remote calls when `local_only`), single-active session enforcement, four-counter integrity, resume-on-restart, reconciliation rollback inside probation.
+
+### Why this is different from idle mode
+Idle mode answers a *resource* question ("is the machine free right now?") and must hedge against the user returning at any moment. Deep-Run answers a *policy* question ("is the user telling me they will be away for a long, predictable window and want me to use it well?") and adopts a different stance: longer per-cycle utilisation, broader frontier, deeper drafting bars, **maturation passes on already-ready predictions**, accumulated provenance, post-session summary. Deep-Run never *infers* itself from idleness alone — it requires explicit user opt-in via CLI / MCP / cockpit / desktop.
+
+### Why this does not turn Vaner into an autonomous agent harness
+Deep-Run only ever does *more* prepare and *more* promote work. The **prepare ≠ promote ≠ adopt ≠ execute** boundary is preserved: adoption requires an explicit MCP/HTTP/CLI call from a user or authorised agent; execution endpoints with `side_effects ∈ {"read", "mutate"}` are out of scope. Deep-Run lets Vaner *think* harder while you sleep; it does not let Vaner *do* anything you did not already authorise it to do during the day.
+
 ## [0.8.0] - 2026-04-23
 
 ### Added
