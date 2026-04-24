@@ -53,11 +53,12 @@ pub fn handoff_path() -> PathBuf {
 fn resolve_handoff_path() -> Result<PathBuf, AdoptHandoffError> {
     #[cfg(target_os = "linux")]
     {
-        let dirs = xdg::BaseDirectories::with_prefix("vaner");
+        let dirs = xdg::BaseDirectories::with_prefix("vaner")
+            .map_err(|e| AdoptHandoffError::NoHandoffDir(e.to_string()))?;
         // `place_state_file` creates the state dir if needed and returns
         // the full path to the file name under it.
         dirs.place_state_file("pending-adopt.json")
-            .map_err(|e| AdoptHandoffError::NoHandoffDir(e.to_string()))
+            .map_err(Into::into)
     }
     #[cfg(target_os = "macos")]
     {

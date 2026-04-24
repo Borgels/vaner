@@ -41,9 +41,7 @@ ts-rs       = { version = "10", features = ["serde-compat"] }
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
-all       = { level = "warn", priority = -1 }
-pedantic  = { level = "warn", priority = -1 }
-# Opt-outs from pedantic that are noisy for a contract crate:
-module_name_repetitions = "allow"
-missing_errors_doc      = "allow"
-missing_panics_doc      = "allow"
+all = { level = "warn", priority = -1 }
+# `pedantic` is opt-in locally (`cargo clippy -- -W clippy::pedantic`) but
+# not enforced in CI — too many stylistic hits to baseline without
+# running locally first. Promote once the crate is stable.

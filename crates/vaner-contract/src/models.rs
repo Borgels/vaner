@@ -328,7 +328,7 @@ mod tests {
         assert!(ok.reachable());
         let bad: EngineStatus = serde_json::from_str(r#"{"health":"error"}"#).unwrap();
         assert!(!bad.reachable());
-        let absent: EngineStatus = serde_json::from_str(r#"{}"#).unwrap();
+        let absent: EngineStatus = serde_json::from_str("{}").unwrap();
         assert!(!absent.reachable());
     }
 }
