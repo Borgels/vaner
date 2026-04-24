@@ -556,6 +556,40 @@ class SourcesConfig(BaseModel):
 # anti-self-judging bench gate (WS1+WS2) passes. The log writes from
 # WS4 (``prediction_adoption_outcomes``) happen regardless of this
 # flag — data accumulates from day one.
+class ContextInjectionConfig(BaseModel):
+    """How aggressively Vaner injects prepared work into LLM context.
+
+    See :mod:`vaner.integrations.injection.mode` for the per-mode semantics
+    and the per-tier defaults. The token budgets are hard caps enforced by
+    the formatters before the ``max_context_fraction`` check — callers can
+    never exceed these numbers.
+    """
+
+    mode: Literal[
+        "none",
+        "digest_only",
+        "adopted_package_only",
+        "top_match_auto_include",
+        "policy_hybrid",
+        "client_controlled",
+    ] = Field(default="policy_hybrid")
+    digest_token_budget: int = Field(default=500, ge=0, le=2000)
+    adopted_package_token_budget: int = Field(default=2000, ge=0, le=8000)
+    max_context_fraction: float = Field(default=0.20, gt=0.0, le=0.5)
+    ttl_seconds: int = Field(default=600, ge=0)
+    include_provenance: bool = Field(default=True)
+    include_confidence_details: bool = Field(default=False)
+
+
+class IntegrationsConfig(BaseModel):
+    """Client-facing integration surface: guidance, capability tiers, injection."""
+
+    guidance_variant: Literal["canonical", "weak", "strong"] = Field(default="canonical")
+    advertise_guidance_resource: bool = Field(default=True)
+    capability_detection_enabled: bool = Field(default=True)
+    context_injection: ContextInjectionConfig = Field(default_factory=ContextInjectionConfig)
+
+
 class RefinementConfig(BaseModel):
     enabled: bool = Field(default=False)
     max_candidates_per_cycle: int = Field(default=3, ge=1)
@@ -587,3 +621,4 @@ class VanerConfig(BaseModel):
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
+    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)

@@ -13,11 +13,29 @@ from vaner.integrations.guidance import (
     current_version,
     load_guidance,
 )
+from vaner.integrations.injection import (
+    AdoptedPackagePayload,
+    ContextInjectionMode,
+    DigestEntry,
+    InjectionDecision,
+    InjectionInputs,
+    build_adopted_package,
+    build_digest,
+    should_inject,
+)
 
 __all__ = [
+    "AdoptedPackagePayload",
+    "ContextInjectionMode",
+    "DigestEntry",
     "GuidanceDoc",
     "GuidanceVariant",
+    "InjectionDecision",
+    "InjectionInputs",
     "available_variants",
+    "build_adopted_package",
+    "build_digest",
     "current_version",
     "load_guidance",
+    "should_inject",
 ]
