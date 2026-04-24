@@ -12,6 +12,13 @@ class PredictionGovernor:
         BACKGROUND = "background"
         DEDICATED = "dedicated"
         BUDGET = "budget"
+        # 0.8.3 WS2: Deep-Run mode. Behaves like DEDICATED (always
+        # continue unless explicitly stopped) but signals to the engine
+        # that a long-window policy is in effect — preset overrides
+        # apply to ratios / drafter thresholds / cycle utilisation, and
+        # resource / cost / locality gates are evaluated each cycle.
+        # Bound to a persisted ``DeepRunSession`` row.
+        DEEP_RUN = "deep_run"
 
     mode: Mode = Mode.BACKGROUND
     budget_units: int = 100
@@ -33,6 +40,11 @@ class PredictionGovernor:
         if self.mode == self.Mode.BACKGROUND:
             return not self._user_request_active
         if self.mode == self.Mode.DEDICATED:
+            return True
+        if self.mode == self.Mode.DEEP_RUN:
+            # Deep-Run continues regardless of per-cycle units; pause
+            # gating is handled by the engine via DeepRun resource +
+            # cost + locality probes (see vaner.intent.deep_run_gates).
             return True
         return self._remaining_units >= units
 
