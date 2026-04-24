@@ -215,6 +215,11 @@ class VanerEngine:
         # created on the first ``precompute_cycle``; thereafter reused and
         # updated in place via ``merge()`` + ``apply_invalidation_signals()``.
         self._prediction_registry: PredictionRegistry | None = None
+        # 0.8.4 hardening (BLOCK-1 partial): staled prediction ids from
+        # the most recent ``_apply_cycle_invalidation`` pass. Consumed
+        # by the async caller in ``precompute_cycle`` to flip pending
+        # adoption outcomes to ``stale``. Empty list between cycles.
+        self._last_staled_prediction_ids: list[str] = []
         # 0.8.4 WS3: optional drafter injected for background refinement.
         # Default is None — the refinement hook is a no-op. 0.8.5 wires
         # a production drafter; tests inject stubs. Keeping this as an
@@ -1160,6 +1165,22 @@ class VanerEngine:
         # against whatever the registry captured on its last touch. No
         # wall-clock decay: if no signal fires, nothing is invalidated.
         cycle_signals = self._apply_cycle_invalidation(recent_query_text)
+        # 0.8.4 hardening (BLOCK-1 partial): bridge the invalidation
+        # sweep's staled-prediction list to the adoption-outcome log.
+        # ``_apply_cycle_invalidation`` is sync; we do the async DB
+        # write here so WS4's outcome log captures ``stale`` rows on
+        # every invalidation cycle. Without this the log would only
+        # ever contain ``pending`` + ``confirmed`` in production.
+        if self._last_staled_prediction_ids:
+            try:
+                await self._resolve_pending_adoptions_for_predictions(
+                    self._last_staled_prediction_ids,
+                    outcome="stale",
+                    reason="invalidation_staled",
+                )
+            except Exception:  # pragma: no cover — defensive: never crash cycle
+                pass
+            self._last_staled_prediction_ids = []
         # 0.8.2 WS3 — reconciliation runs on every cycle that saw at
         # least one commit or file_change signal. Best-effort: a
         # reconciliation failure is logged and swallowed so it never
@@ -1805,12 +1826,13 @@ class VanerEngine:
         if self._prediction_registry is None:
             return 0
         cfg = self.config.refinement
-        # Use wall-clock as the aging signal — simpler and more honest
-        # than synthetic cycle counts (which can diverge between idle
-        # and active phases). Assume a nominal 30s cycle; the cutoff
-        # is adoption_pending_confirm_cycles × 30s before now.
-        nominal_cycle_seconds = 30.0
-        cutoff = time.time() - cfg.adoption_pending_confirm_cycles * nominal_cycle_seconds
+        # Wall-clock aging: anything adopted more than
+        # ``adoption_pending_confirm_seconds`` ago with no contradicting
+        # signal is treated as ``confirmed``. Pre-hardening the field
+        # was named ``_cycles`` with a hardcoded 30s nominal cycle; the
+        # name lied. 0.8.4 hardening renamed it to ``_seconds`` so the
+        # config surface matches the behaviour.
+        cutoff = time.time() - cfg.adoption_pending_confirm_seconds
 
         from vaner.store import prediction_adoption_outcomes as _pao_store
 
@@ -1832,26 +1854,63 @@ class VanerEngine:
                     continue
         return resolved
 
-    async def _reject_pending_adoptions_for_predictions(self, prediction_ids: list[str], *, reason: str) -> int:
+    async def _resolve_pending_adoptions_for_predictions(
+        self,
+        prediction_ids: list[str],
+        *,
+        outcome: str,
+        reason: str,
+    ) -> int:
         """Mark any pending adoption outcomes for the named predictions
-        as ``rejected``. Called from the ``rollback_kept_maturation()``
-        path and from the invalidation sweep when a staled prediction
-        had a pending adoption outcome.
+        as the given terminal state (``rejected`` or ``stale``).
 
-        Returns the number of rows updated.
+        Two call paths today:
+        - **invalidation → stale**: when a file_change / commit /
+          category_shift signal stales a prediction whose adoption
+          was still pending, the outcome flips to ``stale`` (not
+          ``rejected``). Semantics: "the world moved; the user's
+          choice wasn't necessarily wrong."
+        - **rollback → rejected**: when
+          ``rollback_kept_maturation()`` fires during probation, the
+          adoption flips to ``rejected``. Semantics: "the maturation
+          was wrong." (0.8.5 will wire this path when probation-
+          contradiction detection ships; 0.8.4 leaves it inert by
+          design — see BLOCK-1 in docs/reviews/0.8.4-hardening.md.)
+
+        0.8.4 hardening: renamed from ``_reject_pending_adoptions_for_predictions``
+        and generalised with an explicit ``outcome`` param so the
+        invalidation-staled path can use it without pretending every
+        negative outcome is a rollback. Chunks the id list to 500 at
+        a time to stay well below SQLite's 999-variable default
+        (MED-7). Returns the total rows updated.
         """
 
         if not prediction_ids:
             return 0
+        if outcome not in ("rejected", "stale"):
+            raise ValueError(f"_resolve_pending_adoptions_for_predictions: outcome must be 'rejected' or 'stale', got {outcome!r}")
         from vaner.store import prediction_adoption_outcomes as _pao_store
 
-        return await _pao_store.update_pending_by_prediction_id(
-            self.store.db_path,
-            prediction_ids,
-            outcome="rejected",
-            resolved_at=time.time(),
-            rollback_reason=reason,
-        )
+        chunk_size = 500
+        total = 0
+        resolved_at = time.time()
+        for i in range(0, len(prediction_ids), chunk_size):
+            chunk = prediction_ids[i : i + chunk_size]
+            total += await _pao_store.update_pending_by_prediction_id(
+                self.store.db_path,
+                chunk,
+                outcome=outcome,  # type: ignore[arg-type]
+                resolved_at=resolved_at,
+                rollback_reason=reason,
+            )
+        return total
+
+    # Back-compat alias for the 0.8.4-pre-hardening name used by tests.
+    # Always resolves to ``rejected`` — existing callers were rollback-
+    # path callers. New code should call ``_resolve_pending_adoptions_for_predictions``
+    # directly with an explicit ``outcome``.
+    async def _reject_pending_adoptions_for_predictions(self, prediction_ids: list[str], *, reason: str) -> int:
+        return await self._resolve_pending_adoptions_for_predictions(prediction_ids, outcome="rejected", reason=reason)
 
     # ------------------------------------------------------------------
     # 0.8.4 WS3 — Background refinement
@@ -1917,11 +1976,24 @@ class VanerEngine:
         attempted = 0
         for candidate in candidates:
             if not candidate.eligible:
+                # select_maturation_candidates puts ineligibles at the
+                # tail of the sorted list; ``break`` would be slightly
+                # faster, but ``continue`` keeps the code defensive
+                # against any future reordering of the return value.
                 continue
             if governor is not None and not governor.should_continue():
                 break
             if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
                 break
+            # 0.8.4 hardening (MED-2): re-check is_terminal() before
+            # running the drafter. Between the earlier ``active()``
+            # snapshot and this loop iteration, another coroutine
+            # (e.g. MCP ``stale_all`` or the cycle-top invalidation
+            # sweep) may have transitioned this prediction to
+            # ``stale``. Mutating a terminal prediction's draft /
+            # revision / probation would corrupt the terminal state.
+            if candidate.prediction.is_terminal():
+                continue
             pass_id = f"bg-{self._precompute_cycles}-{candidate.prediction.spec.id}"
             try:
                 await mature_one(
@@ -2539,8 +2611,18 @@ class VanerEngine:
         if cat_sig is not None:
             signals.append(cat_sig)
 
+        # 0.8.4 hardening (BLOCK-1 partial): capture the staled
+        # prediction ids so the async caller (precompute_cycle) can
+        # flip the corresponding adoption outcomes to ``stale``. The
+        # apply_invalidation_signals call itself is sync, but the
+        # adoption-outcome DAO needs async, so we stash the ids for
+        # the caller rather than performing the DB write here. See
+        # docs/reviews/0.8.4-hardening.md.
         if signals:
-            registry.apply_invalidation_signals(signals)
+            invalidation_outcomes = registry.apply_invalidation_signals(signals)
+            self._last_staled_prediction_ids = [pid for pid, verdict in invalidation_outcomes.items() if verdict == "staled"]
+        else:
+            self._last_staled_prediction_ids = []
 
         # Refresh observations for the next cycle's diff.
         self._last_observed_head_sha = current_head

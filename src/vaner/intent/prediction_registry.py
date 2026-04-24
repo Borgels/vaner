@@ -15,6 +15,7 @@ the registry just records what they did.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -93,7 +94,15 @@ class PredictionRegistry:
         # the queue at end-of-cycle and writes pending-outcome rows via
         # the async DAO. Drained descriptors are popped — callers should
         # use ``consume_pending_adoption_descriptors()``.
+        #
+        # The queue is guarded by a plain ``threading.Lock`` (not the
+        # asyncio ``self.lock`` below) because ``record_adoption`` is a
+        # sync method callable from any context, and the flush path is
+        # async. The two-op snapshot-then-clear is not atomic under the
+        # GIL on its own. 0.8.4 hardening fix — see HIGH-3 in
+        # docs/reviews/0.8.4-hardening.md.
         self._pending_adoption_descriptors: list[dict[str, object]] = []
+        self._pending_adoption_lock = threading.Lock()
         # Phase 4 / WS1.c: registry is accessed from concurrent
         # ``_process_scenario`` workers. Callers may ``async with registry.lock:``
         # around sequences that must be atomic (e.g. rebalance).
@@ -298,15 +307,15 @@ class PredictionRegistry:
         prompt.artifacts.evidence_score += 1.0
         prompt.run.spent = True
         prompt.run.updated_at = self._clock()
-        self._pending_adoption_descriptors.append(
-            {
-                "prediction_id": prediction_id,
-                "label": prompt.spec.label,
-                "anchor": prompt.spec.anchor,
-                "revision_at_adoption": int(prompt.run.revision),
-                "source": str(prompt.spec.source),
-            }
-        )
+        descriptor = {
+            "prediction_id": prediction_id,
+            "label": prompt.spec.label,
+            "anchor": prompt.spec.anchor,
+            "revision_at_adoption": int(prompt.run.revision),
+            "source": str(prompt.spec.source),
+        }
+        with self._pending_adoption_lock:
+            self._pending_adoption_descriptors.append(descriptor)
         self._emit(
             "prediction.artifact_added",
             prediction_id,
@@ -319,10 +328,15 @@ class PredictionRegistry:
         Called by the engine at end-of-cycle to drain pending adoption
         writes into the SQLite store. Empty list when nothing was
         adopted this cycle.
+
+        Acquires ``_pending_adoption_lock`` so the snapshot + clear
+        pair is atomic vs. concurrent ``record_adoption()`` appends.
+        (0.8.4 hardening — see HIGH-3 in the hardening doc.)
         """
 
-        drained = list(self._pending_adoption_descriptors)
-        self._pending_adoption_descriptors.clear()
+        with self._pending_adoption_lock:
+            drained = list(self._pending_adoption_descriptors)
+            self._pending_adoption_descriptors.clear()
         return drained
 
     def attach_artifact(

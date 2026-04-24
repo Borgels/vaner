@@ -863,15 +863,26 @@ def rollback_kept_maturation(
     *,
     rollback_to_draft: str | None,
     rollback_to_evidence_score: float,
-    cycle_index: int,
 ) -> None:
     """Roll back the most recent kept maturation on this prediction.
 
     Called by reconciliation when a contradicting signal fires inside
     the prediction's probation window. Restores the prior draft +
-    evidence_score, decrements ``revision`` (the kept maturation no
-    longer counts), and increments ``failed_revisits`` (so we stop
-    re-attempting if reconciliation keeps disagreeing).
+    evidence_score and decrements ``revision`` (the kept maturation
+    no longer counts).
+
+    ``failed_revisits`` is **not** bumped by rollback. Rollback is an
+    *external* signal (the world changed under the kept draft), not a
+    judge-discard, and the two shouldn't share a counter — otherwise
+    N successful mature+contradict cycles can exhaust the per-
+    prediction failure cap and permanently exclude a prediction that
+    has never actually had a judge-discarded maturation. (0.8.4
+    hardening fix, per docs/reviews/0.8.4-hardening.md HIGH-1.)
+
+    ``last_matured_cycle`` is set to ``None`` after rollback. The
+    last-matured cycle just got undone; setting it to the rollback
+    cycle would mislead any future "when was this last successfully
+    matured?" analytics. (0.8.4 hardening fix, HIGH-2.)
 
     Engine wires this into the reconciliation path; this module just
     owns the in-memory mutation contract.
@@ -880,9 +891,8 @@ def rollback_kept_maturation(
     prediction.artifacts.draft_answer = rollback_to_draft
     prediction.artifacts.evidence_score = rollback_to_evidence_score
     prediction.run.revision = max(0, prediction.run.revision - 1)
-    prediction.run.failed_revisits += 1
     prediction.run.probationary_until_cycle = None
-    prediction.run.last_matured_cycle = cycle_index
+    prediction.run.last_matured_cycle = None
 
 
 __all__ = [

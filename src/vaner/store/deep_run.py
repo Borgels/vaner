@@ -152,49 +152,73 @@ async def create_session(db_path: Path, session: DeepRunSession) -> DeepRunSessi
     """Insert a new active session.
 
     Raises :class:`DeepRunActiveSessionExistsError` if another session is
-    already active. The defensive check runs inside the same connection
-    as the insert to avoid a TOCTOU window — the UNIQUE partial index
-    is the second line of defense if a caller bypasses this function.
+    already active. The defensive SELECT runs inside a
+    ``BEGIN IMMEDIATE`` write transaction so a concurrent caller's
+    SELECT sees our in-progress insert and serialises on the write
+    lock. The UNIQUE partial index on ``status='active'`` is the
+    second line of defense if a caller bypasses this function — we
+    also catch ``IntegrityError`` from the insert and translate it to
+    the same domain exception so the caller never sees the low-level
+    SQLite surface. (0.8.4 hardening — see HIGH-4 in
+    docs/reviews/0.8.4-hardening.md.)
     """
 
     if session.status != "active":
         raise ValueError(f"create_session requires status='active', got {session.status!r}")
     async with aiosqlite.connect(db_path) as db:
         await db.execute("PRAGMA busy_timeout=5000")
-        async with db.execute("SELECT id FROM deep_run_sessions WHERE status = 'active' LIMIT 1") as cursor:
-            existing = await cursor.fetchone()
-        if existing is not None:
-            raise DeepRunActiveSessionExistsError(f"another Deep-Run session is already active: {existing[0]}")
-        await db.execute(
-            f"""
-            INSERT INTO deep_run_sessions ({_SESSION_COLUMNS})
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                session.id,
-                float(session.started_at),
-                float(session.ends_at),
-                session.preset,
-                session.focus,
-                session.horizon_bias,
-                session.locality,
-                float(session.cost_cap_usd),
-                session.workspace_root,
-                session.status,
-                json.dumps(list(session.pause_reasons)),
-                float(session.spend_usd),
-                int(session.cycles_run),
-                int(session.matured_kept),
-                int(session.matured_discarded),
-                int(session.matured_rolled_back),
-                int(session.matured_failed),
-                int(session.promoted_count),
-                None if session.ended_at is None else float(session.ended_at),
-                json.dumps(dict(session.metadata)),
-                session.cancelled_reason,
-            ),
-        )
-        await db.commit()
+        # BEGIN IMMEDIATE acquires a write lock up-front so concurrent
+        # callers serialise rather than racing the SELECT-then-INSERT.
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute("SELECT id FROM deep_run_sessions WHERE status = 'active' LIMIT 1") as cursor:
+                existing = await cursor.fetchone()
+            if existing is not None:
+                await db.execute("ROLLBACK")
+                raise DeepRunActiveSessionExistsError(f"another Deep-Run session is already active: {existing[0]}")
+            try:
+                await db.execute(
+                    f"""
+                    INSERT INTO deep_run_sessions ({_SESSION_COLUMNS})
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session.id,
+                        float(session.started_at),
+                        float(session.ends_at),
+                        session.preset,
+                        session.focus,
+                        session.horizon_bias,
+                        session.locality,
+                        float(session.cost_cap_usd),
+                        session.workspace_root,
+                        session.status,
+                        json.dumps(list(session.pause_reasons)),
+                        float(session.spend_usd),
+                        int(session.cycles_run),
+                        int(session.matured_kept),
+                        int(session.matured_discarded),
+                        int(session.matured_rolled_back),
+                        int(session.matured_failed),
+                        int(session.promoted_count),
+                        None if session.ended_at is None else float(session.ended_at),
+                        json.dumps(dict(session.metadata)),
+                        session.cancelled_reason,
+                    ),
+                )
+            except aiosqlite.IntegrityError as exc:
+                # Belt-and-braces: the UNIQUE partial index on
+                # status='active' should never fire now that we hold
+                # the write lock, but translate if it ever does so the
+                # caller always sees the domain exception.
+                await db.execute("ROLLBACK")
+                raise DeepRunActiveSessionExistsError("another Deep-Run session became active while we were inserting") from exc
+            await db.commit()
+        except Exception:
+            # Any other exception also rolls back. The ``async with``
+            # will close the connection; BEGIN IMMEDIATE's write lock
+            # is released on connection close.
+            raise
     return session
 
 
@@ -271,6 +295,7 @@ async def update_session_status(
         params.append(json.dumps([str(r) for r in pause_reasons]))
     params.append(session_id)
     async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA busy_timeout=5000")
         cursor = await db.execute(
             f"UPDATE deep_run_sessions SET {', '.join(fields)} WHERE id = ?",
             params,
@@ -307,6 +332,7 @@ async def increment_session_counters(
     ):
         return False
     async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA busy_timeout=5000")
         cursor = await db.execute(
             """
             UPDATE deep_run_sessions
@@ -336,6 +362,7 @@ async def increment_session_counters(
 
 async def insert_pass_log_entry(db_path: Path, entry: DeepRunPassLogEntry) -> None:
     async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA busy_timeout=5000")
         await db.execute(
             """
             INSERT INTO deep_run_pass_log (
@@ -425,6 +452,7 @@ async def close_expired_sessions(db_path: Path, *, now: float) -> int:
     """
 
     async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA busy_timeout=5000")
         cursor = await db.execute(
             """
             UPDATE deep_run_sessions

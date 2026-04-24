@@ -160,13 +160,13 @@ async def test_had_kept_maturation_set_correctly_on_flush(tmp_path) -> None:
 
 
 async def test_sweep_confirms_outcomes_past_cutoff(tmp_path) -> None:
-    """Outcomes adopted long enough ago (beyond
-    ``adoption_pending_confirm_cycles`` × nominal_cycle_seconds) flip
-    to ``confirmed`` on the end-of-cycle sweep."""
+    """Outcomes adopted more than ``adoption_pending_confirm_seconds``
+    ago (with no contradicting signal) flip to ``confirmed`` on the
+    end-of-cycle sweep."""
 
     engine = _make_engine(tmp_path / "repo")
     # Shrink the confirm window for a fast test.
-    engine.config.refinement.adoption_pending_confirm_cycles = 1
+    engine.config.refinement.adoption_pending_confirm_seconds = 30.0
     await engine.initialize()
 
     pred = _ready_prediction()
@@ -254,7 +254,7 @@ async def test_reject_no_op_for_empty_prediction_list(tmp_path) -> None:
 
 async def test_full_outcome_lifecycle_end_to_end(tmp_path) -> None:
     engine = _make_engine(tmp_path / "repo")
-    engine.config.refinement.adoption_pending_confirm_cycles = 1
+    engine.config.refinement.adoption_pending_confirm_seconds = 30.0
     await engine.initialize()
 
     good = _ready_prediction(label="good")

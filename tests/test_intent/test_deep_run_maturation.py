@@ -433,19 +433,22 @@ def test_rollback_restores_prior_draft_and_decrements_revision() -> None:
         pred,
         rollback_to_draft="prior-draft",
         rollback_to_evidence_score=0.4,
-        cycle_index=11,
     )
     assert pred.artifacts.draft_answer == "prior-draft"
     assert pred.artifacts.evidence_score == pytest.approx(0.4)
     assert pred.run.revision == 1
-    assert pred.run.failed_revisits == 1
+    # 0.8.4 hardening: rollback does NOT bump failed_revisits (it's
+    # external, not a judge-discard). See HIGH-1 in the hardening doc.
+    assert pred.run.failed_revisits == 0
     assert pred.run.probationary_until_cycle is None
-    assert pred.run.last_matured_cycle == 11
+    # 0.8.4 hardening: last_matured_cycle cleared on rollback (the
+    # last matured cycle just got undone). See HIGH-2 in the hardening doc.
+    assert pred.run.last_matured_cycle is None
 
 
 def test_rollback_floors_revision_at_zero() -> None:
     pred = _prediction(revision=0)
-    rollback_kept_maturation(pred, rollback_to_draft=None, rollback_to_evidence_score=0.0, cycle_index=1)
+    rollback_kept_maturation(pred, rollback_to_draft=None, rollback_to_evidence_score=0.0)
     assert pred.run.revision == 0
 
 

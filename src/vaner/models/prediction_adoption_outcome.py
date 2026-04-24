@@ -52,9 +52,16 @@ def prediction_label_hash(label: str, anchor: str) -> str:
     adoption log we want a *label-level* identity so "the same
     question asked across cycles" aggregates in one bucket. Keys the
     ``adoption_success_factor`` lookup in WS4 scoring.
+
+    The inputs are length-prefixed before hashing so ``("foo|bar",
+    "baz")`` and ``("foo", "bar|baz")`` don't collide. Without the
+    prefix, the literal ``|`` in ``label`` would ambiguate the
+    delimiter. (0.8.4 hardening — see MED-11 in
+    ``docs/reviews/0.8.4-hardening.md``.)
     """
 
-    return hashlib.sha1(f"{label}|{anchor}".encode()).hexdigest()[:16]
+    payload = f"{len(label)}:{label}|{len(anchor)}:{anchor}".encode()
+    return hashlib.sha1(payload).hexdigest()[:16]
 
 
 @dataclass(slots=True)

@@ -557,14 +557,17 @@ class SourcesConfig(BaseModel):
 # WS4 (``prediction_adoption_outcomes``) happen regardless of this
 # flag — data accumulates from day one.
 class RefinementConfig(BaseModel):
-    enabled: bool = False
-    max_candidates_per_cycle: int = 3
-    min_remaining_deadline_seconds: float = 2.0
-    require_idle_cpu: bool = True
+    enabled: bool = Field(default=False)
+    max_candidates_per_cycle: int = Field(default=3, ge=1)
+    min_remaining_deadline_seconds: float = Field(default=2.0, ge=0.0)
     # WS4 — adoption-outcome sweep thresholds (these are always-active;
     # gating them behind ``enabled`` would delay log population).
-    adoption_pending_confirm_cycles: int = 20
-    adoption_rejection_on_stale: bool = True
+    # Named ``_seconds`` to match the implementation in
+    # ``engine._sweep_pending_adoption_outcomes`` which is wall-clock-
+    # based, not cycle-count-based. The earlier ``_cycles`` name
+    # (0.8.4-pre-hardening) promised cycle semantics the code did not
+    # deliver; renamed during the 0.8.4 hardening pass.
+    adoption_pending_confirm_seconds: float = Field(default=600.0, ge=0.0)
 
 
 class VanerConfig(BaseModel):

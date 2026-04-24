@@ -55,6 +55,14 @@ async def create_prediction_adoption_outcomes_table(db: aiosqlite.Connection) ->
     await db.execute("CREATE INDEX IF NOT EXISTS idx_adoption_outcomes_outcome ON prediction_adoption_outcomes(outcome)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_adoption_outcomes_resolved ON prediction_adoption_outcomes(resolved_at DESC)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_adoption_outcomes_prediction_id ON prediction_adoption_outcomes(prediction_id)")
+    # 0.8.4 hardening (MED-6): compound index supports the hot
+    # ``list_pending_outcomes`` query (filter outcome='pending', then
+    # order by adopted_at). Without this the planner filters via the
+    # single-column outcome index then does an in-memory sort, which
+    # becomes a bottleneck as pending rows accumulate.
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_adoption_outcomes_pending_adopted ON prediction_adoption_outcomes(outcome, adopted_at)"
+    )
 
 
 _COLUMNS = (
@@ -173,6 +181,7 @@ async def update_outcome_state(
     if a row matched and was updated."""
 
     async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA busy_timeout=5000")
         cursor = await db.execute(
             """
             UPDATE prediction_adoption_outcomes
@@ -205,6 +214,7 @@ async def update_pending_by_prediction_id(
         return 0
     placeholders = ",".join("?" for _ in ids)
     async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA busy_timeout=5000")
         cursor = await db.execute(
             f"""
             UPDATE prediction_adoption_outcomes
