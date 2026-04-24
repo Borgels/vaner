@@ -93,6 +93,20 @@ class PredictionRun:
     ``invalidation_reason`` is populated when a signal fires to stale the
     prediction; ``spent`` is flipped on adoption so the prediction doesn't
     resurface until the underlying evidence is invalidated.
+
+    0.8.3 WS3 (Deep-Run maturation): ``revision`` increments each time a
+    maturation pass produces a kept improvement. ``last_matured_cycle``
+    is the cycle index of the most recent kept pass.
+    ``probationary_until_cycle`` is the cycle index up to (and
+    including) which the most recent kept maturation is treated as
+    probationary — during that window the prediction is excluded from
+    further maturation, and a contradicting reconciliation signal can
+    roll it back. ``failed_revisits`` counts consecutive *discarded*
+    maturation attempts; once it reaches the per-preset failure cap,
+    the prediction is excluded from further maturation entirely.
+    ``maturation_eligible`` is a per-source opt-out for short-horizon
+    specs whose value collapses if matured (e.g. "what's the next
+    arc?" predictions).
     """
 
     weight: float
@@ -107,6 +121,12 @@ class PredictionRun:
     last_seen_cycle: int = 0
     invalidation_reason: str = ""
     spent: bool = False
+    # 0.8.3 WS3 — Deep-Run maturation lifecycle.
+    revision: int = 0
+    last_matured_cycle: int | None = None
+    probationary_until_cycle: int | None = None
+    failed_revisits: int = 0
+    maturation_eligible: bool = True
 
 
 @dataclass(slots=True)
