@@ -29,6 +29,24 @@ from vaner.intent.allocator import PortfolioAllocator
 from vaner.intent.arcs import ArcObservation, ConversationArcModel, classify_query_category, derive_prompt_macro
 from vaner.intent.briefing import BriefingAssembler
 from vaner.intent.cache import TieredPredictionCache
+from vaner.intent.deep_run import (
+    DeepRunFocus,
+    DeepRunHorizonBias,
+    DeepRunLocality,
+    DeepRunPauseReason,
+    DeepRunPreset,
+    DeepRunSession,
+    DeepRunSummary,
+)
+from vaner.intent.deep_run_gates import (
+    NoOpResourceGateProbe,
+    ResourceGateConfig,
+    ResourceGateProbe,
+    cost_gate_spent_usd,
+    evaluate_resource_gates,
+    reset_cost_gate,
+    set_active_session_for_routing,
+)
 from vaner.intent.drafter import Drafter
 from vaner.intent.ev import jaccard_reuse
 from vaner.intent.features import extract_hybrid_features
@@ -65,6 +83,7 @@ from vaner.models.config import ComputeConfig, ExplorationConfig, VanerConfig
 from vaner.models.context import ContextPackage
 from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor
 from vaner.models.signal import SignalEvent
+from vaner.store import deep_run as deep_run_store
 from vaner.store.artefacts import ArtefactStore
 from vaner.store.profile_store import UserProfileStore
 from vaner.store.scenarios import ScenarioStore
@@ -196,6 +215,18 @@ class VanerEngine:
         # string / list means "no prior observation", which yields no signals.
         self._last_observed_head_sha: str = ""
         self._last_observed_categories: list[str] = []
+        # 0.8.3 WS1: cached active Deep-Run session. Loaded from the store
+        # by ``initialize()`` (resume-on-restart), updated by
+        # ``start_deep_run`` / ``stop_deep_run``. ``None`` means no
+        # session is in flight.
+        self._active_deep_run_session: DeepRunSession | None = None
+        self._deep_run_loaded: bool = False
+        # 0.8.3 WS2: resource gate probe + threshold config. The default
+        # NoOpResourceGateProbe reports "no constraint" everywhere so
+        # tests do not need to mock platform info; production wiring
+        # plugs in a psutil-backed probe via ``set_resource_gate_probe``.
+        self._resource_gate_probe: ResourceGateProbe = NoOpResourceGateProbe()
+        self._resource_gate_config = ResourceGateConfig()
         # WS9: single canonical briefing assembler. Engine holds it so the
         # approximation-warning latch is shared across call sites (draft path
         # + evidence-threshold synthesis). A real tokenizer can be injected
@@ -314,6 +345,7 @@ class VanerEngine:
             self._arc_loaded = True
         await self._sync_extra_context_sources()
         await self._sync_pinned_facts()
+        await self._resume_deep_run_on_restart()
 
     def invalidate_extra_sources(self) -> None:
         """Mark external context sources dirty so they are re-synced."""
@@ -2969,6 +3001,226 @@ class VanerEngine:
         await self.initialize()
         graph = await self._load_graph()
         return graph.propagate(source_key, depth=depth)
+
+    async def _resume_deep_run_on_restart(self) -> None:
+        """Resume / expire / clear the cached Deep-Run session on startup.
+
+        Called from ``initialize()``. Idempotent — flips
+        ``_deep_run_loaded`` after the first successful run so subsequent
+        ``initialize()`` calls (which happen on every ``observe`` and
+        ``prepare``) are no-ops.
+
+        Two cases:
+
+        1. The DB has a session whose ``ends_at`` is in the past — the
+           daemon was likely killed during a window. Mark it ``ended``
+           with ``cancelled_reason="expired_on_restart"`` and clear the
+           cache.
+        2. The DB has a session whose ``ends_at`` is still in the
+           future — restore it to the in-memory cache. Counters and
+           ``status`` are taken from the persisted row verbatim; any
+           in-flight policy state (preset bias, locality, etc.) is
+           re-applied by the next cycle.
+        """
+
+        if self._deep_run_loaded:
+            return
+        await deep_run_store.close_expired_sessions(self.store.db_path, now=time.time())
+        self._active_deep_run_session = await deep_run_store.get_active_session(self.store.db_path)
+        # WS2: publish the restored session to the routing singleton +
+        # cost-gate state so the router enforces locality / cost from
+        # the moment the engine comes up. ``None`` clears both.
+        set_active_session_for_routing(self._active_deep_run_session)
+        reset_cost_gate(self._active_deep_run_session)
+        self._deep_run_loaded = True
+
+    async def start_deep_run(
+        self,
+        *,
+        ends_at: float,
+        preset: DeepRunPreset = "balanced",
+        focus: DeepRunFocus = "active_goals",
+        horizon_bias: DeepRunHorizonBias = "balanced",
+        locality: DeepRunLocality = "local_preferred",
+        cost_cap_usd: float = 0.0,
+        workspace_root: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> DeepRunSession:
+        """Start a new Deep-Run session.
+
+        Single-active-session is enforced at the store layer — a second
+        concurrent ``start_deep_run`` raises
+        :class:`DeepRunActiveSessionExistsError`. Surfaces (CLI / MCP /
+        cockpit / desktop) translate that into a stable user-facing
+        message.
+
+        ``cost_cap_usd`` defaults to ``0.0``, which means *no remote
+        spend permitted* for the session — the safe default. Callers
+        wanting cloud spend opt in explicitly per session.
+        """
+
+        await self.initialize()
+        session = DeepRunSession.new(
+            ends_at=ends_at,
+            preset=preset,
+            focus=focus,
+            horizon_bias=horizon_bias,
+            locality=locality,
+            cost_cap_usd=cost_cap_usd,
+            workspace_root=workspace_root or str(self.config.repo_root),
+            metadata=metadata,
+        )
+        await deep_run_store.create_session(self.store.db_path, session)
+        self._active_deep_run_session = session
+        # WS2: publish to the router + reset the in-memory cost gate
+        # so the very next remote-call decision sees the new policy.
+        set_active_session_for_routing(session)
+        reset_cost_gate(session)
+        return session
+
+    async def stop_deep_run(self, *, kill: bool = False, reason: str | None = None) -> DeepRunSummary | None:
+        """Stop the currently active Deep-Run session.
+
+        Returns the final :class:`DeepRunSummary`, or ``None`` if no
+        session was active. ``kill=True`` records ``status="killed"``
+        for the audit trail; the caller is responsible for halting
+        in-flight cycles. ``kill=False`` (default) records
+        ``status="ended"`` for a clean stop.
+        """
+
+        await self.initialize()
+        session = self._active_deep_run_session
+        if session is None:
+            return None
+        now = time.time()
+        new_status = "killed" if kill else "ended"
+        await deep_run_store.update_session_status(
+            self.store.db_path,
+            session.id,
+            status=new_status,
+            ended_at=now,
+            cancelled_reason=reason if reason is not None else session.cancelled_reason,
+        )
+        # Refresh from disk so the summary reflects any concurrent
+        # counter increments the cycle loop wrote in parallel.
+        refreshed = await deep_run_store.get_session(self.store.db_path, session.id)
+        self._active_deep_run_session = None
+        # WS2: clear the routing singleton + cost gate so subsequent
+        # remote calls fall back to the router's normal behaviour.
+        set_active_session_for_routing(None)
+        reset_cost_gate(None)
+        if refreshed is None:
+            return None
+        return DeepRunSummary.from_session(refreshed)
+
+    async def current_deep_run(self) -> DeepRunSession | None:
+        """Return the active Deep-Run session, or ``None``.
+
+        Reads from the in-memory cache. The cache is populated by
+        ``initialize()`` / ``start_deep_run`` and cleared by
+        ``stop_deep_run``; it is the canonical record every Vaner
+        surface should render.
+        """
+
+        await self.initialize()
+        return self._active_deep_run_session
+
+    async def list_deep_run_sessions(self, *, limit: int = 20) -> list[DeepRunSession]:
+        """Recent Deep-Run sessions, newest first. Includes terminated
+        sessions for the history surface."""
+
+        await self.initialize()
+        return await deep_run_store.list_sessions(self.store.db_path, limit=limit)
+
+    def set_resource_gate_probe(
+        self,
+        probe: ResourceGateProbe,
+        *,
+        config: ResourceGateConfig | None = None,
+    ) -> None:
+        """Inject a platform-specific :class:`ResourceGateProbe`.
+
+        Production daemon wires a psutil-backed probe at startup; tests
+        compose with the mutable :class:`NoOpResourceGateProbe`. Safe to
+        call at any time — the next gate evaluation uses the new probe.
+        """
+
+        self._resource_gate_probe = probe
+        if config is not None:
+            self._resource_gate_config = config
+
+    async def evaluate_deep_run_gates(self) -> list[DeepRunPauseReason]:
+        """Evaluate the resource gates against the current probe.
+
+        If a session is active and the gates report constraints that
+        differ from the session's recorded ``pause_reasons``, persist
+        the new set and flip the session's status accordingly:
+
+        - non-empty constraints + ``status == 'active'`` ⇒ ``paused``
+        - empty constraints + ``status == 'paused'`` ⇒ ``active``
+        - same constraints ⇒ no-op (avoids spurious DB writes)
+
+        Returns the current set of pause reasons (empty when the
+        session may run, or when no session is active).
+        """
+
+        session = self._active_deep_run_session
+        if session is None:
+            return []
+        reasons = evaluate_resource_gates(
+            probe=self._resource_gate_probe,
+            config=self._resource_gate_config,
+        )
+        same = sorted(reasons) == sorted(session.pause_reasons)
+        if same and ((reasons and session.status == "paused") or (not reasons and session.status == "active")):
+            return reasons
+        new_status = "paused" if reasons else "active"
+        await deep_run_store.update_session_status(
+            self.store.db_path,
+            session.id,
+            status=new_status,
+            pause_reasons=reasons,
+        )
+        session.pause_reasons = list(reasons)
+        session.status = new_status
+        return reasons
+
+    async def flush_deep_run_cost_to_store(self) -> float | None:
+        """Push the in-memory cost-gate spend into the persisted session row.
+
+        Returns the persisted ``spend_usd`` after the flush, or ``None``
+        if no session / no cost gate. Engine calls this at end of cycle
+        so the cockpit / CLI / desktop see up-to-date durable spend.
+        """
+
+        session = self._active_deep_run_session
+        if session is None:
+            return None
+        in_memory = cost_gate_spent_usd()
+        if in_memory is None:
+            return None
+        delta = max(0.0, in_memory - session.spend_usd)
+        if delta > 0:
+            await deep_run_store.increment_session_counters(self.store.db_path, session.id, spend_usd=delta)
+            session.spend_usd = in_memory
+        return session.spend_usd
+
+    async def increment_deep_run_cycle_counter(self, *, promoted_count: int = 0) -> None:
+        """Advance the active session's ``cycles_run`` (+optional promoted
+        count) by one cycle. Called by the engine at the end of every
+        cycle that ran while a Deep-Run session was active."""
+
+        session = self._active_deep_run_session
+        if session is None:
+            return
+        await deep_run_store.increment_session_counters(
+            self.store.db_path,
+            session.id,
+            cycles_run=1,
+            promoted_count=promoted_count,
+        )
+        session.cycles_run += 1
+        session.promoted_count += promoted_count
 
     async def run_background(self, interval_seconds: int = 15, governor: PredictionGovernor | None = None) -> None:
         self._running = True
