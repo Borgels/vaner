@@ -203,6 +203,10 @@ def _consume_remote_budget(repo_root: Path, max_per_hour: int) -> bool:
                 os.replace(tmp_name, state_path)
             except Exception:
                 # Best-effort cleanup of the temp file on failure.
+                # Swallow unlink errors — the primary failure is about
+                # to re-raise below; a cleanup race (e.g. another
+                # process already removed it) must not mask the root
+                # cause.
                 try:
                     os.unlink(tmp_name)
                 except OSError:
