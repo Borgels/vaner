@@ -42,17 +42,6 @@ async def test_tiered_cache_returns_full_hit(tmp_path: Path):
     assert matched.package.id == "pkg-1"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Pre-existing: observed similarity ~0.58 with perfect relevant-path "
-        "overlap against canonical units. TieredPredictionCache's similarity "
-        "computation factors in prompt-hint embedding distance as well as "
-        "unit overlap, so even with 2-of-2 path match the score is weighted "
-        "below 1.0 by the prompt-text similarity term. Fix tracked as a 0.8.1 "
-        "cache-scoring follow-up; unchanged from pre-0.8.0 state."
-    ),
-    strict=False,
-)
 @pytest.mark.asyncio
 async def test_tiered_cache_prefers_canonical_units_over_legacy(tmp_path: Path):
     store = ArtefactStore(tmp_path / "cache_canonical.db")
@@ -60,6 +49,14 @@ async def test_tiered_cache_prefers_canonical_units_over_legacy(tmp_path: Path):
     cache = TieredPredictionCache(store)
 
     # Canonical keys intentionally disagree with legacy keys.
+    #
+    # ``exploration_source`` must be set to mark this as an intentional
+    # prediction entry. Without it, ``match()`` classifies the record as a
+    # query write-through (prior-turn selections persisted as a cache
+    # side-effect) and applies a 0.55 discount to deprioritise it — that
+    # penalty is load-bearing and documented at cache.py:219-226. The test
+    # is about canonical-vs-legacy-unit preference, not the write-through
+    # penalty, so we opt into the intentional-prediction branch.
     await cache.store_entry(
         prompt_hint="explain sample module",
         package=None,
@@ -68,6 +65,7 @@ async def test_tiered_cache_prefers_canonical_units_over_legacy(tmp_path: Path):
             "anchor_files": ["legacy_wrong.py"],
             "source_units": ["sample_helper.py"],
             "source_paths": ["legacy_source_wrong.py"],
+            "exploration_source": "llm_branch",
         },
     )
 
