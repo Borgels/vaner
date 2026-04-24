@@ -210,6 +210,7 @@ def _consume_remote_budget(repo_root: Path, max_per_hour: int) -> bool:
                 try:
                     os.unlink(tmp_name)
                 except OSError:
+                    # See outer comment: intentionally silent.
                     pass
                 raise
             return True
