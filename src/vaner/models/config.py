@@ -102,6 +102,12 @@ class MCPConfig(BaseModel):
     transport: Literal["stdio", "sse"] = "stdio"
     http_host: str = "127.0.0.1"
     http_port: int = 8472
+    apps_ui_enabled: bool = Field(default=True)
+    """0.8.5 WS7 — register the MCP Apps active-predictions UI resource and
+    attach it to `vaner.predictions.dashboard` tool results for Tier-4
+    clients. Flip to `False` to kill-switch the UI if a specific host
+    rejects the profile; the dashboard tool still returns the structured
+    text fallback."""
 
 
 class ComputeConfig(BaseModel):
