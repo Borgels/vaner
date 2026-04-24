@@ -102,7 +102,12 @@ jobs:
           fail_ci_if_error: false
       - name: Security audit
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        run: pip-audit
+        # CVE-2026-3219 applies to pip itself. pip 26.0.1 is both the
+        # latest release and the vulnerable version — no upstream fix
+        # is available yet. Dismissed in Dependabot as ``tolerable_risk``
+        # with --require-hashes as the compensating control in CI. Drop
+        # the ignore flag once a patched pip release ships.
+        run: pip-audit --ignore-vuln CVE-2026-3219
       - name: Installer lint and dry-run smoke
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         run: |
