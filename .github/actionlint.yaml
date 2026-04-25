@@ -1,0 +1,13 @@
+# Tell actionlint about the org's GitHub-hosted larger runners.
+# These are NOT self-hosted — they are managed GitHub-hosted runners
+# in the "Default Larger Runners" group. Actionlint doesn't know
+# their labels by default, so listing them here suppresses
+# `runner-label` warnings without needing to introduce a self-hosted
+# fallback path.
+#
+# Source: org-level Actions runner-group config (Borgels/Default Larger Runners).
+
+self-hosted-runner:
+  labels:
+    - ubuntu-latest-m
+    - windows-latest-l
