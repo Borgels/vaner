@@ -597,7 +597,13 @@ class IntegrationsConfig(BaseModel):
 
 
 class RefinementConfig(BaseModel):
-    enabled: bool = Field(default=False)
+    enabled: bool = Field(default=True)
+    """0.8.5 WS11 — default flipped to True. Refinement runs at most
+    ``max_candidates_per_cycle`` maturation passes per background cycle,
+    guarded by ``min_remaining_deadline_seconds`` so it never starves
+    the precompute budget. Disable with ``--no-refinement`` on
+    ``vaner daemon`` or set ``refinement.enabled = false`` in config
+    for a persistent opt-out."""
     max_candidates_per_cycle: int = Field(default=3, ge=1)
     min_remaining_deadline_seconds: float = Field(default=2.0, ge=0.0)
     # WS4 — adoption-outcome sweep thresholds (these are always-active;

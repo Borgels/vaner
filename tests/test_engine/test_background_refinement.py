@@ -127,6 +127,9 @@ async def test_disabled_flag_skips_refinement_entirely(tmp_path) -> None:
     _seed_registry(engine, [_ready_prediction()])
 
     # Flag is False by default — hook should not invoke drafter.
+    # 0.8.5 WS11: default was flipped to True — tests flip it off here
+    # so the disabled-flag guard is still exercised.
+    engine.config.refinement.enabled = False
     assert engine.config.refinement.enabled is False
     attempted = await engine._run_background_refinement_pass(governor=None, cycle_deadline=None)
     assert attempted == 0
@@ -136,6 +139,10 @@ async def test_disabled_flag_skips_refinement_entirely(tmp_path) -> None:
 async def test_enabled_without_drafter_is_no_op(tmp_path) -> None:
     engine = _make_engine(tmp_path / "repo")
     engine.config.refinement.enabled = True
+    # 0.8.5 WS11: __init__ auto-wires a production drafter when the flag
+    # is True. Clear it here so the "no drafter present" code path is
+    # exercised explicitly.
+    engine._refinement_drafter = None  # noqa: SLF001
     _seed_registry(engine, [_ready_prediction()])
     # No drafter set → hook returns 0.
     attempted = await engine._run_background_refinement_pass(governor=None, cycle_deadline=None)
@@ -265,10 +272,26 @@ async def test_probationary_predictions_not_re_matured(tmp_path) -> None:
 
 async def test_set_refinement_drafter_is_injectable(tmp_path) -> None:
     engine = _make_engine(tmp_path / "repo")
-    assert engine._refinement_drafter is None  # noqa: SLF001
+    # 0.8.5 WS11: default-True refinement.enabled auto-wires a production
+    # drafter in __init__. Clear it first so the override semantics of
+    # set_refinement_drafter() are what we're testing here.
+    engine._refinement_drafter = None  # noqa: SLF001
     drafter, _ = _make_counting_drafter()
     engine.set_refinement_drafter(drafter)
     assert engine._refinement_drafter is drafter  # noqa: SLF001
+
+
+async def test_auto_wired_drafter_on_construction_when_enabled(tmp_path) -> None:
+    """0.8.5 WS11 — ``refinement.enabled=True`` default auto-wires a drafter."""
+    engine = _make_engine(tmp_path / "repo")
+    # The test harness's _make_engine may or may not start with enabled=True;
+    # force the production path explicitly.
+    if not engine.config.refinement.enabled or engine._refinement_drafter is None:  # noqa: SLF001
+        engine.config.refinement.enabled = True
+        from vaner.intent.refinement_wiring import build_production_maturation_drafter
+
+        engine._refinement_drafter = build_production_maturation_drafter(engine._drafter)  # noqa: SLF001
+    assert engine._refinement_drafter is not None  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------

@@ -267,6 +267,17 @@ class VanerEngine:
         # path. Engine holds the draft/briefing cache + registry bookkeeping
         # around it.
         self._drafter = Drafter(llm=self.llm, assembler=self._briefing_assembler)
+        # 0.8.5 WS11: auto-wire a production MaturationDrafterCallable when
+        # refinement is enabled and no drafter has been injected manually.
+        # Tests that want a stub drafter can still call
+        # ``set_refinement_drafter(stub)`` after construction to override.
+        if self.config.refinement.enabled and self._refinement_drafter is None:
+            try:
+                from vaner.intent.refinement_wiring import build_production_maturation_drafter
+
+                self._refinement_drafter = build_production_maturation_drafter(self._drafter)
+            except Exception:  # pragma: no cover - defensive
+                self._refinement_drafter = None
         # WS7: per-cycle cache of active workspace goals. Refreshed at the
         # top of precompute_cycle via ``_refresh_inferred_goals``;
         # consumed by ``_merge_prediction_specs`` to seed goal-anchored
