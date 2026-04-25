@@ -69,7 +69,7 @@
       },
       "readiness_label": "Drafting",
       "eta_bucket": "under_20s",
-      "eta_bucket_label": "~10-20s",
+      "eta_bucket_label": "~10–20s",
       "adoptable": true,
       "rank": 2,
       "ui_summary": "JWT migration rollout is almost draft-ready",

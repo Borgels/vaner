@@ -69,7 +69,10 @@ fn predictions_active_envelope_decodes() {
     assert_eq!(goal.spec.anchor.as_deref(), Some("JWT migration"));
     assert_eq!(goal.run.readiness, Readiness::Drafting);
     assert_eq!(goal.eta_bucket, Some(EtaBucket::Under20s));
-    assert_eq!(goal.eta_bucket_label.as_deref(), Some("~10-20s"));
+    // En-dash matches the daemon's `_ETA_BUCKET_LABELS` source of truth in
+    // `vaner.intent.readiness`; the spec (3b.md) calls for a typographic
+    // range dash. Hyphen-minus would silently break the wire-shape match.
+    assert_eq!(goal.eta_bucket_label.as_deref(), Some("~10–20s"));
     assert_eq!(goal.adoptable, Some(true));
     assert_eq!(goal.rank, Some(2));
 
