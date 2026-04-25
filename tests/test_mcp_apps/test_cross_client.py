@@ -63,10 +63,23 @@ _CASES = [
         ClientCapabilityTier.TIER_2,
         {"roots": SimpleNamespace(listChanged=True)},
     ),
+    # Cursor pre-2.6 — MCP-aware but no UI extension. Tier 2.
     (
-        "cursor",
+        "cursor_pre_2_6",
         ClientCapabilityTier.TIER_2,
         {"sampling": SimpleNamespace()},
+    ),
+    # Cursor 2.6+ ships MCP Apps support. Detection is value-driven (we
+    # match on the experimental UI key, not the client name) so the same
+    # capability-detection code automatically promotes Cursor to Tier-4
+    # the moment it advertises the extension. This case pins the contract.
+    (
+        "cursor_2_6_ui",
+        ClientCapabilityTier.TIER_4,
+        {
+            "experimental": {"io.modelcontextprotocol/ui": {"version": 1}},
+            "sampling": SimpleNamespace(),
+        },
     ),
     (
         "vscode_copilot",

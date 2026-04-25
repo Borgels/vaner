@@ -44,26 +44,48 @@ def test_html_bundle_has_inline_script_and_style() -> None:
     assert "<script" in ACTIVE_PREDICTIONS_HTML
 
 
-def test_html_bundle_does_not_connect_to_daemon_directly() -> None:
-    # The only allowed external URL is the unpkg SDK import. Any http
-    # URL to 127.0.0.1, localhost, or 0.0.0.0 would indicate a direct
-    # daemon call from the iframe — forbidden per the CSP model.
-    for bad in ("127.0.0.1", "localhost", "0.0.0.0"):
-        assert bad not in ACTIVE_PREDICTIONS_HTML
+def test_html_bundle_does_not_reach_external_network() -> None:
+    # 0.8.5 WS13: SDK is inlined; the iframe must not reach ANY external
+    # network at runtime. Sweep for: direct daemon URLs, unpkg, and any
+    # other http(s) reference in *executable* positions. Allow bare
+    # mentions of 'http' that appear inside Zod URL-validator regexes
+    # (the inlined SDK ships URL-validator code) — they don't trigger
+    # network calls; they're only part of pattern strings.
+    for bad in ("127.0.0.1", "localhost", "0.0.0.0", "unpkg.com"):
+        assert bad not in ACTIVE_PREDICTIONS_HTML, (
+            f"HTML bundle must not reference {bad!r} — 0.8.5 WS13 vendored the ext-apps SDK to remove the runtime unpkg dependency."
+        )
 
 
 def test_html_bundle_pins_ext_apps_version() -> None:
-    # Lock the version so a supply-chain change forces a visible diff.
+    # Lock the vendored version so a supply-chain change forces a visible diff.
+    # The version string lives in the vendor banner header comment.
     assert "@modelcontextprotocol/ext-apps@0.4.0" in ACTIVE_PREDICTIONS_HTML
+
+
+def test_html_bundle_inlines_sdk_with_provenance_banner() -> None:
+    # 0.8.5 WS13: vendored SDK must carry the upstream tarball SHA-256
+    # so a future re-vendor preserves the provenance trail.
+    assert "vendored verbatim from npm tarball" in ACTIVE_PREDICTIONS_HTML
+    assert "2dd6b45ff36a6e9a2116c0890a136623c348ff1cc90bfffcbd2ad29098005c0c" in ACTIVE_PREDICTIONS_HTML
+
+
+def test_html_bundle_rebinds_app_class_after_strip() -> None:
+    # The trailing `export { ... gc as App }` line is stripped during
+    # vendoring; we re-bind via `const App = gc` so the rest of our code
+    # keeps working. Pinned here so a future re-vendor doesn't silently
+    # forget the binding.
+    assert "const App = gc;" in ACTIVE_PREDICTIONS_HTML
 
 
 def test_sha256_is_stable_hex_digest() -> None:
     assert re.match(r"^[0-9a-f]{64}$", ACTIVE_PREDICTIONS_SHA256)
 
 
-def test_csp_resource_domains_only_unpkg() -> None:
-    # Tight allowlist — only unpkg for the pinned ext-apps SDK.
-    assert CSP_RESOURCE_DOMAINS == ("https://unpkg.com",)
+def test_csp_resource_domains_is_empty() -> None:
+    # 0.8.5 WS13: SDK inlined → no external network needed → empty allowlist.
+    # `default-src 'none'` posture for the iframe.
+    assert CSP_RESOURCE_DOMAINS == ()
 
 
 def test_resource_meta_includes_csp() -> None:

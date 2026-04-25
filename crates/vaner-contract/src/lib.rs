@@ -36,7 +36,7 @@ pub mod sse;
 #[cfg(feature = "ts-rs")]
 pub mod ts;
 
-pub use enums::{HypothesisType, PredictionSource, Readiness, Specificity};
+pub use enums::{EtaBucket, HypothesisType, PredictionSource, Readiness, Specificity};
 pub use errors::EngineClientError;
 pub use handoff::{AdoptHandoffError, handoff_path, stash_adopt};
 pub use models::{

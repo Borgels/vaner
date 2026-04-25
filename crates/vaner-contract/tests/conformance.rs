@@ -12,7 +12,8 @@
 
 use serde::Deserialize;
 use vaner_contract::{
-    HypothesisType, PredictedPrompt, PredictionSource, Readiness, Resolution, Specificity,
+    EtaBucket, HypothesisType, PredictedPrompt, PredictionSource, Readiness, Resolution,
+    Specificity,
 };
 
 #[derive(Deserialize)]
@@ -51,11 +52,29 @@ fn predictions_active_envelope_decodes() {
     assert_eq!(ready.run.readiness, Readiness::Ready);
     assert!(ready.artifacts.has_draft);
     assert!(ready.artifacts.has_briefing);
+    assert_eq!(ready.readiness_label.as_deref(), Some("Ready"));
+    assert_eq!(ready.eta_bucket, Some(EtaBucket::ReadyNow));
+    assert_eq!(ready.eta_bucket_label.as_deref(), Some("Ready now"));
+    assert_eq!(ready.adoptable, Some(true));
+    assert_eq!(ready.rank, Some(1));
+    assert_eq!(
+        ready.ui_summary.as_deref(),
+        Some("Ready test draft for webhook signing")
+    );
+    assert_eq!(ready.suppression_reason, None);
+    assert_eq!(ready.source_label.as_deref(), Some("Arc"));
 
     let goal = &envelope.predictions[1];
     assert_eq!(goal.spec.source, PredictionSource::Goal);
     assert_eq!(goal.spec.anchor.as_deref(), Some("JWT migration"));
     assert_eq!(goal.run.readiness, Readiness::Drafting);
+    assert_eq!(goal.eta_bucket, Some(EtaBucket::Under20s));
+    // En-dash matches the daemon's `_ETA_BUCKET_LABELS` source of truth in
+    // `vaner.intent.readiness`; the spec (3b.md) calls for a typographic
+    // range dash. Hyphen-minus would silently break the wire-shape match.
+    assert_eq!(goal.eta_bucket_label.as_deref(), Some("~10–20s"));
+    assert_eq!(goal.adoptable, Some(true));
+    assert_eq!(goal.rank, Some(2));
 
     let queued = &envelope.predictions[2];
     assert_eq!(queued.spec.source, PredictionSource::Macro);
@@ -64,6 +83,9 @@ fn predictions_active_envelope_decodes() {
     assert_eq!(queued.run.readiness, Readiness::Queued);
     assert!(!queued.artifacts.has_draft);
     assert_eq!(queued.spec.description, None);
+    assert_eq!(queued.eta_bucket, Some(EtaBucket::Maturing));
+    assert_eq!(queued.adoptable, Some(false));
+    assert_eq!(queued.suppression_reason.as_deref(), Some("low_confidence"));
 }
 
 #[test]
@@ -73,6 +95,9 @@ fn predictions_single_decodes() {
         serde_json::from_str(&body).expect("single prediction must decode");
     assert_eq!(prediction.id, "pred-ready-0001");
     assert_eq!(prediction.run.readiness, Readiness::Ready);
+    assert_eq!(prediction.eta_bucket, Some(EtaBucket::ReadyNow));
+    assert_eq!(prediction.rank, Some(1));
+    assert_eq!(prediction.adoptable, Some(true));
 }
 
 #[test]

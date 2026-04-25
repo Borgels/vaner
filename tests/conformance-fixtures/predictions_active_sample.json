@@ -28,7 +28,15 @@
         "has_draft": true,
         "has_briefing": true,
         "thinking_trace_count": 3
-      }
+      },
+      "readiness_label": "Ready",
+      "eta_bucket": "ready_now",
+      "eta_bucket_label": "Ready now",
+      "adoptable": true,
+      "rank": 1,
+      "ui_summary": "Ready test draft for webhook signing",
+      "suppression_reason": null,
+      "source_label": "Arc"
     },
     {
       "id": "pred-goal-0002",
@@ -58,7 +66,15 @@
         "has_draft": false,
         "has_briefing": true,
         "thinking_trace_count": 2
-      }
+      },
+      "readiness_label": "Drafting",
+      "eta_bucket": "under_20s",
+      "eta_bucket_label": "~10–20s",
+      "adoptable": true,
+      "rank": 2,
+      "ui_summary": "JWT migration rollout is almost draft-ready",
+      "suppression_reason": null,
+      "source_label": "Goal"
     },
     {
       "id": "pred-queued-0003",
@@ -88,7 +104,15 @@
         "has_draft": false,
         "has_briefing": false,
         "thinking_trace_count": 0
-      }
+      },
+      "readiness_label": "Queued",
+      "eta_bucket": "maturing",
+      "eta_bucket_label": "Maturing in background",
+      "adoptable": false,
+      "rank": 3,
+      "ui_summary": "OAuth refresh-token branch is still maturing",
+      "suppression_reason": "low_confidence",
+      "source_label": "Macro"
     }
   ]
 }

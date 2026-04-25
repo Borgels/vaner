@@ -4,11 +4,19 @@
 
 AGENTS.md contains an inline primer between machine-parseable markers:
 
-    <!-- vaner-primer:start v=0.8.5 -->
+    <!-- vaner-primer:start v=1 -->
     ...body...
     <!-- vaner-primer:end -->
 
-This script rewrites that block to match
+The `v=` marker tracks the **canonical guidance asset's `guidance_version`
+field** (the integer at the top of `vaner_guidance_v1.md`'s frontmatter),
+NOT the Vaner release tag. The asset only bumps when the guidance content
+materially changes — most Vaner releases leave it untouched. So a
+machine reading `v=1` in a 0.8.5 install is the *expected* state, not a
+sign of stale primer. The 0.8.5 plan briefly conflated the two; see the
+"WS13 plan correction" note in we-will-now-move-cozy-harbor.md.
+
+This script rewrites the marker + body to match
 `src/vaner/integrations/guidance/vaner_guidance_v1.md`. Run in CI with
 `--check` to enforce lockstep.
 """
@@ -44,7 +52,13 @@ def _load_canonical_body() -> tuple[str, int]:
 
 
 def _render_primer_block(body: str, version: int) -> str:
-    # We use the guidance_version as the primer version marker; bump-free sync.
+    """Render the primer block.
+
+    `version` is the canonical guidance asset's `guidance_version` (an
+    integer). It is **not** the Vaner release tag — the marker decouples
+    primer freshness from release cadence so most releases don't churn
+    AGENTS.md unnecessarily. See module docstring for rationale.
+    """
     start_marker = f"<!-- vaner-primer:start v={version} -->"
     heading = "# Using Vaner"
     return f"{start_marker}\n{heading}\n\n{body}\n{PRIMER_END}"

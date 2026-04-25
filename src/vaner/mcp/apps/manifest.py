@@ -5,8 +5,10 @@ The resource URI + CSP metadata match the `@modelcontextprotocol/ext-apps`
 convention: `ui://<server>/<view>.html` with MIME `text/html;profile=mcp-app`
 and a `ui` meta entry that scopes network access via `csp.resourceDomains`.
 
-We allow only `unpkg.com` for the pinned ext-apps SDK import. Every other
-network egress is blocked by the host CSP applied to the iframe.
+0.8.5 WS13: the `@modelcontextprotocol/ext-apps@0.4.0` SDK is now inlined
+verbatim into `active_predictions.html` (vendored from the npm tarball;
+SHA-256 in the file's header banner). The iframe needs **zero external
+network** at runtime — `csp.resourceDomains` is empty.
 """
 
 from __future__ import annotations
@@ -23,10 +25,11 @@ ACTIVE_PREDICTIONS_DESCRIPTION: Final[str] = (
     "convert a prediction into the next Resolution."
 )
 
-# Which domains the sandboxed iframe may reach. Only the pinned ext-apps
-# SDK loader. Everything else — including the local daemon — is reached
-# through the host's postMessage bridge, never directly.
-CSP_RESOURCE_DOMAINS: Final[tuple[str, ...]] = ("https://unpkg.com",)
+# Which domains the sandboxed iframe may reach. With the ext-apps SDK
+# inlined into active_predictions.html (0.8.5 WS13), the iframe needs
+# zero external network — every state-changing action goes through the
+# host's postMessage bridge.
+CSP_RESOURCE_DOMAINS: Final[tuple[str, ...]] = ()
 
 
 def resource_meta() -> dict[str, Any]:
