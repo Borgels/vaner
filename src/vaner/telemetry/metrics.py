@@ -209,10 +209,16 @@ class MetricsStore:
                     evidence_overlap REAL NOT NULL DEFAULT 0.0,
                     answer_reuse_ratio REAL NOT NULL DEFAULT 0.0,
                     directional_correct INTEGER NOT NULL DEFAULT 0,
-                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    event_type TEXT NOT NULL DEFAULT 'legacy_draft'
                 )
                 """
             )
+            # 0.8.7 WS6: idempotent ALTER for pre-0.8.7 DBs that already
+            # had ``draft_events`` without an ``event_type`` column. Existing
+            # rows default to 'legacy_draft' so the post-migration view of
+            # the existing 0.8.6 dashboard counters is byte-identical.
+            await self._ensure_column(db, "draft_events", "event_type", "TEXT NOT NULL DEFAULT 'legacy_draft'")
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS counterfactual_misses (
@@ -643,9 +649,9 @@ class MetricsStore:
                 """
                 INSERT INTO draft_events (
                     id, timestamp, status, predicted_prompt_similarity, evidence_overlap,
-                    answer_reuse_ratio, directional_correct, metadata_json
+                    answer_reuse_ratio, directional_correct, metadata_json, event_type
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()),
@@ -656,6 +662,7 @@ class MetricsStore:
                     max(0.0, min(1.0, float(answer_reuse_ratio))),
                     int(bool(directional_correct)),
                     json.dumps(payload, sort_keys=True),
+                    "legacy_draft",
                 ),
             )
             await db.execute(
@@ -710,6 +717,66 @@ class MetricsStore:
                         """,
                         ("draft_directionally_correct_total", 1.0, now),
                     )
+            await db.commit()
+
+    async def record_composer_lifecycle_event(
+        self,
+        *,
+        session_id: str,
+        snapshot_id: str,
+        lifecycle_state: str,
+        text_hash: str,
+        length_chars: int,
+        composer_event_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Record a composer-lifecycle observation (0.8.7 WS6).
+
+        Composer-lifecycle rows write to the *separate* counter prefix
+        ``composer_{lifecycle_state}_total`` so they never corrupt the
+        existing ``draft_{served|useful|wrong|unused}_total`` counters
+        that 0.8.6 dashboards depend on. The ``event_type`` column on
+        ``draft_events`` distinguishes these rows from legacy
+        ``record_draft_event`` writes.
+        """
+        payload = dict(metadata or {})
+        # Composer events carry no draft-quality numerics (no answer
+        # reuse, no evidence overlap — those are draft-completion
+        # signals). Preserve session/snapshot/hash metadata so the row
+        # is auditable even though the raw text is never stored.
+        payload.setdefault("session_id", session_id)
+        payload.setdefault("snapshot_id", snapshot_id)
+        payload.setdefault("text_hash", text_hash)
+        payload.setdefault("length_chars", length_chars)
+        payload.setdefault("composer_event_id", composer_event_id)
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO draft_events (
+                    id, timestamp, status, predicted_prompt_similarity, evidence_overlap,
+                    answer_reuse_ratio, directional_correct, metadata_json, event_type
+                )
+                VALUES (?, ?, ?, 0.0, 0.0, 0.0, 0, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    now,
+                    lifecycle_state,
+                    json.dumps(payload, sort_keys=True),
+                    "composer_lifecycle",
+                ),
+            )
+            await db.execute(
+                """
+                INSERT INTO memory_quality_counters (name, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    value = value + excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (f"composer_{lifecycle_state}_total", 1.0, now),
+            )
             await db.commit()
 
     async def record_counterfactual_miss(
