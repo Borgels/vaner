@@ -295,8 +295,29 @@ def build_server(
         while len(suggestion_cache) > _SUGGESTION_CACHE_CAPACITY:
             suggestion_cache.popitem(last=False)
 
+    def _detect_and_record_tier() -> None:
+        """Lazy capability detection on first tool/resource call per session.
+
+        The low-level MCP Server does not expose an ``on_initialize`` hook,
+        so we piggyback on the first handler call. Safe to call repeatedly —
+        :func:`record_tier` replaces any prior cache entry for the session.
+        """
+        try:
+            from vaner.integrations.capability import detect_tier, record_tier
+
+            ctx = getattr(server, "request_context", None)
+            session = getattr(ctx, "session", None) if ctx is not None else None
+            client_params = getattr(session, "client_params", None) if session is not None else None
+            if session is None or client_params is None:
+                return
+            detection = detect_tier(client_params)
+            record_tier(session, detection)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("capability detection skipped: %s", exc)
+
     @server.list_tools()
     async def list_tools() -> ListToolsResult:
+        _detect_and_record_tier()
         return ListToolsResult(
             tools=[
                 Tool(
