@@ -121,7 +121,12 @@ jobs:
       actions: read
       id-token: write
       contents: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a # v2.1.0
+    # slsa-github-generator REQUIRES a tag-form ref here — it verifies its own
+    # provenance against the tag at runtime and exits with `Invalid ref: <sha>`
+    # when called by SHA. This is the only reusable-workflow uses: line in the
+    # repo that intentionally bypasses the SHA-pin policy. See the project's
+    # SECURITY.md / RELEASE.md for the rationale.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.publish.outputs.slsa_subjects }}
       upload-assets: true
