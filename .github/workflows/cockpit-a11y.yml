@@ -62,7 +62,7 @@ jobs:
           npx vite preview --host 127.0.0.1 --port 5173 --strictPort &
           echo $! > preview.pid
           # Wait until the preview server responds.
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:5173/ > /dev/null; then
               echo "preview server ready"
               break
