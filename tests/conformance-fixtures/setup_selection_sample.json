@@ -1,0 +1,55 @@
+{
+  "bundle": {
+    "id": "hybrid_balanced",
+    "label": "Hybrid Balanced",
+    "description": "Sensible middle path: prefer local, reach for cloud when worth it.",
+    "local_cloud_posture": "hybrid",
+    "runtime_profile": "medium",
+    "spend_profile": "low",
+    "latency_profile": "balanced",
+    "privacy_profile": "standard",
+    "prediction_horizon_bias": {
+      "likely_next": 1.0,
+      "long_horizon": 0.5,
+      "finish_partials": 0.5,
+      "balanced": 1.0
+    },
+    "drafting_aggressiveness": 1.0,
+    "exploration_ratio": 0.5,
+    "persistence_strength": 1.0,
+    "goal_weighting": 1.0,
+    "context_injection_default": "policy_hybrid",
+    "deep_run_profile": "balanced"
+  },
+  "score": 4.2,
+  "reasons": [
+    "Balanced priority → hybrid_balanced is the canonical default",
+    "Capable hardware → hybrid_balanced runs medium",
+    "Hybrid-when-worth-it → hybrid_balanced is hybrid"
+  ],
+  "runner_ups": [
+    {
+      "id": "local_balanced",
+      "label": "Local Balanced",
+      "description": "Local-first balanced default.",
+      "local_cloud_posture": "local_preferred",
+      "runtime_profile": "medium",
+      "spend_profile": "zero",
+      "latency_profile": "balanced",
+      "privacy_profile": "standard",
+      "prediction_horizon_bias": {
+        "likely_next": 1.0,
+        "long_horizon": 0.5,
+        "finish_partials": 0.5,
+        "balanced": 1.0
+      },
+      "drafting_aggressiveness": 1.0,
+      "exploration_ratio": 0.5,
+      "persistence_strength": 1.0,
+      "goal_weighting": 1.0,
+      "context_injection_default": "policy_hybrid",
+      "deep_run_profile": "balanced"
+    }
+  ],
+  "forced_fallback": false
+}

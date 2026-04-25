@@ -30,6 +30,12 @@ fn main() {
         Provenance, Resolution, ResolutionAlternative, ResolutionEvidence, ScenarioCounts,
     };
     use vaner_contract::reducer::VanerState;
+    use vaner_contract::setup::{
+        AppliedPolicy, BackgroundPosture, CloudPosture, ComputePosture, DeepRunDefaults,
+        DetectedModel, HardwareProfile, HardwareTier, PolicyConfig, Priority, SelectionResult,
+        SetupAnswers, SetupConfig, SetupQuestion, SetupQuestionOption, VanerPolicyBundle,
+        WorkStyle,
+    };
 
     // Each `export_all` call writes the type *and* its transitive
     // dependencies, deduplicated by ts-rs. We invoke once per
@@ -52,6 +58,24 @@ fn main() {
         ("Readiness", Readiness::export_all),
         ("EtaBucket", EtaBucket::export_all),
         ("VanerState", VanerState::export_all),
+        // 0.8.6 WS12a — setup-wizard contract types.
+        ("WorkStyle", WorkStyle::export_all),
+        ("Priority", Priority::export_all),
+        ("ComputePosture", ComputePosture::export_all),
+        ("CloudPosture", CloudPosture::export_all),
+        ("BackgroundPosture", BackgroundPosture::export_all),
+        ("HardwareTier", HardwareTier::export_all),
+        ("SetupAnswers", SetupAnswers::export_all),
+        ("VanerPolicyBundle", VanerPolicyBundle::export_all),
+        ("DetectedModel", DetectedModel::export_all),
+        ("HardwareProfile", HardwareProfile::export_all),
+        ("SelectionResult", SelectionResult::export_all),
+        ("AppliedPolicy", AppliedPolicy::export_all),
+        ("SetupConfig", SetupConfig::export_all),
+        ("PolicyConfig", PolicyConfig::export_all),
+        ("DeepRunDefaults", DeepRunDefaults::export_all),
+        ("SetupQuestion", SetupQuestion::export_all),
+        ("SetupQuestionOption", SetupQuestionOption::export_all),
     ];
 
     let mut failures: Vec<(&str, ts_rs::ExportError)> = Vec::new();
