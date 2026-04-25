@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+#### Setup primitives + config schema (0.8.6 WS1)
+- **`src/vaner/setup/` module** — outcome-level configuration surface for the 0.8.6 Simple Mode wizard. Five `Literal` type aliases — `WorkStyle`, `Priority`, `ComputePosture`, `CloudPosture`, `BackgroundPosture` — plus a shared `HardwareTier` alias declared here for WS2 to populate via `tier_for()`.
+- **`SetupAnswers`** frozen dataclass (`src/vaner/setup/answers.py`) — immutable record of one wizard run, with `__post_init__` validation that rejects empty `work_styles` (the engine has no priors to average without at least one selection).
+- **`VanerPolicyBundle`** frozen dataclass (`src/vaner/setup/policy.py`) — outcome-level policy archetype. Carries cloud posture, runtime profile, spend profile, latency profile, privacy profile, four-key prediction-horizon-bias mapping, drafting aggressiveness, exploration ratio, persistence strength, goal weighting, context-injection default, and Deep-Run profile. Mapping keys are validated and frozen into a `MappingProxyType` view at construction time.
+- **`PROFILE_CATALOG`** (`src/vaner/setup/catalog.py`) — the seven shipped bundles per spec §9: `local_lightweight`, `local_balanced`, `local_heavy`, `hybrid_balanced`, `hybrid_quality`, `cost_saver`, `deep_research`. Plus `bundle_by_id()` lookup helper that raises `KeyError` (not a swallowed `None`) on unknown ids.
+- **`SetupConfig` and `PolicyConfig` Pydantic models** (`src/vaner/models/config.py`) — added to `VanerConfig` with default factories. `setup` carries the wizard answers + `mode` + `completed_at` first-run marker + schema `version`. `policy` carries `selected_bundle_id` (default `"hybrid_balanced"`), `bundle_overrides`, and `auto_select`.
+
+### Removed
+- **`IntentConfig.domain`** field — the unused `Literal["coding","research","writing","ops"]` field is removed outright (zero callers; no external users to migrate). Superseded by the multi-select `setup.work_styles` field on `SetupConfig`. CHANGELOG is the only record needed.
+
 ## [0.8.4] - 2026-04-24
 
 ### Added

@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from vaner.setup.enums import (
+    BackgroundPosture,
+    CloudPosture,
+    ComputePosture,
+    Priority,
+    WorkStyle,
+)
 
 
 class PrivacyConfig(BaseModel):
@@ -171,7 +180,11 @@ class IntentConfig(BaseModel):
     lookback_turns: int = 8
     skills_loop_enabled: bool = True
     max_feedback_events_per_cycle: int = 5
-    domain: Literal["coding", "research", "writing", "ops"] = "coding"
+    # 0.8.6 WS1 — the previous ``domain`` field
+    # (``Literal["coding","research","writing","ops"]``) is removed.
+    # It had zero callers and is superseded by the multi-select
+    # ``setup.work_styles`` field on :class:`SetupConfig`. See the
+    # 0.8.6 CHANGELOG entry under "Removed".
     embedding_classifier_enabled: bool = True
     cross_workspace_profile: bool = False
 
@@ -616,6 +629,67 @@ class RefinementConfig(BaseModel):
     adoption_pending_confirm_seconds: float = Field(default=600.0, ge=0.0)
 
 
+class SetupConfig(BaseModel):
+    """``[setup]`` — Simple-Mode wizard state (0.8.6 WS1).
+
+    Holds the answers from one completed wizard run plus a few
+    bookkeeping fields. ``mode`` distinguishes the Simple-Mode
+    (outcome-level questions) surface from the Advanced-Mode (full
+    knob-level config) surface; both are simultaneously valid (the
+    user can flip back and forth from the desktop UI). ``completed_at``
+    marks first-run state — when ``None``, the engine treats this as a
+    fresh install and triggers the wizard on first interaction.
+
+    Configs without a ``[setup]`` section get all defaults at load
+    time, which means ``mode="simple"`` and the no-op ``["mixed"]``
+    work-style. There is no migration path from a legacy
+    ``IntentConfig.domain`` field — that field is removed outright in
+    0.8.6 (see CHANGELOG entry).
+    """
+
+    mode: Literal["simple", "advanced"] = "simple"
+    work_styles: list[WorkStyle] = Field(default_factory=lambda: ["mixed"])  # type: ignore[arg-type]
+    # ^ mypy can't see through the Literal narrowing inside the lambda;
+    # the runtime list ["mixed"] is a perfectly valid list[WorkStyle].
+    priority: Priority = "balanced"
+    compute_posture: ComputePosture = "balanced"
+    cloud_posture: CloudPosture = "ask_first"
+    background_posture: BackgroundPosture = "normal"
+    completed_at: datetime | None = None
+    """ISO timestamp of the most recent wizard completion. ``None``
+    means the wizard has never been run on this config; first-run
+    surfaces use this to decide whether to prompt."""
+    version: int = 1
+    """Schema-migration anchor for future ``[setup]`` extensions.
+    Bumped only when a backwards-incompatible field change lands."""
+
+
+class PolicyConfig(BaseModel):
+    """``[policy]`` — selected policy bundle and per-knob overrides
+    (0.8.6 WS1).
+
+    ``selected_bundle_id`` is the foreign key into
+    :data:`vaner.setup.catalog.PROFILE_CATALOG`. The default
+    ``"hybrid_balanced"`` is the safe middle path used when the
+    wizard has not run yet.
+
+    ``bundle_overrides`` is a free-form dict for per-knob user
+    overrides on top of the selected bundle. Keys are bundle field
+    names; values are the override values. WS5's ``apply_policy_bundle``
+    composes bundle defaults → user overrides → Deep-Run session
+    deltas.
+
+    ``auto_select`` controls whether the engine re-runs WS3's
+    selection algorithm when hardware changes (e.g. desktop → battery,
+    GPU added/removed). When ``False`` (user pinned the bundle), the
+    engine emits a warning but does not re-select.
+    """
+
+    selected_bundle_id: str = "hybrid_balanced"
+    bundle_overrides: dict[str, Any] = Field(default_factory=dict)
+    auto_select: bool = True
+
+
 class VanerConfig(BaseModel):
     repo_root: Path
     store_path: Path
@@ -634,3 +708,5 @@ class VanerConfig(BaseModel):
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
+    setup: SetupConfig = Field(default_factory=SetupConfig)
+    policy: PolicyConfig = Field(default_factory=PolicyConfig)
