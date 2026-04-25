@@ -495,6 +495,202 @@ def write_client(
     return WriteResult(client_id=spec.id, path=target_path, action="failed", error=f"Unsupported kind: {spec.kind}")
 
 
+def _remove_vaner_from_json(path: Path, *, container_key: str) -> bool:
+    """Strip `vaner` and `vaner-*` entries from a json client config.
+
+    Returns True when the file was modified or deleted, False otherwise.
+    Used by both `vaner uninstall` and `vaner clients uninstall`.
+    """
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    container = payload.get(container_key)
+    if not isinstance(container, dict):
+        return False
+    keys_to_remove = [key for key in container if str(key) == "vaner" or str(key).startswith("vaner-")]
+    if not keys_to_remove:
+        return False
+    for key in keys_to_remove:
+        container.pop(key, None)
+    if not container:
+        payload.pop(container_key, None)
+    if payload:
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
+    return True
+
+
+def remove_client(detected: DetectedClient, *, dry_run: bool = False) -> WriteResult:
+    """Remove the Vaner entry from a single detected client's config.
+
+    Symmetric to :func:`write_client`. Returns the same `WriteResult` shape
+    (`action="updated"` when an entry was removed, `"skipped"` when nothing
+    matched). For CLI-driven clients (Claude Code, Codex CLI) we shell out
+    to their respective `mcp remove` command.
+    """
+    spec = detected.spec
+    target_path = detected.path
+
+    if spec.kind in ("json-mcpServers", "json-servers", "json-context_servers"):
+        if target_path is None:
+            return WriteResult(client_id=spec.id, path=None, action="skipped", error="no config path")
+        container_key = {
+            "json-mcpServers": "mcpServers",
+            "json-servers": "servers",
+            "json-context_servers": "context_servers",
+        }[spec.kind]
+        if dry_run:
+            return WriteResult(client_id=spec.id, path=target_path, action="skipped", error="dry-run")
+        changed = _remove_vaner_from_json(target_path, container_key=container_key)
+        return WriteResult(
+            client_id=spec.id,
+            path=target_path,
+            action="updated" if changed else "skipped",
+        )
+
+    if spec.kind == "yaml-continue":
+        if target_path is None or not target_path.exists():
+            return WriteResult(client_id=spec.id, path=target_path, action="skipped")
+        try:
+            text = target_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            return WriteResult(client_id=spec.id, path=target_path, action="failed", error=str(exc))
+        if "name: vaner" not in text:
+            return WriteResult(client_id=spec.id, path=target_path, action="skipped")
+        if dry_run:
+            return WriteResult(client_id=spec.id, path=target_path, action="skipped", error="dry-run")
+        target_path.unlink(missing_ok=True)
+        return WriteResult(client_id=spec.id, path=target_path, action="updated")
+
+    if spec.kind == "cli-claude":
+        argv = ["claude", "mcp", "remove", "--scope", "user", "vaner"]
+        return _run_cli_remove(spec.id, "claude", argv, dry_run=dry_run)
+    if spec.kind == "cli-codex":
+        argv = ["codex", "mcp", "remove", "vaner"]
+        return _run_cli_remove(spec.id, "codex", argv, dry_run=dry_run)
+    return WriteResult(client_id=spec.id, path=target_path, action="skipped")
+
+
+def _run_cli_remove(client_id: str, executable: str, argv: list[str], *, dry_run: bool) -> WriteResult:
+    if dry_run:
+        return WriteResult(client_id=client_id, path=None, action="skipped", error="dry-run")
+    if not shutil.which(executable):
+        return WriteResult(
+            client_id=client_id,
+            path=None,
+            action="skipped",
+            error=f"{executable} binary not found",
+        )
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=30)
+    except Exception as exc:  # pragma: no cover
+        return WriteResult(client_id=client_id, path=None, action="failed", error=str(exc))
+    if result.returncode == 0:
+        return WriteResult(client_id=client_id, path=None, action="updated")
+    return WriteResult(
+        client_id=client_id,
+        path=None,
+        action="failed",
+        error=(result.stderr or result.stdout).strip()[:500],
+    )
+
+
+@dataclass(slots=True)
+class LauncherDrift:
+    """Single client's view of `vaner` binary path drift."""
+
+    client_id: str
+    label: str
+    config_path: Path | None
+    drift: bool
+    current_in_config: str | None
+    expected: str
+    detail: str = ""
+
+
+def _load_configured_command(detected: DetectedClient) -> str | None:
+    """Read the `command` (or `command.path` for Zed) the client uses for vaner.
+
+    Returns None when the config file doesn't exist, isn't valid JSON, or
+    doesn't carry a vaner entry. CLI-managed clients (claude/codex) don't
+    expose their config to us this way and return None — they need to be
+    re-run to pick up new launcher paths.
+    """
+    spec = detected.spec
+    if spec.kind not in ("json-mcpServers", "json-servers", "json-context_servers"):
+        return None
+    if detected.path is None or not detected.path.exists():
+        return None
+    container_key = {
+        "json-mcpServers": "mcpServers",
+        "json-servers": "servers",
+        "json-context_servers": "context_servers",
+    }[spec.kind]
+    try:
+        payload = json.loads(detected.path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    container = payload.get(container_key)
+    if not isinstance(container, dict):
+        return None
+    for key, entry in container.items():
+        if not (str(key) == "vaner" or str(key).startswith("vaner-")):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        cmd = entry.get("command")
+        if isinstance(cmd, dict):
+            # Zed uses `{"command": {"path": "...", "args": [...]}}`.
+            inner = cmd.get("path")
+            if isinstance(inner, str):
+                return inner
+        elif isinstance(cmd, str):
+            return cmd
+    return None
+
+
+def launcher_drift(detected: DetectedClient) -> LauncherDrift:
+    """Report whether *detected*'s configured launcher matches the current `vaner` binary."""
+    expected = shutil.which("vaner") or "vaner"
+    if detected.status != ClientStatus.CONFIGURED:
+        return LauncherDrift(
+            client_id=detected.spec.id,
+            label=detected.spec.label,
+            config_path=detected.path,
+            drift=False,
+            current_in_config=None,
+            expected=expected,
+            detail="not configured",
+        )
+    current = _load_configured_command(detected)
+    if current is None:
+        return LauncherDrift(
+            client_id=detected.spec.id,
+            label=detected.spec.label,
+            config_path=detected.path,
+            drift=False,
+            current_in_config=None,
+            expected=expected,
+            detail="cli-managed; cannot inspect",
+        )
+    drifted = current != expected
+    return LauncherDrift(
+        client_id=detected.spec.id,
+        label=detected.spec.label,
+        config_path=detected.path,
+        drift=drifted,
+        current_in_config=current,
+        expected=expected,
+        detail="drift detected" if drifted else "in sync",
+    )
+
+
 def print_other_client_help(launcher_cmd: str, launcher_args: list[str]) -> str:
     snippet = generic_snippet(launcher_cmd, launcher_args)
     lines = [

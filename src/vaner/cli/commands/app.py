@@ -32,6 +32,7 @@ from rich.table import Table
 
 from vaner import __version__, api
 from vaner.cli.commands import mcp_clients
+from vaner.cli.commands.clients import clients_app
 from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
 from vaner.cli.commands.daemon import (
     COCKPIT_PROCESS,
@@ -107,32 +108,6 @@ def _fail(message: str, *, hint: str | None = None, code: int = 1) -> None:
     raise typer.Exit(code=code)
 
 
-def _remove_vaner_from_json_config(path: Path, *, container_key: str = "mcpServers") -> bool:
-    if not path.exists():
-        return False
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    if not isinstance(payload, dict):
-        return False
-    container = payload.get(container_key)
-    if not isinstance(container, dict):
-        return False
-    keys_to_remove = [key for key in container if str(key) == "vaner" or str(key).startswith("vaner-")]
-    if not keys_to_remove:
-        return False
-    for key in keys_to_remove:
-        container.pop(key, None)
-    if not container:
-        payload.pop(container_key, None)
-    if payload:
-        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    else:
-        path.unlink(missing_ok=True)
-    return True
-
-
 def _remove_managed_skill(path: Path) -> bool:
     if not path.exists():
         return False
@@ -148,33 +123,29 @@ def _remove_managed_skill(path: Path) -> bool:
 
 
 def _remove_mcp_config_entries(repo_root: Path) -> int:
+    """Strip every vaner entry from every detected client's config.
+
+    0.8.5 WS12: delegated to :func:`mcp_clients.remove_client` so the
+    same logic backs both `vaner uninstall` and `vaner clients uninstall`.
+    Includes the per-repo `.cursor/mcp.json` not covered by `detect_all`.
+    """
     updated = 0
     updated_paths: set[Path] = set()
 
     repo_cursor = repo_root / ".cursor" / "mcp.json"
-    if _remove_vaner_from_json_config(repo_cursor, container_key="mcpServers"):
+    if mcp_clients._remove_vaner_from_json(repo_cursor, container_key="mcpServers"):
         updated += 1
         updated_paths.add(repo_cursor)
 
     for detected in mcp_clients.detect_all(repo_root):
         config_path = detected.path
-        if config_path is None:
-            continue
         if config_path in updated_paths:
             continue
-        if detected.spec.kind == "json-mcpServers":
-            if _remove_vaner_from_json_config(config_path, container_key="mcpServers"):
-                updated += 1
-        elif detected.spec.kind == "json-servers":
-            if _remove_vaner_from_json_config(config_path, container_key="servers"):
-                updated += 1
-        elif detected.spec.kind == "json-context_servers":
-            if _remove_vaner_from_json_config(config_path, container_key="context_servers"):
-                updated += 1
-        elif detected.spec.kind == "yaml-continue":
-            if config_path.exists() and "name: vaner" in config_path.read_text(encoding="utf-8"):
-                config_path.unlink(missing_ok=True)
-                updated += 1
+        result = mcp_clients.remove_client(detected)
+        if result.action == "updated":
+            updated += 1
+            if config_path is not None:
+                updated_paths.add(config_path)
     return updated
 
 
@@ -2145,6 +2116,7 @@ app.add_typer(scenarios_app, name="scenarios", rich_help_panel="Use with an agen
 app.add_typer(deep_run_app, name="deep-run", rich_help_panel="Background and local")
 app.add_typer(guidance_app, name="guidance", rich_help_panel="Use with an agent")
 app.add_typer(integrations_app, name="integrations", rich_help_panel="Inspect and debug")
+app.add_typer(clients_app, name="clients", rich_help_panel="Connect MCP clients")
 
 
 def run() -> None:
