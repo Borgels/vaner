@@ -684,6 +684,16 @@ def _build_adopt_resolution(prompt: Any) -> Resolution:
         )
         for scenario_id in artifacts.scenario_ids
     ]
+    # 0.8.7 WS7/WS8: when the adopted prediction is composer_intent-sourced,
+    # thread the originating composer_event_id into the Resolution so
+    # adoption telemetry can attribute hit/miss back to the composer event.
+    composer_event_id: str | None = None
+    if spec.source == "composer_intent":
+        meta = getattr(artifacts, "composer_metadata", {}) or {}
+        candidate = meta.get("composer_event_id")
+        if isinstance(candidate, str) and candidate:
+            composer_event_id = candidate
+
     return Resolution(
         intent=spec.label,
         confidence=float(spec.confidence),
@@ -696,6 +706,7 @@ def _build_adopt_resolution(prompt: Any) -> Resolution:
         briefing_token_used=briefing_obj.token_count,
         briefing_token_budget=run.token_budget,
         adopted_from_prediction_id=spec.id,
+        composer_event_id=composer_event_id,
     )
 
 

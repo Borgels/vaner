@@ -1035,6 +1035,109 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         resolution = _build_adopt_resolution(prompt)
         return JSONResponse(resolution.model_dump(mode="json"))
 
+    @app.post("/signals/composer")
+    async def signals_composer(request: Request) -> JSONResponse:
+        """0.8.7 WS7 — ingest a composer-lifecycle event.
+
+        Accepts a ``DraftIntentSnapshot`` payload from a registered
+        :class:`ComposerAdapter` (e.g. the Claude Code UserPromptSubmit
+        hook), envelopes it into a :class:`SignalEvent` of kind
+        ``composer_lifecycle``, and forwards to ``engine.observe()``.
+        Returns the assigned ``composer_event_id`` so adapters can
+        thread it back to the host UI for adoption attribution.
+
+        Returns 400 on malformed payload (pydantic ValidationError),
+        409 when no engine is available (the daemon is running without
+        an injected engine, e.g. cockpit-only mode).
+        """
+        if engine is None:
+            return JSONResponse(
+                {"code": "engine_unavailable", "message": "engine unavailable"},
+                status_code=409,
+            )
+        try:
+            body = await request.json()
+        except Exception as exc:
+            return JSONResponse(
+                {"code": "invalid_input", "message": f"invalid JSON: {exc}"},
+                status_code=400,
+            )
+
+        # Lazy imports keep the daemon module load light.
+        import time as _time
+        import uuid as _uuid
+
+        from pydantic import ValidationError
+
+        from vaner.models.signal import KIND_COMPOSER_LIFECYCLE, SignalEvent
+        from vaner.signals.composer import DraftIntentSnapshot
+
+        try:
+            snapshot = DraftIntentSnapshot.model_validate(body)
+        except ValidationError as exc:
+            return JSONResponse(
+                {"code": "invalid_input", "message": exc.errors()},
+                status_code=400,
+            )
+
+        # The adapter MUST only emit lifecycle states declared in
+        # capabilities.emits — otherwise an L0 adapter could fabricate a
+        # higher state and corrupt downstream scoring.
+        if snapshot.lifecycle_state not in snapshot.capabilities.emits:
+            return JSONResponse(
+                {
+                    "code": "capability_violation",
+                    "message": (
+                        f"adapter declared emits={list(snapshot.capabilities.emits)} but sent lifecycle_state={snapshot.lifecycle_state!r}"
+                    ),
+                },
+                status_code=400,
+            )
+
+        composer_event_id = _uuid.uuid4().hex
+        event = SignalEvent(
+            id=composer_event_id,
+            source=f"composer-adapter:{snapshot.capabilities.host_app}",
+            kind=KIND_COMPOSER_LIFECYCLE,
+            timestamp=_time.time(),
+            payload=snapshot.model_dump(mode="json"),
+        )
+        try:
+            await engine.observe(event)
+        except ValidationError as exc:
+            # engine.observe re-validates; surface its message too.
+            return JSONResponse(
+                {"code": "invalid_input", "message": exc.errors()},
+                status_code=400,
+            )
+
+        # Telemetry: record the composer-lifecycle event into draft_events
+        # for hit/miss attribution downstream. Best-effort: a metrics
+        # failure must not block the response.
+        try:
+            metrics = MetricsStore(_metrics_path(config.repo_root))
+            await metrics.initialize()
+            await metrics.record_composer_lifecycle_event(
+                session_id=snapshot.session_id,
+                snapshot_id=snapshot.snapshot_id,
+                lifecycle_state=snapshot.lifecycle_state,
+                text_hash=snapshot.text_hash,
+                length_chars=snapshot.length_chars,
+                composer_event_id=composer_event_id,
+                metadata={
+                    "host_app": snapshot.capabilities.host_app,
+                    "host_kind": snapshot.capabilities.host_kind,
+                    "level": snapshot.capabilities.level,
+                },
+            )
+        except Exception:  # pragma: no cover - defensive metrics
+            pass
+
+        return JSONResponse(
+            {"composer_event_id": composer_event_id},
+            status_code=200,
+        )
+
     @app.post("/resolve")
     async def resolve_endpoint(request: Request) -> JSONResponse:
         """0.8.1: expose :meth:`VanerEngine.resolve_query` over HTTP.
