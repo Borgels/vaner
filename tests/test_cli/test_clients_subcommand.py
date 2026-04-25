@@ -43,8 +43,16 @@ def _seed_cursor(home: Path, repo_root: Path) -> None:
 
 
 def _seed_claude_desktop(home: Path) -> None:
-    # Linux path on the fake home.
-    (home / ".config" / "Claude").mkdir(parents=True, exist_ok=True)
+    """Seed Claude Desktop's config dir at whatever path the detection
+    helper looks at on the current OS — `~/Library/Application
+    Support/Claude` on macOS, `~/.config/Claude` on Linux,
+    `%APPDATA%\\Claude` on Windows. Without this dispatch the test would
+    pass on Linux runners and fail on macOS.
+    """
+    from vaner.cli.commands import mcp_clients
+
+    target_dir = mcp_clients._claude_desktop_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _seed_continue(home: Path) -> None:
@@ -208,6 +216,8 @@ def test_install_requires_name_or_all(fake_home: Path, tmp_path: Path) -> None:
 
 
 def test_install_claude_desktop_uses_repo_scoped_server_key(fake_home: Path, tmp_path: Path) -> None:
+    from vaner.cli.commands import mcp_clients
+
     repo = tmp_path / "myrepo"
     repo.mkdir()
     _seed_claude_desktop(fake_home)
@@ -216,7 +226,9 @@ def test_install_claude_desktop_uses_repo_scoped_server_key(fake_home: Path, tmp
         ["install", "claude-desktop", "--repo-root", str(repo)],
     )
     assert result.exit_code == 0
-    cfg = fake_home / ".config" / "Claude" / "claude_desktop_config.json"
+    # Resolve the platform-canonical config path the same way the daemon
+    # does, so this test passes on macOS + Linux + Windows runners alike.
+    cfg = mcp_clients._claude_desktop_dir() / "claude_desktop_config.json"
     blob = json.loads(cfg.read_text(encoding="utf-8"))
     # Wizard convention: vaner-<reponame> so multiple repos coexist.
     assert "vaner-myrepo" in blob["mcpServers"]
