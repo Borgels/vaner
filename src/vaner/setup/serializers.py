@@ -114,7 +114,7 @@ def answers_from_payload(raw: object) -> SetupAnswers:
     if not isinstance(work_styles, list) or not all(isinstance(s, str) for s in work_styles):
         raise AnswersValidationError("work_styles must be a list of strings")
     return SetupAnswers(
-        work_styles=tuple(work_styles),  # type: ignore[arg-type]
+        work_styles=tuple(work_styles),
         priority=str(raw.get("priority", "balanced")),  # type: ignore[arg-type]
         compute_posture=str(raw.get("compute_posture", "balanced")),  # type: ignore[arg-type]
         cloud_posture=str(raw.get("cloud_posture", "ask_first")),  # type: ignore[arg-type]
