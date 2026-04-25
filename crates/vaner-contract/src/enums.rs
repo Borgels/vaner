@@ -90,6 +90,57 @@ impl Readiness {
     }
 }
 
+/// 0.8.5 WS6: Coarse ETA bucket for a prediction.
+///
+/// User-facing labels only — we deliberately avoid wall-clock promises.
+/// The daemon populates this alongside readiness; when the prompt is
+/// `Stale` no bucket is surfaced at all (the field is `None`).
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum EtaBucket {
+    /// Prediction is ready right now — click Adopt to use it.
+    ReadyNow,
+    /// Drafting almost done; usable within ~10–20s.
+    Under20s,
+    /// Evidence half-gathered; expect roughly a minute.
+    Under1m,
+    /// Work is underway but no crisp ETA yet.
+    #[default]
+    Working,
+    /// Early in the lifecycle — grounding or queued.
+    Maturing,
+    /// Unknown / future server value.
+    #[serde(other)]
+    Unknown,
+}
+
+#[cfg(test)]
+mod eta_bucket_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_known_eta_buckets() {
+        let cases = [
+            (r#""ready_now""#, EtaBucket::ReadyNow),
+            (r#""under_20s""#, EtaBucket::Under20s),
+            (r#""under_1m""#, EtaBucket::Under1m),
+            (r#""working""#, EtaBucket::Working),
+            (r#""maturing""#, EtaBucket::Maturing),
+        ];
+        for (raw, expected) in cases {
+            let decoded: EtaBucket = serde_json::from_str(raw).unwrap();
+            assert_eq!(decoded, expected, "decoding {raw}");
+        }
+    }
+
+    #[test]
+    fn unknown_eta_bucket_does_not_error() {
+        let decoded: EtaBucket = serde_json::from_str(r#""eons""#).unwrap();
+        assert_eq!(decoded, EtaBucket::Unknown);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
