@@ -5,6 +5,7 @@ import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -215,6 +216,504 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         if session is None:
             raise HTTPException(status_code=404, detail=f"session {session_id!r} not found")
         return JSONResponse(_serialize_session(session))
+
+    # ------------------------------------------------------------------
+    # 0.8.6 WS8 — Setup HTTP surface. Mirrors the WS7 MCP tools so
+    # desktop apps that prefer HTTP can drive the wizard end-to-end.
+    # Reuses WS6's serialisation helpers (vaner.cli.commands.setup) as
+    # the canonical contract for the JSON shapes; the MCP tools use the
+    # same helpers so both surfaces stay in lock-step.
+    #
+    # Hardware detection is cached for the daemon process lifetime
+    # because probing reaches into /sys, runs subprocesses, etc — once
+    # is enough per daemon. The cache is process-local; restart picks
+    # up new hardware. Tests reset the cache via the helper below.
+    # ------------------------------------------------------------------
+
+    _hardware_cache: dict[str, Any] = {"profile": None}
+
+    def _get_hardware_profile_cached() -> Any:
+        from vaner.setup.hardware import detect
+
+        if _hardware_cache["profile"] is None:
+            _hardware_cache["profile"] = detect()
+        return _hardware_cache["profile"]
+
+    def _reset_hardware_cache_for_tests() -> None:
+        _hardware_cache["profile"] = None
+
+    # Expose the reset hook on the app so tests can clear the cache
+    # between runs. Production callers never need this.
+    app.state.reset_hardware_cache = _reset_hardware_cache_for_tests
+    # Same for the wired engine, used by /policy/refresh.
+    app.state.engine = engine
+
+    def _read_setup_section_for_http(repo_root: Path) -> dict[str, Any]:
+        from vaner.cli.commands.setup import _read_setup_section
+
+        return _read_setup_section(repo_root)
+
+    def _read_policy_section_for_http(repo_root: Path) -> dict[str, Any]:
+        from vaner.cli.commands.setup import _read_policy_section
+
+        return _read_policy_section(repo_root)
+
+    def _bundle_to_dict_http(bundle: Any) -> dict[str, Any]:
+        from vaner.cli.commands.setup import _bundle_to_dict
+
+        return _bundle_to_dict(bundle)
+
+    def _selection_to_dict_http(result: Any) -> dict[str, Any]:
+        from vaner.cli.commands.setup import _selection_to_dict
+
+        return _selection_to_dict(result)
+
+    def _hardware_to_dict_http(hw: Any) -> dict[str, Any]:
+        from vaner.cli.commands.setup import _hardware_to_dict
+
+        return _hardware_to_dict(hw)
+
+    def _answers_from_payload_http(raw: Any) -> Any:
+        # Mirror the CLI helper but raise HTTPException(400) on bad input
+        # — typer.BadParameter would 500 the request.
+        from vaner.setup.answers import SetupAnswers
+
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="answers must be a JSON object")
+        work_styles = raw.get("work_styles") or ["mixed"]
+        if isinstance(work_styles, str):
+            work_styles = [work_styles]
+        if not isinstance(work_styles, list) or not all(isinstance(s, str) for s in work_styles):
+            raise HTTPException(status_code=400, detail="work_styles must be a list of strings")
+        try:
+            return SetupAnswers(
+                work_styles=tuple(work_styles),
+                priority=str(raw.get("priority", "balanced")),  # type: ignore[arg-type]
+                compute_posture=str(raw.get("compute_posture", "balanced")),  # type: ignore[arg-type]
+                cloud_posture=str(raw.get("cloud_posture", "ask_first")),  # type: ignore[arg-type]
+                background_posture=str(raw.get("background_posture", "normal")),  # type: ignore[arg-type]
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # The five Simple-Mode questions in the wire shape MCP + HTTP both
+    # consume. Kept as a constant so /setup/questions is a pure read.
+    _SETUP_QUESTIONS_PAYLOAD: dict[str, Any] = {
+        "version": 1,
+        "questions": [
+            {
+                "id": "work_styles",
+                "title": "What kind of work do you want help with?",
+                "kind": "multi",
+                "default": ["mixed"],
+                "choices": [
+                    {"value": "writing", "label": "Writing — drafting, editing, narrative"},
+                    {"value": "research", "label": "Research — surveys, deep reading, citations"},
+                    {"value": "planning", "label": "Planning — design docs, roadmaps, project layout"},
+                    {"value": "support", "label": "Support — answering questions, troubleshooting"},
+                    {"value": "learning", "label": "Learning — studying, exploring a new domain"},
+                    {"value": "coding", "label": "Coding — software development"},
+                    {"value": "general", "label": "General — knowledge work, mixed light tasks"},
+                    {"value": "mixed", "label": "Mixed — a bit of everything (safe default)"},
+                    {"value": "unsure", "label": "Unsure — I'd rather Vaner picks for me"},
+                ],
+            },
+            {
+                "id": "priority",
+                "title": "What matters most?",
+                "kind": "single",
+                "default": "balanced",
+                "choices": [
+                    {"value": "balanced", "label": "Balanced — a sensible middle"},
+                    {"value": "speed", "label": "Speed — snappy responses"},
+                    {"value": "quality", "label": "Quality — best answer, even if slow"},
+                    {"value": "privacy", "label": "Privacy — keep data on this machine"},
+                    {"value": "cost", "label": "Cost — minimise spend"},
+                    {"value": "low_resource", "label": "Low-resource — go easy on this machine"},
+                ],
+            },
+            {
+                "id": "compute_posture",
+                "title": "How hard should this machine work for you?",
+                "kind": "single",
+                "default": "balanced",
+                "choices": [
+                    {"value": "light", "label": "Light — barely use the CPU/GPU"},
+                    {"value": "balanced", "label": "Balanced — work with what's idle"},
+                    {"value": "available_power", "label": "Available-power — use what this box has"},
+                ],
+            },
+            {
+                "id": "cloud_posture",
+                "title": "How do you feel about cloud LLMs?",
+                "kind": "single",
+                "default": "ask_first",
+                "choices": [
+                    {"value": "local_only", "label": "Local only — never reach for cloud LLMs"},
+                    {"value": "ask_first", "label": "Ask first — confirm before any cloud call"},
+                    {
+                        "value": "hybrid_when_worth_it",
+                        "label": "Hybrid — cloud when it's clearly worth it",
+                    },
+                    {"value": "best_available", "label": "Best available — use the best model for the job"},
+                ],
+            },
+            {
+                "id": "background_posture",
+                "title": "How aggressive should background pondering be?",
+                "kind": "single",
+                "default": "normal",
+                "choices": [
+                    {"value": "minimal", "label": "Minimal — barely ponder when idle"},
+                    {"value": "normal", "label": "Normal — moderate background pondering"},
+                    {"value": "idle_more", "label": "Idle-more — ponder broadly when the box is idle"},
+                    {
+                        "value": "deep_run_aggressive",
+                        "label": "Deep-Run-aggressive — happy to run overnight",
+                    },
+                ],
+            },
+        ],
+    }
+
+    @app.get("/setup/questions")
+    async def setup_questions() -> JSONResponse:
+        """Return the static five-question Simple-Mode payload.
+
+        Contract-stable — desktop apps and MCP tools both consume this
+        shape. ``version`` lets clients gate against schema drift.
+        """
+
+        return JSONResponse(_SETUP_QUESTIONS_PAYLOAD)
+
+    @app.post("/setup/recommend")
+    async def setup_recommend(request: Request) -> JSONResponse:
+        """Run :func:`vaner.setup.select.select_policy_bundle` over a
+        :class:`SetupAnswers` body and return :class:`SelectionResult`.
+
+        Pure read — no persistence side effects. The hardware probe is
+        cached for the daemon process lifetime.
+        """
+
+        from vaner.setup.select import select_policy_bundle
+
+        try:
+            body = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="request body must be JSON") from exc
+        answers = _answers_from_payload_http(body)
+        hardware = _get_hardware_profile_cached()
+        selection = select_policy_bundle(answers, hardware)
+        return JSONResponse(_selection_to_dict_http(selection))
+
+    @app.post("/setup/apply")
+    async def setup_apply(request: Request) -> JSONResponse:
+        """Persist answers + selected bundle id to ``.vaner/config.toml``.
+
+        Body shape mirrors the WS7 MCP ``vaner.setup.apply`` tool::
+
+            {
+              "answers": {...SetupAnswers...} | null,
+              "bundle_id": "..." | null,
+              "confirm_cloud_widening": false,
+              "dry_run": false
+            }
+
+        WIDENS_CLOUD_POSTURE behaviour: if the new bundle's cloud
+        posture is strictly more permissive than the previous bundle's
+        posture, the response carries ``widens_cloud_posture=true`` and
+        ``written=false`` unless ``confirm_cloud_widening=true``.
+        """
+
+        from vaner.cli.commands.setup import (
+            _answers_from_payload,
+            _default_answers,
+            _persist_setup_and_policy,
+        )
+        from vaner.setup.apply import (
+            WIDENS_CLOUD_POSTURE_SENTINEL,
+            apply_policy_bundle,
+        )
+        from vaner.setup.catalog import bundle_by_id
+        from vaner.setup.select import select_policy_bundle
+
+        try:
+            body = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="request body must be JSON") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be a JSON object")
+
+        confirm_cloud_widening = bool(body.get("confirm_cloud_widening", False))
+        dry_run = bool(body.get("dry_run", False))
+        bundle_id_override = body.get("bundle_id")
+        raw_answers = body.get("answers")
+
+        repo_root = config.repo_root
+
+        # Resolve answers + bundle_id ----------------------------------
+        if bundle_id_override is not None:
+            if not isinstance(bundle_id_override, str) or not bundle_id_override.strip():
+                raise HTTPException(status_code=400, detail="bundle_id must be a non-empty string")
+            try:
+                bundle = bundle_by_id(bundle_id_override)
+            except KeyError as exc:
+                raise HTTPException(status_code=400, detail=f"unknown bundle id: {bundle_id_override!r}") from exc
+            if isinstance(raw_answers, dict):
+                answers = _answers_from_payload_http(raw_answers)
+            else:
+                existing = _read_setup_section_for_http(repo_root)
+                if existing:
+                    try:
+                        answers = _answers_from_payload(existing)
+                    except Exception:
+                        answers = _default_answers()
+                else:
+                    answers = _default_answers()
+            chosen_bundle_id = bundle.id
+            reasons: list[str] = ["explicit bundle_id override"]
+        else:
+            if isinstance(raw_answers, dict):
+                answers = _answers_from_payload_http(raw_answers)
+            else:
+                existing = _read_setup_section_for_http(repo_root)
+                if not existing:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "no answers provided and no [setup] section on disk; supply 'answers' in the body or run `vaner setup wizard`"
+                        ),
+                    )
+                try:
+                    answers = _answers_from_payload(existing)
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"failed to parse persisted setup answers: {exc}",
+                    ) from exc
+            hardware = _get_hardware_profile_cached()
+            selection = select_policy_bundle(answers, hardware)
+            bundle = selection.bundle
+            chosen_bundle_id = bundle.id
+            reasons = list(selection.reasons)
+
+        # Cloud-widening guard via apply_policy_bundle's diff ----------
+        loaded = load_config(repo_root)
+        prior_policy_section = _read_policy_section_for_http(repo_root)
+        prior_bundle_id = prior_policy_section.get("selected_bundle_id")
+        if isinstance(prior_bundle_id, str) and prior_bundle_id:
+            loaded = loaded.model_copy(update={"policy": loaded.policy.model_copy(update={"selected_bundle_id": prior_bundle_id})})
+        applied = apply_policy_bundle(loaded, bundle)
+        widens = any(entry.startswith(WIDENS_CLOUD_POSTURE_SENTINEL) for entry in applied.overrides_applied)
+
+        applied_summary: dict[str, Any] = {
+            "bundle_id": applied.bundle_id,
+            "overrides_applied": list(applied.overrides_applied),
+        }
+
+        # Block writes when cloud posture would widen and the caller
+        # has not explicitly confirmed.
+        if widens and not confirm_cloud_widening:
+            return JSONResponse(
+                {
+                    "written": False,
+                    "dry_run": dry_run,
+                    "widens_cloud_posture": True,
+                    "selected_bundle_id": chosen_bundle_id,
+                    "reasons": reasons,
+                    "applied_policy": applied_summary,
+                    "bundle": _bundle_to_dict_http(bundle),
+                    "message": ("Cloud posture would widen. Re-send with confirm_cloud_widening=true to proceed."),
+                }
+            )
+
+        if dry_run:
+            return JSONResponse(
+                {
+                    "written": False,
+                    "dry_run": True,
+                    "widens_cloud_posture": widens,
+                    "selected_bundle_id": chosen_bundle_id,
+                    "reasons": reasons,
+                    "applied_policy": applied_summary,
+                    "bundle": _bundle_to_dict_http(bundle),
+                }
+            )
+
+        completed_at = datetime.now(UTC)
+        config_path = _persist_setup_and_policy(repo_root, answers, chosen_bundle_id, completed_at=completed_at)
+
+        return JSONResponse(
+            {
+                "written": True,
+                "dry_run": False,
+                "widens_cloud_posture": widens,
+                "selected_bundle_id": chosen_bundle_id,
+                "reasons": reasons,
+                "applied_policy": applied_summary,
+                "bundle": _bundle_to_dict_http(bundle),
+                "config_path": str(config_path),
+            }
+        )
+
+    @app.get("/setup/status")
+    async def setup_status() -> JSONResponse:
+        """Return the same payload shape as the MCP ``vaner.setup.status`` tool.
+
+        Carries: setup mode + answers, selected bundle id, applied
+        policy summary (with overrides), hardware profile.
+        """
+
+        from vaner.setup.apply import apply_policy_bundle
+        from vaner.setup.catalog import bundle_by_id
+
+        repo_root = config.repo_root
+        setup_section = _read_setup_section_for_http(repo_root)
+        policy_section = _read_policy_section_for_http(repo_root)
+        hardware = _get_hardware_profile_cached()
+
+        selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
+        applied_dict: dict[str, Any]
+        bundle_dict: dict[str, Any] | None = None
+        try:
+            bundle = bundle_by_id(str(selected_bundle_id))
+            bundle_dict = _bundle_to_dict_http(bundle)
+            loaded = load_config(repo_root)
+            loaded = loaded.model_copy(update={"policy": loaded.policy.model_copy(update={"selected_bundle_id": str(selected_bundle_id)})})
+            applied = apply_policy_bundle(loaded, bundle)
+            applied_dict = {
+                "bundle_id": applied.bundle_id,
+                "overrides_applied": list(applied.overrides_applied),
+            }
+        except KeyError:
+            applied_dict = {"error": f"unknown bundle id {selected_bundle_id!r}"}
+
+        mode = setup_section.get("mode") if isinstance(setup_section, dict) else None
+        completed_at = setup_section.get("completed_at") if isinstance(setup_section, dict) else None
+        completed = bool(setup_section) and completed_at is not None
+
+        return JSONResponse(
+            {
+                "repo_root": str(repo_root),
+                "mode": mode or "unconfigured",
+                "completed": completed,
+                "completed_at": completed_at,
+                "selected_bundle_id": str(selected_bundle_id),
+                "setup": setup_section,
+                "policy": policy_section,
+                "applied_policy": applied_dict,
+                "bundle": bundle_dict,
+                "hardware": _hardware_to_dict_http(hardware),
+            }
+        )
+
+    @app.get("/policy/current")
+    async def policy_current() -> JSONResponse:
+        """Return the materialised :class:`AppliedPolicy` plus its bundle.
+
+        Same payload shape as the WS7 MCP ``vaner.policy.show`` tool —
+        bundle, applied-policy summary (with ``overrides_applied`` and
+        the ``WIDENS_CLOUD_POSTURE`` sentinel passed through), the raw
+        ``[policy]`` section from disk, and the engine's wired status.
+        """
+
+        from vaner.setup.apply import apply_policy_bundle
+        from vaner.setup.catalog import bundle_by_id
+
+        repo_root = config.repo_root
+        policy_section = _read_policy_section_for_http(repo_root)
+        selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
+
+        try:
+            bundle = bundle_by_id(str(selected_bundle_id))
+        except KeyError:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown bundle id {selected_bundle_id!r}",
+            ) from None
+
+        loaded = load_config(repo_root)
+        loaded = loaded.model_copy(update={"policy": loaded.policy.model_copy(update={"selected_bundle_id": str(selected_bundle_id)})})
+        applied = apply_policy_bundle(loaded, bundle)
+        applied_dict = {
+            "bundle_id": applied.bundle_id,
+            "overrides_applied": list(applied.overrides_applied),
+        }
+
+        return JSONResponse(
+            {
+                "selected_bundle_id": bundle.id,
+                "bundle": _bundle_to_dict_http(bundle),
+                "applied_policy": applied_dict,
+                "policy_section": policy_section,
+                "engine_wired": engine is not None,
+            }
+        )
+
+    @app.get("/hardware/profile")
+    async def hardware_profile_endpoint() -> JSONResponse:
+        """Return :class:`HardwareProfile` JSON, cached for daemon lifetime.
+
+        First call probes the system; subsequent calls return the
+        cached result. Restart the daemon (or hit the test-only reset
+        hook) to force a fresh probe.
+        """
+
+        hw = _get_hardware_profile_cached()
+        return JSONResponse(_hardware_to_dict_http(hw))
+
+    @app.post("/policy/refresh")
+    async def policy_refresh(request: Request) -> JSONResponse:
+        """Trigger ``engine._refresh_policy_bundle_state()`` on the live engine.
+
+        Used by ``vaner setup apply`` (WS6) to get a hot reload without
+        a daemon restart. Returns 503 when the engine is not wired or
+        the refresh hook is missing.
+        """
+
+        live_engine = app.state.engine
+        if live_engine is None:
+            return JSONResponse(
+                {
+                    "code": "engine_unavailable",
+                    "message": "daemon engine not wired; cannot refresh policy state",
+                },
+                status_code=503,
+            )
+        refresh_hook = getattr(live_engine, "_refresh_policy_bundle_state", None)
+        if refresh_hook is None or not callable(refresh_hook):
+            return JSONResponse(
+                {
+                    "code": "engine_unsupported",
+                    "message": "engine does not expose _refresh_policy_bundle_state",
+                },
+                status_code=503,
+            )
+        try:
+            refresh_hook()
+        except Exception as exc:
+            return JSONResponse(
+                {
+                    "code": "refresh_failed",
+                    "message": f"{type(exc).__name__}: {exc}",
+                },
+                status_code=503,
+            )
+
+        applied = getattr(live_engine, "_applied_policy", None)
+        applied_summary: dict[str, Any] | None = None
+        if applied is not None:
+            applied_summary = {
+                "bundle_id": applied.bundle_id,
+                "overrides_applied": list(applied.overrides_applied),
+            }
+
+        return JSONResponse(
+            {
+                "refreshed": True,
+                "applied_policy_summary": applied_summary,
+            }
+        )
 
     @app.get("/compute/devices")
     async def compute_devices() -> JSONResponse:
