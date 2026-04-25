@@ -16,15 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
-import time
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
+from vaner.cli.duration import parse_until as _parse_until_helper
 from vaner.intent.deep_run import DeepRunSession, DeepRunSummary
 from vaner.server import (
     alist_deep_run_sessions,
@@ -43,59 +43,59 @@ _console = Console()
 
 
 # ---------------------------------------------------------------------------
-# `--until` parsing — accepts duration ("8h", "30m"), HH:MM, or ISO-8601
+# WS9: UX label rename for `horizon_bias` (rendering only — storage stays
+# as the literal). Anti-autonomy reminder card shown at start time.
 # ---------------------------------------------------------------------------
 
 
-_DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhd])\s*$", re.IGNORECASE)
-_TIMEOFDAY_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+_HORIZON_BIAS_LABELS: dict[str, str] = {
+    "likely_next": "Likely next moves",
+    "long_horizon": "Long-horizon work",
+    "finish_partials": "Finish what's in progress",
+    "balanced": "Balanced",
+}
+
+
+def horizon_bias_label(value: str) -> str:
+    """Render-only mapping: storage literal → user-facing label.
+
+    Returns the storage literal verbatim if it is not one of the four
+    known values (forward-compatible against future literals — never
+    crashes on render).
+    """
+
+    return _HORIZON_BIAS_LABELS.get(value, value)
+
+
+_ANTI_AUTONOMY_NOTICE = (
+    "Vaner will draft, deepen evidence, and queue artefacts. It will not "
+    "send messages, commit code, modify files, or take any external "
+    "action without your explicit confirmation."
+)
+
+
+def _anti_autonomy_panel() -> Panel:
+    """Rich panel shown at the bottom of the start confirmation."""
+
+    return Panel(
+        _ANTI_AUTONOMY_NOTICE,
+        title="Deep-Run prepares; it does not act",
+        border_style="cyan",
+    )
+
+
+# ---------------------------------------------------------------------------
+# `--until` parsing — re-exported from :mod:`vaner.cli.duration` so the
+# original CLI test contract (``from vaner.cli.commands.deep_run import
+# _parse_until``) keeps working. Desktop reuse goes through the shared
+# helper directly.
+# ---------------------------------------------------------------------------
 
 
 def _parse_until(spec: str, *, now: float | None = None) -> float:
-    """Parse ``--until`` into an absolute epoch timestamp.
+    """Backwards-compatible alias for :func:`vaner.cli.duration.parse_until`."""
 
-    Accepted forms:
-    - duration: ``30s`` / ``45m`` / ``8h`` / ``2d``
-    - time of day: ``07:00`` (next occurrence; tomorrow if already past today)
-    - ISO-8601: ``2026-04-25T07:00:00``
-
-    Raises ``typer.BadParameter`` on parse error so the CLI shows a clean
-    message rather than a stack trace.
-    """
-
-    base_ts = now if now is not None else time.time()
-    text = spec.strip()
-    if not text:
-        raise typer.BadParameter("--until cannot be empty")
-
-    m = _DURATION_RE.match(text)
-    if m:
-        amount = int(m.group(1))
-        unit = m.group(2).lower()
-        seconds = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit] * amount
-        if seconds <= 0:
-            raise typer.BadParameter(f"--until {spec!r} is non-positive")
-        return base_ts + float(seconds)
-
-    m = _TIMEOFDAY_RE.match(text)
-    if m:
-        hour = int(m.group(1))
-        minute = int(m.group(2))
-        if not (0 <= hour < 24 and 0 <= minute < 60):
-            raise typer.BadParameter(f"--until {spec!r} is not a valid time")
-        now_dt = datetime.fromtimestamp(base_ts).astimezone()
-        target = now_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if target.timestamp() <= base_ts:
-            target = target.replace(day=target.day + 1)
-        return target.timestamp()
-
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError as exc:
-        raise typer.BadParameter(f"--until {spec!r} is not a recognised duration / time / ISO-8601") from exc
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC).astimezone()
-    return dt.timestamp()
+    return _parse_until_helper(spec, now=now)
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ def _human_session_panel(session: DeepRunSession) -> Table:
     table.add_row("session", session.id)
     table.add_row("status", session.status)
     table.add_row("preset", session.preset)
-    table.add_row("focus / horizon", f"{session.focus} / {session.horizon_bias}")
+    table.add_row("focus / horizon", f"{session.focus} / {horizon_bias_label(session.horizon_bias)}")
     table.add_row("locality", session.locality)
     cap = f"${session.cost_cap_usd:.2f}" if session.cost_cap_usd > 0 else "0 (no remote spend permitted)"
     spend_pct = f" ({session.spend_usd / session.cost_cap_usd * 100:.0f}% of cap)" if session.cost_cap_usd > 0 else ""
@@ -185,6 +185,7 @@ def _human_session_list(sessions: list[DeepRunSession]) -> Table:
     table.add_column("id", style="dim", overflow="crop", max_width=12)
     table.add_column("status")
     table.add_column("preset")
+    table.add_column("horizon")
     table.add_column("started")
     table.add_column("cycles", justify="right")
     table.add_column("matured", justify="right")
@@ -193,7 +194,16 @@ def _human_session_list(sessions: list[DeepRunSession]) -> Table:
         started = datetime.fromtimestamp(s.started_at).astimezone().strftime("%m-%d %H:%M")
         matured = f"{s.matured_kept}/{s.matured_kept + s.matured_discarded + s.matured_rolled_back + s.matured_failed}"
         spend = f"${s.spend_usd:.2f}" if s.spend_usd > 0 else "—"
-        table.add_row(s.id, s.status, s.preset, started, str(s.cycles_run), matured, spend)
+        table.add_row(
+            s.id,
+            s.status,
+            s.preset,
+            horizon_bias_label(s.horizon_bias),
+            started,
+            str(s.cycles_run),
+            matured,
+            spend,
+        )
     return table
 
 
@@ -251,10 +261,19 @@ def start(
         )
     )
     if as_json:
-        typer.echo(json.dumps(_session_to_dict(session), indent=2))
+        payload = _session_to_dict(session)
+        # WS9: include the anti-autonomy notice as a structured field so
+        # JSON consumers (cockpit, desktops, agent scripts) can render
+        # the same disclosure their human equivalents do.
+        payload["prepare_only_notice"] = "Deep-Run prepares; it does not act. " + _ANTI_AUTONOMY_NOTICE
+        typer.echo(json.dumps(payload, indent=2))
         return
     _console.print("[bold green]Deep-Run started[/]")
     _console.print(_human_session_panel(session))
+    # WS9: anti-autonomy reminder card, rendered at the bottom of the
+    # confirmation panel so the user is never surprised by what the
+    # session can or cannot do on their behalf.
+    _console.print(_anti_autonomy_panel())
 
 
 @deep_run_app.command("stop", help="Stop the currently active Deep-Run session.")
