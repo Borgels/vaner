@@ -215,6 +215,42 @@ def _serialize_prediction_for_mcp(prompt: Any, *, rank: int | None = None) -> di
     return payload
 
 
+_RESOURCE_METRIC_TASKS: set[Any] = set()
+"""Keep strong refs to background metric tasks until they settle.
+
+Without this, `asyncio.run()` can tear the loop down before the task
+completes, producing `Event loop is closed` warnings. Tracked via
+`add_done_callback(discard)` so entries clear themselves when the task
+finishes.
+"""
+
+
+def _increment_resource_metric(name: str, repo_root: Path) -> None:
+    """Fire-and-forget metric increment for resource-read events.
+
+    0.8.5 WS8: `read_resource` is a sync entry point in the SDK API, so we
+    can't `await` on `MetricsStore`. Spawn an asyncio task when a loop is
+    running; otherwise silently drop — metrics are best-effort.
+    """
+    import asyncio as _asyncio
+
+    async def _do() -> None:
+        try:
+            store = MetricsStore(repo_root / ".vaner" / "metrics.db")
+            await store.initialize()
+            await store.increment_counter(name)
+        except Exception:  # pragma: no cover - defensive metrics
+            pass
+
+    try:
+        loop = _asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_do())
+    _RESOURCE_METRIC_TASKS.add(task)
+    task.add_done_callback(_RESOURCE_METRIC_TASKS.discard)
+
+
 def _dashboard_fallback_text(cards: list[dict[str, Any]]) -> str:
     """Render a plain-text Vaner dashboard for non-UI MCP clients.
 
@@ -509,7 +545,15 @@ def build_server(
                     ),
                     inputSchema={
                         "type": "object",
-                        "properties": {"prediction_id": {"type": "string"}},
+                        "properties": {
+                            "prediction_id": {"type": "string"},
+                            "source": {
+                                "type": "string",
+                                "description": "Where the adopt request came from (for metrics): mcp_app, mcp_tool, cli, desktop, unknown.",
+                                "enum": ["mcp_app", "mcp_tool", "cli", "desktop", "unknown"],
+                                "default": "mcp_tool",
+                            },
+                        },
                         "required": ["prediction_id"],
                     },
                 ),
@@ -790,14 +834,23 @@ def build_server(
 
     @server.list_resources()
     async def list_resources() -> list[Any]:
-        """Advertise the canonical guidance asset as an MCP resource."""
+        """Advertise Vaner's MCP resources.
+
+        - `vaner://guidance/current` — canonical operational guidance doc.
+        - `ui://vaner/active-predictions` — MCP Apps UI bundle (when
+          enabled via `mcp.apps_ui_enabled` config, default True).
+
+        List reflects the current config snapshot; UI-capable clients pick
+        up the `ui://` resource and pre-fetch it when rendering the
+        dashboard tool result.
+        """
         try:
             from mcp.types import Resource as _Resource
         except ModuleNotFoundError:  # pragma: no cover - optional dependency path
             return []
         from vaner.integrations.guidance import current_version
 
-        return [
+        resources: list[Any] = [
             _Resource(
                 uri="vaner://guidance/current",  # type: ignore[arg-type]
                 name="Vaner Guidance",
@@ -810,15 +863,59 @@ def build_server(
                 mimeType="text/markdown",
             )
         ]
+        try:
+            cfg = load_config(repo_root)
+            if getattr(cfg.mcp, "apps_ui_enabled", True):
+                from vaner.mcp.apps import (
+                    ACTIVE_PREDICTIONS_DESCRIPTION,
+                    ACTIVE_PREDICTIONS_MIME,
+                    ACTIVE_PREDICTIONS_NAME,
+                    ACTIVE_PREDICTIONS_TITLE,
+                    ACTIVE_PREDICTIONS_URI,
+                    resource_meta,
+                )
+
+                resources.append(
+                    _Resource(
+                        uri=ACTIVE_PREDICTIONS_URI,  # type: ignore[arg-type]
+                        name=ACTIVE_PREDICTIONS_NAME,
+                        title=ACTIVE_PREDICTIONS_TITLE,
+                        description=ACTIVE_PREDICTIONS_DESCRIPTION,
+                        mimeType=ACTIVE_PREDICTIONS_MIME,
+                        meta=resource_meta(),
+                    )
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("MCP Apps resource registration skipped: %s", exc)
+        return resources
 
     @server.read_resource()
     async def read_resource(uri: Any) -> list[Any]:
-        """Serve the guidance asset body for `vaner://guidance/current`."""
+        """Serve guidance (`vaner://guidance/*`) or MCP Apps UI (`ui://vaner/*`)."""
         from mcp.server.lowlevel.helper_types import ReadResourceContents
 
         from vaner.integrations.guidance import available_variants, load_guidance
+        from vaner.mcp.apps import (
+            ACTIVE_PREDICTIONS_HTML,
+            ACTIVE_PREDICTIONS_MIME,
+            ACTIVE_PREDICTIONS_URI,
+            resource_meta,
+        )
 
         uri_str = str(uri)
+
+        # MCP Apps UI bundle.
+        if uri_str == ACTIVE_PREDICTIONS_URI:
+            _increment_resource_metric("mcp_apps_bundle_read", repo_root)
+            return [
+                ReadResourceContents(
+                    content=ACTIVE_PREDICTIONS_HTML,
+                    mime_type=ACTIVE_PREDICTIONS_MIME,
+                    meta=resource_meta(),
+                )
+            ]
+
+        # Guidance variants.
         variant: str | None = None
         if uri_str == "vaner://guidance/current":
             variant = "canonical"
@@ -838,6 +935,7 @@ def build_server(
         if variant is None:
             raise ValueError(f"unknown vaner resource: {uri_str!r}")
         body = load_guidance(variant).as_text()  # type: ignore[arg-type]
+        _increment_resource_metric(f"guidance_resource_read_{variant}", repo_root)
         return [ReadResourceContents(content=body, mime_type="text/markdown")]
 
     @server.call_tool()
@@ -1550,30 +1648,72 @@ def build_server(
                 tier = ClientCapabilityTier.UNKNOWN
             ui_available = tier is ClientCapabilityTier.TIER_4
 
+            apps_ui_enabled = getattr(config.mcp, "apps_ui_enabled", True)
+            attach_ui = ui_available and apps_ui_enabled
             dashboard_payload = {
                 "predictions": cards,
                 "fallback_text": _dashboard_fallback_text(cards),
-                "ui_available": ui_available,
+                "ui_available": attach_ui,
                 "client_tier": int(tier),
                 "source": "engine",
             }
             try:
                 await metrics_store.increment_counter("mcp_dashboard_called")
-                if ui_available:
+                if attach_ui:
                     await metrics_store.increment_counter("mcp_apps_ui_attached")
             except Exception:  # pragma: no cover - defensive metrics
                 pass
             await _record("ok")
+            # When a Tier-4 client is connected and the UI is enabled, attach
+            # a ResourceLink alongside the JSON payload so the host iframe
+            # can pick up the `ui://vaner/active-predictions` bundle and
+            # populate the initial card list from the TextContent.
+            if attach_ui:
+                try:
+                    from mcp.types import ResourceLink  # type: ignore[import-not-found]
+
+                    from vaner.mcp.apps import (
+                        ACTIVE_PREDICTIONS_DESCRIPTION,
+                        ACTIVE_PREDICTIONS_MIME,
+                        ACTIVE_PREDICTIONS_NAME,
+                        ACTIVE_PREDICTIONS_TITLE,
+                        ACTIVE_PREDICTIONS_URI,
+                        tool_meta,
+                    )
+
+                    link = ResourceLink(
+                        type="resource_link",
+                        uri=ACTIVE_PREDICTIONS_URI,  # type: ignore[arg-type]
+                        name=ACTIVE_PREDICTIONS_NAME,
+                        title=ACTIVE_PREDICTIONS_TITLE,
+                        description=ACTIVE_PREDICTIONS_DESCRIPTION,
+                        mimeType=ACTIVE_PREDICTIONS_MIME,
+                        meta=tool_meta(),
+                    )
+                    return CallToolResult(
+                        content=[link, *_make_text(json.dumps(dashboard_payload))],
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("ResourceLink attach failed, falling back: %s", exc)
             return _json_result(dashboard_payload)
 
         if name == "vaner.predictions.adopt":
             prediction_id_arg = str(args.get("prediction_id", "")).strip()
+            adopt_source = str(args.get("source", "")).strip() or "unknown"
             if not prediction_id_arg:
                 await _record("error")
                 return _json_result(
                     {"code": "invalid_input", "message": "prediction_id is required"},
                     is_error=True,
                 )
+            # 0.8.5 WS8: track adopts coming from the MCP Apps UI separately
+            # from tool-initiated adopts so we can measure UI value.
+            try:
+                if adopt_source == "mcp_app":
+                    await metrics_store.increment_counter("mcp_apps_adopt_clicked")
+                await metrics_store.increment_counter(f"mcp_adopt_source_{adopt_source}")
+            except Exception:  # pragma: no cover - defensive metrics
+                pass
             # In-process engine path first.
             if engine is not None and engine.prediction_registry is not None:
                 prompt = engine.prediction_registry.get(prediction_id_arg)

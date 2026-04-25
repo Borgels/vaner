@@ -20,12 +20,13 @@ def test_server_boot_initialize_lists_tools_and_status(temp_repo) -> None:
             names = [tool.name for tool in listed.tools]
             # WS7 added 4 goal tools → 16. 0.8.2 WS1 adds 4 artefact
             # tools + 1 sources.status → 21. 0.8.3 WS4 adds 5 deep_run
-            # tools → 26 total. Exact set is asserted in
-            # test_protocol_roundtrip; here we just check smoke.
-            assert len(names) == 26
+            # tools → 26. 0.8.5 WS5 adds vaner.predictions.dashboard → 27.
+            # Exact set is asserted in test_protocol_roundtrip.
+            assert len(names) == 27
             assert "vaner.status" in names
             assert "vaner.predictions.active" in names
             assert "vaner.predictions.adopt" in names
+            assert "vaner.predictions.dashboard" in names
             assert "vaner.goals.declare" in names
             assert "vaner.artefacts.list" in names
             assert "vaner.artefacts.influence" in names

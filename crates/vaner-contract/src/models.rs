@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::enums::{HypothesisType, PredictionSource, Readiness, Specificity};
+use crate::enums::{EtaBucket, HypothesisType, PredictionSource, Readiness, Specificity};
 
 #[cfg(feature = "ts-rs")]
 use ts_rs::TS;
@@ -24,6 +24,13 @@ use ts_rs::TS;
 
 /// A single in-flight predicted prompt. The top-level shape returned by
 /// `GET /predictions/active` (wrapped in `{"predictions": [...]}`).
+///
+/// 0.8.5 WS9: the daemon now emits optional card-model derivations
+/// (`readiness_label`, `eta_bucket`, `adoptable`, `rank`, `ui_summary`,
+/// `suppression_reason`, `source_label`, `eta_bucket_label`) alongside
+/// the raw fields. All new fields are `Option<T>` with `skip_serializing_if`
+/// so older daemons keep round-tripping and newer fields are available
+/// to UIs without a contract-version bump coordination step.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-rs", derive(TS), ts(export))]
 pub struct PredictedPrompt {
@@ -31,6 +38,24 @@ pub struct PredictedPrompt {
     pub spec: PredictionSpec,
     pub run: PredictionRun,
     pub artifacts: PredictionArtifacts,
+
+    // 0.8.5 WS9 — UI card-model derivations. Server-computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_bucket: Option<EtaBucket>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_bucket_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adoptable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suppression_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_label: Option<String>,
 }
 
 /// Immutable identity + hypothesis of a predicted prompt.

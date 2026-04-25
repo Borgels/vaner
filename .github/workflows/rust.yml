@@ -30,16 +30,15 @@ jobs:
         with:
           persist-credentials: false
 
-      # TODO(security): Scorecard requires all external actions to be
-      # SHA-pinned. Before merging this workflow to main, replace the
-      # tag refs below with the exact commit SHAs (dependabot can take
-      # over maintenance). dtolnay/rust-toolchain and Swatinem/rust-cache
-      # are widely reviewed and low-risk, but policy is policy.
-      - uses: dtolnay/rust-toolchain@stable
+      # SHA-pinned per OpenSSF Scorecard / CodeQL Pinned-Dependencies
+      # (alerts #223, #224). Dependabot owns the bump cadence — see
+      # `.github/dependabot.yml` if you need to add an update channel.
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master @ 2026-04-25
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
         with:
           workspaces: ". -> target"
 

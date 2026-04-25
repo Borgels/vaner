@@ -146,6 +146,14 @@ mod tests {
                 updated_at: 0.0,
             },
             artifacts: PredictionArtifacts::default(),
+            readiness_label: None,
+            eta_bucket: None,
+            eta_bucket_label: None,
+            adoptable: None,
+            rank: None,
+            ui_summary: None,
+            suppression_reason: None,
+            source_label: None,
         }
     }
 

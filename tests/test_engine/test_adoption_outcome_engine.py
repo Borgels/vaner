@@ -126,10 +126,16 @@ async def test_flush_noop_when_registry_missing(tmp_path) -> None:
 
 async def test_flush_runs_regardless_of_refinement_flag(tmp_path) -> None:
     """WS4 invariant: adoption-log writes do NOT depend on
-    ``refinement.enabled``. Data accumulates from day one."""
+    ``refinement.enabled``. Data accumulates from day one.
+
+    0.8.5 WS11 flipped the default to True; this test now explicitly
+    flips it to False to exercise the "refinement disabled but flush
+    still runs" path.
+    """
     engine = _make_engine(tmp_path / "repo")
+    engine.config.refinement.enabled = False  # 0.8.5 WS11: was the default pre-flip
     await engine.initialize()
-    assert engine.config.refinement.enabled is False  # default
+    assert engine.config.refinement.enabled is False
     pred = _ready_prediction()
     registry = _attach_registry(engine, [pred])
     registry.record_adoption(pred.spec.id)
