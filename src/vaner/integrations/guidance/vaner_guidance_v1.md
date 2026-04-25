@@ -1,5 +1,17 @@
-<!-- vaner-primer:start v=1 -->
-# Using Vaner
+---
+guidance_version: 1
+variant: canonical
+minimum_vaner_version: 0.8.5
+recommended_tools:
+  - vaner.predictions.active
+  - vaner.predictions.dashboard
+  - vaner.predictions.adopt
+  - vaner.resolve
+  - vaner.goals.declare
+  - vaner.feedback
+client_capability_assumptions: tier-2
+updated_at: 2026-04-25
+---
 
 Vaner is a predictive preparation layer available through MCP tools.
 
@@ -20,4 +32,3 @@ Use:
 - `vaner.feedback` at the end of a Vaner-assisted turn (`useful` / `partial` / `wrong` / `irrelevant`).
 
 Do not call Vaner mechanically on every turn. Avoid repeated calls when the current context already contains fresh Vaner material. When using Vaner material, preserve its provenance and distinguish it from your own inference.
-<!-- vaner-primer:end -->

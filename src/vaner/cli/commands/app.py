@@ -48,6 +48,7 @@ from vaner.cli.commands.daemon import (
 from vaner.cli.commands.deep_run import deep_run_app
 from vaner.cli.commands.distill import distill_skill_file
 from vaner.cli.commands.explain import render_human, render_json
+from vaner.cli.commands.guidance import guidance_app
 from vaner.cli.commands.init import (
     BACKEND_PRESETS,
     COMPUTE_PRESETS,
@@ -2141,6 +2142,7 @@ app.add_typer(config_app, name="config", rich_help_panel="Configure")
 app.add_typer(profile_app, name="profile", rich_help_panel="Background and local")
 app.add_typer(scenarios_app, name="scenarios", rich_help_panel="Use with an agent")
 app.add_typer(deep_run_app, name="deep-run", rich_help_panel="Background and local")
+app.add_typer(guidance_app, name="guidance", rich_help_panel="Use with an agent")
 
 
 def run() -> None:

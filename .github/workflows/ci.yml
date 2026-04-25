@@ -84,6 +84,9 @@ jobs:
             src/vaner/intent/profile.py \
             src/vaner/learning/counterfactual.py \
             src/vaner/defaults/loader.py
+      - name: AGENTS.md primer in sync with canonical guidance
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: python scripts/sync_agents_primer.py --check
       - name: Replay regression
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         run: pytest tests/test_replay_regression.py -v

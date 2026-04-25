@@ -378,6 +378,36 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 body = {**body, "artifacts_content": extra}
         return JSONResponse(body)
 
+    @app.get("/integrations/guidance")
+    async def integrations_guidance(variant: str = "canonical", format: str = "body") -> JSONResponse:
+        """Serve the canonical Vaner guidance asset.
+
+        Query params:
+          variant — canonical | weak | strong (default canonical).
+          format — body | markdown | json (default body).
+
+        Clients (MCP hosts, proxy integrations, agent-primer installers) fetch
+        this endpoint at startup to embed Vaner guidance in the agent's prompt.
+        """
+        from vaner.integrations.guidance import available_variants, load_guidance
+
+        if variant not in available_variants():
+            return JSONResponse(
+                {"code": "invalid_variant", "message": f"unknown variant {variant!r}"},
+                status_code=400,
+            )
+        doc = load_guidance(variant)  # type: ignore[arg-type]
+        if format == "body":
+            return JSONResponse({"body": doc.as_text(), "variant": variant, "version": doc.version})
+        if format == "markdown":
+            return JSONResponse({"markdown": doc.as_markdown(), "variant": variant, "version": doc.version})
+        if format == "json":
+            return JSONResponse(doc.as_dict())
+        return JSONResponse(
+            {"code": "invalid_format", "message": f"unknown format {format!r}"},
+            status_code=400,
+        )
+
     @app.post("/predictions/{prediction_id}/adopt")
     async def predictions_adopt(prediction_id: str) -> JSONResponse:
         pid = prediction_id.strip()
