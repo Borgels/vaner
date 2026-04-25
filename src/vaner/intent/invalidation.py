@@ -47,6 +47,14 @@ SignalKind = Literal[
     "artefact_seen",
     "artefact_superseded",
     "progress_reconciled",
+    # 0.8.7 WS4 — composer-lifecycle invalidations. Both carry
+    # ``payload["session_id"]`` and target ``composer_intent``-sourced
+    # predictions whose ``spec.anchor`` matches that session_id.
+    # ``composer_cancelled`` fires when the user explicitly cleared the
+    # draft; ``composer_abandoned`` fires when the draft went stale
+    # without submit (lost focus, replaced, or TTL expired).
+    "composer_cancelled",
+    "composer_abandoned",
 ]
 
 
@@ -171,4 +179,32 @@ def build_adoption_signal(prediction_id: str) -> InvalidationSignal:
     return InvalidationSignal(
         kind="adoption",
         payload={"prediction_id": prediction_id},
+    )
+
+
+def build_composer_cancelled_signal(session_id: str) -> InvalidationSignal:
+    """Emit a ``composer_cancelled`` signal for ``session_id`` (0.8.7 WS4).
+
+    Fires when the user explicitly cleared the composer draft. The
+    registry stales every ``composer_intent``-sourced prediction whose
+    ``spec.anchor`` equals ``session_id``.
+    """
+    return InvalidationSignal(
+        kind="composer_cancelled",
+        payload={"session_id": session_id},
+    )
+
+
+def build_composer_abandoned_signal(session_id: str) -> InvalidationSignal:
+    """Emit a ``composer_abandoned`` signal for ``session_id`` (0.8.7 WS4).
+
+    Fires when the composer draft went stale without submit (focus
+    lost, draft replaced, TTL expired). Treated the same as
+    ``composer_cancelled`` by the registry — both stale the
+    associated ``composer_intent`` predictions; the distinct kind is
+    preserved for telemetry attribution.
+    """
+    return InvalidationSignal(
+        kind="composer_abandoned",
+        payload={"session_id": session_id},
     )

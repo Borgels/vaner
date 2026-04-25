@@ -41,6 +41,11 @@ Source = Literal[
     # stalled} and emits one spec per eligible item. Carries richer
     # ``anchor_units`` (related files + entities) than goal-level specs.
     "artefact_item",
+    # 0.8.7 WS4 — anchored to a live composer session via the
+    # ComposerAdapter. ``anchor`` carries the composer ``session_id``
+    # so ``composer_cancelled`` / ``composer_abandoned`` invalidation
+    # signals can stale the prediction by session lookup.
+    "composer_intent",
 ]
 HypothesisType = Literal["likely_next", "possible_branch", "long_tail"]
 Specificity = Literal["concrete", "category", "anchor"]
@@ -127,6 +132,11 @@ class PredictionRun:
     probationary_until_cycle: int | None = None
     failed_revisits: int = 0
     maturation_eligible: bool = True
+    # 0.8.7 WS4 — strength of the most recent composer-lifecycle signal
+    # that anchors this prediction. Default 0.0 keeps the existing
+    # rebalance arithmetic byte-identical for non-composer predictions
+    # (mirrors the v0.8.6 WS4 mixed-is-identity discipline).
+    compose_signal_strength: float = 0.0
 
 
 @dataclass(slots=True)
