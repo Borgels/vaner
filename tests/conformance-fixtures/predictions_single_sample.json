@@ -26,5 +26,13 @@
     "has_draft": true,
     "has_briefing": true,
     "thinking_trace_count": 3
-  }
+  },
+  "readiness_label": "Ready",
+  "eta_bucket": "ready_now",
+  "eta_bucket_label": "Ready now",
+  "adoptable": true,
+  "rank": 1,
+  "ui_summary": "Next: write the webhook signing regression test.",
+  "suppression_reason": null,
+  "source_label": "Conversation arc"
 }

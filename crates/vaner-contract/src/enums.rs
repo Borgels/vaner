@@ -102,8 +102,10 @@ pub enum EtaBucket {
     /// Prediction is ready right now — click Adopt to use it.
     ReadyNow,
     /// Drafting almost done; usable within ~10–20s.
+    #[serde(rename = "under_20s")]
     Under20s,
     /// Evidence half-gathered; expect roughly a minute.
+    #[serde(rename = "under_1m")]
     Under1m,
     /// Work is underway but no crisp ETA yet.
     #[default]

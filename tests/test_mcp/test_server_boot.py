@@ -18,6 +18,7 @@ def test_server_boot_initialize_lists_tools_and_status(temp_repo) -> None:
             await session.initialize()
             listed = await session.list_tools()
             names = [tool.name for tool in listed.tools]
+            schemas = {tool.name: tool.inputSchema for tool in listed.tools}
             # WS7 added 4 goal tools → 16. 0.8.2 WS1 adds 4 artefact
             # tools + 1 sources.status → 21. 0.8.3 WS4 adds 5 deep_run
             # tools → 26. 0.8.5 WS5 adds vaner.predictions.dashboard → 27.
@@ -32,6 +33,18 @@ def test_server_boot_initialize_lists_tools_and_status(temp_repo) -> None:
             assert "vaner.artefacts.influence" in names
             assert "vaner.sources.status" in names
             assert "vaner.deep_run.start" in names
+            resolve_schema = schemas["vaner.resolve"]
+            assert set(resolve_schema["properties"]) >= {
+                "query",
+                "suggestion_id",
+                "context",
+                "budget",
+                "max_evidence_items",
+                "include_briefing",
+                "include_predicted_response",
+                "include_metrics",
+                "estimated_cost_per_1k_tokens",
+            }
             status = await session.call_tool("vaner.status", {})
             assert json.loads(status.content[0].text)["ready"] is True
 

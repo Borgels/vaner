@@ -79,6 +79,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          VANER_RELEASE_AUTOPUBLISH: ${{ vars.VANER_RELEASE_AUTOPUBLISH || '1' }}
         run: |
           set -euo pipefail
           # Ensure the release exists (tag push normally creates it via release-drafter; be idempotent).
@@ -100,6 +101,15 @@ jobs:
           # gap during 0.8.4). Publishing explicitly is idempotent on
           # already-published releases.
           is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          is_prerelease=$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)
+          if [ "$is_prerelease" = "true" ]; then
+            echo "Release $TAG is marked prerelease; leaving draft/latest state unchanged"
+            exit 0
+          fi
+          if [ "${VANER_RELEASE_AUTOPUBLISH:-1}" != "1" ]; then
+            echo "VANER_RELEASE_AUTOPUBLISH is not 1; leaving draft release $TAG unpublished"
+            exit 0
+          fi
           if [ "$is_draft" = "true" ]; then
             echo "Publishing draft release $TAG"
             gh release edit "$TAG" --draft=false --latest
