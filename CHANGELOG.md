@@ -7,17 +7,79 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-04-25
+
 ### Added
 
-#### Setup primitives + config schema (0.8.6 WS1)
-- **`src/vaner/setup/` module** — outcome-level configuration surface for the 0.8.6 Simple Mode wizard. Five `Literal` type aliases — `WorkStyle`, `Priority`, `ComputePosture`, `CloudPosture`, `BackgroundPosture` — plus a shared `HardwareTier` alias declared here for WS2 to populate via `tier_for()`.
-- **`SetupAnswers`** frozen dataclass (`src/vaner/setup/answers.py`) — immutable record of one wizard run, with `__post_init__` validation that rejects empty `work_styles` (the engine has no priors to average without at least one selection).
-- **`VanerPolicyBundle`** frozen dataclass (`src/vaner/setup/policy.py`) — outcome-level policy archetype. Carries cloud posture, runtime profile, spend profile, latency profile, privacy profile, four-key prediction-horizon-bias mapping, drafting aggressiveness, exploration ratio, persistence strength, goal weighting, context-injection default, and Deep-Run profile. Mapping keys are validated and frozen into a `MappingProxyType` view at construction time.
-- **`PROFILE_CATALOG`** (`src/vaner/setup/catalog.py`) — the seven shipped bundles per spec §9: `local_lightweight`, `local_balanced`, `local_heavy`, `hybrid_balanced`, `hybrid_quality`, `cost_saver`, `deep_research`. Plus `bundle_by_id()` lookup helper that raises `KeyError` (not a swallowed `None`) on unknown ids.
-- **`SetupConfig` and `PolicyConfig` Pydantic models** (`src/vaner/models/config.py`) — added to `VanerConfig` with default factories. `setup` carries the wizard answers + `mode` + `completed_at` first-run marker + schema `version`. `policy` carries `selected_bundle_id` (default `"hybrid_balanced"`), `bundle_overrides`, and `auto_select`.
+#### Simple Mode + Advanced Mode + policy bundles + Deep-Run UX
+
+The headline change: ordinary users now configure Vaner by **outcome** (work style, priority, cloud posture, compute posture, background preparation), not by mechanism (runtime, model, quantization, endpoint, model band). Power users keep full control via Advanced Mode. The 0.8.6 stack ships across five repos: Vaner (engine + CLI + cockpit), Vaner-train (bench corpus + LLM judge), vaner-desktop-macos, vaner-desktop-linux, vaner-docs.
+
+##### Setup primitives, hardware detection, selection algorithm (WS1+WS2+WS3)
+- **`src/vaner/setup/`** — `Literal` enums (`WorkStyle`, `Priority`, `ComputePosture`, `CloudPosture`, `BackgroundPosture`, `HardwareTier`); `SetupAnswers` frozen dataclass with empty-`work_styles` rejection; `VanerPolicyBundle` frozen dataclass with `MappingProxyType`-frozen mappings; `PROFILE_CATALOG` of seven bundles (`local_lightweight`, `local_balanced`, `local_heavy`, `hybrid_balanced`, `hybrid_quality`, `cost_saver`, `deep_research`); `bundle_by_id()` raises `KeyError` on unknowns.
+- **`SetupConfig` + `PolicyConfig`** Pydantic models on `VanerConfig`. `policy.selected_bundle_id` defaults to `"hybrid_balanced"` (no-op against pre-0.8.6 behaviour).
+- **`src/vaner/setup/hardware.py`** — read-only fail-safe probes for OS / CPU class / RAM / GPU (NVIDIA / AMD / Apple Silicon / integrated) / battery / thermal / detected local runtimes / detected models. Four-tier mapping (`light` / `capable` / `high_performance` / `unknown`) via `tier_for()`. Imports cleanly on any supported platform.
+- **`select_policy_bundle(answers, hardware) → SelectionResult`** — pure deterministic function. Filter → score → pick. Six small named match functions. Property test over the cartesian product of priority × cloud_posture × hardware_tier (96 cases) confirms totality.
+
+##### Engine wiring (WS4+WS5)
+- **`src/vaner/intent/work_style_priors.py`** — `WORK_STYLE_PRIORS` table maps each `WorkStyle` to `IntentPriorAdjustments`. Priors compose multiplicatively at three engine points: frontier scoring, drafter evidence/volatility gates, briefing assembler artefact-template hints. The `mixed` style is the identity element — engines on default config see byte-identical behaviour to pre-0.8.6.
+- **`src/vaner/setup/apply.py::apply_policy_bundle()`** — pure function that materialises bundle defaults onto `BackendConfig.prefer_local`, `BackendConfig.remote_budget_per_hour`, `ExplorationConfig.endpoints` (localhost-only filter under `local_only`), `ExplorationConfig.economics_first_routing`, `IntegrationsConfig.context_injection.mode`. `AppliedPolicy.overrides_applied` carries `WIDENS_CLOUD_POSTURE_SENTINEL`-prefixed strings when the new bundle widens cloud posture relative to the prior bundle. Engine stores result on `engine._applied_policy` (snapshot, not config mutation). `engine._refresh_policy_bundle_state()` is callable for hot-reload.
+- `test_apply_no_autonomy` enforces the prepare/promote/adopt/execute boundary at bundle-application time — no `auto_execute` / `auto_adopt` / `auto_send` / `auto_commit` flag-writes possible from a bundle.
+
+##### CLI surface (WS6 + cloud-widening guard follow-up)
+- **`vaner setup`** Typer sub-app with six subcommands: `wizard` / `show` / `recommend` / `apply` / `advanced` / `hardware`.
+- `wizard` runs the five-question Rich flow, surfaces bundle reasoning + cloud-widening warnings (interactive y/N), persists `[setup]` and `[policy]` to `.vaner/config.toml`.
+- `recommend` is the JSON-out programmatic surface. `apply --bundle-id <id>` is the non-interactive batch path.
+- `vaner init` chains into the wizard interactively (skip via `--non-interactive`).
+- **`vaner setup apply --confirm-cloud-widening`** (follow-up) — non-interactive opt-in for cloud-posture widening. Without the flag, `apply` calls `apply_policy_bundle()` server-side, detects the `WIDENS_CLOUD_POSTURE` sentinel, and aborts (`exit 1`) with the warning details. Lets the Linux desktop drop its client-side pre-flight and rely on engine enforcement.
+
+##### MCP and HTTP surfaces (WS7+WS8+WS9)
+- **Five new MCP tools**: `vaner.setup.questions`, `vaner.setup.recommend`, `vaner.setup.apply`, `vaner.setup.status`, `vaner.policy.show`. WS9 adds `vaner.deep_run.defaults`. Tool count 27 → 33.
+- **`src/vaner/setup/serializers.py`** — public canonical JSON-shape source. CLI/MCP/HTTP all import from here so the wire format stays in lock-step. `bundle_to_dict`, `selection_to_dict`, `hardware_to_dict`, `answers_from_payload`, `AnswersValidationError`.
+- **Eight new HTTP endpoints** on the daemon: `GET /setup/questions`, `POST /setup/recommend`, `POST /setup/apply`, `GET /setup/status`, `GET /policy/current`, `GET /hardware/profile`, `POST /policy/refresh`, `GET /deep-run/defaults`. Endpoint count 23 → 31. Loopback-only auth.
+- **`POST /policy/refresh`** triggers `engine._refresh_policy_bundle_state()` so `vaner setup apply` gets a hot reload without a daemon restart.
+- **`GET /hardware/profile`** caches `detect()` for the daemon process lifetime.
+
+##### Deep-Run user-facing refinements (WS9)
+- **`deep_run_defaults_for(bundle, setup) → DeepRunDefaults`** — pure function translating the active bundle + Simple-Mode answers into Deep-Run session-start seeds (preset / horizon_bias / locality / cost_cap_usd / focus). Single source of truth across CLI / MCP / HTTP / desktops via `GET /deep-run/defaults` and `vaner.deep_run.defaults`.
+- UX label rename for `horizon_bias` values in **rendering only** (storage literals stay): "Likely next moves" / "Long-horizon work" / "Finish what's in progress" / "Balanced".
+- Anti-autonomy reminder card at the start-confirmation step: *"Deep-Run prepares; it does not act."* Both human Rich panel and `prepare_only_notice` field in `--json` mode.
+- Duration helper extracted from `vaner/cli/commands/deep_run.py` to `vaner/cli/duration.py` for desktop reuse.
+
+##### Cockpit + accessibility (WS10)
+- **`BundleSummaryCard`** + **`HardwareProfilePanel`** React components. Read-only views fed by the WS8 daemon endpoints; fetch helpers gracefully return `null` on 404.
+- Full axe-core / pa11y accessibility pass on the cockpit + the MCP Apps UI bundle (deferred from 0.8.5). `cockpit-a11y.yml` GitHub Action workflow fails on regressions.
+
+##### 0.8.5 carry-overs (WS11)
+- **Labelled Deep-Run corpus expansion** (Vaner-train) — 40 synthetic `LabelledSession` fixtures (10 per archetype × writer / researcher / developer / planner). Each carries `synthetic: true` so future κ reports can split synthetic vs real corpora.
+- **`llm_external_judge`** (Vaner-train) — `ExternalJudgeCallable` against a higher-capacity LLM. Two adapters: `anthropic_llm_callable` (Claude API) and `openai_llm_callable_for_judge` (OpenAI-compatible / vLLM / LM Studio / ollama-OAI). Temperature=0; deterministic cache keyed on `(model_id, sha256(canonical_json(inputs)))`. Wired via `--external-judge llm --judge-model <id>`.
+- **ts-rs `cargo run --example export_bindings`** — single-command bindings export for vaner-desktop-linux. README documents the predev/prebuild rsync pattern.
+
+##### Setup-types Rust mirrors (follow-up shipped in 0.8.6)
+- **`crates/vaner-contract/src/setup.rs`** — Rust + ts-rs mirrors of `SetupAnswers`, `VanerPolicyBundle`, `HardwareProfile`, `SelectionResult`, `AppliedPolicy`, `SetupConfig`, `PolicyConfig`, `DeepRunDefaults`, `SetupQuestion` + supporting enums (18 types). Conformance fixtures at `tests/conformance-fixtures/setup_*_sample.json` validated by both Rust and Python.
+
+#### Cross-repo
+
+- **`Borgels/vaner-desktop-macos`** branch `0.8.6/setup-and-simple-mode` — OnboardingWindow extended from 3 to 6 steps. New `SetupModels` / `SetupStore` / `DeepRunStartSheet`. PreferencesPane gains a Simple/Advanced toggle. Hardware tier readout in popover.
+- **`Borgels/vaner-desktop-linux`** branch `0.8.6/setup-and-simple-mode` — `/setup` first-run wizard; activated `/preferences/engine` and `/preferences/telemetry` tabs (previously stubbed); Engine tab Simple/Advanced segmented control; Tauri commands shell out to `vaner setup --json`; `regen-contract-bindings.mjs` predev script.
+- **`Borgels/vaner-docs`** branch `0.8.6/setup-and-simple-mode` — Getting Started fork into Simple Mode / Advanced Mode paths. New pages: `simple-mode.mdx`, `advanced-mode.mdx`, `policy-bundles.mdx`, `hardware-tiers.mdx`, `deep-run.mdx`. `cli.mdx` updated with the `vaner setup` command group.
 
 ### Removed
-- **`IntentConfig.domain`** field — the unused `Literal["coding","research","writing","ops"]` field is removed outright (zero callers; no external users to migrate). Superseded by the multi-select `setup.work_styles` field on `SetupConfig`. CHANGELOG is the only record needed.
+- **`IntentConfig.domain`** field — the unused `Literal["coding","research","writing","ops"]` field is deleted outright (zero callers; no external users yet). Superseded by the multi-select `setup.work_styles` field on `SetupConfig`.
+
+### Tests
+- **+341 tests** vs the 0.8.5 baseline of 1241 → 1582 total passing on the full Vaner suite (15 skipped, 0 failed).
+- Property test over (priority × cloud_posture × hardware_tier) cartesian product asserts `select_policy_bundle()` is total.
+- `test_apply_no_autonomy` enforces the prepare/promote/adopt/execute invariant.
+- `test_engine_no_op_when_default` confirms WS4 priors are byte-identical to pre-0.8.6 when `setup.work_styles=["mixed"]`.
+- Two security-review passes (against WS5+WS6+WS10+WS11 surface, then WS7+WS8+WS9 surface). **Zero HIGH or MEDIUM findings at confidence ≥ 0.8.** All ten threat surfaces cleared.
+
+### Bench / ship gates
+- κ anti-self-judging gate harness runs end-to-end on the synthetic corpus with the `reference_match` judge — structural pass (per-archetype Δ ≥ +0.15 holds; harness exit 0). The numeric κ is artefact of corpus uniformity (synthetic fixtures have no inter-judge variance to disagree on); real κ validation requires a real-LLM judge run against a corpus with variance — `--external-judge llm --judge-model <id>` is wired and ready.
+
+### Internal
+- Setup primitives are pure functions; no I/O outside `hardware.detect()`. Bundle application is pure and reversible.
+- 1Password SSH-signing was disabled for the v0.8.6 development session; commits in this stack are unsigned (`%G? = N`). The chain is internally consistent.
 
 ## [0.8.4] - 2026-04-24
 
