@@ -14,6 +14,8 @@ import type {
   UIPinnedFact,
   UISkill,
 } from '../types'
+import type { AppliedPolicy, VanerPolicyBundle } from '../types/setup'
+import { BundleSummaryCard } from './BundleSummaryCard'
 
 export interface CommandItem {
   id: string
@@ -86,7 +88,7 @@ export function TopBar({ running, onToggleRun, packageState, onOpenSettings, onO
             {running ? 'LIVE' : 'RETRYING'}
           </span>
         </div>
-        <button onClick={onToggleRun} style={headerBtn}>
+        <button type="button" onClick={onToggleRun} style={headerBtn} aria-label="Refresh cockpit data">
           ↻ refresh
         </button>
         {packageState ? (
@@ -105,10 +107,22 @@ export function TopBar({ running, onToggleRun, packageState, onOpenSettings, onO
             </div>
           </>
         ) : null}
-        <button onClick={onOpenPalette} style={headerBtn} title="Command palette (Ctrl/Cmd+K)">
+        <button
+          type="button"
+          onClick={onOpenPalette}
+          style={headerBtn}
+          title="Command palette (Ctrl/Cmd+K)"
+          aria-label="Open command palette"
+        >
           ⌘K
         </button>
-        <button onClick={onOpenSettings} style={headerBtn} title="Settings">
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          style={headerBtn}
+          title="Settings"
+          aria-label="Open settings"
+        >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3">
             <circle cx="6" cy="6" r="1.5" />
             <path d="M6 1v1.5M6 9.5V11M11 6H9.5M2.5 6H1M9.5 2.5 8.5 3.5M3.5 8.5 2.5 9.5M9.5 9.5 8.5 8.5M3.5 3.5 2.5 2.5" />
@@ -580,6 +594,13 @@ interface SettingsDrawerProps {
   onSaveContext: (maxContextTokens: number) => Promise<void>
   onPatchCockpit: (patch: Partial<CockpitSettings>) => void
   onToggleGateway?: (enabled: boolean) => Promise<void>
+  // 0.8.6 WS10 — optional bundle-summary inputs. Until WS8's
+  // /policy/current endpoint ships, the parent App passes
+  // appliedPolicy={null} and the BundleSummaryCard renders its
+  // wizard-prompt fallback.
+  appliedPolicy?: AppliedPolicy | null
+  selectionReasons?: string[]
+  runnerUps?: VanerPolicyBundle[]
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -758,6 +779,11 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     onSaveContext,
     onPatchCockpit,
     onToggleGateway,
+    // 0.8.6 WS10 — bundle summary props are optional; App.tsx passes
+    // null until WS8 wires the daemon /policy/current endpoint.
+    appliedPolicy = null,
+    selectionReasons = [],
+    runnerUps = [],
   } = props
 
   if (!open) {
@@ -795,11 +821,26 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
               {mode} · saves to .vaner/config.toml
             </div>
           </div>
-          <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: 'var(--fg-3)', fontSize: 20, cursor: 'pointer' }}>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close settings"
+            style={{ background: 'transparent', border: 'none', color: 'var(--fg-3)', fontSize: 20, cursor: 'pointer' }}
+          >
             ×
           </button>
         </div>
         <div className="scroll" style={{ flex: 1, overflow: 'auto' }}>
+          {/* 0.8.6 WS10 — Bundle summary card. Always rendered; the card
+              itself decides whether to show the applied bundle, the
+              wizard-prompt fallback, or the cloud-widening warning. */}
+          <Section title="POLICY BUNDLE">
+            <BundleSummaryCard
+              applied_policy={appliedPolicy}
+              selection_reasons={selectionReasons}
+              runner_ups={runnerUps}
+            />
+          </Section>
           <Section title="BACKEND">
             <Field label="Preset">
               <SelectInput
