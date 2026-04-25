@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 
 import type { CycleState, ModelState } from '../api/usePipelineEvents'
 import type { BucketBudgets } from '../types'
+import type { HardwareProfile } from '../types/setup'
+import { HardwareProfilePanel } from './HardwareProfilePanel'
 
 export interface SystemVitalsProps {
   live: boolean
@@ -27,6 +29,14 @@ export interface SystemVitalsProps {
     count: number
     accuracy: number
   }> | null
+  // 0.8.6 WS10 — optional Device readout. The HardwareProfilePanel is
+  // rendered as a new section under the existing vitals so the user can
+  // see *why* a particular bundle was auto-selected. Until WS8 wires the
+  // /hardware/profile endpoint, the parent passes hardwareProfile=null
+  // and the panel renders its "probe unavailable" fallback.
+  hardwareProfile?: HardwareProfile | null
+  onRefreshHardware?: () => Promise<void> | void
+  refreshingHardware?: boolean
 }
 
 function formatDuration(ms: number | null | undefined): string {
@@ -69,6 +79,9 @@ export function SystemVitals({
   pendingLlm,
   predictionMetrics,
   predictionCalibration,
+  hardwareProfile,
+  onRefreshHardware,
+  refreshingHardware,
 }: SystemVitalsProps) {
   const calibrationEce =
     predictionCalibration && predictionCalibration.length
@@ -238,6 +251,17 @@ export function SystemVitals({
         <VitalRow
           label="llm errors"
           value={<span style={{ color: 'var(--err)' }}>{model.totalErrors}</span>}
+        />
+      ) : null}
+      {/* 0.8.6 WS10 — Device / hardware readout. Rendered when the parent
+          provides at least one hardware-related prop; null profile renders
+          the "probe unavailable" fallback so users on a daemon that has
+          not yet wired WS8 still see a clear message. */}
+      {hardwareProfile !== undefined || onRefreshHardware ? (
+        <HardwareProfilePanel
+          profile={hardwareProfile ?? null}
+          onRefresh={onRefreshHardware}
+          refreshing={refreshingHardware}
         />
       ) : null}
     </div>

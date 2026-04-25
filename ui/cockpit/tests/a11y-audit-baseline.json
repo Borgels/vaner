@@ -1,0 +1,30 @@
+{
+  "_comment": "0.8.6 WS10 — axe-core baseline for the cockpit dev server + the MCP Apps UI bundle. CI fails if any new HIGH/SERIOUS violations appear that are not listed here. Re-generate with `npm run a11y:scan` and `npm run a11y:scan:mcp` after fixing real violations.",
+  "_generated_by": "cockpit-a11y.yml",
+  "schema_version": 1,
+  "targets": [
+    {
+      "name": "cockpit-dev-server",
+      "url": "http://127.0.0.1:5173/",
+      "axe_options": {
+        "runOnly": {
+          "type": "tag",
+          "values": ["wcag2a", "wcag2aa", "best-practice"]
+        }
+      },
+      "known_violations": []
+    },
+    {
+      "name": "mcp-apps-active-predictions",
+      "source": "src/vaner/mcp/apps/active_predictions.html",
+      "axe_options": {
+        "runOnly": {
+          "type": "tag",
+          "values": ["wcag2a", "wcag2aa", "best-practice"]
+        }
+      },
+      "known_violations": []
+    }
+  ],
+  "fail_on_severities": ["serious", "critical"]
+}
