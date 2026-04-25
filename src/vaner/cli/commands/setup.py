@@ -818,6 +818,18 @@ def apply_cmd(
         str | None,
         typer.Option("--bundle-id", help="Skip selection; pin this bundle id directly."),
     ] = None,
+    confirm_cloud_widening: Annotated[
+        bool,
+        typer.Option(
+            "--confirm-cloud-widening",
+            help=(
+                "Required to proceed when the new bundle widens cloud posture "
+                "relative to the prior bundle. Without this flag, apply aborts "
+                "and prints the widening details so callers (desktop apps, CI) "
+                "can re-invoke with explicit consent."
+            ),
+        ),
+    ] = False,
     as_json: Annotated[
         bool,
         typer.Option("--json", help="Emit a JSON status object instead of human-readable lines."),
@@ -833,15 +845,12 @@ def apply_cmd(
         except KeyError as exc:
             typer.secho(f"unknown bundle id: {bundle_id!r}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=1) from exc
-        # No answers required for explicit-bundle override; persist the
-        # current setup section unchanged (or defaults) plus the
-        # selected bundle id.
         existing_setup = _read_setup_section(repo_root)
         if existing_setup:
             answers = _answers_from_payload(existing_setup)
         else:
             answers = _default_answers()
-        chosen_bundle_id = bundle.id
+        chosen_bundle = bundle
         reasons: list[str] = ["explicit --bundle-id override"]
     else:
         if answers_path is None:
@@ -865,14 +874,53 @@ def apply_cmd(
                 raise typer.Exit(code=1) from exc
         hardware = detect()
         selection = select_policy_bundle(answers, hardware)
-        chosen_bundle_id = selection.bundle.id
+        chosen_bundle = selection.bundle
         reasons = list(selection.reasons)
+
+    # Cloud-widening guard. apply_policy_bundle records sentinel-prefixed
+    # entries in overrides_applied when the new bundle widens cloud posture
+    # relative to the prior bundle on disk. Batch callers must opt in
+    # explicitly via --confirm-cloud-widening; otherwise we abort with the
+    # widening details so the caller (desktop UI, CI) can re-invoke with
+    # consent.
+    config = load_config(repo_root)
+    prior_policy_section = _read_policy_section(repo_root)
+    prior_bundle_id = prior_policy_section.get("selected_bundle_id")
+    if isinstance(prior_bundle_id, str) and prior_bundle_id:
+        config = config.model_copy(update={"policy": config.policy.model_copy(update={"selected_bundle_id": prior_bundle_id})})
+    applied = apply_policy_bundle(config, chosen_bundle)
+    warnings, _regular_overrides = _split_overrides(applied)
+
+    if warnings and not confirm_cloud_widening:
+        if as_json:
+            typer.echo(
+                json.dumps(
+                    {
+                        "blocked": True,
+                        "block_reason": "cloud_widening_requires_confirm",
+                        "selected_bundle_id": chosen_bundle.id,
+                        "widens_cloud_posture": True,
+                        "warnings": warnings,
+                        "hint": "re-invoke with --confirm-cloud-widening to proceed",
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            typer.secho(
+                "Aborted: this bundle widens cloud posture; re-invoke with --confirm-cloud-widening.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            for entry in warnings:
+                typer.secho(f"  - {entry}", fg=typer.colors.YELLOW, err=True)
+        raise typer.Exit(code=1)
 
     completed_at = datetime.now(UTC)
     config_path = _persist_setup_and_policy(
         repo_root,
         answers,
-        chosen_bundle_id,
+        chosen_bundle.id,
         completed_at=completed_at,
     )
 
@@ -880,8 +928,9 @@ def apply_cmd(
 
     payload: dict[str, Any] = {
         "config_path": str(config_path),
-        "selected_bundle_id": chosen_bundle_id,
+        "selected_bundle_id": chosen_bundle.id,
         "reasons": reasons,
+        "widens_cloud_posture": bool(warnings),
         "daemon": daemon_status,
     }
     if as_json:
@@ -889,7 +938,9 @@ def apply_cmd(
         return
 
     _console.print(f"[green]Wrote setup + policy to[/green] {config_path}")
-    _console.print(f"[dim]selected_bundle_id={chosen_bundle_id}[/dim]")
+    _console.print(f"[dim]selected_bundle_id={chosen_bundle.id}[/dim]")
+    if warnings:
+        _console.print("[yellow]Cloud posture widened (confirmed via --confirm-cloud-widening).[/yellow]")
     if daemon_status.get("reachable"):
         _console.print("[dim]Daemon reachable. Daemon will pick up changes on next config reload.[/dim]")
     else:

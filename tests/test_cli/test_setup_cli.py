@@ -263,6 +263,77 @@ def test_apply_with_answers_path(
     assert "config_path" in parsed
 
 
+def test_apply_blocks_on_cloud_widening_without_confirm(
+    tmp_path: Path,
+    fake_hardware: HardwareProfile,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`apply --bundle-id <wider>` aborts when cloud posture would widen.
+
+    The 0.8.6 follow-up adds a non-interactive cloud-widening guard to the
+    batch apply path so the desktop / CI surfaces can rely on the engine,
+    not their own pre-flight, to enforce the invariant.
+    """
+
+    monkeypatch.setattr(
+        "vaner.cli.commands.setup._ping_daemon_for_refresh",
+        lambda: {"reachable": False, "url": "test"},
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # Pin the prior bundle to a strict-local one so any move toward a
+    # hybrid bundle widens the cloud posture.
+    result_first = runner.invoke(
+        setup_app,
+        ["apply", "--bundle-id", "local_lightweight", "--path", str(repo)],
+    )
+    assert result_first.exit_code == 0, result_first.output
+
+    # Now try to widen to hybrid_quality without --confirm-cloud-widening.
+    result_blocked = runner.invoke(
+        setup_app,
+        ["apply", "--bundle-id", "hybrid_quality", "--path", str(repo), "--json"],
+    )
+    assert result_blocked.exit_code != 0
+    parsed = json.loads(result_blocked.output)
+    assert parsed["blocked"] is True
+    assert parsed["block_reason"] == "cloud_widening_requires_confirm"
+    assert parsed["widens_cloud_posture"] is True
+    assert parsed["warnings"], "expected at least one widening warning"
+
+
+def test_apply_proceeds_with_confirm_cloud_widening(
+    tmp_path: Path,
+    fake_hardware: HardwareProfile,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`apply --bundle-id <wider> --confirm-cloud-widening` proceeds."""
+
+    monkeypatch.setattr(
+        "vaner.cli.commands.setup._ping_daemon_for_refresh",
+        lambda: {"reachable": False, "url": "test"},
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    runner.invoke(setup_app, ["apply", "--bundle-id", "local_lightweight", "--path", str(repo)])
+    result = runner.invoke(
+        setup_app,
+        [
+            "apply",
+            "--bundle-id",
+            "hybrid_quality",
+            "--path",
+            str(repo),
+            "--confirm-cloud-widening",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    parsed = json.loads(result.output)
+    assert parsed["selected_bundle_id"] == "hybrid_quality"
+    assert parsed["widens_cloud_posture"] is True
+
+
 # ---------------------------------------------------------------------------
 # show
 # ---------------------------------------------------------------------------
