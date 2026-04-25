@@ -396,7 +396,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 {"code": "invalid_variant", "message": f"unknown variant {variant!r}"},
                 status_code=400,
             )
-        doc = load_guidance(variant)  # type: ignore[arg-type]
+        doc = load_guidance(variant)
         if format == "body":
             return JSONResponse({"body": doc.as_text(), "variant": variant, "version": doc.version})
         if format == "markdown":
@@ -406,6 +406,59 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         return JSONResponse(
             {"code": "invalid_format", "message": f"unknown format {format!r}"},
             status_code=400,
+        )
+
+    @app.post("/integrations/handoff/check")
+    async def integrations_handoff_check(request: Request) -> JSONResponse:
+        """Probe the platform-canonical adopt-handoff path without consuming it.
+
+        0.8.5 WS13: read-only HTTP companion to MCP's `vaner.resolve`
+        handoff short-circuit. Lets non-MCP clients (the web cockpit, a
+        custom proxy) check whether a fresh adopted package is waiting
+        on disk before deciding whether to spend a fresh resolve. Unlike
+        the MCP path this does NOT delete the file on read — callers
+        that want one-shot semantics should hit the corresponding MCP
+        tool, or delete the file themselves after consuming.
+
+        Optional body: `{"ttl_seconds": int}` to override the default
+        10-min freshness window. Returns `{adopted_package, fresh,
+        age_seconds, path}` where `adopted_package` is the raw payload
+        the desktop client stashed (or `null` when missing/stale).
+        """
+        from vaner.integrations.injection.handoff import (
+            DEFAULT_TTL_SECONDS,
+            handoff_path,
+            read_handoff,
+        )
+
+        ttl_seconds: int = DEFAULT_TTL_SECONDS
+        try:
+            body = await request.json()
+            if isinstance(body, dict) and "ttl_seconds" in body:
+                raw = body["ttl_seconds"]
+                if isinstance(raw, (int, float)) and raw >= 0:
+                    ttl_seconds = int(raw)
+        except Exception:
+            # Empty body or invalid JSON is fine — caller just wants the default TTL.
+            pass
+
+        result = read_handoff(ttl_seconds=ttl_seconds)
+        if result is None:
+            return JSONResponse(
+                {
+                    "adopted_package": None,
+                    "fresh": False,
+                    "age_seconds": None,
+                    "path": str(handoff_path()),
+                }
+            )
+        return JSONResponse(
+            {
+                "adopted_package": result.raw,
+                "fresh": True,
+                "age_seconds": result.age_seconds,
+                "path": str(result.path),
+            }
         )
 
     @app.post("/predictions/{prediction_id}/adopt")
