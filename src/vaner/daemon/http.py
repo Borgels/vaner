@@ -740,11 +740,11 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             )
         try:
             refresh_hook()
-        except Exception as exc:
+        except Exception:
             return JSONResponse(
                 {
                     "code": "refresh_failed",
-                    "message": f"{type(exc).__name__}: {exc}",
+                    "message": "policy refresh failed",
                 },
                 status_code=503,
             )
