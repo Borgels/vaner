@@ -217,6 +217,55 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             raise HTTPException(status_code=404, detail=f"session {session_id!r} not found")
         return JSONResponse(_serialize_session(session))
 
+    @app.get("/deep-run/defaults")
+    async def deep_run_defaults_endpoint() -> JSONResponse:
+        """Return the bundle-derived Deep-Run start-dialog seeds.
+
+        Reads the active policy bundle (defaulting to ``hybrid_balanced``
+        when no bundle has been selected) and the persisted SetupAnswers
+        (defaulting to a neutral set when no Simple-Mode run has
+        happened yet), then runs :func:`deep_run_defaults_for`. Pure
+        read — no side effects.
+        """
+
+        from vaner.cli.commands.setup import (
+            _default_answers,
+            _read_policy_section,
+            _read_setup_section,
+        )
+        from vaner.intent.deep_run_defaults import (
+            deep_run_defaults_for,
+            defaults_to_dict,
+        )
+        from vaner.setup.answers import SetupAnswers
+        from vaner.setup.catalog import bundle_by_id
+
+        repo_root = config.repo_root
+        policy_section = _read_policy_section(repo_root)
+        selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
+        try:
+            bundle = bundle_by_id(str(selected_bundle_id))
+        except KeyError:
+            raise HTTPException(
+                status_code=503,
+                detail=f"unknown bundle id {selected_bundle_id!r}; run `vaner setup wizard`",
+            ) from None
+
+        setup_section = _read_setup_section(repo_root)
+        answers: SetupAnswers
+        if setup_section:
+            try:
+                from vaner.cli.commands.setup import _answers_from_payload
+
+                answers = _answers_from_payload(setup_section)
+            except Exception:
+                answers = _default_answers()
+        else:
+            answers = _default_answers()
+
+        defaults = deep_run_defaults_for(bundle, answers)
+        return JSONResponse(defaults_to_dict(defaults))
+
     # ------------------------------------------------------------------
     # 0.8.6 WS8 — Setup HTTP surface. Mirrors the WS7 MCP tools so
     # desktop apps that prefer HTTP can drive the wizard end-to-end.

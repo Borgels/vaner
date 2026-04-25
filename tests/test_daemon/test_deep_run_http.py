@@ -119,3 +119,27 @@ def test_list_limit_bounds_clamped(client: TestClient) -> None:
     # limit=999 should be silently clamped to 200, not rejected
     resp = client.get("/deep-run/sessions?limit=999")
     assert resp.status_code == 200
+
+
+def test_defaults_endpoint_returns_well_formed_payload(client: TestClient) -> None:
+    """WS9: GET /deep-run/defaults emits the bundle-derived seed shape."""
+
+    resp = client.get("/deep-run/defaults")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["preset"] in ("conservative", "balanced", "aggressive")
+    assert body["horizon_bias"] in (
+        "likely_next",
+        "long_horizon",
+        "finish_partials",
+        "balanced",
+    )
+    assert body["locality"] in ("local_only", "local_preferred", "allow_cloud")
+    assert body["focus"] in ("active_goals", "current_workspace", "all_recent")
+    assert isinstance(body["cost_cap_usd"], (int, float))
+    assert body["cost_cap_usd"] >= 0.0
+    # No bundle on disk → falls back to hybrid_balanced.
+    assert body["source_bundle_id"] == "hybrid_balanced"
+    # One reason per derived field.
+    assert isinstance(body["reasons"], list)
+    assert len(body["reasons"]) == 5

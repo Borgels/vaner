@@ -23,8 +23,9 @@ def test_server_boot_initialize_lists_tools_and_status(temp_repo) -> None:
             # tools + 1 sources.status → 21. 0.8.3 WS4 adds 5 deep_run
             # tools → 26. 0.8.5 WS5 adds vaner.predictions.dashboard → 27.
             # 0.8.6 WS7 adds 5 vaner.setup.* / vaner.policy.show tools → 32.
+            # 0.8.6 WS9 adds vaner.deep_run.defaults → 33.
             # Exact set is asserted in test_protocol_roundtrip.
-            assert len(names) == 32
+            assert len(names) == 33
             assert "vaner.status" in names
             assert "vaner.predictions.active" in names
             assert "vaner.predictions.adopt" in names

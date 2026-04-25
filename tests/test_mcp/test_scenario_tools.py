@@ -81,6 +81,8 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
             "vaner.deep_run.status",
             "vaner.deep_run.list",
             "vaner.deep_run.show",
+            # 0.8.6 WS9: bundle-derived Deep-Run start-dialog seeds.
+            "vaner.deep_run.defaults",
             # 0.8.6 WS7: Setup-surface MCP tools.
             "vaner.setup.questions",
             "vaner.setup.recommend",

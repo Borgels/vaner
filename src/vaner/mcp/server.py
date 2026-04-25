@@ -1162,6 +1162,20 @@ def build_server(
                         "required": ["session_id"],
                     },
                 ),
+                # 0.8.6 WS9 — Bundle-derived Deep-Run start-dialog seeds.
+                Tool(
+                    name="vaner.deep_run.defaults",
+                    description=(
+                        "Return the bundle-derived seed values for the "
+                        "Deep-Run start dialog: preset, horizon_bias, "
+                        "locality, cost_cap_usd, focus, plus a list of "
+                        "human-readable reasons. Read-only. Surfaces / "
+                        "desktops use this to pre-fill the form so users "
+                        "see sensible bundle-aware defaults instead of a "
+                        "blank dialog."
+                    ),
+                    inputSchema={"type": "object", "properties": {}},
+                ),
                 # 0.8.6 WS7 — Setup-surface MCP tools.
                 Tool(
                     name="vaner.setup.questions",
@@ -2684,6 +2698,45 @@ def build_server(
                     )
                 await _record("ok")
                 return _json_result(_session_to_dict(session))
+
+            if name == "vaner.deep_run.defaults":
+                # WS9: bundle-derived seeds for the Deep-Run start dialog.
+                from vaner.cli.commands.setup import (
+                    _answers_from_payload,
+                    _default_answers,
+                    _read_policy_section,
+                    _read_setup_section,
+                )
+                from vaner.intent.deep_run_defaults import (
+                    deep_run_defaults_for,
+                    defaults_to_dict,
+                )
+                from vaner.setup.catalog import bundle_by_id
+
+                policy_section = _read_policy_section(active_repo_root)
+                selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
+                try:
+                    bundle = bundle_by_id(str(selected_bundle_id))
+                except KeyError:
+                    await _record("error")
+                    return _json_result(
+                        {
+                            "code": "unknown_bundle_id",
+                            "message": f"unknown bundle id {selected_bundle_id!r}; run `vaner setup wizard`",
+                        },
+                        is_error=True,
+                    )
+                setup_section = _read_setup_section(active_repo_root)
+                if setup_section:
+                    try:
+                        answers = _answers_from_payload(setup_section)
+                    except Exception:
+                        answers = _default_answers()
+                else:
+                    answers = _default_answers()
+                defaults = deep_run_defaults_for(bundle, answers)
+                await _record("ok")
+                return _json_result(defaults_to_dict(defaults))
 
         # ------------------------------------------------------------------
         # 0.8.6 WS7 — Setup-surface MCP tools.
