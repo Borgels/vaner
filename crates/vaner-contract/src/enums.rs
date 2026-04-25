@@ -28,6 +28,10 @@ pub enum PredictionSource {
     History,
     /// 0.8.0 WS7: prediction anchored to a `WorkspaceGoal`.
     Goal,
+    /// 0.8.7 WS8: prediction anchored to a live composer session via
+    /// the ComposerAdapter. `PredictionSpec.anchor` carries the
+    /// composer `session_id`.
+    ComposerIntent,
     /// Unknown / future server value. `PredictionSpec.anchor` may still
     /// carry useful info even when the source is opaque.
     #[serde(other)]

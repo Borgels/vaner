@@ -541,7 +541,40 @@ def _serialize_prediction_for_mcp(prompt: Any, *, rank: int | None = None) -> di
     }
     if rank is not None:
         payload["rank"] = rank
+    # 0.8.7 WS8: surface composer-engagement metadata only for
+    # composer_intent-sourced predictions. The data backbone is
+    # populated by WS7's daemon path; field is omitted entirely
+    # for non-composer predictions so existing card payloads stay
+    # byte-identical.
+    if spec.source == "composer_intent":
+        composer_engagement = _composer_engagement_payload(prompt)
+        if composer_engagement is not None:
+            payload["composer_engagement"] = composer_engagement
     return payload
+
+
+def _composer_engagement_payload(prompt: Any) -> dict[str, Any] | None:
+    """Extract composer-engagement metadata from a composer_intent prediction.
+
+    Returns None if the prediction lacks the engagement fields the host
+    UI would render against. Stored on the prediction's run/artifacts
+    metadata by WS7's adapter pipeline; this helper is the single
+    decoupling point so a future schema change touches one place.
+    """
+    artifacts = getattr(prompt, "artifacts", None)
+    spec = getattr(prompt, "spec", None)
+    if artifacts is None or spec is None:
+        return None
+    metadata: dict[str, Any] = getattr(artifacts, "composer_metadata", {}) or {}
+    composer_event_id = metadata.get("composer_event_id")
+    if not composer_event_id:
+        return None
+    return {
+        "composer_event_id": str(composer_event_id),
+        "lifecycle_state": str(metadata.get("lifecycle_state", "submitted")),
+        "inferred_intent_label": metadata.get("inferred_intent_label"),
+        "inferred_intent_confidence": metadata.get("inferred_intent_confidence"),
+    }
 
 
 _RESOURCE_METRIC_TASKS: set[Any] = set()

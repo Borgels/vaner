@@ -56,6 +56,30 @@ pub struct PredictedPrompt {
     pub suppression_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_label: Option<String>,
+    /// 0.8.7 WS8: present when the prediction is anchored to a live
+    /// composer session. Lets host UIs render draft-derived predictions
+    /// distinctly (without hard-coding `source == ComposerIntent`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer_engagement: Option<ComposerEngagement>,
+}
+
+/// 0.8.7 WS8: composer-engagement annotation on a `PredictedPrompt`.
+///
+/// Populated by the server when `spec.source == "composer_intent"` so
+/// host UIs can show draft-derived predictions distinctly. The
+/// `composer_event_id` matches the value the server attaches to a
+/// downstream `Resolution.composer_event_id` on adoption — this is
+/// the link adopt-telemetry uses to attribute hits/misses back to the
+/// originating composer event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export))]
+pub struct ComposerEngagement {
+    pub composer_event_id: String,
+    pub lifecycle_state: String,
+    #[serde(default)]
+    pub inferred_intent_label: Option<String>,
+    #[serde(default)]
+    pub inferred_intent_confidence: Option<f64>,
 }
 
 /// Immutable identity + hypothesis of a predicted prompt.
@@ -141,6 +165,13 @@ pub struct Resolution {
     pub gaps: Vec<String>,
     #[serde(default)]
     pub next_actions: Vec<String>,
+    /// 0.8.7 WS8: when the adopted prediction is sourced from a
+    /// `composer_intent` (i.e. the user's draft triggered the
+    /// preparation), carries the originating composer event id so
+    /// adoption telemetry can attribute hit/miss back to the composer
+    /// event. None on non-composer adoptions.
+    #[serde(default)]
+    pub composer_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

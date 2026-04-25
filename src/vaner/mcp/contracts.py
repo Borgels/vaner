@@ -117,6 +117,12 @@ class Resolution(BaseModel):
     # downstream agents know the prepared package came from an adopted
     # prediction (and can surface that provenance in their UI).
     adopted_from_prediction_id: str | None = None
+    # 0.8.7 WS8: when the adopted prediction is sourced from a
+    # ``composer_intent`` (i.e. the user's draft triggered the
+    # preparation), this carries the originating composer event id so
+    # adoption telemetry can attribute hit/miss back to the composer
+    # event. Default None — non-composer adoptions never set this field.
+    composer_event_id: str | None = None
 
 
 class Abstain(BaseModel):

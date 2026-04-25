@@ -166,6 +166,12 @@ class PredictionArtifacts:
     file_content_hashes: dict[str, str] = field(default_factory=dict)
     pre_maturation_draft_answer: str | None = None
     pre_maturation_evidence_score: float | None = None
+    # 0.8.7 WS8 — composer-engagement metadata for ``composer_intent``-
+    # sourced predictions. Populated by the daemon's composer signal
+    # path (WS7) so the MCP card surface can render
+    # ``composer_engagement`` without hard-coding lookups against the
+    # signal store. Empty for non-composer sources.
+    composer_metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
