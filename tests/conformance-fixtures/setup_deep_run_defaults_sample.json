@@ -1,0 +1,15 @@
+{
+  "preset": "balanced",
+  "horizon_bias": "balanced",
+  "locality": "local_preferred",
+  "cost_cap_usd": 1.0,
+  "focus": "active_goals",
+  "source_bundle_id": "hybrid_balanced",
+  "reasons": [
+    "Bundle hybrid_balanced -> preset balanced",
+    "Bundle prediction_horizon_bias max -> horizon_bias balanced",
+    "Bundle local_cloud_posture hybrid -> locality local_preferred",
+    "Bundle spend_profile low -> cost_cap_usd 1.00",
+    "Setup background_posture normal -> focus active_goals"
+  ]
+}

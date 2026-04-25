@@ -12,8 +12,9 @@
 
 use serde::Deserialize;
 use vaner_contract::{
-    EtaBucket, HypothesisType, PredictedPrompt, PredictionSource, Readiness, Resolution,
-    Specificity,
+    BackgroundPosture, CloudPosture, ComputePosture, DeepRunDefaults, EtaBucket, HardwareProfile,
+    HardwareTier, HypothesisType, PredictedPrompt, PredictionSource, Priority, Readiness,
+    Resolution, SelectionResult, SetupAnswers, Specificity, WorkStyle,
 };
 
 #[derive(Deserialize)]
@@ -157,4 +158,64 @@ fn error_fixtures_decode_with_expected_codes() {
         assert_eq!(err.code, expected_code, "{file}");
         assert!(!err.message.is_empty(), "{file} has empty message");
     }
+}
+
+// ---------------------------------------------------------------------
+// 0.8.6 WS12a — setup-wizard fixtures
+// ---------------------------------------------------------------------
+
+#[test]
+fn setup_answers_fixture_decodes() {
+    let body = load("setup_answers_sample.json");
+    let answers: SetupAnswers =
+        serde_json::from_str(&body).expect("setup answers fixture must decode");
+    assert_eq!(answers.work_styles, vec![WorkStyle::Coding, WorkStyle::Research]);
+    assert_eq!(answers.priority, Priority::Quality);
+    assert_eq!(answers.compute_posture, ComputePosture::AvailablePower);
+    assert_eq!(answers.cloud_posture, CloudPosture::HybridWhenWorthIt);
+    assert_eq!(answers.background_posture, BackgroundPosture::IdleMore);
+}
+
+#[test]
+fn setup_hardware_profile_fixture_decodes() {
+    let body = load("setup_hardware_profile_sample.json");
+    let hw: HardwareProfile =
+        serde_json::from_str(&body).expect("hardware profile fixture must decode");
+    assert_eq!(hw.os, "linux");
+    assert_eq!(hw.cpu_class, "high");
+    assert_eq!(hw.ram_gb, 64);
+    assert_eq!(hw.gpu, "nvidia");
+    assert_eq!(hw.gpu_vram_gb, Some(24));
+    assert_eq!(hw.detected_runtimes.len(), 2);
+    assert_eq!(hw.detected_models.len(), 2);
+    assert_eq!(hw.detected_models[0].1, "llama3.1:8b");
+    assert_eq!(hw.tier, HardwareTier::HighPerformance);
+}
+
+#[test]
+fn setup_selection_fixture_decodes() {
+    let body = load("setup_selection_sample.json");
+    let result: SelectionResult =
+        serde_json::from_str(&body).expect("selection fixture must decode");
+    assert_eq!(result.bundle.id, "hybrid_balanced");
+    assert!(!result.forced_fallback);
+    assert_eq!(result.reasons.len(), 3);
+    assert_eq!(result.runner_ups.len(), 1);
+    assert_eq!(result.runner_ups[0].id, "local_balanced");
+    assert_eq!(
+        result.bundle.prediction_horizon_bias.get("likely_next"),
+        Some(&1.0)
+    );
+}
+
+#[test]
+fn setup_deep_run_defaults_fixture_decodes() {
+    let body = load("setup_deep_run_defaults_sample.json");
+    let defaults: DeepRunDefaults =
+        serde_json::from_str(&body).expect("deep run defaults fixture must decode");
+    assert_eq!(defaults.preset, "balanced");
+    assert_eq!(defaults.locality, "local_preferred");
+    assert_eq!(defaults.cost_cap_usd, 1.0);
+    assert_eq!(defaults.source_bundle_id, "hybrid_balanced");
+    assert_eq!(defaults.reasons.len(), 5);
 }

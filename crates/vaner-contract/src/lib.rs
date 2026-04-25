@@ -26,6 +26,7 @@ pub mod errors;
 pub mod handoff;
 pub mod models;
 pub mod reducer;
+pub mod setup;
 
 #[cfg(feature = "http")]
 pub mod http;
@@ -44,6 +45,11 @@ pub use models::{
     Resolution, ResolutionAlternative, ResolutionEvidence,
 };
 pub use reducer::{ReducerInputs, VanerState, reduce};
+pub use setup::{
+    AppliedPolicy, BackgroundPosture, CloudPosture, ComputePosture, DeepRunDefaults,
+    DetectedModel, HardwareProfile, HardwareTier, PolicyConfig, Priority, SelectionResult,
+    SetupAnswers, SetupConfig, SetupQuestion, SetupQuestionOption, VanerPolicyBundle, WorkStyle,
+};
 
 #[cfg(feature = "http")]
 pub use http::{EngineClient, HttpEngineClient};

@@ -29,6 +29,10 @@ forcing function that keeps the three clients aligned.
 | `error_codes/adopt_not_found.json`   | 404 body from adopt — `{code: "not_found", ...}` |
 | `error_codes/adopt_engine_unavailable.json` | 409 body from adopt                     |
 | `error_codes/adopt_invalid_input.json` | 400 body from adopt                            |
+| `setup_answers_sample.json`          | `vaner.setup.answers` payload (`SetupAnswers`)   |
+| `setup_hardware_profile_sample.json` | `GET /setup/hardware` body (`HardwareProfile`)   |
+| `setup_selection_sample.json`        | `vaner.setup.recommend` body (`SelectionResult`) |
+| `setup_deep_run_defaults_sample.json` | `GET /deep-run/defaults` (`DeepRunDefaults`)    |
 
 Timestamps use fixed epoch values so the fixtures are byte-stable
 across regenerations. Live responses include real `time.time()`

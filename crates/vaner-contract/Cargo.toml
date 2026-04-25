@@ -28,7 +28,12 @@ sse = ["http", "dep:futures", "dep:bytes"]
 # Emit TypeScript type definitions for the SvelteKit frontend. When built
 # with this feature, `cargo test --features ts-rs` writes a file at a
 # workspace-relative path (see `src/ts.rs`).
-ts-rs = ["dep:ts-rs"]
+#
+# `ts-rs/serde-json-impl` is required so the 0.8.6 setup-wizard types
+# can carry `serde_json::Value` fields (free-form `bundle_overrides`
+# and per-question `default`). Without it, the derive expansion errors
+# on those fields.
+ts-rs = ["dep:ts-rs", "ts-rs/serde-json-impl"]
 
 [dependencies]
 serde = { workspace = true }

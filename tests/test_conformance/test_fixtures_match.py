@@ -22,7 +22,12 @@ from pathlib import Path
 
 import pytest
 
+from vaner.intent.deep_run_defaults import DeepRunDefaults
 from vaner.mcp.contracts import Resolution
+from vaner.setup.hardware import HardwareProfile
+from vaner.setup.policy import VanerPolicyBundle
+from vaner.setup.select import SelectionResult
+from vaner.setup.serializers import answers_from_payload
 
 FIXTURES = Path(__file__).parent.parent / "conformance-fixtures"
 
@@ -164,9 +169,110 @@ def test_every_fixture_is_registered():
         "error_codes/adopt_not_found.json",
         "error_codes/adopt_engine_unavailable.json",
         "error_codes/adopt_invalid_input.json",
+        # 0.8.6 WS12a — setup-wizard fixtures.
+        "setup_answers_sample.json",
+        "setup_hardware_profile_sample.json",
+        "setup_selection_sample.json",
+        "setup_deep_run_defaults_sample.json",
     }
     found = {str(p.relative_to(FIXTURES)) for p in FIXTURES.rglob("*.json")}
     orphans = found - known
     missing = known - found
     assert not orphans, f"unregistered fixtures: {sorted(orphans)}"
     assert not missing, f"expected fixtures absent from disk: {sorted(missing)}"
+
+
+# ---------------------------------------------------------------------------
+# 0.8.6 WS12a — setup-wizard fixture round-trips
+# ---------------------------------------------------------------------------
+
+
+def test_setup_answers_fixture_round_trips_through_python():
+    """``answers_from_payload`` must accept the wire shape Rust mirrors."""
+    body = _load("setup_answers_sample.json")
+    answers = answers_from_payload(body)
+    assert answers.work_styles == ("coding", "research")
+    assert answers.priority == "quality"
+    assert answers.compute_posture == "available_power"
+    assert answers.cloud_posture == "hybrid_when_worth_it"
+    assert answers.background_posture == "idle_more"
+
+
+def test_setup_hardware_profile_fixture_matches_dataclass():
+    """The fixture must construct a valid :class:`HardwareProfile`.
+
+    Tuples in the dataclass become JSON arrays on the wire; we
+    re-tuplise here to check construction succeeds.
+    """
+    body = _load("setup_hardware_profile_sample.json")
+    profile = HardwareProfile(
+        os=body["os"],
+        cpu_class=body["cpu_class"],
+        ram_gb=body["ram_gb"],
+        gpu=body["gpu"],
+        gpu_vram_gb=body["gpu_vram_gb"],
+        is_battery=body["is_battery"],
+        thermal_constrained=body["thermal_constrained"],
+        detected_runtimes=tuple(body["detected_runtimes"]),
+        detected_models=tuple(tuple(row) for row in body["detected_models"]),
+        tier=body["tier"],
+    )
+    assert profile.os == "linux"
+    assert profile.tier == "high_performance"
+    assert profile.detected_models[0] == ("ollama", "llama3.1:8b", "4.7GB")
+
+
+def _bundle_from_dict(raw: dict) -> VanerPolicyBundle:
+    return VanerPolicyBundle(
+        id=raw["id"],
+        label=raw["label"],
+        description=raw["description"],
+        local_cloud_posture=raw["local_cloud_posture"],
+        runtime_profile=raw["runtime_profile"],
+        spend_profile=raw["spend_profile"],
+        latency_profile=raw["latency_profile"],
+        privacy_profile=raw["privacy_profile"],
+        prediction_horizon_bias=dict(raw["prediction_horizon_bias"]),
+        drafting_aggressiveness=raw["drafting_aggressiveness"],
+        exploration_ratio=raw["exploration_ratio"],
+        persistence_strength=raw["persistence_strength"],
+        goal_weighting=raw["goal_weighting"],
+        context_injection_default=raw["context_injection_default"],
+        deep_run_profile=raw["deep_run_profile"],
+    )
+
+
+def test_setup_selection_fixture_matches_dataclass():
+    """The fixture must construct a valid :class:`SelectionResult`."""
+    body = _load("setup_selection_sample.json")
+    result = SelectionResult(
+        bundle=_bundle_from_dict(body["bundle"]),
+        score=body["score"],
+        reasons=tuple(body["reasons"]),
+        runner_ups=tuple(_bundle_from_dict(b) for b in body["runner_ups"]),
+        forced_fallback=body["forced_fallback"],
+    )
+    assert result.bundle.id == "hybrid_balanced"
+    assert not result.forced_fallback
+    assert len(result.reasons) == 3
+    assert len(result.runner_ups) == 1
+    assert result.runner_ups[0].id == "local_balanced"
+
+
+def test_setup_deep_run_defaults_fixture_matches_dataclass():
+    """The fixture must construct a valid :class:`DeepRunDefaults`."""
+    body = _load("setup_deep_run_defaults_sample.json")
+    defaults = DeepRunDefaults(
+        preset=body["preset"],
+        horizon_bias=body["horizon_bias"],
+        locality=body["locality"],
+        cost_cap_usd=body["cost_cap_usd"],
+        focus=body["focus"],
+        source_bundle_id=body["source_bundle_id"],
+        reasons=tuple(body["reasons"]),
+    )
+    assert defaults.preset == "balanced"
+    assert defaults.locality == "local_preferred"
+    assert defaults.cost_cap_usd == 1.0
+    assert defaults.source_bundle_id == "hybrid_balanced"
+    assert len(defaults.reasons) == 5
