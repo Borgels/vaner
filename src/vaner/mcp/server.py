@@ -169,12 +169,22 @@ def _scenario_penalty(scenario: Scenario, query_tokens: set[str]) -> float:
 # :func:`build_server`.
 
 
-def _serialize_prediction_for_mcp(prompt: Any) -> dict[str, Any]:
-    """Render a PredictedPrompt into the shape returned by vaner.predictions.active."""
+def _serialize_prediction_for_mcp(prompt: Any, *, rank: int | None = None) -> dict[str, Any]:
+    """Render a PredictedPrompt into the shape returned by vaner.predictions.active.
+
+    0.8.5 WS5: payload now includes the UI-facing derivations (readiness_label,
+    eta_bucket, adoptable, suppression_reason, source_label, ui_summary)
+    computed by :func:`vaner.intent.prediction_card.derive_card_fields`. The
+    fields are always present (optional in the Rust contract mirror) so
+    MCP Apps clients and text-fallback renderers share one shape.
+    """
+    from vaner.intent.prediction_card import derive_card_fields
+
     spec = prompt.spec
     run = prompt.run
     artifacts = prompt.artifacts
-    return {
+    card = derive_card_fields(prompt)
+    payload: dict[str, Any] = {
         "id": spec.id,
         "label": spec.label,
         "description": spec.description,
@@ -187,10 +197,47 @@ def _serialize_prediction_for_mcp(prompt: Any) -> dict[str, Any]:
         "token_budget": run.token_budget,
         "tokens_used": run.tokens_used,
         "scenarios_complete": run.scenarios_complete,
+        "scenarios_spawned": run.scenarios_spawned,
         "evidence_score": artifacts.evidence_score,
         "has_draft": artifacts.draft_answer is not None,
         "has_briefing": artifacts.prepared_briefing is not None,
+        # 0.8.5 WS5 — UI card derivations.
+        "readiness_label": card.readiness_label,
+        "eta_bucket": card.eta_bucket,
+        "eta_bucket_label": card.eta_bucket_label,
+        "adoptable": card.adoptable,
+        "suppression_reason": card.suppression_reason,
+        "source_label": card.source_label,
+        "ui_summary": card.ui_summary,
     }
+    if rank is not None:
+        payload["rank"] = rank
+    return payload
+
+
+def _dashboard_fallback_text(cards: list[dict[str, Any]]) -> str:
+    """Render a plain-text Vaner dashboard for non-UI MCP clients.
+
+    0.8.5 WS5: called from the `vaner.predictions.dashboard` handler when
+    the connected client does not advertise MCP Apps support. The text
+    format matches the spec exactly so downstream scripts can regex it if
+    they want to.
+    """
+    if not cards:
+        return "Vaner is preparing likely next steps.\nNo adoptable predictions are ready yet."
+    lines: list[str] = [f"Vaner has {len(cards)} active prediction(s):", ""]
+    for i, card in enumerate(cards, start=1):
+        readiness = card.get("readiness_label") or card.get("readiness") or "Unknown"
+        eta = card.get("eta_bucket_label")
+        label = card.get("label", "").strip() or "(untitled)"
+        marker = "Ready" if card.get("adoptable") else readiness
+        eta_text = f" ({eta})" if eta and eta != readiness else ""
+        lines.append(f'{i}. {marker}{eta_text} — "{label}"')
+        if card.get("suppression_reason"):
+            lines.append(f"   Not adoptable yet: {card['suppression_reason']}")
+    lines.append("")
+    lines.append("Use vaner.predictions.adopt with a prediction id to adopt one.")
+    return "\n".join(lines)
 
 
 _ADOPT_BRIEFING_ASSEMBLER = BriefingAssembler()
@@ -295,8 +342,29 @@ def build_server(
         while len(suggestion_cache) > _SUGGESTION_CACHE_CAPACITY:
             suggestion_cache.popitem(last=False)
 
+    def _detect_and_record_tier() -> None:
+        """Lazy capability detection on first tool/resource call per session.
+
+        The low-level MCP Server does not expose an ``on_initialize`` hook,
+        so we piggyback on the first handler call. Safe to call repeatedly —
+        :func:`record_tier` replaces any prior cache entry for the session.
+        """
+        try:
+            from vaner.integrations.capability import detect_tier, record_tier
+
+            ctx = getattr(server, "request_context", None)
+            session = getattr(ctx, "session", None) if ctx is not None else None
+            client_params = getattr(session, "client_params", None) if session is not None else None
+            if session is None or client_params is None:
+                return
+            detection = detect_tier(client_params)
+            record_tier(session, detection)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("capability detection skipped: %s", exc)
+
     @server.list_tools()
     async def list_tools() -> ListToolsResult:
+        _detect_and_record_tier()
         return ListToolsResult(
             tools=[
                 Tool(
@@ -443,6 +511,37 @@ def build_server(
                         "type": "object",
                         "properties": {"prediction_id": {"type": "string"}},
                         "required": ["prediction_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.predictions.dashboard",
+                    description=(
+                        "Open the interactive Vaner predictions dashboard. On MCP-Apps-capable clients "
+                        "(Claude Desktop, ChatGPT, others that advertise the io.modelcontextprotocol/ui "
+                        "extension) this attaches an inline ui:// resource — the user gets prediction "
+                        "cards with Adopt buttons. On other clients it returns a structured text "
+                        "summary of the top ready/drafting predictions. Call this when the user asks "
+                        "'what are you preparing?', 'show me the dashboard', or when you want to let "
+                        "the user pick a prediction rather than adopting one yourself. The returned "
+                        "payload always includes the same compact card model regardless of UI support."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                            "min_readiness": {
+                                "type": "string",
+                                "enum": [
+                                    "queued",
+                                    "grounding",
+                                    "evidence_gathering",
+                                    "drafting",
+                                    "ready",
+                                ],
+                                "default": "queued",
+                            },
+                            "include_details": {"type": "boolean", "default": False},
+                        },
                     },
                 ),
                 Tool(
@@ -883,6 +982,46 @@ def build_server(
             if not query:
                 await _record("error")
                 return _json_result({"code": "invalid_input", "message": "query is required"}, is_error=True)
+
+            # 0.8.5 WS4: a fresh adopted-package handoff on disk short-circuits
+            # resolution — the user already picked a prepared prediction on
+            # the desktop (or equivalent UI) and we should return that
+            # resolution verbatim rather than spending model budget on a
+            # fresh resolve. Consume (read+delete) so subsequent turns don't
+            # keep reusing the same package.
+            try:
+                from vaner.integrations.injection.handoff import consume_handoff
+
+                ttl = int(config.integrations.context_injection.ttl_seconds)
+                handoff = consume_handoff(ttl_seconds=ttl)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("handoff probe skipped: %s", exc)
+                handoff = None
+            if handoff is not None and handoff.intent is not None:
+                logger.info(
+                    "vaner.resolve suppressed by adopt handoff: pred=%s age=%.1fs",
+                    handoff.adopted_from_prediction_id,
+                    handoff.age_seconds,
+                )
+                await metrics_store.increment_counter("resolves_total")
+                await metrics_store.increment_counter("tool_call_redundancy_suppressed")
+                append_log(
+                    repo_root,
+                    tool=name,
+                    label=(handoff.intent or "")[:60],
+                    decision_id=None,
+                    provenance_mode="handoff_hit",
+                    memory_state=None,
+                )
+                await _record("ok", tool_name="vaner.resolve.handoff")
+                payload = dict(handoff.raw)
+                payload.setdefault("provenance", {})
+                if isinstance(payload["provenance"], dict):
+                    payload["provenance"].setdefault("mode", "handoff_hit")
+                    payload["provenance"].setdefault("cache", "warm")
+                    payload["provenance"].setdefault("freshness", "fresh")
+                payload["suppressed_reason"] = "fresh_adopted_package_handoff"
+                return _json_result(payload)
             suggestion_id = str(args.get("suggestion_id", "")).strip()
             context_arg = args.get("context") or {}
             if suggestion_id and suggestion_id in suggestion_cache:
@@ -1337,6 +1476,95 @@ def build_server(
                 )
             await _record("ok")
             return _json_result(body)
+
+        if name == "vaner.predictions.dashboard":
+            # 0.8.5 WS5: compact card-model + text fallback.
+            from vaner.integrations.capability import ClientCapabilityTier, current_tier
+            from vaner.intent.prediction_card import rank_cards
+
+            limit = int(args.get("limit") or 5)
+            limit = max(1, min(20, limit))
+            include_details = bool(args.get("include_details") or False)
+            min_readiness = str(args.get("min_readiness") or "queued")
+            allowed_readiness = {"queued", "grounding", "evidence_gathering", "drafting", "ready"}
+            readiness_order = [
+                "queued",
+                "grounding",
+                "evidence_gathering",
+                "drafting",
+                "ready",
+            ]
+            if min_readiness not in allowed_readiness:
+                min_readiness = "queued"
+            min_rank = readiness_order.index(min_readiness)
+
+            # Get predictions via engine (preferred) or daemon.
+            active_prompts: list[Any] = []
+            try:
+                if engine is not None:
+                    active_prompts = list(engine.get_active_predictions())
+                else:
+                    body = await _daemon().get_predictions_active()
+                    # body["predictions"] is already serialized; we can't re-rank
+                    # without the live prompt objects, so fall through to a
+                    # direct payload return.
+                    dashboard_payload = {
+                        "predictions": body.get("predictions", [])[:limit],
+                        "fallback_text": _dashboard_fallback_text(body.get("predictions", [])[:limit]),
+                        "ui_available": False,
+                        "source": "daemon",
+                    }
+                    await _record("ok")
+                    return _json_result(dashboard_payload)
+            except VanerDaemonUnavailable:
+                await _record("ok")
+                return _json_result(
+                    {
+                        "predictions": [],
+                        "fallback_text": "Vaner is preparing likely next steps. No predictions are ready yet.",
+                        "ui_available": False,
+                        "engine_unavailable": True,
+                    }
+                )
+
+            # Filter + rank.
+            filtered = [
+                p for p in active_prompts if p.run.readiness in allowed_readiness and readiness_order.index(p.run.readiness) >= min_rank
+            ]
+            ranked = rank_cards(filtered)[:limit]
+            cards = [_serialize_prediction_for_mcp(p, rank=i + 1) for i, p in enumerate(ranked)]
+            if not include_details:
+                for card in cards:
+                    # Trim the heaviest fields from the payload — the iframe
+                    # JS re-queries vaner.predictions.active for details when
+                    # the user expands a card.
+                    card.pop("description", None)
+
+            # Tier-gated UI attachment is the MCP-Apps job (WS7). WS5 ships
+            # the text fallback + the flag so clients can tell whether a UI
+            # is available on this session.
+            try:
+                session = getattr(getattr(server, "request_context", None), "session", None)
+                tier = current_tier(session) if session is not None else ClientCapabilityTier.UNKNOWN
+            except Exception:  # pragma: no cover - defensive
+                tier = ClientCapabilityTier.UNKNOWN
+            ui_available = tier is ClientCapabilityTier.TIER_4
+
+            dashboard_payload = {
+                "predictions": cards,
+                "fallback_text": _dashboard_fallback_text(cards),
+                "ui_available": ui_available,
+                "client_tier": int(tier),
+                "source": "engine",
+            }
+            try:
+                await metrics_store.increment_counter("mcp_dashboard_called")
+                if ui_available:
+                    await metrics_store.increment_counter("mcp_apps_ui_attached")
+            except Exception:  # pragma: no cover - defensive metrics
+                pass
+            await _record("ok")
+            return _json_result(dashboard_payload)
 
         if name == "vaner.predictions.adopt":
             prediction_id_arg = str(args.get("prediction_id", "")).strip()
