@@ -109,6 +109,335 @@ def _ensure_backend(config: Any) -> bool:
     return bool(base_url and model)
 
 
+# ---------------------------------------------------------------------------
+# 0.8.6 WS7 — Setup-surface helpers.
+#
+# These keep the MCP setup tools light: no typer / Rich. The shared JSON
+# shapes come from :mod:`vaner.setup.serializers` so the CLI surface
+# (WS6) and the MCP surface (WS7) emit byte-identical contracts.
+# ---------------------------------------------------------------------------
+
+
+def _setup_question_schema() -> list[dict[str, Any]]:
+    """Static ordered schema for the five Simple-Mode questions.
+
+    Mirrors the choice tables in :mod:`vaner.cli.commands.setup`. Static
+    data — no engine state — so cockpit / desktop UIs can render the
+    same prompts without hardcoding strings.
+    """
+
+    return [
+        {
+            "id": "work_styles",
+            "prompt": "What kind of work do you want help with?",
+            "kind": "multi",
+            "default": ["mixed"],
+            "options": [
+                {"value": "writing", "label": "Writing — drafting, editing, narrative"},
+                {"value": "research", "label": "Research — surveys, deep reading, citations"},
+                {"value": "planning", "label": "Planning — design docs, roadmaps, project layout"},
+                {"value": "support", "label": "Support — answering questions, troubleshooting"},
+                {"value": "learning", "label": "Learning — studying, exploring a new domain"},
+                {"value": "coding", "label": "Coding — software development"},
+                {"value": "general", "label": "General — knowledge work, mixed light tasks"},
+                {"value": "mixed", "label": "Mixed — a bit of everything (safe default)"},
+                {"value": "unsure", "label": "Unsure — I'd rather Vaner picks for me"},
+            ],
+        },
+        {
+            "id": "priority",
+            "prompt": "What matters most?",
+            "kind": "single",
+            "default": "balanced",
+            "options": [
+                {"value": "balanced", "label": "Balanced — a sensible middle"},
+                {"value": "speed", "label": "Speed — snappy responses"},
+                {"value": "quality", "label": "Quality — best answer, even if slow"},
+                {"value": "privacy", "label": "Privacy — keep data on this machine"},
+                {"value": "cost", "label": "Cost — minimise spend"},
+                {"value": "low_resource", "label": "Low-resource — go easy on this machine"},
+            ],
+        },
+        {
+            "id": "compute_posture",
+            "prompt": "How hard should this machine work for you?",
+            "kind": "single",
+            "default": "balanced",
+            "options": [
+                {"value": "light", "label": "Light — barely use the CPU/GPU"},
+                {"value": "balanced", "label": "Balanced — work with what's idle"},
+                {"value": "available_power", "label": "Available-power — use what this box has"},
+            ],
+        },
+        {
+            "id": "cloud_posture",
+            "prompt": "How do you feel about cloud LLMs?",
+            "kind": "single",
+            "default": "ask_first",
+            "options": [
+                {"value": "local_only", "label": "Local only — never reach for cloud LLMs"},
+                {"value": "ask_first", "label": "Ask first — confirm before any cloud call"},
+                {"value": "hybrid_when_worth_it", "label": "Hybrid — cloud when it's clearly worth it"},
+                {"value": "best_available", "label": "Best available — use the best model for the job"},
+            ],
+        },
+        {
+            "id": "background_posture",
+            "prompt": "How aggressive should background pondering be?",
+            "kind": "single",
+            "default": "normal",
+            "options": [
+                {"value": "minimal", "label": "Minimal — barely ponder when idle"},
+                {"value": "normal", "label": "Normal — moderate background pondering"},
+                {"value": "idle_more", "label": "Idle-more — ponder broadly when the box is idle"},
+                {"value": "deep_run_aggressive", "label": "Deep-Run-aggressive — happy to run overnight"},
+            ],
+        },
+    ]
+
+
+def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResult:
+    """Dispatch for ``vaner.setup.apply``.
+
+    Resolves ``answers`` or ``bundle_id`` into the chosen bundle, runs
+    :func:`apply_policy_bundle` to get the override list (incl. the
+    cloud-widening sentinel), and persists the result unless
+    ``dry_run`` is set or ``confirm_cloud_widening`` is missing while
+    the change widens cloud posture.
+    """
+
+    from datetime import UTC, datetime
+
+    from vaner.cli.commands.config import load_config as _load_config
+    from vaner.cli.commands.setup import (
+        _persist_setup_and_policy,
+        _read_policy_section,
+        _read_setup_section,
+    )
+    from vaner.setup.apply import (
+        WIDENS_CLOUD_POSTURE_SENTINEL,
+        apply_policy_bundle,
+    )
+    from vaner.setup.catalog import bundle_by_id
+    from vaner.setup.hardware import detect as _hw_detect
+    from vaner.setup.select import select_policy_bundle as _select_bundle
+    from vaner.setup.serializers import (
+        AnswersValidationError,
+        answers_from_payload,
+    )
+
+    bundle_id_arg = args.get("bundle_id")
+    answers_arg = args.get("answers")
+    confirm_cloud_widening = bool(args.get("confirm_cloud_widening", False))
+    dry_run = bool(args.get("dry_run", False))
+
+    # ------------------------------------------------------------------
+    # 1. Resolve answers + bundle.
+    # ------------------------------------------------------------------
+    chosen_bundle_id: str
+    answers: Any
+    if isinstance(bundle_id_arg, str) and bundle_id_arg:
+        try:
+            bundle = bundle_by_id(bundle_id_arg)
+        except KeyError:
+            return _json_result(
+                {"code": "unknown_bundle_id", "message": f"unknown bundle id: {bundle_id_arg!r}"},
+                is_error=True,
+            )
+        chosen_bundle_id = bundle.id
+        existing_setup = _read_setup_section(repo_root)
+        if existing_setup:
+            try:
+                answers = answers_from_payload(existing_setup)
+            except AnswersValidationError:
+                from vaner.setup.answers import SetupAnswers
+
+                answers = SetupAnswers(
+                    work_styles=("mixed",),
+                    priority="balanced",
+                    compute_posture="balanced",
+                    cloud_posture="ask_first",
+                    background_posture="normal",
+                )
+        else:
+            from vaner.setup.answers import SetupAnswers
+
+            answers = SetupAnswers(
+                work_styles=("mixed",),
+                priority="balanced",
+                compute_posture="balanced",
+                cloud_posture="ask_first",
+                background_posture="normal",
+            )
+    else:
+        if answers_arg is None:
+            return _json_result(
+                {
+                    "code": "invalid_input",
+                    "message": "either `answers` or `bundle_id` must be provided",
+                },
+                is_error=True,
+            )
+        try:
+            answers = answers_from_payload(answers_arg)
+        except AnswersValidationError as exc:
+            return _json_result(
+                {"code": "invalid_input", "message": str(exc)},
+                is_error=True,
+            )
+        try:
+            hardware = _hw_detect()
+            selection = _select_bundle(answers, hardware)
+        except Exception as exc:
+            return _json_result(
+                {"code": "recommend_failed", "message": str(exc)},
+                is_error=True,
+            )
+        chosen_bundle_id = selection.bundle.id
+        bundle = selection.bundle
+
+    # ------------------------------------------------------------------
+    # 2. Compute overrides + cloud-widening flag.
+    # ------------------------------------------------------------------
+    config = _load_config(repo_root)
+    prior_policy_section = _read_policy_section(repo_root)
+    prior_bundle_id = prior_policy_section.get("selected_bundle_id")
+    if isinstance(prior_bundle_id, str) and prior_bundle_id:
+        config = config.model_copy(update={"policy": config.policy.model_copy(update={"selected_bundle_id": prior_bundle_id})})
+    applied = apply_policy_bundle(config, bundle)
+    overrides_applied = list(applied.overrides_applied)
+    widens_cloud_posture = any(line.startswith(WIDENS_CLOUD_POSTURE_SENTINEL) for line in overrides_applied)
+
+    # ------------------------------------------------------------------
+    # 3. Decide whether to write.
+    # ------------------------------------------------------------------
+    written = False
+    block_reason: str | None = None
+    if dry_run:
+        block_reason = "dry_run=True; config not written"
+    elif widens_cloud_posture and not confirm_cloud_widening:
+        block_reason = "WIDENS_CLOUD_POSTURE: refusing to widen cloud posture without confirm_cloud_widening=True"
+    else:
+        try:
+            _persist_setup_and_policy(
+                repo_root,
+                answers,
+                chosen_bundle_id,
+                completed_at=datetime.now(UTC),
+            )
+            written = True
+        except Exception as exc:
+            return _json_result(
+                {"code": "persist_failed", "message": str(exc)},
+                is_error=True,
+            )
+
+    return _json_result(
+        {
+            "bundle_id": chosen_bundle_id,
+            "overrides_applied": overrides_applied,
+            "widens_cloud_posture": widens_cloud_posture,
+            "written": written,
+            "block_reason": block_reason,
+        }
+    )
+
+
+def _setup_status_handler(repo_root: Path) -> CallToolResult:
+    """Dispatch for ``vaner.setup.status``.
+
+    Read-only snapshot of the current ``[setup]`` / ``[policy]`` state
+    plus a fresh hardware probe and the materialised :class:`AppliedPolicy`.
+    """
+
+    from vaner.cli.commands.config import load_config as _load_config
+    from vaner.cli.commands.setup import (
+        _read_policy_section,
+        _read_setup_section,
+    )
+    from vaner.setup.apply import apply_policy_bundle
+    from vaner.setup.catalog import bundle_by_id
+    from vaner.setup.hardware import detect as _hw_detect
+    from vaner.setup.serializers import hardware_to_dict
+
+    setup_section = _read_setup_section(repo_root)
+    policy_section = _read_policy_section(repo_root)
+    hardware = _hw_detect()
+
+    mode = setup_section.get("mode") if isinstance(setup_section, dict) else None
+    if mode not in ("simple", "advanced"):
+        mode = "simple"
+    selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
+    completed_at = setup_section.get("completed_at")
+
+    applied_payload: dict[str, Any] | None = None
+    try:
+        bundle = bundle_by_id(str(selected_bundle_id))
+        config = _load_config(repo_root)
+        # Pin prior bundle to current so the cloud-widening guard does
+        # not double-fire when status is re-rendered.
+        config = config.model_copy(update={"policy": config.policy.model_copy(update={"selected_bundle_id": str(selected_bundle_id)})})
+        applied = apply_policy_bundle(config, bundle)
+        applied_payload = {
+            "bundle_id": applied.bundle_id,
+            "overrides_applied": list(applied.overrides_applied),
+        }
+    except KeyError:
+        applied_payload = {
+            "bundle_id": str(selected_bundle_id),
+            "overrides_applied": [],
+            "error": f"unknown bundle id {selected_bundle_id!r}",
+        }
+
+    return _json_result(
+        {
+            "mode": mode,
+            "selected_bundle_id": str(selected_bundle_id),
+            "completed_at": str(completed_at) if completed_at is not None else None,
+            "applied_policy": applied_payload,
+            "hardware": hardware_to_dict(hardware),
+        }
+    )
+
+
+def _policy_show_handler(repo_root: Path) -> CallToolResult:
+    """Dispatch for ``vaner.policy.show``.
+
+    Returns the full :class:`VanerPolicyBundle` JSON for the currently
+    selected bundle plus the verbatim ``overrides_applied`` list. Drives
+    the desktop transparency disclosure panel.
+    """
+
+    from vaner.cli.commands.config import load_config as _load_config
+    from vaner.cli.commands.setup import _read_policy_section
+    from vaner.setup.apply import apply_policy_bundle
+    from vaner.setup.catalog import bundle_by_id
+    from vaner.setup.serializers import bundle_to_dict
+
+    policy_section = _read_policy_section(repo_root)
+    selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
+    try:
+        bundle = bundle_by_id(str(selected_bundle_id))
+    except KeyError:
+        return _json_result(
+            {
+                "code": "unknown_bundle_id",
+                "message": f"unknown bundle id {selected_bundle_id!r}",
+                "selected_bundle_id": str(selected_bundle_id),
+            },
+            is_error=True,
+        )
+    config = _load_config(repo_root)
+    config = config.model_copy(update={"policy": config.policy.model_copy(update={"selected_bundle_id": str(selected_bundle_id)})})
+    applied = apply_policy_bundle(config, bundle)
+    return _json_result(
+        {
+            "bundle": bundle_to_dict(bundle),
+            "overrides_applied": list(applied.overrides_applied),
+        }
+    )
+
+
 def _tokenize(text: str) -> set[str]:
     return {tok for tok in "".join(ch if ch.isalnum() else " " for ch in text.lower()).split() if len(tok) > 2}
 
@@ -832,6 +1161,101 @@ def build_server(
                         "properties": {"session_id": {"type": "string"}},
                         "required": ["session_id"],
                     },
+                ),
+                # 0.8.6 WS9 — Bundle-derived Deep-Run start-dialog seeds.
+                Tool(
+                    name="vaner.deep_run.defaults",
+                    description=(
+                        "Return the bundle-derived seed values for the "
+                        "Deep-Run start dialog: preset, horizon_bias, "
+                        "locality, cost_cap_usd, focus, plus a list of "
+                        "human-readable reasons. Read-only. Surfaces / "
+                        "desktops use this to pre-fill the form so users "
+                        "see sensible bundle-aware defaults instead of a "
+                        "blank dialog."
+                    ),
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                # 0.8.6 WS7 — Setup-surface MCP tools.
+                Tool(
+                    name="vaner.setup.questions",
+                    description=(
+                        "Return the ordered Simple-Mode question schema "
+                        "(work styles, priority, compute posture, cloud "
+                        "posture, background posture). Static — no engine "
+                        "state. Desktops/cockpit consume this so they "
+                        "don't hardcode question strings."
+                    ),
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.setup.recommend",
+                    description=(
+                        "Run WS3 bundle selection on a SetupAnswers payload "
+                        "and return the SelectionResult JSON (chosen bundle, "
+                        "score, reasons, runner-ups, forced_fallback). Pure "
+                        "read; no config write."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "work_styles": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "array", "items": {"type": "string"}},
+                                ],
+                                "description": "WorkStyle id(s); single string or list.",
+                            },
+                            "priority": {"type": "string"},
+                            "compute_posture": {"type": "string"},
+                            "cloud_posture": {"type": "string"},
+                            "background_posture": {"type": "string"},
+                        },
+                    },
+                ),
+                Tool(
+                    name="vaner.setup.apply",
+                    description=(
+                        "Persist a chosen policy bundle to .vaner/config.toml. "
+                        "Pass `answers` for selection or `bundle_id` to pin a "
+                        "specific bundle. Surfaces a WIDENS_CLOUD_POSTURE "
+                        "warning via `widens_cloud_posture=true`; defaults to "
+                        "NOT writing on widening unless `confirm_cloud_widening` "
+                        "is true. Set `dry_run` to true to preview without "
+                        "writing."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "answers": {
+                                "type": "object",
+                                "description": "SetupAnswers payload (optional if bundle_id is set).",
+                            },
+                            "bundle_id": {
+                                "type": "string",
+                                "description": "Skip selection; pin this bundle id directly.",
+                            },
+                            "confirm_cloud_widening": {"type": "boolean", "default": False},
+                            "dry_run": {"type": "boolean", "default": False},
+                        },
+                    },
+                ),
+                Tool(
+                    name="vaner.setup.status",
+                    description=(
+                        "Read current setup mode + selected bundle id + applied policy overrides + hardware profile. Read-only; no input."
+                    ),
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.policy.show",
+                    description=(
+                        "Return the full VanerPolicyBundle JSON for the "
+                        "currently selected bundle plus the overrides_applied "
+                        "list. Drives the desktop transparency disclosure "
+                        "panel. Read-only."
+                    ),
+                    inputSchema={"type": "object", "properties": {}},
                 ),
             ]
         )
@@ -2274,6 +2698,93 @@ def build_server(
                     )
                 await _record("ok")
                 return _json_result(_session_to_dict(session))
+
+            if name == "vaner.deep_run.defaults":
+                # WS9: bundle-derived seeds for the Deep-Run start dialog.
+                from vaner.cli.commands.setup import (
+                    _answers_from_payload,
+                    _default_answers,
+                    _read_policy_section,
+                    _read_setup_section,
+                )
+                from vaner.intent.deep_run_defaults import (
+                    deep_run_defaults_for,
+                    defaults_to_dict,
+                )
+                from vaner.setup.catalog import bundle_by_id
+
+                policy_section = _read_policy_section(active_repo_root)
+                selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
+                try:
+                    bundle = bundle_by_id(str(selected_bundle_id))
+                except KeyError:
+                    await _record("error")
+                    return _json_result(
+                        {
+                            "code": "unknown_bundle_id",
+                            "message": f"unknown bundle id {selected_bundle_id!r}; run `vaner setup wizard`",
+                        },
+                        is_error=True,
+                    )
+                setup_section = _read_setup_section(active_repo_root)
+                if setup_section:
+                    try:
+                        answers = _answers_from_payload(setup_section)
+                    except Exception:
+                        answers = _default_answers()
+                else:
+                    answers = _default_answers()
+                defaults = deep_run_defaults_for(bundle, answers)
+                await _record("ok")
+                return _json_result(defaults_to_dict(defaults))
+
+        # ------------------------------------------------------------------
+        # 0.8.6 WS7 — Setup-surface MCP tools.
+        # ------------------------------------------------------------------
+        if name == "vaner.setup.questions":
+            await _record("ok")
+            return _json_result({"questions": _setup_question_schema()})
+
+        if name == "vaner.setup.recommend":
+            from vaner.setup.hardware import detect as _hw_detect
+            from vaner.setup.select import select_policy_bundle as _select_bundle
+            from vaner.setup.serializers import (
+                AnswersValidationError,
+                answers_from_payload,
+                selection_to_dict,
+            )
+
+            try:
+                answers = answers_from_payload(args)
+            except AnswersValidationError as exc:
+                await _record("error")
+                return _json_result(
+                    {"code": "invalid_input", "message": str(exc)},
+                    is_error=True,
+                )
+            try:
+                hardware = _hw_detect()
+                selection = _select_bundle(answers, hardware)
+            except Exception as exc:
+                await _record("error")
+                return _json_result(
+                    {"code": "recommend_failed", "message": str(exc)},
+                    is_error=True,
+                )
+            await _record("ok")
+            return _json_result(selection_to_dict(selection))
+
+        if name == "vaner.setup.apply":
+            await _record("ok")
+            return _setup_apply_handler(active_repo_root, args)
+
+        if name == "vaner.setup.status":
+            await _record("ok")
+            return _setup_status_handler(active_repo_root)
+
+        if name == "vaner.policy.show":
+            await _record("ok")
+            return _policy_show_handler(active_repo_root)
 
         if name == "vaner.debug.trace":
             if str(__import__("os").environ.get("VANER_MCP_DEBUG", "0")) != "1":

@@ -21,18 +21,28 @@
 
 #[cfg(test)]
 mod regen {
-    use crate::enums::{HypothesisType, PredictionSource, Readiness, Specificity};
+    use crate::enums::{EtaBucket, HypothesisType, PredictionSource, Readiness, Specificity};
     use crate::models::{
         EngineStatus, PredictedPrompt, PredictionArtifacts, PredictionRun, PredictionSpec,
         Provenance, Resolution, ResolutionAlternative, ResolutionEvidence, ScenarioCounts,
     };
     use crate::reducer::VanerState;
+    use crate::setup::{
+        AppliedPolicy, BackgroundPosture, CloudPosture, ComputePosture, DeepRunDefaults,
+        DetectedModel, HardwareProfile, HardwareTier, PolicyConfig, Priority, SelectionResult,
+        SetupAnswers, SetupConfig, SetupQuestion, SetupQuestionOption, VanerPolicyBundle,
+        WorkStyle,
+    };
     use ts_rs::TS;
 
     /// `cargo test --features ts-rs regen_types` writes every `TS`-
     /// derived type to `bindings/*.ts` in the crate root. The frontend
     /// vendors these (copies to `vaner-linux/src/lib/contract/`) and
     /// CI enforces that the committed copy matches.
+    ///
+    /// 0.8.6 WS11: kept in lockstep with the `examples/export_bindings.rs`
+    /// list — the example binary is the equivalent path for downstream
+    /// consumers who want a single command rather than the test harness.
     #[test]
     fn regen_types() {
         // Invoking `T::export_all_to` would write to each type's
@@ -54,6 +64,28 @@ mod regen {
         HypothesisType::export_all().expect("export_all HypothesisType");
         Specificity::export_all().expect("export_all Specificity");
         Readiness::export_all().expect("export_all Readiness");
+        EtaBucket::export_all().expect("export_all EtaBucket");
         VanerState::export_all().expect("export_all VanerState");
+
+        // 0.8.6 WS12a — setup-wizard contract types. Kept in lockstep
+        // with the `examples/export_bindings.rs` exports list so CI
+        // catches drift in either entry point.
+        WorkStyle::export_all().expect("export_all WorkStyle");
+        Priority::export_all().expect("export_all Priority");
+        ComputePosture::export_all().expect("export_all ComputePosture");
+        CloudPosture::export_all().expect("export_all CloudPosture");
+        BackgroundPosture::export_all().expect("export_all BackgroundPosture");
+        HardwareTier::export_all().expect("export_all HardwareTier");
+        SetupAnswers::export_all().expect("export_all SetupAnswers");
+        VanerPolicyBundle::export_all().expect("export_all VanerPolicyBundle");
+        DetectedModel::export_all().expect("export_all DetectedModel");
+        HardwareProfile::export_all().expect("export_all HardwareProfile");
+        SelectionResult::export_all().expect("export_all SelectionResult");
+        AppliedPolicy::export_all().expect("export_all AppliedPolicy");
+        SetupConfig::export_all().expect("export_all SetupConfig");
+        PolicyConfig::export_all().expect("export_all PolicyConfig");
+        DeepRunDefaults::export_all().expect("export_all DeepRunDefaults");
+        SetupQuestion::export_all().expect("export_all SetupQuestion");
+        SetupQuestionOption::export_all().expect("export_all SetupQuestionOption");
     }
 }

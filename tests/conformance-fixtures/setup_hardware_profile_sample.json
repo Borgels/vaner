@@ -1,0 +1,15 @@
+{
+  "os": "linux",
+  "cpu_class": "high",
+  "ram_gb": 64,
+  "gpu": "nvidia",
+  "gpu_vram_gb": 24,
+  "is_battery": false,
+  "thermal_constrained": false,
+  "detected_runtimes": ["ollama", "llama.cpp"],
+  "detected_models": [
+    ["ollama", "llama3.1:8b", "4.7GB"],
+    ["ollama", "qwen2.5:14b", "9.0GB"]
+  ],
+  "tier": "high_performance"
+}

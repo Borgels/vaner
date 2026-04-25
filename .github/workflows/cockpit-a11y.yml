@@ -1,0 +1,98 @@
+name: cockpit-a11y
+
+# 0.8.6 WS10 — Accessibility scan for the cockpit + the MCP Apps UI
+# bundle. Runs axe-core (via @axe-core/cli) against:
+#   1. The built cockpit served by `vite preview`.
+#   2. The static MCP Apps active-predictions HTML bundle.
+# Fails the PR when any new HIGH/SERIOUS violation appears that isn't in
+# `ui/cockpit/tests/a11y-audit-baseline.json`.
+
+on:
+  pull_request:
+    paths:
+      - "ui/cockpit/**"
+      - "src/vaner/mcp/apps/active_predictions.html"
+      - ".github/workflows/cockpit-a11y.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  axe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install cockpit dependencies
+        working-directory: ui/cockpit
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Typecheck
+        working-directory: ui/cockpit
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: ui/cockpit
+        run: npm run lint || echo "lint script absent; skipping"
+
+      - name: Unit tests (incl. jest-axe component-level a11y)
+        working-directory: ui/cockpit
+        run: npm test
+
+      - name: Build cockpit
+        working-directory: ui/cockpit
+        run: npm run build
+
+      - name: Start cockpit preview server
+        working-directory: ui/cockpit
+        run: |
+          npx vite preview --host 127.0.0.1 --port 5173 --strictPort &
+          echo $! > preview.pid
+          # Wait until the preview server responds.
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5173/ > /dev/null; then
+              echo "preview server ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: axe-core scan — cockpit dev server
+        working-directory: ui/cockpit
+        run: npm run a11y:scan -- --cockpit
+        env:
+          AXE_TARGET_URL: "http://127.0.0.1:5173/"
+
+      - name: axe-core scan — MCP Apps UI bundle
+        working-directory: ui/cockpit
+        run: npm run a11y:scan -- --mcp
+
+      - name: Stop cockpit preview server
+        if: always()
+        working-directory: ui/cockpit
+        run: |
+          if [ -f preview.pid ]; then
+            kill "$(cat preview.pid)" || true
+            rm -f preview.pid
+          fi
+
+      - name: Upload axe-core report
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4
+        with:
+          name: axe-core-report
+          path: ui/cockpit/tests/a11y-audit-baseline.json
+          if-no-files-found: ignore

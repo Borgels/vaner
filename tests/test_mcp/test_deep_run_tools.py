@@ -195,3 +195,39 @@ def test_deep_run_stop_with_no_session_returns_null_summary(temp_repo) -> None:
         assert body.get("summary") is None
 
     asyncio.run(_run())
+
+
+def test_deep_run_defaults_returns_well_formed_payload(temp_repo) -> None:
+    """WS9: vaner.deep_run.defaults emits the expected seed shape."""
+
+    async def _run() -> None:
+        _seed_repo(temp_repo)
+        server = build_server(temp_repo)
+        call_handler = server.request_handlers[CallToolRequest]
+        resp = await call_handler(
+            CallToolRequest(
+                method="tools/call",
+                params={"name": "vaner.deep_run.defaults", "arguments": {}},
+            )
+        )
+        assert resp.root.isError is not True
+        body = _payload(resp)
+        # All seed fields are present with the expected literal types.
+        assert body["preset"] in ("conservative", "balanced", "aggressive")
+        assert body["horizon_bias"] in (
+            "likely_next",
+            "long_horizon",
+            "finish_partials",
+            "balanced",
+        )
+        assert body["locality"] in ("local_only", "local_preferred", "allow_cloud")
+        assert body["focus"] in ("active_goals", "current_workspace", "all_recent")
+        assert isinstance(body["cost_cap_usd"], (int, float))
+        assert body["cost_cap_usd"] >= 0.0
+        # No bundle selected → defaults to hybrid_balanced.
+        assert body["source_bundle_id"] == "hybrid_balanced"
+        # Reasons explain each derived field.
+        assert isinstance(body["reasons"], list)
+        assert len(body["reasons"]) == 5
+
+    asyncio.run(_run())

@@ -32,6 +32,67 @@ whichever side has fallen behind.
 - `sse` — event stream (requires `http`).
 - `ts-rs` — emit TypeScript types for the SvelteKit frontend; run `cargo test --features ts-rs` to regenerate.
 
+## TypeScript bindings (Linux desktop consumption)
+
+`vaner-desktop-linux` (the SvelteKit/Tauri app) consumes these types
+through `ts-rs`-generated TypeScript declarations. The bindings dir is
+**gitignored** at the workspace root — every consumer regenerates
+locally so the source of truth stays in Rust.
+
+### Regenerate
+
+Either of these commands writes `bindings/*.ts` under
+`crates/vaner-contract/`:
+
+```sh
+# Test-driven (matches what CI runs in `.github/workflows/rust.yml`):
+cargo test --features ts-rs --package vaner-contract regen_types
+
+# Or via the dedicated example binary (one command, no test harness):
+cargo run --example export_bindings --features ts-rs --package vaner-contract
+```
+
+Both paths emit the same files; pick whichever suits your tooling.
+
+### Consume from `vaner-desktop-linux`
+
+The Linux desktop's preferred pattern is to copy or symlink
+`crates/vaner-contract/bindings/` into its own `src/lib/contract/`
+tree at build time. A typical Tauri pre-build script:
+
+```sh
+# In vaner-desktop-linux's package.json `scripts.predev` /
+# `scripts.prebuild`:
+cargo run --example export_bindings --features ts-rs \
+  --manifest-path ../Vaner/Cargo.toml --package vaner-contract
+rsync -a ../Vaner/crates/vaner-contract/bindings/ src/lib/contract/
+```
+
+Don't commit the copy; treat it as a generated artefact. The CI step
+`test (ts-rs feature)` in `rust.yml` regenerates on every push and
+fails the build if any annotated type can't export, so the Linux side
+gets a clean cross-repo signal when a contract change lands.
+
+### macOS does NOT consume these bindings
+
+`vaner-desktop-macos` (Swift) compiles its own `Codable` mirrors and
+runs the same conformance fixtures from `tests/conformance-fixtures/`.
+The bindings dir is irrelevant to the macOS build — Linux-desktop-only.
+
+### When new public types are added
+
+Any new public struct or enum that needs a TypeScript mirror must
+carry both:
+
+```rust
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export))]
+```
+
+…and be added to the `export_all` list inside `examples/export_bindings.rs`
+(plus the same list in `src/ts.rs`'s `regen_types` test). The test
+path is what CI exercises; the example binary mirrors it for ad-hoc
+local runs.
+
 ## Conformance
 
 Run `cargo test` to exercise every layer. `tests/conformance.rs` consumes

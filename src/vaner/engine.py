@@ -98,6 +98,8 @@ from vaner.models.config import ComputeConfig, ExplorationConfig, VanerConfig
 from vaner.models.context import ContextPackage
 from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor
 from vaner.models.signal import SignalEvent
+from vaner.setup.apply import AppliedPolicy, apply_policy_bundle
+from vaner.setup.catalog import bundle_by_id
 from vaner.store import deep_run as deep_run_store
 from vaner.store.artefacts import ArtefactStore
 from vaner.store.profile_store import UserProfileStore
@@ -280,6 +282,16 @@ class VanerEngine:
         # ``precompute_cycle`` via :meth:`_refresh_work_style_adjustments`.
         self._cycle_work_style_adjustments: IntentPriorAdjustments = default_work_style_adjustments()
         self._refresh_work_style_adjustments()
+        # 0.8.6 WS5 — applied policy bundle. Materialises the selected
+        # bundle's defaults onto a *snapshot* of the current config and
+        # caches the result on the engine so downstream surfaces can
+        # read bundle-derived knobs (and the audit list) without
+        # re-running the apply step. ``hybrid_balanced`` (the default)
+        # is engineered to be a no-op against a freshly defaulted
+        # config — hence pre-WS5 behaviour is preserved when the user
+        # has not run the wizard.
+        self._applied_policy: AppliedPolicy | None = None
+        self._refresh_policy_bundle_state()
         # WS10: single drafting module. Owns the rewrite + draft LLM
         # templates and the gate arithmetic so arc / pattern / history /
         # future goal-sourced (WS7) predictions all drive through the same
@@ -379,6 +391,51 @@ class VanerEngine:
         # Forward hook for the briefing assembler's artefact-template
         # tie-break. Empty tuple under the ``mixed`` default → no-op.
         self._briefing_assembler.set_preferred_templates(self._cycle_work_style_adjustments.preferred_artefact_templates)
+        # 0.8.6 WS5 — keep the policy-bundle materialisation in lock-
+        # step with the work-style refresh. Both are config-derived
+        # state that depends only on ``config.setup`` / ``config.policy``
+        # and must be coherent for one cycle. Calling here means a hot
+        # config edit (CLI ``vaner setup apply``) is picked up on the
+        # next ``precompute_cycle`` without a daemon restart.
+        self._refresh_policy_bundle_state()
+
+    def _refresh_policy_bundle_state(self) -> None:
+        """Materialise the selected policy bundle onto config-derived knobs.
+
+        0.8.6 WS5. Reads :attr:`config.policy.selected_bundle_id`,
+        looks up the matching :class:`VanerPolicyBundle` from
+        :data:`vaner.setup.catalog.PROFILE_CATALOG`, and stores the
+        resulting :class:`AppliedPolicy` on ``self._applied_policy``.
+
+        Engine code that needs bundle-derived knobs reads from
+        ``self._applied_policy.config`` (or the ``overrides_applied``
+        list for transparency surfaces). The engine's *primary*
+        :attr:`config` is left untouched — apply is a non-destructive
+        snapshot — so a subsequent hot edit doesn't have to undo
+        anything.
+
+        Defensive: an unknown bundle id (corrupted config / future
+        bundle from a newer install) is logged and the engine falls
+        back to no applied policy. The default
+        ``selected_bundle_id="hybrid_balanced"`` always exists.
+        """
+
+        bundle_id = self.config.policy.selected_bundle_id
+        try:
+            bundle = bundle_by_id(bundle_id)
+        except KeyError:
+            logger.warning(
+                "Unknown policy.selected_bundle_id=%r; running without applied bundle defaults",
+                bundle_id,
+            )
+            self._applied_policy = None
+            return
+        user_overrides = self.config.policy.bundle_overrides or None
+        self._applied_policy = apply_policy_bundle(
+            self.config,
+            bundle,
+            user_overrides=user_overrides,
+        )
 
     async def initialize(self) -> None:
         await self.store.initialize()

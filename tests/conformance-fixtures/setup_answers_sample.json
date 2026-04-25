@@ -1,0 +1,7 @@
+{
+  "work_styles": ["coding", "research"],
+  "priority": "quality",
+  "compute_posture": "available_power",
+  "cloud_posture": "hybrid_when_worth_it",
+  "background_posture": "idle_more"
+}
