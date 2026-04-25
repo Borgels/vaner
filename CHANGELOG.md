@@ -68,7 +68,7 @@ The headline change: ordinary users now configure Vaner by **outcome** (work sty
 - **`IntentConfig.domain`** field — the unused `Literal["coding","research","writing","ops"]` field is deleted outright (zero callers; no external users yet). Superseded by the multi-select `setup.work_styles` field on `SetupConfig`.
 
 ### Tests
-- **+341 tests** vs the 0.8.5 baseline of 1241 → 1582 total passing on the full Vaner suite (15 skipped, 0 failed).
+- **+329 tests** vs the 0.8.5 baseline of 1241 → **1570 total passing** on the full Vaner suite (15 skipped, 0 failed). Confirmed on the hardening tip (`0.8.6/ws12b-hardening` at `9be88e7`).
 - Property test over (priority × cloud_posture × hardware_tier) cartesian product asserts `select_policy_bundle()` is total.
 - `test_apply_no_autonomy` enforces the prepare/promote/adopt/execute invariant.
 - `test_engine_no_op_when_default` confirms WS4 priors are byte-identical to pre-0.8.6 when `setup.work_styles=["mixed"]`.
