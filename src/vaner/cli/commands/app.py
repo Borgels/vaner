@@ -67,6 +67,7 @@ from vaner.cli.commands.integrations import integrations_app
 from vaner.cli.commands.primer import PRIMER_SURFACES, write_primers
 from vaner.cli.commands.profile import export_pins, import_pins, pin_fact, profile_show, unpin_fact
 from vaner.cli.commands.runtime_snapshot import runtime_snapshot
+from vaner.cli.commands.setup import setup_app
 from vaner.cli.commands.supervisor import run_down, run_up
 from vaner.daemon.http import create_daemon_http_app
 from vaner.daemon.preflight import check_repo_root
@@ -617,6 +618,32 @@ def init(
             typer.echo("Could not install completion automatically. Run `vaner --install-completion` manually.")
     else:
         typer.echo("Tip: enable command completion with `vaner --install-completion`.")
+
+    # 0.8.6 WS6: chain into the Simple-Mode setup wizard when interactive.
+    # The wizard is a no-op-or-skip from the user's perspective; they
+    # can also run it later with `vaner setup wizard`.
+    if resolved_interactive:
+        try:
+            run_wizard_now = typer.confirm(
+                "Run the setup wizard now to choose a profile?",
+                default=True,
+            )
+        except (EOFError, KeyboardInterrupt):
+            run_wizard_now = False
+        if run_wizard_now:
+            try:
+                from vaner.cli.commands.setup import wizard_cmd
+
+                wizard_cmd(path=str(repo_root))
+            except typer.Exit:
+                # The wizard signals control flow with typer.Exit; let it
+                # propagate normally without aborting the rest of init.
+                pass
+            except Exception as exc:  # pragma: no cover - defensive
+                typer.echo(f"Setup wizard skipped (error: {exc}).")
+                typer.echo("Run `vaner setup wizard` to choose a profile.")
+        else:
+            typer.echo("Skipped. Run `vaner setup wizard` later to choose a profile.")
 
 
 @daemon_app.command("start")
@@ -2117,6 +2144,7 @@ app.add_typer(deep_run_app, name="deep-run", rich_help_panel="Background and loc
 app.add_typer(guidance_app, name="guidance", rich_help_panel="Use with an agent")
 app.add_typer(integrations_app, name="integrations", rich_help_panel="Inspect and debug")
 app.add_typer(clients_app, name="clients", rich_help_panel="Connect MCP clients")
+app.add_typer(setup_app, name="setup", rich_help_panel="Get started")
 
 
 def run() -> None:
