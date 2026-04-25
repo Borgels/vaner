@@ -97,9 +97,10 @@ from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.models.config import ComputeConfig, ExplorationConfig, VanerConfig
 from vaner.models.context import ContextPackage
 from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor
-from vaner.models.signal import SignalEvent
+from vaner.models.signal import KIND_COMPOSER_LIFECYCLE, SignalEvent
 from vaner.setup.apply import AppliedPolicy, apply_policy_bundle
 from vaner.setup.catalog import bundle_by_id
+from vaner.signals.composer import ComposerSignalPump, DraftIntentSnapshot
 from vaner.store import deep_run as deep_run_store
 from vaner.store.artefacts import ArtefactStore
 from vaner.store.profile_store import UserProfileStore
@@ -251,6 +252,11 @@ class VanerEngine:
         )
 
         self._refinement_drafter: _MaturationDrafterCallable | None = None
+        # 0.8.7 WS3: distribution point for composer-lifecycle snapshots.
+        # The engine validates ``SignalEvent``s of kind ``composer_lifecycle``
+        # in ``observe()`` and publishes the typed snapshot here. WS4 wires
+        # the prediction registry as the first subscriber.
+        self._composer_signal_pump = ComposerSignalPump()
         # WS6: snapshot the most recent git HEAD and category tail so each
         # cycle can diff against them to build invalidation signals. Empty
         # string / list means "no prior observation", which yields no signals.
@@ -492,9 +498,24 @@ class VanerEngine:
 
     async def observe(self, event: SignalEvent) -> None:
         await self.initialize()
+        if event.kind == KIND_COMPOSER_LIFECYCLE:
+            # Validates payload shape; pydantic.ValidationError on malformed.
+            # The validation MUST happen before the store insert so a
+            # malformed composer payload never reaches persistence.
+            snapshot = DraftIntentSnapshot.model_validate(event.payload)
+            await self._composer_signal_pump.publish(snapshot)
         event.payload.setdefault("corpus_id", getattr(self.adapter, "corpus_id", "default"))
         event.payload.setdefault("privacy_zone", getattr(self.adapter, "privacy_zone", "local"))
         await self.store.insert_signal_event(event)
+
+    @property
+    def composer_signal_pump(self) -> ComposerSignalPump:
+        """Subscribe to composer-lifecycle snapshots.
+
+        Exposed for the prediction registry's invalidation path (WS4) and
+        for tests. The engine owns the pump for its lifetime.
+        """
+        return self._composer_signal_pump
 
     async def prepare(self, changed_files: list[Path] | None = None) -> int:
         await self.initialize()

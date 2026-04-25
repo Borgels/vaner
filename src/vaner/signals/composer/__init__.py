@@ -10,11 +10,14 @@ from vaner.signals.composer.contract import (
     HostKind,
     LifecycleState,
 )
+from vaner.signals.composer.pump import ComposerSignalPump, ComposerSubscriber
 
 __all__ = [
     "CapabilityLevel",
     "ComposerAdapterCapabilities",
     "ComposerEvent",
+    "ComposerSignalPump",
+    "ComposerSubscriber",
     "DraftIntentSnapshot",
     "FieldRole",
     "HostKind",
