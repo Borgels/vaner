@@ -96,6 +96,32 @@ class BriefingAssembler:
 
     def __init__(self, tokenizer: Callable[[str], int] | None = None) -> None:
         self._tokenizer = tokenizer
+        # 0.8.6 WS4 — preferred artefact-template ids derived from the
+        # active work-style mix. Updated each cycle by the engine via
+        # :meth:`set_preferred_templates`. The assembler ranks registered
+        # templates by this preference when an artefact-template registry
+        # is consulted (forward hook — no-op until the registry lands in
+        # a later WS). Empty tuple is the neutral default.
+        self._preferred_artefact_templates: tuple[str, ...] = ()
+
+    def set_preferred_templates(self, template_ids: tuple[str, ...]) -> None:
+        """Set the preferred artefact-template ids for tie-breaking.
+
+        0.8.6 WS4. Called once per engine cycle with the work-style
+        mix's preferred templates (e.g. ``("decision_memo", "risk_list")``
+        for planning). When the briefing assembler consults an artefact-
+        template registry it should prefer ids in this tuple. Templates
+        that aren't registered are silently ignored — the assembler falls
+        back to its existing template selection.
+        """
+
+        self._preferred_artefact_templates = tuple(template_ids)
+
+    @property
+    def preferred_artefact_templates(self) -> tuple[str, ...]:
+        """The preferred artefact-template ids (0.8.6 WS4 forward hook)."""
+
+        return self._preferred_artefact_templates
 
     def _count_tokens(self, text: str) -> int:
         if not text:

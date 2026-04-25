@@ -82,6 +82,15 @@ from vaner.intent.timing import ActivityTimingModel
 from vaner.intent.trainer import IntentTrainer
 from vaner.intent.transfer import bootstrap_transfer_priors
 from vaner.intent.volatility import semantic_volatility_profile
+from vaner.intent.work_style_priors import (
+    IntentPriorAdjustments,
+)
+from vaner.intent.work_style_priors import (
+    adjustments_for as work_style_adjustments_for,
+)
+from vaner.intent.work_style_priors import (
+    default_adjustments as default_work_style_adjustments,
+)
 from vaner.learning.counterfactual import CounterfactualAnalyzer
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.models.artefact import Artefact, ArtefactKind
@@ -263,6 +272,14 @@ class VanerEngine:
         # later via ``set_briefing_tokenizer`` once the structured LLM client
         # exposes one.
         self._briefing_assembler = BriefingAssembler()
+        # 0.8.6 WS4 — work-style intent priors. Cached per cycle so the
+        # frontier / drafter / briefing assembler all see the same
+        # composed multipliers. Defaults to the ``mixed`` identity so
+        # configs without a populated ``[setup]`` section produce
+        # byte-identical behaviour to pre-WS4. Refreshed at the top of
+        # ``precompute_cycle`` via :meth:`_refresh_work_style_adjustments`.
+        self._cycle_work_style_adjustments: IntentPriorAdjustments = default_work_style_adjustments()
+        self._refresh_work_style_adjustments()
         # WS10: single drafting module. Owns the rewrite + draft LLM
         # templates and the gate arithmetic so arc / pattern / history /
         # future goal-sourced (WS7) predictions all drive through the same
@@ -345,6 +362,23 @@ class VanerEngine:
             "invest_ratio": 0.10,
             "no_regret_ratio": 0.20,
         }
+
+    def _refresh_work_style_adjustments(self) -> None:
+        """Recompute per-cycle work-style adjustments from config.
+
+        0.8.6 WS4. Reads ``config.setup.work_styles`` and caches the
+        averaged :class:`IntentPriorAdjustments` for the cycle. Called
+        from ``__init__`` and again at the top of each ``precompute_cycle``
+        so a hot config edit takes effect on the next cycle without a
+        daemon restart. Default ``["mixed"]`` yields the identity element
+        — the engine produces byte-identical behaviour to pre-WS4.
+        """
+
+        styles = tuple(getattr(self.config.setup, "work_styles", ()) or ())
+        self._cycle_work_style_adjustments = work_style_adjustments_for(styles)
+        # Forward hook for the briefing assembler's artefact-template
+        # tie-break. Empty tuple under the ``mixed`` default → no-op.
+        self._briefing_assembler.set_preferred_templates(self._cycle_work_style_adjustments.preferred_artefact_templates)
 
     async def initialize(self) -> None:
         await self.store.initialize()
@@ -1011,6 +1045,10 @@ class VanerEngine:
         """
         cycle_started = time.monotonic()
         await self.initialize()
+        # 0.8.6 WS4 — refresh work-style adjustments from current config
+        # so a hot edit to ``setup.work_styles`` takes effect on the next
+        # cycle. No-op for the default ``["mixed"]``.
+        self._refresh_work_style_adjustments()
         compute = self.config.compute
         # Keep the binary idle-only gate as an escape hatch: if the load is
         # genuinely saturating, skip the cycle entirely. Between idle and
@@ -1268,7 +1306,12 @@ class VanerEngine:
                         aligned_paths.update(str(p) for p in paths if p)
                 except Exception:
                     continue
-        frontier.set_artefact_aligned_paths(aligned_paths)
+        # 0.8.6 WS4 — compose the default 1.10x artefact-alignment boost with
+        # the work-style multiplier (mixed → 1.0 → no-op). The frontier clamps
+        # to >= 1.0 internally; we still pass a positive value so the contract
+        # holds without WS4 inspecting frontier internals.
+        _ws_boost = 1.10 * self._cycle_work_style_adjustments.artefact_alignment_weight_multiplier
+        frontier.set_artefact_aligned_paths(aligned_paths, boost=_ws_boost)
 
         # Order matters: Jaccard-dedup is first-admitted-wins, and
         # seed_from_workflow_phase produces arc-sourced scenarios whose file
@@ -3206,13 +3249,26 @@ class VanerEngine:
             draft_budget_min_s = float(self._cycle_policy_state.get("draft_budget_min_ms", 2000.0)) / 1000.0
             has_budget = deadline is None or (deadline - time.monotonic()) >= draft_budget_min_s
             # WS10: gates consolidated into the Drafter.
+            # 0.8.6 WS4 — fold work-style intent priors into the gates so a
+            # "coding"/"planning" style demands stronger evidence and a
+            # tighter volatility ceiling, while "writing"/"learning" relax
+            # the bar. ``mixed`` (default) leaves both knobs unchanged.
+            _ws_adj = self._cycle_work_style_adjustments
+            _ws_gates = dict(self._cycle_policy_state)
+            _ws_gates["draft_evidence_threshold"] = max(
+                float(_ws_gates.get("draft_evidence_threshold", 0.45)),
+                _ws_adj.drafting_evidence_floor,
+            )
+            _ws_gates["draft_volatility_ceiling"] = (
+                float(_ws_gates.get("draft_volatility_ceiling", 0.40)) * _ws_adj.drafting_volatility_ceiling_multiplier
+            )
             if not self._drafter.passes_gates(
                 posterior_confidence=posterior_confidence,
                 evidence_quality=evidence_quality,
                 evidence_volatility=evidence_volatility,
                 prior_draft_usefulness=prior_draft_usefulness,
                 has_budget=has_budget,
-                gates=self._cycle_policy_state,
+                gates=_ws_gates,
             ):
                 continue
 
