@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 import subprocess
@@ -96,6 +97,7 @@ from vaner.telemetry.metrics import MetricsStore
 
 LLMCallable = Callable[[str], Awaitable[str]]
 EmbedCallable = Callable[[list[str]], Awaitable[list[list[float]]]]
+logger = logging.getLogger(__name__)
 # Phase 4 / WS2: richer LLM callable that returns a structured
 # ``LLMResponse`` (thinking + content + raw). The engine prefers this when
 # available so reasoning-model preambles are captured rather than discarded.
@@ -276,7 +278,8 @@ class VanerEngine:
                 from vaner.intent.refinement_wiring import build_production_maturation_drafter
 
                 self._refinement_drafter = build_production_maturation_drafter(self._drafter)
-            except Exception:  # pragma: no cover - defensive
+            except (ImportError, RuntimeError, ValueError) as exc:  # pragma: no cover - defensive
+                logger.warning("Background refinement is enabled but production drafter wiring failed: %s", exc)
                 self._refinement_drafter = None
         # WS7: per-cycle cache of active workspace goals. Refreshed at the
         # top of precompute_cycle via ``_refresh_inferred_goals``;
