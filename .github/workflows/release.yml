@@ -177,12 +177,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh attestation verify dist-assets/dist/* --repo "$GITHUB_REPOSITORY"
+          # 0.8.8 fix: the newer ``gh attestation verify`` CLI takes a
+          # SINGLE file path, not a glob. v0.8.7's release verify failed
+          # with "too many arguments" when the wildcard expanded to
+          # wheel + sdist. Loop one artifact at a time.
           provenance_file=""
           if compgen -G "provenance/*.intoto.jsonl" > /dev/null; then
             provenance_file="$(printf '%s\n' provenance/*.intoto.jsonl | head -n 1)"
           fi
           for artifact in dist-assets/dist/*; do
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
             bundle="${artifact}.sigstore.json"
             cosign verify-blob --bundle "$bundle" "$artifact"
             if [ -n "$provenance_file" ]; then
