@@ -145,6 +145,15 @@ class MetricsStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA journal_mode=WAL")
+            # 0.8.7 hardening (H3): set a 5s busy_timeout so concurrent
+            # ``initialize()`` calls (one per composer-event POST in the
+            # daemon's record_composer_lifecycle_event path) wait for the
+            # writer lock instead of failing with ``database is locked``.
+            # WAL allows concurrent readers + one writer; without
+            # busy_timeout, the second concurrent ALTER/CREATE racing on
+            # the writer slot errors immediately. 5s comfortably exceeds
+            # the cycle DDL latency on slow disks.
+            await db.execute("PRAGMA busy_timeout = 5000")
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS request_metrics (

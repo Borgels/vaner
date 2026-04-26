@@ -169,7 +169,10 @@ fn setup_answers_fixture_decodes() {
     let body = load("setup_answers_sample.json");
     let answers: SetupAnswers =
         serde_json::from_str(&body).expect("setup answers fixture must decode");
-    assert_eq!(answers.work_styles, vec![WorkStyle::Coding, WorkStyle::Research]);
+    assert_eq!(
+        answers.work_styles,
+        vec![WorkStyle::Coding, WorkStyle::Research]
+    );
     assert_eq!(answers.priority, Priority::Quality);
     assert_eq!(answers.compute_posture, ComputePosture::AvailablePower);
     assert_eq!(answers.cloud_posture, CloudPosture::HybridWhenWorthIt);
