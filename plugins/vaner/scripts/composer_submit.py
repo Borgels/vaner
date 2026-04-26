@@ -134,5 +134,7 @@ if __name__ == "__main__":
         try:
             sys.stderr.write(f"vaner-composer-submit: unexpected {type(_exc).__name__}: {_exc}\n")
         except Exception:
+            # stderr may be closed under unusual hook environments;
+            # the hook contract still requires exit 0.
             pass
         raise SystemExit(0) from None

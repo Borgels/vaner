@@ -49,6 +49,7 @@ class ComposerSignalPump:
         try:
             self._subscribers.remove(callback)
         except ValueError:
+            # Idempotent unsubscribe: callback already removed.
             pass
 
     @property

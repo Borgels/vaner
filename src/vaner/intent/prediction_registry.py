@@ -673,6 +673,7 @@ class PredictionRegistry:
                         )
                         outcomes[prompt.spec.id] = "staled"
                     except InvalidTransitionError:
+                        # Already in a terminal state — invalidation is a no-op.
                         pass
                     prompt.run.updated_at = self._clock()
 
