@@ -4,7 +4,6 @@
 from vaner.signals.composer.contract import (
     CapabilityLevel,
     ComposerAdapterCapabilities,
-    ComposerEvent,
     DraftIntentSnapshot,
     FieldRole,
     HostKind,
@@ -15,7 +14,6 @@ from vaner.signals.composer.pump import ComposerSignalPump, ComposerSubscriber
 __all__ = [
     "CapabilityLevel",
     "ComposerAdapterCapabilities",
-    "ComposerEvent",
     "ComposerSignalPump",
     "ComposerSubscriber",
     "DraftIntentSnapshot",

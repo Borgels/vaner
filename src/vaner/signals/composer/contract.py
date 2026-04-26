@@ -68,6 +68,21 @@ FieldRole = Literal[
 ]
 
 
+# sha256 hex digest pattern. The text_hash field MUST match this so
+# the daemon's error envelope (which echoes invalid input) can never
+# reflect raw draft text mistakenly placed in the text_hash slot.
+_SHA256_HEX_PATTERN = r"^[0-9a-f]{64}$"
+
+# ISO-8601 datetime pattern (date + time + Z or +HH:MM offset). Pinned
+# so adapters can't send free-form strings that downstream telemetry
+# range queries would silently misbehave on.
+_ISO8601_TS_PATTERN = (
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?"
+    r"(?:Z|[+-]\d{2}:\d{2})$"
+)
+
+
 class ComposerAdapterCapabilities(BaseModel):
     """What an adapter can truthfully emit.
 
@@ -78,9 +93,12 @@ class ComposerAdapterCapabilities(BaseModel):
 
     level: CapabilityLevel
     emits: tuple[LifecycleState, ...] = Field(
-        description="Lifecycle states this adapter can truthfully produce.",
+        min_length=1,
+        description="Lifecycle states this adapter can truthfully produce. MUST be non-empty.",
     )
     host_app: str = Field(
+        min_length=1,
+        max_length=128,
         description="Stable identifier for the host (e.g. 'claude-code', 'cursor').",
     )
     host_kind: HostKind
@@ -90,32 +108,29 @@ class DraftIntentSnapshot(BaseModel):
     """A single composer-lifecycle observation from an adapter."""
 
     session_id: str = Field(
+        min_length=1,
+        max_length=256,
         description="Stable id for the composer session. Used to correlate snapshots and to invalidate predictions on cancel/abandon.",
     )
     snapshot_id: str = Field(
+        min_length=1,
+        max_length=128,
         description="Unique id for this snapshot. Adapters MUST generate a fresh id per emission.",
     )
-    timestamp: str = Field(description="ISO-8601 timestamp of the observation.")
+    timestamp: str = Field(
+        pattern=_ISO8601_TS_PATTERN,
+        description="ISO-8601 timestamp of the observation (e.g. '2026-04-25T20:14:45Z').",
+    )
     lifecycle_state: LifecycleState
     text_hash: str = Field(
-        description="sha256 hex digest of the draft text. The raw text is never transmitted in 0.8.7.",
+        pattern=_SHA256_HEX_PATTERN,
+        description="sha256 hex digest of the draft text (lowercase, 64 chars). The raw text is never transmitted in 0.8.7.",
     )
     length_chars: int = Field(ge=0)
     capabilities: ComposerAdapterCapabilities
 
-    workspace_id: str | None = None
-    conversation_id: str | None = None
+    workspace_id: str | None = Field(default=None, max_length=2048)
+    conversation_id: str | None = Field(default=None, max_length=256)
     field_role: FieldRole | None = None
-    inferred_intent_label: str | None = None
+    inferred_intent_label: str | None = Field(default=None, max_length=256)
     inferred_intent_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
-
-
-class ComposerEvent(BaseModel):
-    """Envelope written into ``SignalEvent.payload`` for ``kind=composer_lifecycle``.
-
-    Wrapping the snapshot in an envelope leaves room for adapter-level
-    fields that should not live on the snapshot itself (e.g. transport
-    metadata, batch markers) without breaking the snapshot contract.
-    """
-
-    snapshot: DraftIntentSnapshot

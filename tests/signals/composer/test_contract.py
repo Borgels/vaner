@@ -11,7 +11,6 @@ from pydantic import ValidationError
 
 from vaner.signals.composer import (
     ComposerAdapterCapabilities,
-    ComposerEvent,
     DraftIntentSnapshot,
 )
 from vaner.signals.composer.schema import ARTIFACT_RELATIVE, render_schema
@@ -74,50 +73,43 @@ class TestSnapshotRoundTrip:
             )
             assert snap.lifecycle_state == state
 
-    def test_envelope_wraps_snapshot(self) -> None:
-        event = ComposerEvent(snapshot=_valid_l0_snapshot())
-        encoded = event.model_dump_json()
-        decoded = ComposerEvent.model_validate_json(encoded)
-        assert decoded.snapshot == event.snapshot
+
+_VALID_HASH = "0" * 64
+_VALID_TS = "2026-04-25T20:14:45Z"
+
+
+def _snap_kwargs(**overrides: object) -> dict[str, object]:
+    """Return valid snapshot kwargs with overrides applied.
+
+    Lets each test perturb exactly one field so the ValidationError is
+    attributable to the field under test, not to leftover invalid
+    placeholders from the test fixture.
+    """
+    base: dict[str, object] = dict(
+        session_id="s",
+        snapshot_id="x",
+        timestamp=_VALID_TS,
+        lifecycle_state="submitted",
+        text_hash=_VALID_HASH,
+        length_chars=0,
+        capabilities=_l0_capabilities(),
+    )
+    base.update(overrides)
+    return base
 
 
 class TestValidation:
     def test_negative_length_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            DraftIntentSnapshot(
-                session_id="s",
-                snapshot_id="x",
-                timestamp="t",
-                lifecycle_state="submitted",
-                text_hash="h",
-                length_chars=-1,
-                capabilities=_l0_capabilities(),
-            )
+            DraftIntentSnapshot(**_snap_kwargs(length_chars=-1))
 
     def test_unknown_lifecycle_state_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            DraftIntentSnapshot(
-                session_id="s",
-                snapshot_id="x",
-                timestamp="t",
-                lifecycle_state="not-a-state",  # type: ignore[arg-type]
-                text_hash="h",
-                length_chars=0,
-                capabilities=_l0_capabilities(),
-            )
+            DraftIntentSnapshot(**_snap_kwargs(lifecycle_state="not-a-state"))  # type: ignore[arg-type]
 
     def test_confidence_out_of_range_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            DraftIntentSnapshot(
-                session_id="s",
-                snapshot_id="x",
-                timestamp="t",
-                lifecycle_state="submitted",
-                text_hash="h",
-                length_chars=0,
-                capabilities=_l0_capabilities(),
-                inferred_intent_confidence=1.5,
-            )
+            DraftIntentSnapshot(**_snap_kwargs(inferred_intent_confidence=1.5))
 
     def test_unknown_capability_level_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -135,6 +127,53 @@ class TestValidation:
                 emits=("submitted",),
                 host_app="x",
                 host_kind="phone",  # type: ignore[arg-type]
+            )
+
+    # --- 0.8.7 hardening ---
+
+    def test_text_hash_must_be_64_hex_chars(self) -> None:
+        # Too short, wrong charset, uppercase: all rejected so the
+        # daemon's error envelope can never reflect raw draft text
+        # mistakenly placed in this slot.
+        for bad in ("abc", "x" * 64, "0" * 63, "0" * 65, "0" * 64 + "0", "ABCDEF" + "0" * 58):
+            with pytest.raises(ValidationError):
+                DraftIntentSnapshot(**_snap_kwargs(text_hash=bad))
+
+    def test_text_hash_field_pinned_to_sha256(self) -> None:
+        # Valid sha256 hex passes.
+        snap = DraftIntentSnapshot(**_snap_kwargs(text_hash="a" * 64))
+        assert snap.text_hash == "a" * 64
+
+    def test_timestamp_must_be_iso8601(self) -> None:
+        for bad in ("yesterday", "2026-04-25", "20:14:45", "2026/04/25 20:14:45", ""):
+            with pytest.raises(ValidationError):
+                DraftIntentSnapshot(**_snap_kwargs(timestamp=bad))
+
+    def test_timestamp_accepts_z_and_offset(self) -> None:
+        DraftIntentSnapshot(**_snap_kwargs(timestamp="2026-04-25T20:14:45Z"))
+        DraftIntentSnapshot(**_snap_kwargs(timestamp="2026-04-25T20:14:45+02:00"))
+        DraftIntentSnapshot(**_snap_kwargs(timestamp="2026-04-25T20:14:45.123Z"))
+
+    def test_capabilities_emits_cannot_be_empty(self) -> None:
+        with pytest.raises(ValidationError):
+            ComposerAdapterCapabilities(
+                level="L0",
+                emits=(),  # type: ignore[arg-type]
+                host_app="claude-code",
+                host_kind="ai_chat_client",
+            )
+
+    def test_session_id_cannot_be_empty(self) -> None:
+        with pytest.raises(ValidationError):
+            DraftIntentSnapshot(**_snap_kwargs(session_id=""))
+
+    def test_host_app_cannot_be_empty(self) -> None:
+        with pytest.raises(ValidationError):
+            ComposerAdapterCapabilities(
+                level="L0",
+                emits=("submitted",),
+                host_app="",
+                host_kind="ai_chat_client",
             )
 
 

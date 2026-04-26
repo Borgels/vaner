@@ -560,6 +560,13 @@ def _composer_engagement_payload(prompt: Any) -> dict[str, Any] | None:
     UI would render against. Stored on the prediction's run/artifacts
     metadata by WS7's adapter pipeline; this helper is the single
     decoupling point so a future schema change touches one place.
+
+    0.8.7 hardening (M2): each metadata field is type-checked before it
+    enters the wire payload. A corrupted ``composer_metadata`` carrying
+    e.g. ``composer_event_id=[1,2,3]`` would otherwise be coerced to
+    ``"[1, 2, 3]"`` by ``str(...)`` and surface in the MCP card. We
+    require ``composer_event_id`` to be a non-empty string and validate
+    each optional field's type before passing it through.
     """
     artifacts = getattr(prompt, "artifacts", None)
     spec = getattr(prompt, "spec", None)
@@ -567,13 +574,22 @@ def _composer_engagement_payload(prompt: Any) -> dict[str, Any] | None:
         return None
     metadata: dict[str, Any] = getattr(artifacts, "composer_metadata", {}) or {}
     composer_event_id = metadata.get("composer_event_id")
-    if not composer_event_id:
+    if not isinstance(composer_event_id, str) or not composer_event_id:
         return None
+    lifecycle_state = metadata.get("lifecycle_state", "submitted")
+    if not isinstance(lifecycle_state, str):
+        lifecycle_state = "submitted"
+    inferred_intent_label = metadata.get("inferred_intent_label")
+    if inferred_intent_label is not None and not isinstance(inferred_intent_label, str):
+        inferred_intent_label = None
+    inferred_intent_confidence = metadata.get("inferred_intent_confidence")
+    if inferred_intent_confidence is not None and not isinstance(inferred_intent_confidence, (int, float)):
+        inferred_intent_confidence = None
     return {
-        "composer_event_id": str(composer_event_id),
-        "lifecycle_state": str(metadata.get("lifecycle_state", "submitted")),
-        "inferred_intent_label": metadata.get("inferred_intent_label"),
-        "inferred_intent_confidence": metadata.get("inferred_intent_confidence"),
+        "composer_event_id": composer_event_id,
+        "lifecycle_state": lifecycle_state,
+        "inferred_intent_label": inferred_intent_label,
+        "inferred_intent_confidence": inferred_intent_confidence,
     }
 
 

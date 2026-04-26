@@ -24,6 +24,28 @@ def _metrics_path(repo_root: Path) -> Path:
     return repo_root / ".vaner" / "metrics.db"
 
 
+def _sanitize_validation_errors(exc: Any) -> list[dict[str, Any]]:
+    """Strip the raw ``input`` value from pydantic ValidationError payloads.
+
+    0.8.7 WS7 hardening C1: pydantic v2's ``exc.errors()`` echoes the
+    offending value under the ``input`` key. For an adapter bug that
+    placed draft text into the wrong field, that would reflect raw text
+    back to the client in the error envelope. We surface only the field
+    path + error type + message — never the input value or any URL the
+    pydantic library generated for the error catalog.
+    """
+    safe: list[dict[str, Any]] = []
+    for err in exc.errors():
+        safe.append(
+            {
+                "loc": err.get("loc"),
+                "type": err.get("type"),
+                "msg": err.get("msg"),
+            }
+        )
+    return safe
+
+
 # How long to wait between precompute cycles when the daemon holds a live
 # engine. Reusing the existing idle-gate + timing-aware cycle budget, so this
 # is just the outer rhythm — the engine itself may return early under load.
@@ -1075,8 +1097,14 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         try:
             snapshot = DraftIntentSnapshot.model_validate(body)
         except ValidationError as exc:
+            # 0.8.7 hardening C1: scrub the raw `input` payload from
+            # pydantic error envelopes. Pydantic v2's exc.errors() echoes
+            # the offending value under the `input` key — for an adapter
+            # bug that put draft text into the wrong field, that would
+            # reflect raw text back to the client. We surface only the
+            # field path + error type + message, never the input value.
             return JSONResponse(
-                {"code": "invalid_input", "message": exc.errors()},
+                {"code": "invalid_input", "message": _sanitize_validation_errors(exc)},
                 status_code=400,
             )
 
@@ -1105,9 +1133,9 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         try:
             await engine.observe(event)
         except ValidationError as exc:
-            # engine.observe re-validates; surface its message too.
+            # engine.observe re-validates; same sanitization applies.
             return JSONResponse(
-                {"code": "invalid_input", "message": exc.errors()},
+                {"code": "invalid_input", "message": _sanitize_validation_errors(exc)},
                 status_code=400,
             )
 
@@ -1128,6 +1156,9 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                     "host_app": snapshot.capabilities.host_app,
                     "host_kind": snapshot.capabilities.host_kind,
                     "level": snapshot.capabilities.level,
+                    # 0.8.7 hardening H4: propagate privacy_zone so dashboards
+                    # that aggregate by zone can attribute composer rows.
+                    "privacy_zone": getattr(getattr(engine, "adapter", None), "privacy_zone", "local"),
                 },
             )
         except Exception:  # pragma: no cover - defensive metrics

@@ -155,3 +155,51 @@ def test_response_event_id_is_unique_per_call(temp_repo):
     assert a["composer_event_id"] != b["composer_event_id"]
     # Both events reached the engine.
     assert len(engine.observed) == 2
+
+
+def test_validation_error_envelope_does_not_echo_input(temp_repo):
+    """0.8.7 hardening C1: pydantic v2's exc.errors() echoes the offending
+    value under the `input` key. For an adapter bug that placed draft
+    text into a wrong field, that would reflect raw text back. The
+    daemon MUST scrub `input` before serializing the error envelope.
+    """
+    config = _make_config(temp_repo)
+    engine = _CapturingEngine()
+    app = create_daemon_http_app(config, engine=engine)
+    sentinel = "RAW_DRAFT_SECRET_THAT_MUST_NOT_LEAK"
+    bad = _valid_l0_payload()
+    bad["text_hash"] = sentinel  # not 64 hex chars → ValidationError
+
+    with TestClient(app) as client:
+        response = client.post("/signals/composer", json=bad)
+
+    assert response.status_code == 400
+    body_text = response.text
+    assert sentinel not in body_text, "validation error envelope leaked the offending input value"
+    # The structured message is still useful for adapter authors:
+    payload = response.json()
+    assert payload["code"] == "invalid_input"
+    assert isinstance(payload["message"], list)
+    for entry in payload["message"]:
+        assert "loc" in entry
+        assert "type" in entry
+        assert "msg" in entry
+        # Critically: no `input` field reflecting the raw value.
+        assert "input" not in entry
+
+
+def test_capability_emits_empty_rejected_at_validation(temp_repo):
+    """0.8.7 hardening C2: ComposerAdapterCapabilities.emits has min_length=1.
+    An adapter that declares emits=[] is structurally invalid.
+    """
+    config = _make_config(temp_repo)
+    engine = _CapturingEngine()
+    app = create_daemon_http_app(config, engine=engine)
+    payload = _valid_l0_payload()
+    payload["capabilities"]["emits"] = []
+
+    with TestClient(app) as client:
+        response = client.post("/signals/composer", json=payload)
+
+    assert response.status_code == 400
+    assert engine.observed == []
