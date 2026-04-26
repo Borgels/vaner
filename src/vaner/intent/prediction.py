@@ -41,6 +41,11 @@ Source = Literal[
     # stalled} and emits one spec per eligible item. Carries richer
     # ``anchor_units`` (related files + entities) than goal-level specs.
     "artefact_item",
+    # 0.8.7 WS4 — anchored to a live composer session via the
+    # ComposerAdapter. ``anchor`` carries the composer ``session_id``
+    # so ``composer_cancelled`` / ``composer_abandoned`` invalidation
+    # signals can stale the prediction by session lookup.
+    "composer_intent",
 ]
 HypothesisType = Literal["likely_next", "possible_branch", "long_tail"]
 Specificity = Literal["concrete", "category", "anchor"]
@@ -64,9 +69,19 @@ def is_transition_allowed(from_state: ReadinessState, to_state: ReadinessState) 
 
 
 def prediction_id(source: str, anchor: str, label: str) -> str:
-    """Stable hash over (source, anchor, label). The identity key for a prediction."""
+    """Stable hash over (source, anchor, label). The identity key for a prediction.
+
+    Uses SHA-256 truncated to 16 hex chars purely as a deterministic
+    identifier hash (not a cryptographic primitive — the truncation
+    breaks any cryptographic strength anyway). 0.8.7 hardening switched
+    from SHA-1 because CodeQL's ``py/weak-cryptographic-algorithm`` does
+    not honor ``usedforsecurity=False``; SHA-256 is universally accepted.
+    The ID change across the 0.8.6→0.8.7 boundary is safe: prediction
+    adoption outcomes are short-TTL and the in-memory registry rebuilds
+    every cycle.
+    """
     payload = f"{source}|{anchor}|{label}".encode()
-    return hashlib.sha1(payload).hexdigest()[:16]
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +142,20 @@ class PredictionRun:
     probationary_until_cycle: int | None = None
     failed_revisits: int = 0
     maturation_eligible: bool = True
+    # 0.8.7 WS4 — strength of the most recent composer-lifecycle signal
+    # that anchors this prediction. Default 0.0 keeps the existing
+    # rebalance arithmetic byte-identical for non-composer predictions
+    # (mirrors the v0.8.6 WS4 mixed-is-identity discipline).
+    #
+    # NOTE (v0.8.8 wiring gap): in v0.8.7 this field is part of the data
+    # backbone but has NO producer (no pump subscriber sets it) and NO
+    # consumer (no rebalance path reads it). The producer lands when the
+    # composer signal pump gets a registry-update subscriber; the
+    # consumer lands when ``rebalance()`` weights composer_intent specs
+    # by their signal strength. Both are tracked for v0.8.8 alongside
+    # the first L1 adapter. The default-0 invariant is what keeps v0.8.7
+    # behavior byte-identical to pre-0.8.7 for default-config users.
+    compose_signal_strength: float = 0.0
 
 
 @dataclass(slots=True)
@@ -156,6 +185,12 @@ class PredictionArtifacts:
     file_content_hashes: dict[str, str] = field(default_factory=dict)
     pre_maturation_draft_answer: str | None = None
     pre_maturation_evidence_score: float | None = None
+    # 0.8.7 WS8 — composer-engagement metadata for ``composer_intent``-
+    # sourced predictions. Populated by the daemon's composer signal
+    # path (WS7) so the MCP card surface can render
+    # ``composer_engagement`` without hard-coding lookups against the
+    # signal store. Empty for non-composer sources.
+    composer_metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

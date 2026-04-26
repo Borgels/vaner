@@ -132,9 +132,18 @@ jobs:
       upload-assets: true
 
   verify:
-    needs:
-      - publish
-      - slsa-provenance
+    # 0.8.7 WS1 — verify only depends on `publish`. The slsa-github-generator
+    # reusable workflow's `final` aggregation step has a known cosmetic-failure
+    # mode where it reports failure even when `generator` and `upload-assets`
+    # both succeed and the *.intoto.jsonl is uploaded to the release. v0.8.6
+    # hit exactly this on run #24939687147: artifacts were signed and live,
+    # but `verify` was skipped because it depended on slsa-provenance.
+    # `verify` independently downloads the provenance from the release below
+    # (see "Download provenance assets from release"), so the dependency was
+    # redundant. `if: always() && publish succeeded` lets verify run end-to-end
+    # even when the upstream aggregation reports a soft failure.
+    needs: publish
+    if: ${{ always() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

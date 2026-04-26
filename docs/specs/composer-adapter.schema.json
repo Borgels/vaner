@@ -1,0 +1,199 @@
+{
+  "$defs": {
+    "ComposerAdapterCapabilities": {
+      "description": "What an adapter can truthfully emit.\n\nThe daemon uses ``emits`` to validate each ``DraftIntentSnapshot``\non ingest. An L0 adapter that declares ``emits=(\"submitted\",)``\ncannot send a payload with ``lifecycle_state=\"actionable\"``.",
+      "properties": {
+        "emits": {
+          "description": "Lifecycle states this adapter can truthfully produce. MUST be non-empty.",
+          "items": {
+            "enum": [
+              "observing",
+              "tentative",
+              "stabilizing",
+              "actionable",
+              "submitted",
+              "cleared",
+              "abandoned"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Emits",
+          "type": "array"
+        },
+        "host_app": {
+          "description": "Stable identifier for the host (e.g. 'claude-code', 'cursor').",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Host App",
+          "type": "string"
+        },
+        "host_kind": {
+          "enum": [
+            "ai_chat_client",
+            "ide",
+            "editor",
+            "support_console",
+            "writing_tool",
+            "terminal_ai_client",
+            "enterprise_app"
+          ],
+          "title": "Host Kind",
+          "type": "string"
+        },
+        "level": {
+          "enum": [
+            "L0",
+            "L1",
+            "L2",
+            "L3"
+          ],
+          "title": "Level",
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "emits",
+        "host_app",
+        "host_kind"
+      ],
+      "title": "ComposerAdapterCapabilities",
+      "type": "object"
+    }
+  },
+  "description": "A single composer-lifecycle observation from an adapter.",
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/ComposerAdapterCapabilities"
+    },
+    "conversation_id": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Conversation Id"
+    },
+    "field_role": {
+      "anyOf": [
+        {
+          "enum": [
+            "chat_composer",
+            "agent_prompt",
+            "email_body",
+            "doc_editor",
+            "support_reply",
+            "task_note"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Field Role"
+    },
+    "inferred_intent_confidence": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Inferred Intent Confidence"
+    },
+    "inferred_intent_label": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Inferred Intent Label"
+    },
+    "length_chars": {
+      "minimum": 0,
+      "title": "Length Chars",
+      "type": "integer"
+    },
+    "lifecycle_state": {
+      "enum": [
+        "observing",
+        "tentative",
+        "stabilizing",
+        "actionable",
+        "submitted",
+        "cleared",
+        "abandoned"
+      ],
+      "title": "Lifecycle State",
+      "type": "string"
+    },
+    "session_id": {
+      "description": "Stable id for the composer session. Used to correlate snapshots and to invalidate predictions on cancel/abandon.",
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "description": "Unique id for this snapshot. Adapters MUST generate a fresh id per emission.",
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "text_hash": {
+      "description": "sha256 hex digest of the draft text (lowercase, 64 chars). The raw text is never transmitted in 0.8.7.",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Text Hash",
+      "type": "string"
+    },
+    "timestamp": {
+      "description": "ISO-8601 timestamp of the observation (e.g. '2026-04-25T20:14:45Z').",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$",
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "workspace_id": {
+      "anyOf": [
+        {
+          "maxLength": 2048,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Workspace Id"
+    }
+  },
+  "required": [
+    "session_id",
+    "snapshot_id",
+    "timestamp",
+    "lifecycle_state",
+    "text_hash",
+    "length_chars",
+    "capabilities"
+  ],
+  "title": "DraftIntentSnapshot",
+  "type": "object"
+}

@@ -93,7 +93,16 @@ def test_predictions_active_envelope_shape():
         _assert_shape(row["run"], RUN_KEYS)
         _assert_shape(row["artifacts"], ARTIFACTS_KEYS)
         # Enum-valued strings must be drawn from the documented sets
-        assert row["spec"]["source"] in {"arc", "pattern", "llm_branch", "macro", "history", "goal"}
+        assert row["spec"]["source"] in {
+            "arc",
+            "pattern",
+            "llm_branch",
+            "macro",
+            "history",
+            "goal",
+            "artefact_item",
+            "composer_intent",
+        }
         assert row["spec"]["hypothesis_type"] in {"likely_next", "possible_branch", "long_tail"}
         assert row["spec"]["specificity"] in {"concrete", "category", "anchor"}
         assert row["run"]["readiness"] in {
@@ -114,7 +123,70 @@ def test_predictions_single_shape():
     _assert_shape(row["artifacts"], ARTIFACTS_KEYS)
 
 
-@pytest.mark.parametrize("fixture", ["adopt_response_rich.json", "adopt_response_minimal.json"])
+def test_predictions_active_composer_fixture():
+    """0.8.7 WS8: composer_intent prediction with composer_engagement.
+
+    Exercises the present-case for the new optional fields the Rust
+    mirror gained (PredictedPrompt.composer_engagement, ComposerEngagement
+    struct). The fixture itself is the contract: if it stops parsing,
+    either the Rust mirror or the Python serializer drifted.
+    """
+    body = _load("predictions_active_composer_sample.json")
+    assert list(body.keys()) == ["predictions"]
+    assert len(body["predictions"]) == 1
+    row = body["predictions"][0]
+    assert row["spec"]["source"] == "composer_intent"
+    # composer_engagement is the new optional block.
+    assert "composer_engagement" in row
+    engagement = row["composer_engagement"]
+    assert isinstance(engagement["composer_event_id"], str) and engagement["composer_event_id"]
+    assert engagement["lifecycle_state"] in {
+        "observing",
+        "tentative",
+        "stabilizing",
+        "actionable",
+        "submitted",
+        "cleared",
+        "abandoned",
+    }
+    # Optional fields may be present + typed, or absent.
+    if engagement.get("inferred_intent_label") is not None:
+        assert isinstance(engagement["inferred_intent_label"], str)
+    if engagement.get("inferred_intent_confidence") is not None:
+        assert isinstance(engagement["inferred_intent_confidence"], (int, float))
+        assert 0.0 <= engagement["inferred_intent_confidence"] <= 1.0
+
+
+def test_adopt_response_composer_carries_composer_event_id():
+    """0.8.7 WS8: when an adopted prediction is composer_intent-sourced,
+    Resolution.composer_event_id is populated for adoption-telemetry
+    attribution. Other Resolution fixtures keep it as None.
+    """
+    body = _load("adopt_response_composer.json")
+    resolution = Resolution.model_validate(body)
+    assert resolution.composer_event_id == body["composer_event_id"]
+    assert resolution.adopted_from_prediction_id == body["adopted_from_prediction_id"]
+
+
+def test_legacy_adopt_responses_have_no_composer_event_id():
+    """The 0.8.6 fixtures predate composer_event_id; they MUST decode
+    cleanly with the field as None (byte-compat invariant)."""
+    for fixture in ("adopt_response_rich.json", "adopt_response_minimal.json"):
+        body = _load(fixture)
+        assert "composer_event_id" not in body
+        resolution = Resolution.model_validate(body)
+        assert resolution.composer_event_id is None
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "adopt_response_rich.json",
+        "adopt_response_minimal.json",
+        # 0.8.7 WS8 — composer_event_id present case
+        "adopt_response_composer.json",
+    ],
+)
 def test_adopt_response_roundtrips_through_pydantic(fixture):
     """The Resolution Pydantic model must accept every shape the
     fixture represents. If validation fails the daemon's `Resolution`
@@ -174,6 +246,9 @@ def test_every_fixture_is_registered():
         "setup_hardware_profile_sample.json",
         "setup_selection_sample.json",
         "setup_deep_run_defaults_sample.json",
+        # 0.8.7 WS8 — composer_intent + composer_engagement fixtures.
+        "predictions_active_composer_sample.json",
+        "adopt_response_composer.json",
     }
     found = {str(p.relative_to(FIXTURES)) for p in FIXTURES.rglob("*.json")}
     orphans = found - known

@@ -420,11 +420,17 @@ mod tests {
             "background_posture": "deep_run_aggressive"
         }"#;
         let decoded: SetupAnswers = serde_json::from_str(raw).unwrap();
-        assert_eq!(decoded.work_styles, vec![WorkStyle::Coding, WorkStyle::Research]);
+        assert_eq!(
+            decoded.work_styles,
+            vec![WorkStyle::Coding, WorkStyle::Research]
+        );
         assert_eq!(decoded.priority, Priority::Quality);
         assert_eq!(decoded.compute_posture, ComputePosture::AvailablePower);
         assert_eq!(decoded.cloud_posture, CloudPosture::HybridWhenWorthIt);
-        assert_eq!(decoded.background_posture, BackgroundPosture::DeepRunAggressive);
+        assert_eq!(
+            decoded.background_posture,
+            BackgroundPosture::DeepRunAggressive
+        );
 
         let reencoded = serde_json::to_string(&decoded).unwrap();
         let again: SetupAnswers = serde_json::from_str(&reencoded).unwrap();
@@ -581,8 +587,14 @@ mod tests {
         let decoded: SetupQuestion = serde_json::from_str(raw).unwrap();
         assert_eq!(decoded.id, "priority");
         assert_eq!(decoded.options.len(), 2);
-        assert_eq!(decoded.options[1].description.as_deref(), Some("Snappy responses"));
-        assert_eq!(decoded.default.as_ref().and_then(|v| v.as_str()), Some("balanced"));
+        assert_eq!(
+            decoded.options[1].description.as_deref(),
+            Some("Snappy responses")
+        );
+        assert_eq!(
+            decoded.default.as_ref().and_then(|v| v.as_str()),
+            Some("balanced")
+        );
     }
 
     #[test]

@@ -32,6 +32,8 @@ _SOURCE_LABELS: dict[str, str] = {
     "macro": "Workspace signal",
     "history": "Historical pattern",
     "goal": "Active goal",
+    # 0.8.7 WS4 — composer-anchored predictions surface as draft-derived.
+    "composer_intent": "From your current draft",
 }
 
 

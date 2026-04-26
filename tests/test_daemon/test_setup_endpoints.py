@@ -384,9 +384,11 @@ def test_post_policy_refresh_503_on_engine_exception(repo_root: Path) -> None:
     init_repo(repo_root)
     config = load_config(repo_root)
 
+    sentinel = "kaboom-internal-detail-must-not-leak"
+
     class BoomEngine:
         def _refresh_policy_bundle_state(self) -> None:
-            raise RuntimeError("kaboom")
+            raise RuntimeError(sentinel)
 
         async def initialize(self) -> None:
             return None
@@ -400,4 +402,10 @@ def test_post_policy_refresh_503_on_engine_exception(repo_root: Path) -> None:
     assert resp.status_code == 503
     body = resp.json()
     assert body["code"] == "refresh_failed"
-    assert "kaboom" in body["message"]
+    # The endpoint MUST NOT echo the raw exception message into the
+    # response body — this was hardened in commit 3e70586 to resolve a
+    # CodeQL stack-exposure alert. The static "policy refresh failed"
+    # text is the contract; pinning the sentinel-absence stops a future
+    # accidental revert from re-introducing the leak.
+    assert body["message"] == "policy refresh failed"
+    assert sentinel not in resp.text

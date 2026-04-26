@@ -541,7 +541,56 @@ def _serialize_prediction_for_mcp(prompt: Any, *, rank: int | None = None) -> di
     }
     if rank is not None:
         payload["rank"] = rank
+    # 0.8.7 WS8: surface composer-engagement metadata only for
+    # composer_intent-sourced predictions. The data backbone is
+    # populated by WS7's daemon path; field is omitted entirely
+    # for non-composer predictions so existing card payloads stay
+    # byte-identical.
+    if spec.source == "composer_intent":
+        composer_engagement = _composer_engagement_payload(prompt)
+        if composer_engagement is not None:
+            payload["composer_engagement"] = composer_engagement
     return payload
+
+
+def _composer_engagement_payload(prompt: Any) -> dict[str, Any] | None:
+    """Extract composer-engagement metadata from a composer_intent prediction.
+
+    Returns None if the prediction lacks the engagement fields the host
+    UI would render against. Stored on the prediction's run/artifacts
+    metadata by WS7's adapter pipeline; this helper is the single
+    decoupling point so a future schema change touches one place.
+
+    0.8.7 hardening (M2): each metadata field is type-checked before it
+    enters the wire payload. A corrupted ``composer_metadata`` carrying
+    e.g. ``composer_event_id=[1,2,3]`` would otherwise be coerced to
+    ``"[1, 2, 3]"`` by ``str(...)`` and surface in the MCP card. We
+    require ``composer_event_id`` to be a non-empty string and validate
+    each optional field's type before passing it through.
+    """
+    artifacts = getattr(prompt, "artifacts", None)
+    spec = getattr(prompt, "spec", None)
+    if artifacts is None or spec is None:
+        return None
+    metadata: dict[str, Any] = getattr(artifacts, "composer_metadata", {}) or {}
+    composer_event_id = metadata.get("composer_event_id")
+    if not isinstance(composer_event_id, str) or not composer_event_id:
+        return None
+    lifecycle_state = metadata.get("lifecycle_state", "submitted")
+    if not isinstance(lifecycle_state, str):
+        lifecycle_state = "submitted"
+    inferred_intent_label = metadata.get("inferred_intent_label")
+    if inferred_intent_label is not None and not isinstance(inferred_intent_label, str):
+        inferred_intent_label = None
+    inferred_intent_confidence = metadata.get("inferred_intent_confidence")
+    if inferred_intent_confidence is not None and not isinstance(inferred_intent_confidence, (int, float)):
+        inferred_intent_confidence = None
+    return {
+        "composer_event_id": composer_event_id,
+        "lifecycle_state": lifecycle_state,
+        "inferred_intent_label": inferred_intent_label,
+        "inferred_intent_confidence": inferred_intent_confidence,
+    }
 
 
 _RESOURCE_METRIC_TASKS: set[Any] = set()
@@ -651,6 +700,16 @@ def _build_adopt_resolution(prompt: Any) -> Resolution:
         )
         for scenario_id in artifacts.scenario_ids
     ]
+    # 0.8.7 WS7/WS8: when the adopted prediction is composer_intent-sourced,
+    # thread the originating composer_event_id into the Resolution so
+    # adoption telemetry can attribute hit/miss back to the composer event.
+    composer_event_id: str | None = None
+    if spec.source == "composer_intent":
+        meta = getattr(artifacts, "composer_metadata", {}) or {}
+        candidate = meta.get("composer_event_id")
+        if isinstance(candidate, str) and candidate:
+            composer_event_id = candidate
+
     return Resolution(
         intent=spec.label,
         confidence=float(spec.confidence),
@@ -663,6 +722,7 @@ def _build_adopt_resolution(prompt: Any) -> Resolution:
         briefing_token_used=briefing_obj.token_count,
         briefing_token_budget=run.token_budget,
         adopted_from_prediction_id=spec.id,
+        composer_event_id=composer_event_id,
     )
 
 

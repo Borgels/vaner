@@ -152,6 +152,10 @@ class ExplorationFrontier:
         "pattern": 1.2,  # validated patterns get a slight head start
         "llm_branch": 0.9,
         "skill": 1.1,
+        # 0.8.7 WS5 — composer-anchored predictions enter at the
+        # baseline multiplier; the existing per-source learning loop
+        # below auto-adapts based on adoption telemetry.
+        "composer_intent": 1.0,
     }
 
     def __init__(

@@ -24,6 +24,28 @@ def _metrics_path(repo_root: Path) -> Path:
     return repo_root / ".vaner" / "metrics.db"
 
 
+def _sanitize_validation_errors(exc: Any) -> list[dict[str, Any]]:
+    """Strip the raw ``input`` value from pydantic ValidationError payloads.
+
+    0.8.7 WS7 hardening C1: pydantic v2's ``exc.errors()`` echoes the
+    offending value under the ``input`` key. For an adapter bug that
+    placed draft text into the wrong field, that would reflect raw text
+    back to the client in the error envelope. We surface only the field
+    path + error type + message — never the input value or any URL the
+    pydantic library generated for the error catalog.
+    """
+    safe: list[dict[str, Any]] = []
+    for err in exc.errors():
+        safe.append(
+            {
+                "loc": err.get("loc"),
+                "type": err.get("type"),
+                "msg": err.get("msg"),
+            }
+        )
+    return safe
+
+
 # How long to wait between precompute cycles when the daemon holds a live
 # engine. Reusing the existing idle-gate + timing-aware cycle budget, so this
 # is just the outer rhythm — the engine itself may return early under load.
@@ -1034,6 +1056,126 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
 
         resolution = _build_adopt_resolution(prompt)
         return JSONResponse(resolution.model_dump(mode="json"))
+
+    @app.post("/signals/composer")
+    async def signals_composer(request: Request) -> JSONResponse:
+        """0.8.7 WS7 — ingest a composer-lifecycle event.
+
+        Accepts a ``DraftIntentSnapshot`` payload from a registered
+        :class:`ComposerAdapter` (e.g. the Claude Code UserPromptSubmit
+        hook), envelopes it into a :class:`SignalEvent` of kind
+        ``composer_lifecycle``, and forwards to ``engine.observe()``.
+        Returns the assigned ``composer_event_id`` so adapters can
+        thread it back to the host UI for adoption attribution.
+
+        Returns 400 on malformed payload (pydantic ValidationError),
+        409 when no engine is available (the daemon is running without
+        an injected engine, e.g. cockpit-only mode).
+        """
+        if engine is None:
+            return JSONResponse(
+                {"code": "engine_unavailable", "message": "engine unavailable"},
+                status_code=409,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            # 0.8.7 hardening (CodeQL py/stack-trace-exposure): the
+            # JSON-parse exception text can carry payload bytes and
+            # internal parser state. Surface only a static "invalid
+            # JSON" message — adapter authors don't need the raw error.
+            return JSONResponse(
+                {"code": "invalid_input", "message": "invalid JSON body"},
+                status_code=400,
+            )
+
+        # Lazy imports keep the daemon module load light.
+        import time as _time
+        import uuid as _uuid
+
+        from pydantic import ValidationError
+
+        from vaner.models.signal import KIND_COMPOSER_LIFECYCLE, SignalEvent
+        from vaner.signals.composer import DraftIntentSnapshot
+
+        try:
+            snapshot = DraftIntentSnapshot.model_validate(body)
+        except ValidationError as exc:
+            # 0.8.7 hardening C1: scrub the raw `input` payload from
+            # pydantic error envelopes. Pydantic v2's exc.errors() echoes
+            # the offending value under the `input` key — for an adapter
+            # bug that put draft text into the wrong field, that would
+            # reflect raw text back to the client. We surface only the
+            # field path + error type + message, never the input value.
+            return JSONResponse(
+                {"code": "invalid_input", "message": _sanitize_validation_errors(exc)},
+                status_code=400,
+            )
+
+        # The adapter MUST only emit lifecycle states declared in
+        # capabilities.emits — otherwise an L0 adapter could fabricate a
+        # higher state and corrupt downstream scoring.
+        if snapshot.lifecycle_state not in snapshot.capabilities.emits:
+            return JSONResponse(
+                {
+                    "code": "capability_violation",
+                    "message": (
+                        f"adapter declared emits={list(snapshot.capabilities.emits)} but sent lifecycle_state={snapshot.lifecycle_state!r}"
+                    ),
+                },
+                status_code=400,
+            )
+
+        composer_event_id = _uuid.uuid4().hex
+        event = SignalEvent(
+            id=composer_event_id,
+            source=f"composer-adapter:{snapshot.capabilities.host_app}",
+            kind=KIND_COMPOSER_LIFECYCLE,
+            timestamp=_time.time(),
+            payload=snapshot.model_dump(mode="json"),
+        )
+        try:
+            await engine.observe(event)
+        except ValidationError as exc:
+            # engine.observe re-validates; same sanitization applies.
+            return JSONResponse(
+                {"code": "invalid_input", "message": _sanitize_validation_errors(exc)},
+                status_code=400,
+            )
+
+        # Telemetry: record the composer-lifecycle event into draft_events
+        # for hit/miss attribution downstream. Best-effort: a metrics
+        # failure must not block the response.
+        #
+        # 0.8.7 hardening: reuse the closure-captured ``metrics_store``
+        # that the daemon's lifespan already initialized at startup.
+        # An earlier draft created a fresh MetricsStore + initialized it
+        # per request, which raced under concurrent composer events on
+        # SQLite WAL setup (CI Python 3.11 / 3.13 surfaced this).
+        try:
+            await metrics_store.record_composer_lifecycle_event(
+                session_id=snapshot.session_id,
+                snapshot_id=snapshot.snapshot_id,
+                lifecycle_state=snapshot.lifecycle_state,
+                text_hash=snapshot.text_hash,
+                length_chars=snapshot.length_chars,
+                composer_event_id=composer_event_id,
+                metadata={
+                    "host_app": snapshot.capabilities.host_app,
+                    "host_kind": snapshot.capabilities.host_kind,
+                    "level": snapshot.capabilities.level,
+                    # 0.8.7 hardening H4: propagate privacy_zone so dashboards
+                    # that aggregate by zone can attribute composer rows.
+                    "privacy_zone": getattr(getattr(engine, "adapter", None), "privacy_zone", "local"),
+                },
+            )
+        except Exception:  # pragma: no cover - defensive metrics
+            pass
+
+        return JSONResponse(
+            {"composer_event_id": composer_event_id},
+            status_code=200,
+        )
 
     @app.post("/resolve")
     async def resolve_endpoint(request: Request) -> JSONResponse:

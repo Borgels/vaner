@@ -647,6 +647,36 @@ class PredictionRegistry:
                 # doesn't fall through as an unknown signal.
                 continue
 
+            elif kind in ("composer_cancelled", "composer_abandoned"):
+                # 0.8.7 WS4 — stale every composer_intent-sourced
+                # prediction whose spec.anchor matches the cancelled /
+                # abandoned session_id. Both kinds invalidate the same
+                # set; preserving distinct kinds keeps telemetry
+                # attribution intact.
+                session_id = str(payload.get("session_id", ""))
+                if not session_id:
+                    continue
+                reason_label = "composer_cancelled" if kind == "composer_cancelled" else "composer_abandoned"
+                for prompt in list(self._predictions.values()):
+                    if prompt.is_terminal():
+                        continue
+                    if prompt.spec.source != "composer_intent":
+                        continue
+                    if prompt.spec.anchor != session_id:
+                        continue
+                    prompt.run.invalidation_reason = f"{reason_label}: {session_id}"
+                    try:
+                        self._transition(
+                            prompt,
+                            "stale",
+                            reason=prompt.run.invalidation_reason,
+                        )
+                        outcomes[prompt.spec.id] = "staled"
+                    except InvalidTransitionError:
+                        # Already in a terminal state — invalidation is a no-op.
+                        pass
+                    prompt.run.updated_at = self._clock()
+
         return outcomes
 
     # ---------------------------------------------------------------

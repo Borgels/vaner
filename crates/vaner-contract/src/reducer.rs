@@ -154,6 +154,7 @@ mod tests {
             ui_summary: None,
             suppression_reason: None,
             source_label: None,
+            composer_engagement: None,
         }
     }
 

@@ -66,6 +66,22 @@ class IntentPriorAdjustments:
     drafting_evidence_floor: float
     drafting_volatility_ceiling_multiplier: float
     preferred_artefact_templates: tuple[str, ...]
+    # 0.8.7 WS5 — multiplier applied to ``composer_intent``-sourced
+    # predictions when the user is in this work style. mixed=1.0 keeps
+    # the prior identity invariant; styles whose drafts are highly
+    # informative about next-prompt intent (writing, research) get a
+    # stronger boost than coding/general/support.
+    #
+    # NOTE (v0.8.8 wiring gap): in v0.8.7 this field has values per
+    # WorkStyle (writing 1.4, research 1.3, etc.) but NO consumer reads
+    # it. Plan WS5 step 4 was to gate ``composer_intent``-source weight
+    # on this multiplier in the engine's per-cycle scoring (where
+    # ``artefact_alignment_weight_multiplier`` is composed at
+    # engine.py:1403); that wiring lands in v0.8.8 alongside the first
+    # composer_intent producer (registry subscriber on the pump).
+    # Keeping the field populated now means v0.8.8 can plug in the
+    # consumer without a parallel data migration.
+    composer_signal_weight_multiplier: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +100,8 @@ WORK_STYLE_PRIORS: Final[Mapping[WorkStyle, IntentPriorAdjustments]] = {
         drafting_evidence_floor=0.0,
         drafting_volatility_ceiling_multiplier=1.2,
         preferred_artefact_templates=("next_scene_draft", "outline_continuation"),
+        # Rewrite/style intents are highly draft-revealing.
+        composer_signal_weight_multiplier=1.4,
     ),
     "research": IntentPriorAdjustments(
         # Research wants broad branch coverage; weight possible-branch
@@ -95,6 +113,8 @@ WORK_STYLE_PRIORS: Final[Mapping[WorkStyle, IntentPriorAdjustments]] = {
         drafting_evidence_floor=0.45,
         drafting_volatility_ceiling_multiplier=1.0,
         preferred_artefact_templates=("research_brief", "lit_review"),
+        # Comparison/follow-up framing is draft-revealing.
+        composer_signal_weight_multiplier=1.3,
     ),
     "planning": IntentPriorAdjustments(
         # Planning is artefact-anchored (decision memos, risk lists);
@@ -106,6 +126,7 @@ WORK_STYLE_PRIORS: Final[Mapping[WorkStyle, IntentPriorAdjustments]] = {
         drafting_evidence_floor=0.50,
         drafting_volatility_ceiling_multiplier=0.9,
         preferred_artefact_templates=("decision_memo", "risk_list"),
+        composer_signal_weight_multiplier=1.2,
     ),
     "support": IntentPriorAdjustments(
         # Support work wants to finish what's in flight (short horizon,
@@ -116,6 +137,7 @@ WORK_STYLE_PRIORS: Final[Mapping[WorkStyle, IntentPriorAdjustments]] = {
         drafting_evidence_floor=0.55,
         drafting_volatility_ceiling_multiplier=0.8,
         preferred_artefact_templates=("ticket_reply", "troubleshooting_brief"),
+        composer_signal_weight_multiplier=1.1,
     ),
     "learning": IntentPriorAdjustments(
         # Learning rewards exposure to adjacent concepts (high possible-
@@ -126,6 +148,7 @@ WORK_STYLE_PRIORS: Final[Mapping[WorkStyle, IntentPriorAdjustments]] = {
         drafting_evidence_floor=0.0,
         drafting_volatility_ceiling_multiplier=1.3,
         preferred_artefact_templates=("study_outline", "concept_brief"),
+        composer_signal_weight_multiplier=1.1,
     ),
     "coding": IntentPriorAdjustments(
         # Coding wants clean patches: high evidence floor, tight volatility
@@ -136,6 +159,7 @@ WORK_STYLE_PRIORS: Final[Mapping[WorkStyle, IntentPriorAdjustments]] = {
         drafting_evidence_floor=0.55,
         drafting_volatility_ceiling_multiplier=0.8,
         preferred_artefact_templates=("debugging_brief", "patch_proposal"),
+        composer_signal_weight_multiplier=1.0,
     ),
     "general": IntentPriorAdjustments(
         # General-purpose: very gentle nudges, no template preference.
@@ -145,6 +169,7 @@ WORK_STYLE_PRIORS: Final[Mapping[WorkStyle, IntentPriorAdjustments]] = {
         drafting_evidence_floor=0.0,
         drafting_volatility_ceiling_multiplier=1.0,
         preferred_artefact_templates=(),
+        composer_signal_weight_multiplier=1.0,
     ),
     "mixed": IntentPriorAdjustments(
         # Identity element. ``setup.work_styles == ["mixed"]`` is the
@@ -156,6 +181,10 @@ WORK_STYLE_PRIORS: Final[Mapping[WorkStyle, IntentPriorAdjustments]] = {
         drafting_evidence_floor=0.0,
         drafting_volatility_ceiling_multiplier=1.0,
         preferred_artefact_templates=(),
+        # mixed-is-identity invariant: composer multiplier MUST be 1.0
+        # so a mixed user with no composer signal sees byte-identical
+        # frontier scoring vs. pre-0.8.7. Same gate as 0.8.6 WS4.
+        composer_signal_weight_multiplier=1.0,
     ),
     "unsure": IntentPriorAdjustments(
         # Same identity as ``mixed`` — the user opted out of telling us;
@@ -168,6 +197,7 @@ WORK_STYLE_PRIORS: Final[Mapping[WorkStyle, IntentPriorAdjustments]] = {
         drafting_evidence_floor=0.0,
         drafting_volatility_ceiling_multiplier=1.0,
         preferred_artefact_templates=(),
+        composer_signal_weight_multiplier=1.0,
     ),
 }
 
@@ -219,6 +249,7 @@ def adjustments_for(work_styles: Sequence[WorkStyle]) -> IntentPriorAdjustments:
         drafting_evidence_floor=sum(s.drafting_evidence_floor for s in specs) / n,
         drafting_volatility_ceiling_multiplier=sum(s.drafting_volatility_ceiling_multiplier for s in specs) / n,
         preferred_artefact_templates=tuple(sorted(templates)),
+        composer_signal_weight_multiplier=sum(s.composer_signal_weight_multiplier for s in specs) / n,
     )
 
 

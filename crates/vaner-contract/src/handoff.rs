@@ -175,6 +175,7 @@ mod tests {
             alternatives_considered: vec![],
             gaps: vec![],
             next_actions: vec![],
+            composer_event_id: None,
         }
     }
 
