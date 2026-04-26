@@ -152,6 +152,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
         try:
             tmp_path.unlink()
         except FileNotFoundError:
+            # Successful replace moves the temp file into place before cleanup.
             pass
 
 
