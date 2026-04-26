@@ -40,6 +40,28 @@ _LEAD_TIME_BUCKETS: tuple[tuple[str, float], ...] = (
     ("gte_900s", float("inf")),
 )
 
+# 0.8.7 hardening (H2): coarse buckets for composer-event length_chars in
+# telemetry rows. Storing exact char counts alongside even an irreversible
+# hash gives a post-compromise adversary the ranged input domain for a
+# brute-force sha256 inversion. The buckets keep the histogram useful for
+# debugging without pinning short prompts to enumerable bands.
+_COMPOSER_LENGTH_BUCKETS: tuple[tuple[str, int], ...] = (
+    ("0_9", 10),
+    ("10_49", 50),
+    ("50_249", 250),
+    ("250_999", 1_000),
+    ("1000_4999", 5_000),
+    ("5000_plus", -1),
+)
+
+
+def _length_bucket(length_chars: int) -> str:
+    n = max(0, int(length_chars))
+    for label, ceiling in _COMPOSER_LENGTH_BUCKETS:
+        if ceiling < 0 or n < ceiling:
+            return label
+    return _COMPOSER_LENGTH_BUCKETS[-1][0]
+
 
 @dataclass
 class RequestMetrics:
@@ -104,8 +126,20 @@ class MetricsStore:
         cursor = await db.execute(f"PRAGMA table_info({table})")
         rows = await cursor.fetchall()
         names = {str(row[1]) for row in rows}
-        if column not in names:
+        if column in names:
+            return
+        # 0.8.7 hardening (H3): two concurrent first-time initialize()
+        # calls (e.g. two ingest requests on a fresh DB) can both pass
+        # the PRAGMA check, both attempt ALTER, and the second errors
+        # with "duplicate column name". The post-state is correct (the
+        # column exists once) — swallow the race and trust the PRAGMA
+        # snapshot on the next call. Any other OperationalError still
+        # propagates so genuine schema problems surface loudly.
+        try:
             await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
+        except aiosqlite.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
 
     async def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -733,22 +767,31 @@ class MetricsStore:
         """Record a composer-lifecycle observation (0.8.7 WS6).
 
         Composer-lifecycle rows write to the *separate* counter prefix
-        ``composer_{lifecycle_state}_total`` so they never corrupt the
-        existing ``draft_{served|useful|wrong|unused}_total`` counters
-        that 0.8.6 dashboards depend on. The ``event_type`` column on
-        ``draft_events`` distinguishes these rows from legacy
+        ``composer_lifecycle_{lifecycle_state}_total`` so they never
+        corrupt the existing ``draft_{served|useful|wrong|unused}_total``
+        counters that 0.8.6 dashboards depend on. The ``event_type``
+        column on ``draft_events`` distinguishes these rows from legacy
         ``record_draft_event`` writes.
+
+        0.8.7 hardening (H2 — short-prompt brute-force): the telemetry
+        row stores ``length_bucket`` (coarse band) instead of the exact
+        ``length_chars``, and DROPS the redundant ``text_hash`` copy that
+        existed alongside the unbucketed length. The signal_events row
+        retains the full snapshot for audit (single source of truth).
+        Reducing the cross-store correlation surface defeats the trivial
+        case where a post-compromise adversary brute-forces sha256 over
+        all candidate strings of an exact known length.
         """
+        # Reject the audit-noise pair (text_hash, length_chars) entirely
+        # from the telemetry surface. snapshot_id + composer_event_id
+        # already pin the row to its source signal_events record without
+        # leaking the privacy-sensitive cross-store correlation.
+        del text_hash
         payload = dict(metadata or {})
-        # Composer events carry no draft-quality numerics (no answer
-        # reuse, no evidence overlap — those are draft-completion
-        # signals). Preserve session/snapshot/hash metadata so the row
-        # is auditable even though the raw text is never stored.
-        payload.setdefault("session_id", session_id)
-        payload.setdefault("snapshot_id", snapshot_id)
-        payload.setdefault("text_hash", text_hash)
-        payload.setdefault("length_chars", length_chars)
-        payload.setdefault("composer_event_id", composer_event_id)
+        payload["session_id"] = session_id
+        payload["snapshot_id"] = snapshot_id
+        payload["composer_event_id"] = composer_event_id
+        payload["length_bucket"] = _length_bucket(length_chars)
         now = time.time()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(

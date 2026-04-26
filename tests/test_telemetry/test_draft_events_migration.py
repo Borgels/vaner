@@ -191,7 +191,15 @@ def test_counter_namespace_is_isolated(temp_repo):
 
 
 def test_metadata_carries_audit_fields_not_raw_text(temp_repo):
-    """The composer-lifecycle metadata must NEVER carry raw text."""
+    """The composer-lifecycle metadata must NEVER carry raw text.
+
+    0.8.7 hardening (H2): the telemetry metadata also drops the
+    ``text_hash`` copy and replaces exact ``length_chars`` with a
+    coarse ``length_bucket``. The signal_events row keeps the full
+    snapshot for audit; reducing the cross-store correlation surface
+    defeats the trivial brute-force-sha256-over-known-length attack
+    that the metadata copy was enabling.
+    """
     store = _new_store(temp_repo)
 
     async def _run() -> dict:
@@ -215,9 +223,56 @@ def test_metadata_carries_audit_fields_not_raw_text(temp_repo):
     meta = asyncio.run(_run())
     assert meta["session_id"] == "s1"
     assert meta["snapshot_id"] == "snap-1"
-    assert meta["text_hash"] == "0" * 64
-    assert meta["length_chars"] == 42
     assert meta["composer_event_id"] == "evt-1"
+    # 0.8.7 hardening H2: bucketed, not exact.
+    assert meta["length_bucket"] == "10_49"
+    assert "length_chars" not in meta
+    # 0.8.7 hardening H2: text_hash redundant copy removed from
+    # telemetry surface. signal_events.payload retains it for audit.
+    assert "text_hash" not in meta
     # Pin the privacy invariant: no raw-text key under any reasonable name.
     for forbidden in ("text", "draft_text", "raw_text", "preview", "prompt"):
         assert forbidden not in meta
+
+
+def test_length_bucket_boundaries(temp_repo):
+    """Pin the bucket boundaries — defeats the side-channel only if the
+    bands are wide enough that a brute-force enumeration over the band
+    is infeasible.
+    """
+    from vaner.telemetry.metrics import _length_bucket
+
+    cases = [
+        (0, "0_9"),
+        (9, "0_9"),
+        (10, "10_49"),
+        (49, "10_49"),
+        (50, "50_249"),
+        (250, "250_999"),
+        (1000, "1000_4999"),
+        (5000, "5000_plus"),
+        (1_000_000, "5000_plus"),
+        (-1, "0_9"),  # clamps
+    ]
+    for n, expected in cases:
+        assert _length_bucket(n) == expected, f"length={n}"
+
+
+def test_concurrent_first_use_migration_does_not_lose(temp_repo):
+    """0.8.7 hardening (H3): two concurrent first-time initialize()
+    calls on a pre-0.8.7 DB must not error or lose the migration. One
+    of the two ALTERs may race; the duplicate-column error is swallowed
+    and the post-state is correct.
+    """
+    store = _new_store(temp_repo)
+
+    async def _run() -> set[str]:
+        await _seed_pre_0_8_7_db(store.db_path)
+        # Race two initialize() calls — both will PRAGMA, both will see
+        # no event_type column, both will attempt ALTER. The second's
+        # OperationalError("duplicate column name") MUST be swallowed.
+        await asyncio.gather(store.initialize(), store.initialize())
+        return await _table_columns(store.db_path)
+
+    columns = asyncio.run(_run())
+    assert "event_type" in columns
