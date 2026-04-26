@@ -5,7 +5,7 @@ description: Show the top candidate next moves Vaner has prepared context for. U
 
 When the user invokes `/vaner:next`, surface the most-ready next candidates Vaner has prepared:
 
-0. **First, check the desktop handoff file.** The Vaner desktop apps (`vaner-desktop-macos`, `vaner-desktop-linux`) drop the full `Resolution` of an adopted prediction at a well-known path when the user clicks **Adopt**. If that's what happened, the user has already picked a candidate — inject it and skip the listing step.
+0. **First, check the desktop handoff file.** The Vaner desktop apps (`vaner-desktop-macos`, `vaner-desktop` for Linux + Windows) drop the full `Resolution` of an adopted prediction at a well-known path when the user clicks **Adopt**. If that's what happened, the user has already picked a candidate — inject it and skip the listing step.
 
    - Look for the handoff file at:
      - Linux: `$XDG_STATE_HOME/vaner/pending-adopt.json` (fall back to `~/.local/state/vaner/pending-adopt.json` when unset).

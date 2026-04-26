@@ -4,10 +4,11 @@ Cross-platform contract integration layer for Vaner desktop clients.
 
 This crate is consumed by:
 
-- The Linux Tauri app (`github.com/Borgels/vaner-linux`).
-- The future Windows Tauri app (same repo, different bundle target).
+- The cross-platform Tauri app (`github.com/Borgels/vaner-desktop`),
+  which builds Linux `.deb`/`.AppImage` and Windows `.exe` from one
+  codebase.
 
-The macOS SwiftUI app (`github.com/Borgels/vaner-desktop`) does **not** compile
+The macOS SwiftUI app (`github.com/Borgels/vaner-desktop-macos`) does **not** compile
 against this crate. It runs the same JSON conformance fixtures (published
 under `tests/conformance-fixtures/` in this monorepo) through its own
 `Codable` models, so spec drift between Swift and Rust fails CI on
@@ -32,12 +33,12 @@ whichever side has fallen behind.
 - `sse` — event stream (requires `http`).
 - `ts-rs` — emit TypeScript types for the SvelteKit frontend; run `cargo test --features ts-rs` to regenerate.
 
-## TypeScript bindings (Linux desktop consumption)
+## TypeScript bindings (Tauri desktop consumption)
 
-`vaner-desktop-linux` (the SvelteKit/Tauri app) consumes these types
-through `ts-rs`-generated TypeScript declarations. The bindings dir is
-**gitignored** at the workspace root — every consumer regenerates
-locally so the source of truth stays in Rust.
+`vaner-desktop` (the SvelteKit/Tauri app shared by Linux + Windows)
+consumes these types through `ts-rs`-generated TypeScript declarations.
+The bindings dir is **gitignored** at the workspace root — every
+consumer regenerates locally so the source of truth stays in Rust.
 
 ### Regenerate
 
@@ -54,14 +55,14 @@ cargo run --example export_bindings --features ts-rs --package vaner-contract
 
 Both paths emit the same files; pick whichever suits your tooling.
 
-### Consume from `vaner-desktop-linux`
+### Consume from `vaner-desktop`
 
-The Linux desktop's preferred pattern is to copy or symlink
+The Tauri desktop's preferred pattern is to copy or symlink
 `crates/vaner-contract/bindings/` into its own `src/lib/contract/`
 tree at build time. A typical Tauri pre-build script:
 
 ```sh
-# In vaner-desktop-linux's package.json `scripts.predev` /
+# In vaner-desktop's package.json `scripts.predev` /
 # `scripts.prebuild`:
 cargo run --example export_bindings --features ts-rs \
   --manifest-path ../Vaner/Cargo.toml --package vaner-contract
@@ -70,14 +71,14 @@ rsync -a ../Vaner/crates/vaner-contract/bindings/ src/lib/contract/
 
 Don't commit the copy; treat it as a generated artefact. The CI step
 `test (ts-rs feature)` in `rust.yml` regenerates on every push and
-fails the build if any annotated type can't export, so the Linux side
+fails the build if any annotated type can't export, so the Tauri side
 gets a clean cross-repo signal when a contract change lands.
 
 ### macOS does NOT consume these bindings
 
 `vaner-desktop-macos` (Swift) compiles its own `Codable` mirrors and
 runs the same conformance fixtures from `tests/conformance-fixtures/`.
-The bindings dir is irrelevant to the macOS build — Linux-desktop-only.
+The bindings dir is irrelevant to the macOS build — Tauri-desktop-only.
 
 ### When new public types are added
 
