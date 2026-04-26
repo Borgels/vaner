@@ -26,7 +26,13 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
-from datetime import UTC, datetime
+
+# Use ``timezone.utc`` (3.8+) rather than ``datetime.UTC`` (3.11+) so
+# the script imports cleanly on system Python 3.10 (still common on
+# older macOS / Linux distros). The Vaner CLI itself requires 3.11+,
+# but the hook is invoked via the host's ``python3`` which may resolve
+# to an older interpreter.
+from datetime import datetime, timezone
 
 DEFAULT_DAEMON_PORT = 8473
 HTTP_TIMEOUT_SECONDS = 1.0
@@ -57,7 +63,7 @@ def _build_snapshot(payload: dict[str, object]) -> dict[str, object] | None:
     snapshot: dict[str, object] = {
         "session_id": session_id or f"unknown-{uuid.uuid4().hex[:8]}",
         "snapshot_id": uuid.uuid4().hex,
-        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),  # noqa: UP017 — keep 3.8+ compat (see import note)
         "lifecycle_state": "submitted",
         "text_hash": text_hash,
         "length_chars": len(prompt),
@@ -115,4 +121,18 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # 0.8.7 hardening M3: every uncaught exception is swallowed and the
+    # script exits 0. The hook contract is "never block the user's
+    # prompt" — that means a misconfigured Python, a missing module,
+    # or any unforeseen exception MUST NOT propagate as a non-zero exit.
+    # Diagnostic detail goes to stderr only.
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except BaseException as _exc:  # noqa: BLE001 — defense-in-depth top-level
+        try:
+            sys.stderr.write(f"vaner-composer-submit: unexpected {type(_exc).__name__}: {_exc}\n")
+        except Exception:
+            pass
+        raise SystemExit(0) from None

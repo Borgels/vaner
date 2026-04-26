@@ -1,0 +1,29 @@
+{
+  "intent": "Rewrite the scene with slower tension",
+  "confidence": 0.78,
+  "summary": "Composer-derived prediction from the writer's draft.",
+  "evidence": [
+    {
+      "id": "scn_scene_rewrite",
+      "source": "composer_intent",
+      "kind": "record",
+      "locator": {
+        "prediction_id": "pred-composer-0001",
+        "scenario_id": "scn_scene_rewrite"
+      },
+      "reason": "scenario explored under prediction 'Rewrite the scene with slower tension'"
+    }
+  ],
+  "provenance": {
+    "mode": "predictive_hit",
+    "cache": "warm",
+    "freshness": "fresh"
+  },
+  "resolution_id": "adopt-pred-composer-0001",
+  "prepared_briefing": "Continuity: prior chapter ended on a high beat. Recommended pacing arc: ...",
+  "predicted_response": null,
+  "briefing_token_used": 412,
+  "briefing_token_budget": 2048,
+  "adopted_from_prediction_id": "pred-composer-0001",
+  "composer_event_id": "evt-01HX9Z3K7M"
+}

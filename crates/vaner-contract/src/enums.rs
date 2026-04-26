@@ -160,11 +160,23 @@ mod tests {
             (r#""macro""#, PredictionSource::Macro),
             (r#""history""#, PredictionSource::History),
             (r#""goal""#, PredictionSource::Goal),
+            // 0.8.7 WS8: composer_intent variant
+            (r#""composer_intent""#, PredictionSource::ComposerIntent),
         ];
         for (raw, expected) in cases {
             let decoded: PredictionSource = serde_json::from_str(raw).unwrap();
             assert_eq!(decoded, expected, "decoding {raw}");
         }
+    }
+
+    #[test]
+    fn composer_intent_round_trips() {
+        // 0.8.7 WS8: encode then decode the ComposerIntent variant to
+        // pin the snake_case wire-form against the Python contract.
+        let encoded = serde_json::to_string(&PredictionSource::ComposerIntent).unwrap();
+        assert_eq!(encoded, r#""composer_intent""#);
+        let decoded: PredictionSource = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, PredictionSource::ComposerIntent);
     }
 
     #[test]
