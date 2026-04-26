@@ -1079,9 +1079,13 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             )
         try:
             body = await request.json()
-        except Exception as exc:
+        except Exception:
+            # 0.8.7 hardening (CodeQL py/stack-trace-exposure): the
+            # JSON-parse exception text can carry payload bytes and
+            # internal parser state. Surface only a static "invalid
+            # JSON" message — adapter authors don't need the raw error.
             return JSONResponse(
-                {"code": "invalid_input", "message": f"invalid JSON: {exc}"},
+                {"code": "invalid_input", "message": "invalid JSON body"},
                 status_code=400,
             )
 

@@ -143,16 +143,16 @@ class MetricsStore:
 
     async def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.db_path) as db:
+        # 0.8.7 hardening (H3): aiosqlite's ``timeout`` kwarg sets the
+        # SQLite busy handler at CONNECTION TIME (before any PRAGMA can
+        # run), so the very first writer call already waits for the
+        # writer-slot lock instead of erroring with ``database is locked``.
+        # The PRAGMA-based busy_timeout below is redundant on most
+        # Pythons but keeps the fallback explicit. CI Python 3.11 surfaced
+        # the difference: PRAGMA-only ran AFTER the WAL-init write and
+        # raced; constructor-level timeout is the load-bearing fix.
+        async with aiosqlite.connect(self.db_path, timeout=5.0) as db:
             await db.execute("PRAGMA journal_mode=WAL")
-            # 0.8.7 hardening (H3): set a 5s busy_timeout so concurrent
-            # ``initialize()`` calls (one per composer-event POST in the
-            # daemon's record_composer_lifecycle_event path) wait for the
-            # writer lock instead of failing with ``database is locked``.
-            # WAL allows concurrent readers + one writer; without
-            # busy_timeout, the second concurrent ALTER/CREATE racing on
-            # the writer slot errors immediately. 5s comfortably exceeds
-            # the cycle DDL latency on slow disks.
             await db.execute("PRAGMA busy_timeout = 5000")
             await db.execute(
                 """

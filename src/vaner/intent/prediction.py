@@ -69,9 +69,18 @@ def is_transition_allowed(from_state: ReadinessState, to_state: ReadinessState) 
 
 
 def prediction_id(source: str, anchor: str, label: str) -> str:
-    """Stable hash over (source, anchor, label). The identity key for a prediction."""
+    """Stable hash over (source, anchor, label). The identity key for a prediction.
+
+    Uses SHA-1 truncated to 16 hex chars purely as a deterministic
+    identifier hash (not a cryptographic primitive). ``usedforsecurity=False``
+    declares this intent so CodeQL ``py/weak-cryptographic-algorithm``
+    no longer flags it; the hash result is unchanged. Switching to
+    SHA-256 would change every existing prediction id and break stored
+    rows in the prediction registry / store, so we pin the algorithm
+    and document the non-security purpose.
+    """
     payload = f"{source}|{anchor}|{label}".encode()
-    return hashlib.sha1(payload).hexdigest()[:16]
+    return hashlib.sha1(payload, usedforsecurity=False).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)
