@@ -3214,7 +3214,7 @@ wheels = [
 
 [[package]]
 name = "vaner"
-version = "0.8.5"
+version = "0.8.6"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -3227,6 +3227,7 @@ dependencies = [
     { name = "typer" },
     { name = "uvicorn" },
     { name = "watchdog" },
+    { name = "xgboost" },
 ]
 
 [package.optional-dependencies]
@@ -3258,7 +3259,6 @@ mcp = [
 training = [
     { name = "catboost" },
     { name = "torch" },
-    { name = "xgboost" },
 ]
 
 [package.metadata]
@@ -3292,7 +3292,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "watchdog", specifier = ">=4.0" },
-    { name = "xgboost", marker = "extra == 'training'", specifier = ">=2.1" },
+    { name = "xgboost", specifier = ">=2.1" },
 ]
 provides-extras = ["dev", "llm", "embeddings", "training", "mcp", "all"]
 

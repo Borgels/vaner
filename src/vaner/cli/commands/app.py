@@ -281,6 +281,14 @@ def _canon_key(key: str) -> str:
     normalized = key.strip()
     if normalized in {"max_age_seconds", "max_context_tokens"}:
         return f"limits.{normalized}"
+    exploration_aliases = {
+        "exploration.endpoint": "exploration.exploration_endpoint",
+        "exploration.model": "exploration.exploration_model",
+        "exploration.backend": "exploration.exploration_backend",
+        "exploration.api_key": "exploration.exploration_api_key",
+    }
+    if normalized in exploration_aliases:
+        return exploration_aliases[normalized]
     return normalized
 
 
@@ -297,6 +305,14 @@ def _config_attr_path_for_key(key: str) -> str:
 def _config_write_target_for_key(key: str) -> tuple[str, str]:
     if key.startswith("limits."):
         return "limits", key.removeprefix("limits.")
+    exploration_targets = {
+        "exploration.exploration_endpoint": ("exploration", "endpoint"),
+        "exploration.exploration_model": ("exploration", "model"),
+        "exploration.exploration_backend": ("exploration", "backend"),
+        "exploration.exploration_api_key": ("exploration", "api_key"),
+    }
+    if key in exploration_targets:
+        return exploration_targets[key]
     parts = key.split(".")
     if len(parts) < 2:
         raise ValueError("Key must include a section prefix.")
@@ -371,7 +387,10 @@ def _iter_config_keys(config: VanerConfig) -> list[dict[str, Any]]:
         for field_name, field in section_fields.items():
             if section == "intent" and field_name in {"skills_loop_enabled", "max_feedback_events_per_cycle"}:
                 continue
-            key = f"{section}.{field_name}"
+            key_name = field_name
+            if section == "exploration" and field_name.startswith("exploration_"):
+                key_name = field_name.removeprefix("exploration_")
+            key = f"{section}.{key_name}"
             value = getattr(section_model, field_name)
             rows.append({"key": key, "value": value, "annotation": field.annotation, "description": field.description or ""})
             if section == "gateway" and field_name == "routes" and isinstance(value, dict):

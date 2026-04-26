@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from vaner.cli.commands.config import load_config, set_compute_value
 from vaner.daemon.cockpit_html import build_cockpit_html
@@ -44,6 +45,13 @@ def _sanitize_validation_errors(exc: Any) -> list[dict[str, Any]]:
             }
         )
     return safe
+
+
+def _cockpit_dist_dir() -> Path | None:
+    candidate = Path(__file__).resolve().parents[3] / "ui" / "cockpit" / "dist"
+    if (candidate / "index.html").exists():
+        return candidate
+    return None
 
 
 # How long to wait between precompute cycles when the daemon holds a live
@@ -111,10 +119,17 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                     pass
 
     app = FastAPI(title="Vaner Cockpit", version="0.2.0", lifespan=lifespan)
+    cockpit_dist = _cockpit_dist_dir()
+    if cockpit_dist is not None and (cockpit_dist / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=cockpit_dist / "assets"), name="cockpit-assets")
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/bootstrap")
+    async def bootstrap() -> dict[str, str]:
+        return {"mode": "daemon", "version": app.version, "cockpit_sha": os.environ.get("VANER_COCKPIT_SHA", "")}
 
     @app.get("/status")
     async def status() -> JSONResponse:
@@ -1347,6 +1362,8 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
 
     @app.get("/", response_class=HTMLResponse)
     async def cockpit() -> str:
+        if cockpit_dist is not None:
+            return (cockpit_dist / "index.html").read_text(encoding="utf-8")
         return build_cockpit_html("daemon")
 
     @app.get("/ui")
