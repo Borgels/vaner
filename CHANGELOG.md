@@ -7,6 +7,53 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-04-26
+
+### Added
+
+#### Live Intent Capture (Phase 1) + L0 Claude Code adapter
+
+The first slice of a new product direction: Vaner consumes explicit composer/prompt lifecycle events from supported clients via a `ComposerAdapter` contract. Vaner is **not** a client — only documented client-level hooks/plugins/extensions are honored. The L0 reference adapter ships in the Claude Code plugin via the `UserPromptSubmit` hook.
+
+##### `ComposerAdapter` contract (WS2)
+- **`src/vaner/signals/composer/`** — pydantic source of truth for `DraftIntentSnapshot`, `ComposerAdapterCapabilities`, `LifecycleState` / `CapabilityLevel` / `HostKind` / `FieldRole` literals. JSON Schema artifact at `docs/specs/composer-adapter.schema.json` regenerated from pydantic via the new `vaner-composer-schema` console script. CI guards drift via `git diff --exit-code`.
+- **Privacy contract pinned in code**: no field for `text` / `preview` / `draft_text` / `raw_text` / `local_text_ref`. Adapters send only `text_hash` (sha256 hex, regex-pinned) + `length_chars`. `text_preview` / `local_text_ref` from the longer product spec are deferred until a redaction module exists.
+- **Capability matrix**: 11 existing client surfaces audited (Claude Code at L0, 10 MCP-only clients as N/A, Vaner VS Code extension explicitly excluded under "Vaner is not a client").
+
+##### Engine plumbing (WS3 + WS4 + WS5 + WS8)
+- **`src/vaner/engine.py::observe()`** branches on `event.kind`: `composer_lifecycle` payloads validate as `DraftIntentSnapshot` BEFORE the store insert (malformed payloads never reach persistence) and publish to a new `ComposerSignalPump`. Persist-before-publish ordering means a misbehaving subscriber cannot lose the durable record.
+- **`PredictionRun.compose_signal_strength`** (WS4 — data backbone for v0.8.8) and **`IntentPriorAdjustments.composer_signal_weight_multiplier`** (WS5 — values per WorkStyle: writing 1.4, research 1.3, planning 1.2, support/learning 1.1, coding/general/mixed/unsure 1.0). Both fields are documented v0.8.8 wiring gaps; default-0/1.0 invariants preserve byte-identical engine behavior for default-config users.
+- **`composer_intent` prediction source** + invalidation handler: `composer_cancelled` / `composer_abandoned` signals stale every `composer_intent`-sourced prediction whose `spec.anchor` matches the cancelled session_id.
+- **`Resolution.composer_event_id`** + **`PredictedPrompt.composer_engagement`** (Python + Rust mirror). Both default-None — existing wire-format conformance fixtures pass byte-identical when absent. Rust `PredictionSource` enum gains `ComposerIntent` variant.
+
+##### L0 Claude Code adapter (WS7)
+- **`plugins/vaner/hooks/hooks.json`** registers `UserPromptSubmit` alongside `SessionStart`. Translator script `composer_submit.py` reads stdin JSON, computes `sha256(prompt)`, POSTs a `DraftIntentSnapshot` to the daemon at `http://127.0.0.1:8473/signals/composer` with a 1s timeout. Top-level try/except → exit 0 on every failure path so a misconfigured daemon never blocks the user's prompt.
+- **`POST /signals/composer`** daemon endpoint validates the snapshot, enforces capability declaration (rejects lifecycle states not in `capabilities.emits`), envelopes into `SignalEvent(kind="composer_lifecycle")`, and records to `draft_events` with a separate counter prefix (`composer_lifecycle_*_total`).
+
+##### Telemetry (WS6)
+- **`draft_events.event_type`** column with default `'legacy_draft'`. Idempotent `PRAGMA table_info` ALTER migration handles pre-0.8.7 DBs. Composer rows write `event_type='composer_lifecycle'` and bump a separate counter prefix so the existing `draft_{served|useful|wrong|unused}_total` counters that 0.8.6 dashboards depend on remain untouched.
+- Telemetry metadata stores `length_bucket` (coarse band) instead of exact `length_chars` — defeats short-prompt sha256 brute-force across the cross-store correlation surface.
+
+#### CI / supply-chain hardening (WS1 + carry-overs)
+- **SLSA-3 verify-chain decouple**: `verify` job's `needs:` changed from `[publish, slsa-provenance]` to `publish`. The slsa-github-generator's `final` aggregation step has a known cosmetic-failure mode that no longer skips end-to-end SLSA-3 verification. v0.8.6 hit exactly this on run #24939687147.
+- **Rust workflow unblocked**: pre-existing `cargo fmt` drift in `lib.rs` + `setup.rs` (red since 0.8.6) fixed via `cargo fmt --all`. New `composer_intent_round_trips` Rust test pins the snake_case wire-form against the Python contract.
+- **CodeQL**: declared `prediction_id()`'s SHA-1 as `usedforsecurity=False` (it's a deterministic identifier truncated to 16 hex chars, not a cryptographic primitive); replaced JSON-decode exception interpolation with a static error message in `POST /signals/composer`. Both alerts resolved.
+- **SQLite concurrency**: `MetricsStore.initialize()` opens with `aiosqlite.connect(..., timeout=5.0)` so the SQLite busy handler is set at connection time. Two concurrent first-time initialize calls (one per composer-event POST) wait for the writer lock instead of failing with `database is locked`.
+
+### Cross-repo
+- **vaner-docs PR #25**: ComposerAdapter integration docs page at `content/docs/integrations/composer-adapter.mdx`.
+- **vaner-docs issue #26**: tracking removal of the five temporary lychee exclusions for the new 0.8.6 doc routes (blocked on docs.vaner.ai redeploy).
+
+### Test counts
+83 new tests across the 8 workstreams + hardening pass. 1655 total tests passing on the full pytest suite (-m "not slow and not integration"). All CI-equivalent local checks green: pre-commit, mypy (3 CI scopes), pip-audit, actionlint, AGENTS.md primer + plugin parity scripts, replay regression, cargo fmt/clippy/test (default + ts-rs + no-default-features), `claude plugin validate`, moat-guard.
+
+### Deferred to v0.8.8
+- Inline composer UI (Phase 3 — `Prepared` / `Preparing` pills near the composer)
+- Real Level-1 adapters (true pre-submit draft lifecycle) — needs ecosystem partner with documented draft hooks
+- The three v0.8.8 wiring-gap consumers (composer signal pump subscriber, frontier scoring on `composer_signal_weight_multiplier`, registry update from `compose_signal_strength`)
+- `text_preview` / `local_text_ref` snapshot fields (need redaction module first)
+- Cloud processing of unsent draft text (opt-in policy work)
+
 ## [0.8.6] - 2026-04-25
 
 ### Added
