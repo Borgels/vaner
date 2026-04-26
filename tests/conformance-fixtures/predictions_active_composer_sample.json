@@ -37,6 +37,12 @@
       "ui_summary": "Composer-aligned rewrite continuation ready",
       "suppression_reason": null,
       "source_label": "From your current draft",
+      "trust_status": "ready",
+      "freshness": "recent",
+      "invalidated_by": [],
+      "watched_sources": [],
+      "changed_sources": [],
+      "diagnostic_status": "unverified",
       "composer_engagement": {
         "composer_event_id": "evt-01HX9Z3K7M",
         "lifecycle_state": "submitted",

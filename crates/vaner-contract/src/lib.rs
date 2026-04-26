@@ -41,8 +41,8 @@ pub use enums::{EtaBucket, HypothesisType, PredictionSource, Readiness, Specific
 pub use errors::EngineClientError;
 pub use handoff::{AdoptHandoffError, handoff_path, stash_adopt};
 pub use models::{
-    EngineStatus, PredictedPrompt, PredictionArtifacts, PredictionRun, PredictionSpec, Provenance,
-    Resolution, ResolutionAlternative, ResolutionEvidence,
+    ContextEnvelope, EngineStatus, PredictedPrompt, PredictionArtifacts, PredictionRun,
+    PredictionSpec, Provenance, Resolution, ResolutionAlternative, ResolutionEvidence,
 };
 pub use reducer::{ReducerInputs, VanerState, reduce};
 pub use setup::{

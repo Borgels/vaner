@@ -9,7 +9,13 @@
       "kind": "file",
       "locator": { "start_line": 1, "end_line": 42 },
       "reason": "most recent test file in this module",
-      "fingerprint": "sha256:abc123"
+      "fingerprint": "sha256:abc123",
+      "overlay": "working_tree",
+      "freshness": "fresh",
+      "captured_at": 1000000000.0,
+      "validated_at": 1000000120.0,
+      "confidence": 0.86,
+      "dependencies": [{ "source": "payments-svc/webhook.js", "relationship": "covers" }]
     }
   ],
   "alternatives_considered": [

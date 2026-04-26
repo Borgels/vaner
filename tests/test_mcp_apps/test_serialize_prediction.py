@@ -57,7 +57,11 @@ def _prompt(
         readiness=readiness,
         updated_at=0.0,
     )
-    artifacts = PredictionArtifacts(prepared_briefing=briefing, draft_answer=draft)
+    artifacts = PredictionArtifacts(
+        prepared_briefing=briefing,
+        draft_answer=draft,
+        file_content_hashes={"docs/plan.md": "sha256:abc123"} if briefing else {},
+    )
     return PredictedPrompt(spec=spec, run=run, artifacts=artifacts)
 
 
@@ -92,3 +96,13 @@ def test_scenarios_spawned_round_trips() -> None:
     payload = _serialize_prediction_for_mcp(_prompt())
     assert payload["scenarios_spawned"] == 4
     assert payload["scenarios_complete"] == 3
+
+
+def test_payload_contains_trust_fields() -> None:
+    payload = _serialize_prediction_for_mcp(_prompt())
+    assert payload["trust_status"] == "ready"
+    assert payload["freshness"] == "fresh"
+    assert payload["watched_sources"] == ["docs/plan.md"]
+    assert payload["changed_sources"] == []
+    assert payload["invalidated_by"] == []
+    assert payload["diagnostic_status"] == "verified"

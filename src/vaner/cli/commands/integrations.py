@@ -157,6 +157,7 @@ def _probe_daemon(url: str) -> dict[str, Any]:
         "reachable": True,
         "url": status["url"],
         "status": status.get("payload", status.get("status", "ok")),
+        "prediction_health": (status.get("payload") or {}).get("prediction_health", {}) if isinstance(status.get("payload"), dict) else {},
         "guidance_endpoint_ok": guidance_ok,
     }
 
@@ -245,6 +246,13 @@ def _render_pretty(report: dict[str, Any]) -> None:
     daemon = report["daemon"]
     if daemon["reachable"]:
         console.print(f"Daemon: [green]reachable[/green]  guidance endpoint: {'ok' if daemon['guidance_endpoint_ok'] else 'FAIL'}")
+        prediction_health = daemon.get("prediction_health") or {}
+        if prediction_health:
+            console.print(
+                "Prediction health: "
+                f"{prediction_health.get('diagnostic_status', 'unknown')} "
+                f"(active={prediction_health.get('active_prediction_count', 0)})"
+            )
     else:
         console.print(f"Daemon: [red]unreachable[/red]  ({daemon.get('error', 'unknown')})")
     handoff = report["handoff"]

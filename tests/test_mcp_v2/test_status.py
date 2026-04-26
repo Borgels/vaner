@@ -9,3 +9,5 @@ def test_status_returns_health_payload(temp_repo, mcp_server) -> None:
     payload = parse_content(result)
     assert payload["ready"] is True
     assert "memory" in payload
+    assert payload["prediction_health"]["diagnostic_status"] in {"healthy", "cold", "engine_unavailable"}
+    assert "readiness_counts" in payload["prediction_health"]

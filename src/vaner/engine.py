@@ -2211,22 +2211,41 @@ class VanerEngine:
         and reports real token counts via the assembler's tokenizer
         path.
 
-        ``context`` is accepted for symmetry with the MCP surface but
-        not consumed here; future goal-aware biasing (WS7 scoring
-        integration) can read from it. ``include_briefing`` /
-        ``include_predicted_response`` mirror the MCP opt-in flags.
+        ``context`` is parsed into a ContextEnvelope and used as a light
+        domain/goal bias for prediction reuse and evidence labelling.
+        ``include_briefing`` / ``include_predicted_response`` mirror the MCP
+        opt-in flags.
         """
         await self.initialize()
         # Late import keeps the engine module free of pydantic at
         # import time for callers that only need precompute_cycle.
         from vaner.mcp.contracts import (
             Alternative,
+            ContextEnvelope,
             EvidenceItem,
             Provenance,
             Resolution,
         )
 
         resolution_id = f"resolve-{uuid.uuid4().hex[:12]}"
+        context_envelope: ContextEnvelope | None = None
+        if isinstance(context, dict):
+            try:
+                context_envelope = ContextEnvelope.model_validate(context)
+            except Exception:
+                context_envelope = None
+        domain = context_envelope.domain if context_envelope is not None else "code"
+        domain_kind = {
+            "code": "file",
+            "docs": "doc",
+            "research": "doc",
+            "planning": "record",
+            "learning": "doc",
+            "writing": "doc",
+            "support": "record",
+            "operations": "record",
+            "general": "record",
+        }.get(domain, "record")
 
         # Step 1: prediction-registry match on label similarity.
         matched_prediction: PredictedPrompt | None = None
@@ -2239,6 +2258,10 @@ class VanerEngine:
             # contains-check in both directions; a more refined
             # similarity score is a WS8.1 follow-up.
             query_lower = query.lower()
+            goal_tokens = set()
+            if context_envelope is not None and context_envelope.agent_goal:
+                goal_tokens = set(w for w in context_envelope.agent_goal.lower().split() if len(w) > 2)
+            artifact_hint = (context_envelope.current_artifact or "").lower() if context_envelope is not None else ""
             candidates: list[tuple[float, PredictedPrompt]] = []
             for prompt in active:
                 label_lower = prompt.spec.label.lower()
@@ -2252,8 +2275,12 @@ class VanerEngine:
                     l_tokens = set(w for w in label_lower.split() if len(w) > 2)
                     if q_tokens and l_tokens:
                         overlap = len(q_tokens & l_tokens) / max(1, len(q_tokens | l_tokens))
+                    if goal_tokens and l_tokens:
+                        overlap += min(0.15, len(goal_tokens & l_tokens) * 0.05)
+                if artifact_hint and prompt.spec.anchor and prompt.spec.anchor.lower() in artifact_hint:
+                    overlap += 0.1
                 if overlap > 0:
-                    candidates.append((overlap, prompt))
+                    candidates.append((min(1.0, overlap), prompt))
             candidates.sort(key=lambda pair: pair[0], reverse=True)
             if candidates and candidates[0][0] >= 0.5:
                 matched_prediction = candidates[0][1]
@@ -2279,6 +2306,9 @@ class VanerEngine:
                         "scenario_id": sid,
                     },
                     reason=(f"scenario explored under prediction {matched_prediction.spec.label!r}"),
+                    overlay="predicted",
+                    freshness="fresh",
+                    confidence=float(matched_prediction.spec.confidence),
                 )
                 for sid in matched_prediction.artifacts.scenario_ids
             ]
@@ -2288,6 +2318,7 @@ class VanerEngine:
                 summary=matched_prediction.spec.description or matched_prediction.spec.label,
                 evidence=evidence,
                 alternatives_considered=alternatives,
+                context_envelope=context_envelope,
                 provenance=Provenance(
                     mode="predictive_hit",
                     cache="warm",
@@ -2327,9 +2358,12 @@ class VanerEngine:
             EvidenceItem(
                 id=sel.artefact_key,
                 source=tier,
-                kind="file",
+                kind=domain_kind,
                 locator={"path": sel.source_path, "artefact_key": sel.artefact_key},
                 reason=sel.rationale or f"selected by tier={tier}",
+                overlay="indexed",
+                freshness="fresh",
+                confidence=0.5 if tier == "miss" else 0.7,
             )
             for sel in package.selections[:8]
         ]
@@ -2339,6 +2373,7 @@ class VanerEngine:
             summary=f"Heuristic context for: {query}",
             evidence=evidence,
             alternatives_considered=alternatives,
+            context_envelope=context_envelope,
             provenance=Provenance(
                 mode=provenance_mode,  # type: ignore[arg-type]
                 cache=cache_label,  # type: ignore[arg-type]

@@ -56,6 +56,19 @@ pub struct PredictedPrompt {
     pub suppression_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_label: Option<String>,
+    /// Additive trust/freshness metadata for prediction cards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invalidated_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watched_sources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_sources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic_status: Option<String>,
     /// 0.8.7 WS8: present when the prediction is anchored to a live
     /// composer session. Lets host UIs render draft-derived predictions
     /// distinctly (without hard-coding `source == ComposerIntent`).
@@ -158,6 +171,8 @@ pub struct Resolution {
     pub briefing_token_budget: u64,
     #[serde(default)]
     pub adopted_from_prediction_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_envelope: Option<ContextEnvelope>,
     /// 0.8.0 WS8: populated by `resolve_query`; empty on the adopt path.
     #[serde(default)]
     pub alternatives_considered: Vec<ResolutionAlternative>,
@@ -181,8 +196,41 @@ pub struct ResolutionEvidence {
     pub id: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_at: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validated_at: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(TS), ts(export))]
+pub struct ContextEnvelope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_queries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_goal: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

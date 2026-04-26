@@ -112,6 +112,45 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
 
     app = FastAPI(title="Vaner Cockpit", version="0.2.0", lifespan=lifespan)
 
+    def _prediction_health() -> dict[str, Any]:
+        readiness_counts = {state: 0 for state in ["queued", "grounding", "evidence_gathering", "drafting", "ready", "stale"]}
+        if engine is None or getattr(engine, "prediction_registry", None) is None:
+            return {
+                "engine_available": engine is not None,
+                "daemon_with_engine": engine is not None,
+                "active_prediction_count": 0,
+                "total_prediction_count": 0,
+                "readiness_counts": readiness_counts,
+                "pending_adoption_outcomes": 0,
+                "stale_or_invalidated_reasons": [],
+                "diagnostic_status": "engine_unavailable" if engine is None else "cold",
+            }
+        registry = engine.prediction_registry
+        prompts = registry.all()
+        stale_reasons: list[str] = []
+        for prompt in prompts:
+            readiness_counts[prompt.run.readiness] = readiness_counts.get(prompt.run.readiness, 0) + 1
+            if prompt.run.invalidation_reason:
+                stale_reasons.append(prompt.run.invalidation_reason)
+        pending_lock = getattr(registry, "_pending_adoption_lock", None)
+        pending_queue = getattr(registry, "_pending_adoption_descriptors", [])
+        if pending_lock is not None:
+            with pending_lock:
+                pending_adoptions = len(pending_queue)
+        else:
+            pending_adoptions = len(pending_queue)
+        active_count = len(registry.active())
+        return {
+            "engine_available": True,
+            "daemon_with_engine": True,
+            "active_prediction_count": active_count,
+            "total_prediction_count": len(prompts),
+            "readiness_counts": readiness_counts,
+            "pending_adoption_outcomes": pending_adoptions,
+            "stale_or_invalidated_reasons": stale_reasons[-8:],
+            "diagnostic_status": "healthy" if active_count > 0 else "cold",
+        }
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -144,6 +183,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 "top_scenario": top[0].id if top else None,
                 "prediction_metrics": prediction_metrics,
                 "prediction_calibration": calibration,
+                "prediction_health": _prediction_health(),
             }
         )
 
@@ -790,39 +830,9 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
 
     def _serialize_prediction(prompt: Any) -> dict[str, Any]:
         """Render a PredictedPrompt into a JSON-safe dict."""
-        spec = prompt.spec
-        run = prompt.run
-        artifacts = prompt.artifacts
-        return {
-            "id": spec.id,
-            "spec": {
-                "label": spec.label,
-                "description": spec.description,
-                "source": spec.source,
-                "anchor": spec.anchor,
-                "confidence": spec.confidence,
-                "hypothesis_type": spec.hypothesis_type,
-                "specificity": spec.specificity,
-                "created_at": spec.created_at,
-            },
-            "run": {
-                "weight": run.weight,
-                "token_budget": run.token_budget,
-                "tokens_used": run.tokens_used,
-                "model_calls": run.model_calls,
-                "scenarios_spawned": run.scenarios_spawned,
-                "scenarios_complete": run.scenarios_complete,
-                "readiness": run.readiness,
-                "updated_at": run.updated_at,
-            },
-            "artifacts": {
-                "scenario_ids": list(artifacts.scenario_ids),
-                "evidence_score": artifacts.evidence_score,
-                "has_draft": artifacts.draft_answer is not None,
-                "has_briefing": artifacts.prepared_briefing is not None,
-                "thinking_trace_count": len(artifacts.thinking_traces),
-            },
-        }
+        from vaner.intent.prediction_serialization import serialize_prediction_nested
+
+        return serialize_prediction_nested(prompt)
 
     @app.get("/predictions/active")
     async def predictions_active() -> JSONResponse:
@@ -968,6 +978,11 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         from vaner.mcp.server import _build_adopt_resolution
 
         resolution = _build_adopt_resolution(prompt)
+        try:
+            async with engine.prediction_registry.lock:
+                engine.prediction_registry.record_adoption(pid)
+        except Exception:
+            pass
         return JSONResponse(resolution.model_dump(mode="json"))
 
     @app.post("/signals/composer")

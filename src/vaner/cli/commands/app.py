@@ -1974,6 +1974,41 @@ def doctor(
             "fix": "Run `vaner up --path .` (or `vaner daemon start --path . --no-once`).",
         }
     )
+    try:
+        status_response = httpx.get(f"{cockpit_url.rstrip('/')}/status", timeout=1.5)
+        status_response.raise_for_status()
+        status_payload = status_response.json()
+        prediction_health = status_payload.get("prediction_health", {}) if isinstance(status_payload, dict) else {}
+        active_predictions = int(prediction_health.get("active_prediction_count", 0) or 0)
+        engine_available = bool(prediction_health.get("engine_available", False))
+        checks.append(
+            {
+                "name": "prediction_engine_available",
+                "ok": engine_available,
+                "level": "warn" if not engine_available else "pass",
+                "detail": prediction_health.get("diagnostic_status", "unknown"),
+                "fix": "Start the daemon with `vaner daemon serve-http --with-engine` so predictions can mature.",
+            }
+        )
+        checks.append(
+            {
+                "name": "active_predictions_present",
+                "ok": active_predictions > 0,
+                "level": "warn" if active_predictions == 0 else "pass",
+                "detail": f"active={active_predictions} readiness={prediction_health.get('readiness_counts', {})}",
+                "fix": "Let a precompute cycle run, submit a composer signal, or check stale evidence/invalidation diagnostics.",
+            }
+        )
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "prediction_health_status",
+                "ok": False,
+                "level": "warn",
+                "detail": str(exc),
+                "fix": "Start the HTTP daemon and retry `vaner doctor`.",
+            }
+        )
 
     cursor_mcp_path = repo_root / ".cursor" / "mcp.json"
     claude_mcp_path = Path.home() / ".claude" / "claude_desktop_config.json"

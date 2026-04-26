@@ -52,6 +52,8 @@ def test_status_payload_includes_backend(temp_repo) -> None:
     assert "backend" in payload
     assert payload["backend"]["base_url"] == config.backend.base_url
     assert payload["backend"]["model"] == config.backend.model
+    assert payload["prediction_health"]["engine_available"] is False
+    assert payload["prediction_health"]["diagnostic_status"] == "engine_unavailable"
 
 
 def test_ui_route_redirects_to_root(temp_repo) -> None:
