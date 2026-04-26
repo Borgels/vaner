@@ -828,6 +828,78 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             payload["warning"] = probe_warning
         return JSONResponse(payload)
 
+    @app.get("/backend/presets")
+    async def backend_presets() -> JSONResponse:
+        """Return cockpit-selectable backend presets.
+
+        This endpoint is intentionally read-only metadata; applying a preset
+        still flows through the existing config update surfaces.
+        """
+
+        return JSONResponse(
+            {
+                "presets": [
+                    {
+                        "name": "Ollama local",
+                        "base_url": "http://127.0.0.1:11434/v1",
+                        "default_model": config.backend.model or "qwen3.5:35b",
+                        "api_key_env": "OPENAI_API_KEY",
+                    },
+                    {
+                        "name": "vLLM OpenAI-compatible",
+                        "base_url": "http://127.0.0.1:8000/v1",
+                        "default_model": config.backend.model or "Qwen/Qwen3.5-32B",
+                        "api_key_env": "OPENAI_API_KEY",
+                    },
+                    {
+                        "name": "OpenAI",
+                        "base_url": "https://api.openai.com/v1",
+                        "default_model": "gpt-5.2",
+                        "api_key_env": "OPENAI_API_KEY",
+                    },
+                ]
+            }
+        )
+
+    @app.get("/skills")
+    async def list_skills() -> JSONResponse:
+        from vaner.intent.skills_discovery import discover_skills
+
+        refs = discover_skills(
+            config.repo_root,
+            include_global=config.intent.include_global_skills,
+            skill_roots=config.intent.skill_roots,
+        )
+        skills = []
+        for ref in refs:
+            payload = ref.as_signal_payload(config.repo_root)
+            skills.append(
+                {
+                    "name": ref.name,
+                    "desc": ref.description,
+                    "weight": 0.5,
+                    "path": payload["path"],
+                    "tags": ref.tags,
+                    "kind": ref.vaner_kind,
+                }
+            )
+        return JSONResponse({"skills": skills})
+
+    @app.get("/pinned-facts")
+    async def pinned_facts() -> JSONResponse:
+        rows = await scenario_store.list_top(limit=100)
+        facts = []
+        for row in rows:
+            if not row.pinned and row.memory_state != "trusted":
+                continue
+            text = row.prepared_context.strip()
+            if not text and row.coverage_gaps:
+                text = row.coverage_gaps[0]
+            if not text:
+                text = " · ".join(row.entities[:3]) or row.id
+            facts.append({"id": row.id, "text": text[:240]})
+        return JSONResponse({"facts": facts})
+
     @app.post("/compute")
     async def update_compute(payload: dict[str, Any]) -> JSONResponse:
         allowed = {

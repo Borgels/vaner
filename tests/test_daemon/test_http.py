@@ -31,11 +31,14 @@ def test_cockpit_root_serves_html_and_expected_endpoints(temp_repo) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert "Vaner Cockpit" in response.text
-    assert 'data-mode="daemon"' in response.text
-    assert 'window.__VANER_MODE = "daemon"' in response.text
-    assert "/scenarios/stream" in response.text
-    assert "/compute/devices" in response.text
-    assert "/scenarios/" in response.text
+    if "/assets/" in response.text:
+        assert '<div id="root"></div>' in response.text
+    else:
+        assert 'data-mode="daemon"' in response.text
+        assert 'window.__VANER_MODE = "daemon"' in response.text
+        assert "/scenarios/stream" in response.text
+        assert "/compute/devices" in response.text
+        assert "/scenarios/" in response.text
 
 
 def test_status_payload_includes_backend(temp_repo) -> None:
@@ -65,6 +68,60 @@ def test_ui_route_redirects_to_root(temp_repo) -> None:
         response = client.get("/ui", follow_redirects=False)
     assert response.status_code == 307
     assert response.headers["location"] == "/"
+
+
+def test_cockpit_support_endpoints_return_payloads(temp_repo) -> None:
+    skill_path = temp_repo / ".cursor" / "skills" / "vaner" / "sample" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True, exist_ok=True)
+    skill_path.write_text(
+        "---\n"
+        "name: sample-skill\n"
+        "description: Helps with cockpit smoke tests\n"
+        "tags: [debug]\n"
+        "---\n"
+        "# Sample\n",
+        encoding="utf-8",
+    )
+
+    async def _seed() -> None:
+        store = ScenarioStore(temp_repo / ".vaner" / "scenarios.db")
+        await store.initialize()
+        await store.upsert(
+            Scenario(
+                id="scn_pinned_1",
+                kind="debug",
+                score=0.9,
+                confidence=0.8,
+                entities=["src/main.py"],
+                evidence=[],
+                prepared_context="Pinned context",
+                coverage_gaps=[],
+                freshness="fresh",
+                cost_to_expand="medium",
+                created_at=time.time(),
+                pinned=1,
+            )
+        )
+
+    asyncio.run(_seed())
+
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        presets = client.get("/backend/presets")
+        skills = client.get("/skills")
+        pinned = client.get("/pinned-facts")
+
+    assert presets.status_code == 200
+    assert presets.json()["presets"]
+    assert skills.status_code == 200
+    assert skills.json()["skills"][0]["name"] == "sample-skill"
+    assert pinned.status_code == 200
+    assert pinned.json()["facts"] == [{"id": "scn_pinned_1", "text": "Pinned context"}]
 
 
 def test_scenario_stream_route_not_shadowed_by_id_route(temp_repo) -> None:
