@@ -136,6 +136,15 @@ class PredictionRun:
     # that anchors this prediction. Default 0.0 keeps the existing
     # rebalance arithmetic byte-identical for non-composer predictions
     # (mirrors the v0.8.6 WS4 mixed-is-identity discipline).
+    #
+    # NOTE (v0.8.8 wiring gap): in v0.8.7 this field is part of the data
+    # backbone but has NO producer (no pump subscriber sets it) and NO
+    # consumer (no rebalance path reads it). The producer lands when the
+    # composer signal pump gets a registry-update subscriber; the
+    # consumer lands when ``rebalance()`` weights composer_intent specs
+    # by their signal strength. Both are tracked for v0.8.8 alongside
+    # the first L1 adapter. The default-0 invariant is what keeps v0.8.7
+    # behavior byte-identical to pre-0.8.7 for default-config users.
     compose_signal_strength: float = 0.0
 
 

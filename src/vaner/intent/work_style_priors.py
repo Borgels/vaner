@@ -71,6 +71,16 @@ class IntentPriorAdjustments:
     # the prior identity invariant; styles whose drafts are highly
     # informative about next-prompt intent (writing, research) get a
     # stronger boost than coding/general/support.
+    #
+    # NOTE (v0.8.8 wiring gap): in v0.8.7 this field has values per
+    # WorkStyle (writing 1.4, research 1.3, etc.) but NO consumer reads
+    # it. Plan WS5 step 4 was to gate ``composer_intent``-source weight
+    # on this multiplier in the engine's per-cycle scoring (where
+    # ``artefact_alignment_weight_multiplier`` is composed at
+    # engine.py:1403); that wiring lands in v0.8.8 alongside the first
+    # composer_intent producer (registry subscriber on the pump).
+    # Keeping the field populated now means v0.8.8 can plug in the
+    # consumer without a parallel data migration.
     composer_signal_weight_multiplier: float = 1.0
 
 

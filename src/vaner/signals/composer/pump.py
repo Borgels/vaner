@@ -4,15 +4,25 @@
 WS3 wires :meth:`vaner.engine.Engine.observe` so that ``SignalEvent``s
 of kind ``composer_lifecycle`` are validated into a
 :class:`DraftIntentSnapshot` and published to a ``ComposerSignalPump``.
-Subscribers (e.g. the prediction registry's invalidation path in WS4)
-register a coroutine callback; ``publish()`` fires all subscribers
-concurrently and isolates failures so one bad subscriber cannot block
-the others.
+Subscribers register a coroutine callback; ``publish()`` fires all
+subscribers concurrently and isolates failures so one bad subscriber
+cannot block the others.
 
 The pump is deliberately minimal — no queue, no buffering, no ordering
 guarantees beyond "earlier publish() calls complete their gather()
 before later ones start, on the same publish-task." The engine owns
 the pump and it lives for the lifetime of the engine.
+
+NOTE (v0.8.8 wiring gap): in v0.8.7 the pump publishes snapshots but
+NO production code subscribes to it. The intended v0.8.8 subscriber is
+the prediction registry's update path: when a composer signal arrives,
+either create a ``composer_intent``-sourced spec (if none for that
+session_id exists) or update the existing one's
+``compose_signal_strength`` based on the snapshot's lifecycle_state
+and confidence. Without that subscriber, ``composer_intent`` specs
+never appear in the registry — the entire engine plumbing in WS4/WS5/WS8
+(source literal, frontier multiplier, MCP card field) is data-backbone
+only until v0.8.8.
 """
 
 from __future__ import annotations
