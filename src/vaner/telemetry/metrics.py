@@ -19,6 +19,7 @@ Derived metrics:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import time
@@ -120,6 +121,17 @@ class MetricsStore:
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        # 0.8.7 hardening: serialize concurrent ``initialize()`` calls
+        # within the same process. SQLite WAL setup takes an exclusive
+        # lock on the WAL file's first write — two parallel async tasks
+        # creating fresh connections will race that step, and the
+        # connection-time ``timeout=`` only kicks in AFTER the lock
+        # attempt fails. The asyncio lock guarantees only one initialize
+        # writes the schema; the second waits and finds it complete.
+        # Production runs ``initialize()`` once at daemon-lifespan start;
+        # this lock is defense-in-depth for tests + future call sites.
+        self._init_lock = asyncio.Lock()
+        self._initialized = False
 
     @staticmethod
     async def _ensure_column(db: aiosqlite.Connection, table: str, column: str, column_def: str) -> None:
@@ -142,140 +154,143 @@ class MetricsStore:
                 raise
 
     async def initialize(self) -> None:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        # 0.8.7 hardening (H3): aiosqlite's ``timeout`` kwarg sets the
-        # SQLite busy handler at CONNECTION TIME (before any PRAGMA can
-        # run), so the very first writer call already waits for the
-        # writer-slot lock instead of erroring with ``database is locked``.
-        # The PRAGMA-based busy_timeout below is redundant on most
-        # Pythons but keeps the fallback explicit. CI Python 3.11 surfaced
-        # the difference: PRAGMA-only ran AFTER the WAL-init write and
-        # raced; constructor-level timeout is the load-bearing fix.
-        async with aiosqlite.connect(self.db_path, timeout=5.0) as db:
-            await db.execute("PRAGMA journal_mode=WAL")
-            await db.execute("PRAGMA busy_timeout = 5000")
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS request_metrics (
-                    request_id TEXT PRIMARY KEY,
-                    timestamp REAL NOT NULL,
-                    cache_tier TEXT NOT NULL,
-                    partial_similarity REAL NOT NULL DEFAULT 0.0,
-                    context_tokens INTEGER NOT NULL DEFAULT 0,
-                    prompt_tokens INTEGER NOT NULL DEFAULT 0,
-                    is_stream INTEGER NOT NULL DEFAULT 0,
-                    context_retrieval_ms REAL NOT NULL DEFAULT 0.0,
-                    llm_first_token_ms REAL NOT NULL DEFAULT 0.0,
-                    llm_total_ms REAL NOT NULL DEFAULT 0.0,
-                    total_e2e_ms REAL NOT NULL DEFAULT 0.0,
-                    metadata_json TEXT NOT NULL DEFAULT '{}'
+        # 0.8.7 hardening: in-process serialization. Two concurrent
+        # initialize() calls in the same daemon raced on SQLite WAL
+        # setup before this lock was added. The ``_initialized``
+        # short-circuit means the second caller does no SQL work; the
+        # first holds the lock through the full DDL pass. timeout=5.0
+        # + PRAGMA busy_timeout below remain as belt-and-braces for
+        # cross-process or cross-MetricsStore-instance contention.
+        async with self._init_lock:
+            if self._initialized:
+                return
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            async with aiosqlite.connect(self.db_path, timeout=5.0) as db:
+                await db.execute("PRAGMA journal_mode=WAL")
+                await db.execute("PRAGMA busy_timeout = 5000")
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS request_metrics (
+                        request_id TEXT PRIMARY KEY,
+                        timestamp REAL NOT NULL,
+                        cache_tier TEXT NOT NULL,
+                        partial_similarity REAL NOT NULL DEFAULT 0.0,
+                        context_tokens INTEGER NOT NULL DEFAULT 0,
+                        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                        is_stream INTEGER NOT NULL DEFAULT 0,
+                        context_retrieval_ms REAL NOT NULL DEFAULT 0.0,
+                        llm_first_token_ms REAL NOT NULL DEFAULT 0.0,
+                        llm_total_ms REAL NOT NULL DEFAULT 0.0,
+                        total_e2e_ms REAL NOT NULL DEFAULT 0.0,
+                        metadata_json TEXT NOT NULL DEFAULT '{}'
+                    )
+                    """
                 )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS shadow_comparisons (
-                    shadow_pair_id TEXT PRIMARY KEY,
-                    request_id TEXT NOT NULL,
-                    timestamp REAL NOT NULL,
-                    with_context_total_ms REAL NOT NULL,
-                    without_context_total_ms REAL NOT NULL,
-                    with_context_tokens INTEGER NOT NULL,
-                    without_context_tokens INTEGER NOT NULL,
-                    latency_delta_ms REAL NOT NULL,
-                    token_delta INTEGER NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS shadow_comparisons (
+                        shadow_pair_id TEXT PRIMARY KEY,
+                        request_id TEXT NOT NULL,
+                        timestamp REAL NOT NULL,
+                        with_context_total_ms REAL NOT NULL,
+                        without_context_total_ms REAL NOT NULL,
+                        with_context_tokens INTEGER NOT NULL,
+                        without_context_tokens INTEGER NOT NULL,
+                        latency_delta_ms REAL NOT NULL,
+                        token_delta INTEGER NOT NULL,
+                        metadata_json TEXT NOT NULL DEFAULT '{}'
+                    )
+                    """
                 )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS integration_usage (
-                    mode TEXT PRIMARY KEY,
-                    count INTEGER NOT NULL DEFAULT 0,
-                    updated_at REAL NOT NULL
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS integration_usage (
+                        mode TEXT PRIMARY KEY,
+                        count INTEGER NOT NULL DEFAULT 0,
+                        updated_at REAL NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS mcp_tool_calls (
-                    id TEXT PRIMARY KEY,
-                    tool_name TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    latency_ms REAL NOT NULL,
-                    scenario_id TEXT,
-                    skill TEXT,
-                    timestamp REAL NOT NULL
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS mcp_tool_calls (
+                        id TEXT PRIMARY KEY,
+                        tool_name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        latency_ms REAL NOT NULL,
+                        scenario_id TEXT,
+                        skill TEXT,
+                        timestamp REAL NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS scenario_outcomes (
-                    id TEXT PRIMARY KEY,
-                    scenario_id TEXT NOT NULL,
-                    result TEXT NOT NULL,
-                    note TEXT NOT NULL DEFAULT '',
-                    skill TEXT,
-                    timestamp REAL NOT NULL
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scenario_outcomes (
+                        id TEXT PRIMARY KEY,
+                        scenario_id TEXT NOT NULL,
+                        result TEXT NOT NULL,
+                        note TEXT NOT NULL DEFAULT '',
+                        skill TEXT,
+                        timestamp REAL NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS memory_quality_counters (
-                    name TEXT PRIMARY KEY,
-                    value REAL NOT NULL DEFAULT 0,
-                    updated_at REAL NOT NULL
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS memory_quality_counters (
+                        name TEXT PRIMARY KEY,
+                        value REAL NOT NULL DEFAULT 0,
+                        updated_at REAL NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS prediction_events (
-                    id TEXT PRIMARY KEY,
-                    timestamp REAL NOT NULL,
-                    top1_label TEXT NOT NULL,
-                    top1_confidence REAL NOT NULL,
-                    probs_json TEXT NOT NULL
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS prediction_events (
+                        id TEXT PRIMARY KEY,
+                        timestamp REAL NOT NULL,
+                        top1_label TEXT NOT NULL,
+                        top1_confidence REAL NOT NULL,
+                        probs_json TEXT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS draft_events (
-                    id TEXT PRIMARY KEY,
-                    timestamp REAL NOT NULL,
-                    status TEXT NOT NULL,
-                    predicted_prompt_similarity REAL NOT NULL DEFAULT 0.0,
-                    evidence_overlap REAL NOT NULL DEFAULT 0.0,
-                    answer_reuse_ratio REAL NOT NULL DEFAULT 0.0,
-                    directional_correct INTEGER NOT NULL DEFAULT 0,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    event_type TEXT NOT NULL DEFAULT 'legacy_draft'
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS draft_events (
+                        id TEXT PRIMARY KEY,
+                        timestamp REAL NOT NULL,
+                        status TEXT NOT NULL,
+                        predicted_prompt_similarity REAL NOT NULL DEFAULT 0.0,
+                        evidence_overlap REAL NOT NULL DEFAULT 0.0,
+                        answer_reuse_ratio REAL NOT NULL DEFAULT 0.0,
+                        directional_correct INTEGER NOT NULL DEFAULT 0,
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        event_type TEXT NOT NULL DEFAULT 'legacy_draft'
+                    )
+                    """
                 )
-                """
-            )
-            # 0.8.7 WS6: idempotent ALTER for pre-0.8.7 DBs that already
-            # had ``draft_events`` without an ``event_type`` column. Existing
-            # rows default to 'legacy_draft' so the post-migration view of
-            # the existing 0.8.6 dashboard counters is byte-identical.
-            await self._ensure_column(db, "draft_events", "event_type", "TEXT NOT NULL DEFAULT 'legacy_draft'")
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS counterfactual_misses (
-                    id TEXT PRIMARY KEY,
-                    timestamp REAL NOT NULL,
-                    prompt TEXT NOT NULL,
-                    miss_type TEXT NOT NULL,
-                    helpful_context_json TEXT NOT NULL DEFAULT '[]',
-                    wasted_branches_json TEXT NOT NULL DEFAULT '[]',
-                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                # 0.8.7 WS6: idempotent ALTER for pre-0.8.7 DBs that already
+                # had ``draft_events`` without an ``event_type`` column. Existing
+                # rows default to 'legacy_draft' so the post-migration view of
+                # the existing 0.8.6 dashboard counters is byte-identical.
+                await self._ensure_column(db, "draft_events", "event_type", "TEXT NOT NULL DEFAULT 'legacy_draft'")
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS counterfactual_misses (
+                        id TEXT PRIMARY KEY,
+                        timestamp REAL NOT NULL,
+                        prompt TEXT NOT NULL,
+                        miss_type TEXT NOT NULL,
+                        helpful_context_json TEXT NOT NULL DEFAULT '[]',
+                        wasted_branches_json TEXT NOT NULL DEFAULT '[]',
+                        metadata_json TEXT NOT NULL DEFAULT '{}'
+                    )
+                    """
                 )
-                """
-            )
-            await db.commit()
+                await db.commit()
+            self._initialized = True
 
     async def record(self, m: RequestMetrics) -> None:
         async with aiosqlite.connect(self.db_path) as db:

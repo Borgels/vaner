@@ -1146,10 +1146,14 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         # Telemetry: record the composer-lifecycle event into draft_events
         # for hit/miss attribution downstream. Best-effort: a metrics
         # failure must not block the response.
+        #
+        # 0.8.7 hardening: reuse the closure-captured ``metrics_store``
+        # that the daemon's lifespan already initialized at startup.
+        # An earlier draft created a fresh MetricsStore + initialized it
+        # per request, which raced under concurrent composer events on
+        # SQLite WAL setup (CI Python 3.11 / 3.13 surfaced this).
         try:
-            metrics = MetricsStore(_metrics_path(config.repo_root))
-            await metrics.initialize()
-            await metrics.record_composer_lifecycle_event(
+            await metrics_store.record_composer_lifecycle_event(
                 session_id=snapshot.session_id,
                 snapshot_id=snapshot.snapshot_id,
                 lifecycle_state=snapshot.lifecycle_state,
