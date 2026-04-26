@@ -48,11 +48,17 @@ class ComposerSignalPump:
     async def publish(self, snapshot: DraftIntentSnapshot) -> None:
         if not self._subscribers:
             return
+        # 0.8.7 hardening M5: snapshot the subscriber list ONCE before
+        # gather() so the same tuple drives both the invocation set and
+        # the failure-attribution zip below. A subscriber that
+        # un/subscribes during dispatch (or another subscriber doing it
+        # on its behalf) would otherwise mis-pair callbacks with results.
+        subs = tuple(self._subscribers)
         results = await asyncio.gather(
-            *(self._invoke(cb, snapshot) for cb in tuple(self._subscribers)),
+            *(self._invoke(cb, snapshot) for cb in subs),
             return_exceptions=True,
         )
-        for cb, result in zip(self._subscribers, results, strict=False):
+        for cb, result in zip(subs, results, strict=True):
             if isinstance(result, BaseException):
                 logger.warning(
                     "composer signal subscriber %r failed: %s",

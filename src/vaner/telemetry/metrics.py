@@ -775,7 +775,7 @@ class MetricsStore:
                     value = value + excluded.value,
                     updated_at = excluded.updated_at
                 """,
-                (f"composer_{lifecycle_state}_total", 1.0, now),
+                (f"composer_lifecycle_{lifecycle_state}_total", 1.0, now),
             )
             await db.commit()
 

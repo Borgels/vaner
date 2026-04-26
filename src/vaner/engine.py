@@ -498,15 +498,27 @@ class VanerEngine:
 
     async def observe(self, event: SignalEvent) -> None:
         await self.initialize()
+        snapshot: DraftIntentSnapshot | None = None
         if event.kind == KIND_COMPOSER_LIFECYCLE:
             # Validates payload shape; pydantic.ValidationError on malformed.
             # The validation MUST happen before the store insert so a
             # malformed composer payload never reaches persistence.
             snapshot = DraftIntentSnapshot.model_validate(event.payload)
-            await self._composer_signal_pump.publish(snapshot)
         event.payload.setdefault("corpus_id", getattr(self.adapter, "corpus_id", "default"))
         event.payload.setdefault("privacy_zone", getattr(self.adapter, "privacy_zone", "local"))
         await self.store.insert_signal_event(event)
+        # 0.8.7 hardening H1: persist BEFORE publish. A pump exception
+        # (a misbehaving subscriber, a cancelled loop) must not lose the
+        # event; the store insert is the durable record. Publish errors
+        # are isolated by the pump itself, but wrap in defense-in-depth.
+        if snapshot is not None:
+            try:
+                await self._composer_signal_pump.publish(snapshot)
+            except Exception:  # pragma: no cover - defensive
+                # The signal is already persisted. A future cycle can
+                # re-derive prediction state from signal_events; losing
+                # the in-process pump notification is non-fatal.
+                pass
 
     @property
     def composer_signal_pump(self) -> ComposerSignalPump:

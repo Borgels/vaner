@@ -179,7 +179,7 @@ def test_counter_namespace_is_isolated(temp_repo):
         return {str(row[0]): float(row[1]) for row in rows}
 
     counters = asyncio.run(_run())
-    assert counters.get("composer_submitted_total") == 1.0
+    assert counters.get("composer_lifecycle_submitted_total") == 1.0
     # The 0.8.6 draft counters MUST be untouched.
     for legacy in (
         "draft_served_total",
