@@ -7,14 +7,20 @@ standing up a real daemon.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
 from vaner.clients.daemon import (
+    DAEMON_PROBE_TIMEOUT,
+    DAEMON_STATUS_PATH,
     DEFAULT_BASE_URL,
     VanerDaemonClient,
     VanerDaemonNotFound,
     VanerDaemonUnavailable,
+    daemon_base_url_from_env,
+    probe_daemon_status,
 )
 
 
@@ -207,6 +213,40 @@ async def test_adopt_prediction_5xx_raises_unavailable():
 
 
 # ---------------------------------------------------------------------------
+# resolve
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_defaults_include_briefing_and_predicted_response():
+    seen: dict[str, bytes] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["json"] = request.read()
+        assert request.url.path == "/resolve"
+        payload = json.loads(seen["json"])
+        assert payload["include_briefing"] is True
+        assert payload["include_predicted_response"] is True
+        return httpx.Response(
+            200,
+            json={
+                "intent": "Do the thing",
+                "confidence": 0.8,
+                "summary": "resolved",
+                "evidence": [],
+                "provenance": {"mode": "predictive_hit"},
+                "resolution_id": "resolve-1",
+            },
+        )
+
+    client = _client(_handler)
+    resolution = await client.resolve("Do the thing")
+
+    assert resolution.resolution_id == "resolve-1"
+    assert seen["json"]
+
+
+# ---------------------------------------------------------------------------
 # Client construction defaults
 # ---------------------------------------------------------------------------
 
@@ -219,3 +259,38 @@ def test_default_base_url_is_localhost_8473():
 def test_base_url_trailing_slash_is_stripped():
     client = VanerDaemonClient(base_url="http://example.com/")
     assert client._base == "http://example.com"
+
+
+def test_daemon_base_url_from_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VANER_DAEMON_URL", "http://127.0.0.1:9999")
+
+    assert daemon_base_url_from_env() == "http://127.0.0.1:9999"
+
+
+def test_probe_daemon_status_uses_shared_status_path_and_success_shape():
+    seen: dict[str, str] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={"health": "ok"})
+
+    transport = httpx.MockTransport(_handler)
+    with httpx.Client(transport=transport, base_url=DEFAULT_BASE_URL) as client:
+        result = probe_daemon_status(DEFAULT_BASE_URL, client=client)
+
+    assert seen["path"] == DAEMON_STATUS_PATH
+    assert result["reachable"] is True
+    assert result["url"] == DEFAULT_BASE_URL
+    assert result["payload"] == {"health": "ok"}
+
+
+def test_probe_daemon_status_reports_non_200_without_raising():
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="down")
+
+    transport = httpx.MockTransport(_handler)
+    with httpx.Client(transport=transport, base_url=DEFAULT_BASE_URL) as client:
+        result = probe_daemon_status(DEFAULT_BASE_URL, client=client)
+
+    assert result == {"reachable": False, "url": DEFAULT_BASE_URL, "status_code": 503}
+    assert DAEMON_PROBE_TIMEOUT == 1.0

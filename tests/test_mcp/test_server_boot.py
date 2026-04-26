@@ -52,6 +52,10 @@ def test_server_boot_initialize_lists_tools_and_status(temp_repo) -> None:
                 "include_metrics",
                 "estimated_cost_per_1k_tokens",
             }
+            assert resolve_schema["properties"]["include_briefing"]["default"] is True
+            assert resolve_schema["properties"]["include_predicted_response"]["default"] is True
+            assert "currently accepted but not applied" in resolve_schema["properties"]["budget"]["description"]
+            assert "currently accepted but not applied" in resolve_schema["properties"]["max_evidence_items"]["description"]
             status = await session.call_tool("vaner.status", {})
             assert json.loads(status.content[0].text)["ready"] is True
 

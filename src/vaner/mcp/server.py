@@ -121,79 +121,13 @@ def _ensure_backend(config: Any) -> bool:
 def _setup_question_schema() -> list[dict[str, Any]]:
     """Static ordered schema for the five Simple-Mode questions.
 
-    Mirrors the choice tables in :mod:`vaner.cli.commands.setup`. Static
-    data — no engine state — so cockpit / desktop UIs can render the
-    same prompts without hardcoding strings.
+    Static data — no engine state — so cockpit / desktop UIs can render
+    the same prompts without hardcoding strings.
     """
 
-    return [
-        {
-            "id": "work_styles",
-            "prompt": "What kind of work do you want help with?",
-            "kind": "multi",
-            "default": ["mixed"],
-            "options": [
-                {"value": "writing", "label": "Writing — drafting, editing, narrative"},
-                {"value": "research", "label": "Research — surveys, deep reading, citations"},
-                {"value": "planning", "label": "Planning — design docs, roadmaps, project layout"},
-                {"value": "support", "label": "Support — answering questions, troubleshooting"},
-                {"value": "learning", "label": "Learning — studying, exploring a new domain"},
-                {"value": "coding", "label": "Coding — software development"},
-                {"value": "general", "label": "General — knowledge work, mixed light tasks"},
-                {"value": "mixed", "label": "Mixed — a bit of everything (safe default)"},
-                {"value": "unsure", "label": "Unsure — I'd rather Vaner picks for me"},
-            ],
-        },
-        {
-            "id": "priority",
-            "prompt": "What matters most?",
-            "kind": "single",
-            "default": "balanced",
-            "options": [
-                {"value": "balanced", "label": "Balanced — a sensible middle"},
-                {"value": "speed", "label": "Speed — snappy responses"},
-                {"value": "quality", "label": "Quality — best answer, even if slow"},
-                {"value": "privacy", "label": "Privacy — keep data on this machine"},
-                {"value": "cost", "label": "Cost — minimise spend"},
-                {"value": "low_resource", "label": "Low-resource — go easy on this machine"},
-            ],
-        },
-        {
-            "id": "compute_posture",
-            "prompt": "How hard should this machine work for you?",
-            "kind": "single",
-            "default": "balanced",
-            "options": [
-                {"value": "light", "label": "Light — barely use the CPU/GPU"},
-                {"value": "balanced", "label": "Balanced — work with what's idle"},
-                {"value": "available_power", "label": "Available-power — use what this box has"},
-            ],
-        },
-        {
-            "id": "cloud_posture",
-            "prompt": "How do you feel about cloud LLMs?",
-            "kind": "single",
-            "default": "ask_first",
-            "options": [
-                {"value": "local_only", "label": "Local only — never reach for cloud LLMs"},
-                {"value": "ask_first", "label": "Ask first — confirm before any cloud call"},
-                {"value": "hybrid_when_worth_it", "label": "Hybrid — cloud when it's clearly worth it"},
-                {"value": "best_available", "label": "Best available — use the best model for the job"},
-            ],
-        },
-        {
-            "id": "background_posture",
-            "prompt": "How aggressive should background pondering be?",
-            "kind": "single",
-            "default": "normal",
-            "options": [
-                {"value": "minimal", "label": "Minimal — barely ponder when idle"},
-                {"value": "normal", "label": "Normal — moderate background pondering"},
-                {"value": "idle_more", "label": "Idle-more — ponder broadly when the box is idle"},
-                {"value": "deep_run_aggressive", "label": "Deep-Run-aggressive — happy to run overnight"},
-            ],
-        },
-    ]
+    from vaner.setup.questions import setup_questions_for_mcp
+
+    return setup_questions_for_mcp()
 
 
 def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResult:
@@ -209,16 +143,16 @@ def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResul
     from datetime import UTC, datetime
 
     from vaner.cli.commands.config import load_config as _load_config
-    from vaner.cli.commands.setup import (
-        _persist_setup_and_policy,
-        _read_policy_section,
-        _read_setup_section,
-    )
     from vaner.setup.apply import (
         WIDENS_CLOUD_POSTURE_SENTINEL,
         apply_policy_bundle,
     )
     from vaner.setup.catalog import bundle_by_id
+    from vaner.setup.config_io import (
+        persist_setup_and_policy,
+        read_policy_section,
+        read_setup_section,
+    )
     from vaner.setup.hardware import detect as _hw_detect
     from vaner.setup.select import select_policy_bundle as _select_bundle
     from vaner.setup.serializers import (
@@ -245,7 +179,7 @@ def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResul
                 is_error=True,
             )
         chosen_bundle_id = bundle.id
-        existing_setup = _read_setup_section(repo_root)
+        existing_setup = read_setup_section(repo_root)
         if existing_setup:
             try:
                 answers = answers_from_payload(existing_setup)
@@ -300,7 +234,7 @@ def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResul
     # 2. Compute overrides + cloud-widening flag.
     # ------------------------------------------------------------------
     config = _load_config(repo_root)
-    prior_policy_section = _read_policy_section(repo_root)
+    prior_policy_section = read_policy_section(repo_root)
     prior_bundle_id = prior_policy_section.get("selected_bundle_id")
     if isinstance(prior_bundle_id, str) and prior_bundle_id:
         config = config.model_copy(update={"policy": config.policy.model_copy(update={"selected_bundle_id": prior_bundle_id})})
@@ -319,7 +253,7 @@ def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResul
         block_reason = "WIDENS_CLOUD_POSTURE: refusing to widen cloud posture without confirm_cloud_widening=True"
     else:
         try:
-            _persist_setup_and_policy(
+            persist_setup_and_policy(
                 repo_root,
                 answers,
                 chosen_bundle_id,
@@ -351,17 +285,14 @@ def _setup_status_handler(repo_root: Path) -> CallToolResult:
     """
 
     from vaner.cli.commands.config import load_config as _load_config
-    from vaner.cli.commands.setup import (
-        _read_policy_section,
-        _read_setup_section,
-    )
     from vaner.setup.apply import apply_policy_bundle
     from vaner.setup.catalog import bundle_by_id
+    from vaner.setup.config_io import read_policy_section, read_setup_section
     from vaner.setup.hardware import detect as _hw_detect
     from vaner.setup.serializers import hardware_to_dict
 
-    setup_section = _read_setup_section(repo_root)
-    policy_section = _read_policy_section(repo_root)
+    setup_section = read_setup_section(repo_root)
+    policy_section = read_policy_section(repo_root)
     hardware = _hw_detect()
 
     mode = setup_section.get("mode") if isinstance(setup_section, dict) else None
@@ -409,12 +340,12 @@ def _policy_show_handler(repo_root: Path) -> CallToolResult:
     """
 
     from vaner.cli.commands.config import load_config as _load_config
-    from vaner.cli.commands.setup import _read_policy_section
     from vaner.setup.apply import apply_policy_bundle
     from vaner.setup.catalog import bundle_by_id
+    from vaner.setup.config_io import read_policy_section
     from vaner.setup.serializers import bundle_to_dict
 
-    policy_section = _read_policy_section(repo_root)
+    policy_section = read_policy_section(repo_root)
     selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
     try:
         bundle = bundle_by_id(str(selected_bundle_id))
@@ -593,40 +524,15 @@ def _composer_engagement_payload(prompt: Any) -> dict[str, Any] | None:
     }
 
 
-_RESOURCE_METRIC_TASKS: set[Any] = set()
-"""Keep strong refs to background metric tasks until they settle.
-
-Without this, `asyncio.run()` can tear the loop down before the task
-completes, producing `Event loop is closed` warnings. Tracked via
-`add_done_callback(discard)` so entries clear themselves when the task
-finishes.
-"""
-
-
-def _increment_resource_metric(name: str, repo_root: Path) -> None:
-    """Fire-and-forget metric increment for resource-read events.
-
-    0.8.5 WS8: `read_resource` is a sync entry point in the SDK API, so we
-    can't `await` on `MetricsStore`. Spawn an asyncio task when a loop is
-    running; otherwise silently drop — metrics are best-effort.
-    """
-    import asyncio as _asyncio
-
-    async def _do() -> None:
-        try:
-            store = MetricsStore(repo_root / ".vaner" / "metrics.db")
-            await store.initialize()
-            await store.increment_counter(name)
-        except Exception:  # pragma: no cover - defensive metrics
-            pass
+async def _increment_resource_metric(name: str, repo_root: Path) -> None:
+    """Best-effort metric increment for resource-read events."""
 
     try:
-        loop = _asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    task = loop.create_task(_do())
-    _RESOURCE_METRIC_TASKS.add(task)
-    task.add_done_callback(_RESOURCE_METRIC_TASKS.discard)
+        store = MetricsStore(repo_root / ".vaner" / "metrics.db")
+        await store.initialize()
+        await store.increment_counter(name)
+    except Exception:  # pragma: no cover - defensive metrics
+        pass
 
 
 def _dashboard_fallback_text(cards: list[dict[str, Any]]) -> str:
@@ -747,6 +653,8 @@ def build_server(
     # Lazy import keeps MCP server import-free of pydantic/httpx when the
     # tools surface is unused (e.g. CLI --help).
     from vaner.clients.daemon import (
+        RESOLVE_INCLUDE_BRIEFING_DEFAULT,
+        RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT,
         VanerDaemonClient,
         VanerDaemonNotFound,
         VanerDaemonUnavailable,
@@ -828,10 +736,22 @@ def build_server(
                             "query": {"type": "string"},
                             "suggestion_id": {"type": "string"},
                             "context": {"type": "object"},
-                            "budget": {"type": "string", "enum": ["low", "medium", "high"], "default": "medium"},
-                            "max_evidence_items": {"type": "integer", "default": 8},
-                            "include_briefing": {"type": "boolean", "default": False},
-                            "include_predicted_response": {"type": "boolean", "default": False},
+                            "budget": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high"],
+                                "default": "medium",
+                                "description": "Reserved for future engine budget shaping; currently accepted but not applied.",
+                            },
+                            "max_evidence_items": {
+                                "type": "integer",
+                                "default": 8,
+                                "description": "Reserved for future evidence limiting; currently accepted but not applied.",
+                            },
+                            "include_briefing": {"type": "boolean", "default": RESOLVE_INCLUDE_BRIEFING_DEFAULT},
+                            "include_predicted_response": {
+                                "type": "boolean",
+                                "default": RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT,
+                            },
                             "include_metrics": {"type": "boolean", "default": False},
                             "estimated_cost_per_1k_tokens": {"type": "number", "default": 0.0},
                         },
@@ -1262,14 +1182,43 @@ def build_server(
                             "work_styles": {
                                 "anyOf": [
                                     {"type": "string"},
-                                    {"type": "array", "items": {"type": "string"}},
+                                    {"type": "array"},
                                 ],
-                                "description": "WorkStyle id(s); single string or list.",
+                                "description": ("WorkStyle id(s). Handler validates list items for structured errors."),
                             },
-                            "priority": {"type": "string"},
-                            "compute_posture": {"type": "string"},
-                            "cloud_posture": {"type": "string"},
-                            "background_posture": {"type": "string"},
+                            "priority": {
+                                "type": "string",
+                                "enum": [
+                                    "balanced",
+                                    "speed",
+                                    "quality",
+                                    "privacy",
+                                    "cost",
+                                    "low_resource",
+                                ],
+                            },
+                            "compute_posture": {
+                                "type": "string",
+                                "enum": ["light", "balanced", "available_power"],
+                            },
+                            "cloud_posture": {
+                                "type": "string",
+                                "enum": [
+                                    "local_only",
+                                    "ask_first",
+                                    "hybrid_when_worth_it",
+                                    "best_available",
+                                ],
+                            },
+                            "background_posture": {
+                                "type": "string",
+                                "enum": [
+                                    "minimal",
+                                    "normal",
+                                    "idle_more",
+                                    "deep_run_aggressive",
+                                ],
+                            },
                         },
                     },
                 ),
@@ -1336,7 +1285,7 @@ def build_server(
             from mcp.types import Resource as _Resource
         except ModuleNotFoundError:  # pragma: no cover - optional dependency path
             return []
-        from vaner.integrations.guidance import current_version
+        from vaner.integrations.guidance import available_variants, current_version
 
         resources: list[Any] = [
             _Resource(
@@ -1351,6 +1300,21 @@ def build_server(
                 mimeType="text/markdown",
             )
         ]
+        for variant in available_variants():
+            if variant == "canonical":
+                continue
+            resources.append(
+                _Resource(
+                    uri=f"vaner://guidance/current?variant={variant}",  # type: ignore[arg-type]
+                    name=f"Vaner Guidance ({variant})",
+                    title=f"Vaner operational guidance ({variant})",
+                    description=(
+                        "Alternate operational guidance variant for agents using Vaner. "
+                        "Canonical remains available at vaner://guidance/current."
+                    ),
+                    mimeType="text/markdown",
+                )
+            )
         try:
             cfg = load_config(repo_root)
             if getattr(cfg.mcp, "apps_ui_enabled", True):
@@ -1394,7 +1358,7 @@ def build_server(
 
         # MCP Apps UI bundle.
         if uri_str == ACTIVE_PREDICTIONS_URI:
-            _increment_resource_metric("mcp_apps_bundle_read", repo_root)
+            await _increment_resource_metric("mcp_apps_bundle_read", repo_root)
             return [
                 ReadResourceContents(
                     content=ACTIVE_PREDICTIONS_HTML,
@@ -1423,7 +1387,7 @@ def build_server(
         if variant is None:
             raise ValueError(f"unknown vaner resource: {uri_str!r}")
         body = load_guidance(variant).as_text()  # type: ignore[arg-type]
-        _increment_resource_metric(f"guidance_resource_read_{variant}", repo_root)
+        await _increment_resource_metric(f"guidance_resource_read_{variant}", repo_root)
         return [ReadResourceContents(content=body, mime_type="text/markdown")]
 
     @server.call_tool()
@@ -1615,8 +1579,8 @@ def build_server(
                 # resolve picks up the canonical form even when the caller's
                 # query text is terse.
                 query = str(suggestion_cache[suggestion_id].get("label") or query)
-            include_briefing = bool(args.get("include_briefing", False))
-            include_predicted_response = bool(args.get("include_predicted_response", False))
+            include_briefing = bool(args.get("include_briefing", RESOLVE_INCLUDE_BRIEFING_DEFAULT))
+            include_predicted_response = bool(args.get("include_predicted_response", RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT))
             include_metrics = bool(args.get("include_metrics", False))
 
             try:
@@ -1893,7 +1857,7 @@ def build_server(
                         contradiction_signal=float(scenario.contradiction_signal),
                         prior_successes=int(scenario.prior_successes),
                         has_explicit_pin=bool(preferred_items),
-                        correction_confirmed=False,
+                        correction_confirmed=rating == "useful" and scenario.last_outcome == "wrong",
                     ),
                     scenario.memory_state,
                 )
@@ -1948,6 +1912,7 @@ def build_server(
             )
             legacy_outcome = "wrong" if rating == "wrong" else rating
             await scenario_store.record_outcome(scenario_id, legacy_outcome)
+            updated = await scenario_store.get(scenario_id)
             try:
                 await metrics_store.record_scenario_outcome(scenario_id=scenario_id, result=legacy_outcome, note=correction[:200])
             except Exception:
@@ -1962,16 +1927,16 @@ def build_server(
                     await metrics_store.record_draft_event(status="unused", directional_correct=False, metadata={"source": "feedback"})
             except Exception:
                 pass
-            if rating == "useful" and scenario.memory_state == "trusted":
+            post_memory_state = updated.memory_state if updated else scenario.memory_state
+            if rating == "useful" and post_memory_state == "trusted":
                 await metrics_store.increment_counter("promotions_still_trusted_total")
-            if rating == "useful" and scenario.last_outcome == "wrong":
+            if rating == "useful" and scenario.last_outcome == "wrong" and post_memory_state == "trusted":
                 await metrics_store.increment_counter("corrections_survived_total")
-            if rating in {"useful", "partial"} and scenario.memory_state == "demoted":
+            if rating in {"useful", "partial"} and scenario.memory_state == "demoted" and post_memory_state != "demoted":
                 await metrics_store.increment_counter("demotion_recovery_total")
             promotion_ring.append(transition)
             if len(promotion_ring) > 5:
                 del promotion_ring[0]
-            updated = await scenario_store.get(scenario_id)
             append_log(
                 repo_root,
                 tool=name,
@@ -2180,6 +2145,7 @@ def build_server(
                     )
                     return CallToolResult(
                         content=[link, *_make_text(json.dumps(dashboard_payload))],
+                        structuredContent=dashboard_payload,
                     )
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.debug("ResourceLink attach failed, falling back: %s", exc)
@@ -2665,7 +2631,7 @@ def build_server(
                 )
             await _record("error")
             return _json_result(
-                {"code": "invalid_input", "message": f"unknown goals tool: {name}"},
+                {"code": "invalid_input", "message": f"unknown artefacts/sources tool: {name}"},
                 is_error=True,
             )
 
@@ -2761,19 +2727,16 @@ def build_server(
 
             if name == "vaner.deep_run.defaults":
                 # WS9: bundle-derived seeds for the Deep-Run start dialog.
-                from vaner.cli.commands.setup import (
-                    _answers_from_payload,
-                    _default_answers,
-                    _read_policy_section,
-                    _read_setup_section,
-                )
+                from vaner.cli.commands.setup import _default_answers
                 from vaner.intent.deep_run_defaults import (
                     deep_run_defaults_for,
                     defaults_to_dict,
                 )
                 from vaner.setup.catalog import bundle_by_id
+                from vaner.setup.config_io import read_policy_section, read_setup_section
+                from vaner.setup.serializers import answers_from_payload
 
-                policy_section = _read_policy_section(active_repo_root)
+                policy_section = read_policy_section(active_repo_root)
                 selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
                 try:
                     bundle = bundle_by_id(str(selected_bundle_id))
@@ -2786,10 +2749,10 @@ def build_server(
                         },
                         is_error=True,
                     )
-                setup_section = _read_setup_section(active_repo_root)
+                setup_section = read_setup_section(active_repo_root)
                 if setup_section:
                     try:
-                        answers = _answers_from_payload(setup_section)
+                        answers = answers_from_payload(setup_section)
                     except Exception:
                         answers = _default_answers()
                 else:

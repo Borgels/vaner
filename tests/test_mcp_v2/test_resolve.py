@@ -17,7 +17,7 @@ What survives:
 - ``Abstain(reason="low_confidence")`` — MCP-surface concern, still
   applied against the engine's Resolution.confidence output.
 - ``include_briefing`` / ``include_predicted_response`` / ``include_metrics``
-  opt-in flags.
+    include flags.
 - ``resolution_id``, ``provenance.mode``, token accounting, evidence list.
 """
 
@@ -163,6 +163,16 @@ def test_resolve_forwards_opt_in_flags_to_engine(temp_repo) -> None:
     assert engine.calls[0]["include_predicted_response"] is True
 
 
+def test_resolve_defaults_include_briefing_and_predicted_response(temp_repo) -> None:
+    engine = _StubEngine(resolution=_build_resolution())
+    server = _make_server(temp_repo, engine=engine)
+
+    call_tool(server, "vaner.resolve", {"query": "default include flags"})
+
+    assert engine.calls[0]["include_briefing"] is True
+    assert engine.calls[0]["include_predicted_response"] is True
+
+
 def test_resolve_abstains_on_low_confidence(temp_repo) -> None:
     """The engine doesn't produce Abstain — the MCP shim applies the
     0.35 threshold as a surface-level policy."""
@@ -244,8 +254,8 @@ class _StubDaemonClient:
         query: str,
         *,
         context: dict | None = None,
-        include_briefing: bool = False,
-        include_predicted_response: bool = False,
+        include_briefing: bool = True,
+        include_predicted_response: bool = True,
     ) -> Resolution:
         self.calls.append(
             {
@@ -286,7 +296,7 @@ def test_resolve_forwards_to_injected_daemon_client_when_no_engine(temp_repo) ->
             "query": "delegated question",
             "context": {},
             "include_briefing": True,
-            "include_predicted_response": False,
+            "include_predicted_response": True,
         }
     ]
 

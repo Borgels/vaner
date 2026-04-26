@@ -24,6 +24,7 @@ from "daemon rejected the request". Fire-and-forget style callers
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -34,6 +35,16 @@ from vaner.mcp.contracts import Resolution
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8473"
 DEFAULT_TIMEOUT = 5.0
+DAEMON_STATUS_PATH = "/status"
+DAEMON_PROBE_TIMEOUT = 1.0
+RESOLVE_INCLUDE_BRIEFING_DEFAULT = True
+RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT = True
+
+
+def daemon_base_url_from_env(default: str = DEFAULT_BASE_URL) -> str:
+    """Return the configured daemon HTTP base URL for CLI-style callers."""
+
+    return os.environ.get("VANER_DAEMON_URL", "").strip() or default
 
 
 class VanerDaemonError(Exception):
@@ -93,7 +104,7 @@ class VanerDaemonClient:
         """GET /status — returns the daemon's health + config snapshot."""
         async with self._session() as client:
             try:
-                response = await client.get(f"{self._base}/status")
+                response = await client.get(f"{self._base}{DAEMON_STATUS_PATH}")
             except (httpx.TransportError, httpx.TimeoutException) as exc:
                 raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
             if response.status_code >= 500:
@@ -192,8 +203,8 @@ class VanerDaemonClient:
         query: str,
         *,
         context: dict[str, Any] | None = None,
-        include_briefing: bool = False,
-        include_predicted_response: bool = False,
+        include_briefing: bool = RESOLVE_INCLUDE_BRIEFING_DEFAULT,
+        include_predicted_response: bool = RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT,
     ) -> Resolution:
         """POST /resolve — forward a query to the daemon's engine.resolve_query.
 
@@ -236,3 +247,36 @@ class VanerDaemonClient:
                 raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
             response.raise_for_status()
             return Resolution.model_validate(response.json())
+
+
+def probe_daemon_status(
+    base_url: str = DEFAULT_BASE_URL,
+    *,
+    timeout: float = DAEMON_PROBE_TIMEOUT,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """Best-effort synchronous daemon reachability probe for CLI commands."""
+
+    base = base_url.rstrip("/")
+
+    def _probe(active_client: httpx.Client) -> dict[str, Any]:
+        try:
+            response = active_client.get(f"{base}{DAEMON_STATUS_PATH}")
+        except (httpx.HTTPError, OSError) as exc:
+            return {"reachable": False, "url": base, "error": str(exc)}
+        if response.status_code == 200:
+            payload: dict[str, Any] | None
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            result: dict[str, Any] = {"reachable": True, "url": base, "status": "ok"}
+            if payload is not None:
+                result["payload"] = payload
+            return result
+        return {"reachable": False, "url": base, "status_code": response.status_code}
+
+    if client is not None:
+        return _probe(client)
+    with httpx.Client(timeout=timeout) as active_client:
+        return _probe(active_client)
