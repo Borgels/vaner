@@ -85,6 +85,28 @@ OLLAMA_REGISTRY_URL = "https://registry.ollama.ai/v2"
 HTTP_TIMEOUT = 10.0
 USER_AGENT = "Vaner-RecommendedModels-Refresher/0.8.8 (+https://github.com/Borgels/Vaner)"
 
+# Hardening (0.8.8): only allow URLs whose host is in this set. Defends
+# against a maintainer accidentally repointing the script at a typo'd
+# domain or a malicious mirror. The two hosts here are the only ones
+# the production script needs.
+_ALLOWED_HOSTS: frozenset[str] = frozenset(
+    {
+        "ollama.com",
+        "registry.ollama.ai",
+    }
+)
+
+# Hardening: cap each HTTP response at 5 MB. The Ollama library page is
+# ~200 KB; manifests are <10 KB. A 5 MB ceiling tolerates growth
+# without letting a malicious / corrupted source feed us megabytes of
+# garbage to regex over.
+_MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+
+# Hardening: cap the number of model names harvested from the library
+# page. The current Ollama library has ~120 entries; 500 is plenty of
+# headroom and small enough that the bucketing pass stays bounded.
+_MAX_LIBRARY_ENTRIES = 500
+
 # Power-of-two-ish parameter bands. Each band keeps the top-N by
 # popularity rank. Bands chosen to match common memory budgets — see
 # the calibration table in vaner.setup.memory_budget.
@@ -182,11 +204,33 @@ class SourceResult:
 
 
 def _http_get(url: str) -> str:
+    """Fetch ``url`` with the script's user-agent.
+
+    Hardening:
+
+    * URL must be ``https://`` and the host must be in
+      :data:`_ALLOWED_HOSTS`. Defends against accidental misconfiguration
+      and a few exotic SSRF shapes.
+    * Body is capped at :data:`_MAX_RESPONSE_BYTES`; an oversized
+      response raises ``URLError`` so the caller can fall back to the
+      previous data.json for that source.
+    """
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if parts.scheme != "https":
+        raise URLError(f"{url}: only https is allowed")
+    host = (parts.hostname or "").lower()
+    if host not in _ALLOWED_HOSTS:
+        raise URLError(f"{url}: host {host!r} is not in the allowlist")
     req = urlrequest.Request(url, headers={"User-Agent": USER_AGENT})
-    with urlrequest.urlopen(req, timeout=HTTP_TIMEOUT) as resp:  # noqa: S310 - public read
+    with urlrequest.urlopen(req, timeout=HTTP_TIMEOUT) as resp:  # noqa: S310 - public read, allowlisted host
         if resp.status != 200:
             raise URLError(f"{url} returned status {resp.status}")
-        return resp.read().decode("utf-8", errors="replace")
+        body = resp.read(_MAX_RESPONSE_BYTES + 1)
+        if len(body) > _MAX_RESPONSE_BYTES:
+            raise URLError(f"{url}: response exceeded {_MAX_RESPONSE_BYTES} bytes")
+        return body.decode("utf-8", errors="replace")
 
 
 _LIBRARY_HREF_RE = re.compile(
@@ -196,7 +240,11 @@ _LIBRARY_HREF_RE = re.compile(
 
 
 def _scrape_ollama_library(html: str) -> list[str]:
-    """Extract the model names from the library page, in document order."""
+    """Extract the model names from the library page, in document order.
+
+    Capped at :data:`_MAX_LIBRARY_ENTRIES` so a malformed / malicious
+    page can't drive the per-tag fetch loop unbounded.
+    """
     seen: set[str] = set()
     out: list[str] = []
     for match in _LIBRARY_HREF_RE.finditer(html):
@@ -205,6 +253,8 @@ def _scrape_ollama_library(html: str) -> list[str]:
             continue
         seen.add(name)
         out.append(name)
+        if len(out) >= _MAX_LIBRARY_ENTRIES:
+            break
     return out
 
 

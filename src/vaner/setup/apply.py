@@ -265,6 +265,13 @@ def apply_policy_bundle(
     # registry, and (c) the user has not set a model explicitly.
     # Never override a user choice; never write something the resolver
     # could not justify.
+    #
+    # Trust contract: ``recommended.id`` is already shape-validated by
+    # ``vaner.setup.recommended.schema._MODEL_ID_RE`` at registry load
+    # time. We deliberately do not duplicate that check here — adding
+    # a redundant regex invites drift between the two patterns. The
+    # schema is the boundary; callers must construct ``Registry``
+    # objects through pydantic validation, not ``model_construct``.
     if (
         hardware_profile is not None
         and recommended_registry is not None

@@ -178,3 +178,48 @@ def test_refresh_intent_lean_for_coder_family_includes_coding(
     # mapping later, this test will fail loudly and prompt a rethink.
     for m in coder_entries:
         assert m.intent_lean == ("mixed",)
+
+
+# ---------------------------------------------------------------------------
+# Hardening (0.8.8): URL allowlist + response-size + library-entry caps
+# ---------------------------------------------------------------------------
+
+
+def test_http_get_rejects_non_https_scheme(refresh_module: object) -> None:
+    """Plain HTTP must be refused — defense against accidental misconfig."""
+    from urllib.error import URLError
+
+    with pytest.raises(URLError, match="only https is allowed"):
+        refresh_module._http_get("http://ollama.com/library")  # type: ignore[attr-defined]
+
+
+def test_http_get_rejects_off_allowlist_host(refresh_module: object) -> None:
+    """Hosts outside the allowlist must be refused."""
+    from urllib.error import URLError
+
+    with pytest.raises(URLError, match="not in the allowlist"):
+        refresh_module._http_get("https://evil.example/library")  # type: ignore[attr-defined]
+
+
+def test_http_get_rejects_uppercase_host_when_off_allowlist(refresh_module: object) -> None:
+    """Hostnames are normalised to lowercase before allowlist check."""
+    from urllib.error import URLError
+
+    with pytest.raises(URLError, match="not in the allowlist"):
+        refresh_module._http_get("https://OLLAMA-MIRROR.example/library")  # type: ignore[attr-defined]
+
+
+def test_library_scrape_caps_at_500(refresh_module: object) -> None:
+    """A malicious library page with 10k entries can't blow up the loop."""
+    # Build synthetic HTML with 10k library hrefs.
+    html = "\n".join(f'<a href="/library/m{i}">m{i}</a>' for i in range(10_000))
+    out = refresh_module._scrape_ollama_library(html)  # type: ignore[attr-defined]
+    assert len(out) <= 500
+    assert len(out) == 500  # we expect to hit the cap exactly
+
+
+def test_allowlisted_hosts_are_minimal(refresh_module: object) -> None:
+    """Sanity: the allowlist contains only the two production hosts."""
+    assert refresh_module._ALLOWED_HOSTS == frozenset(  # type: ignore[attr-defined]
+        {"ollama.com", "registry.ollama.ai"}
+    )

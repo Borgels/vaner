@@ -1082,6 +1082,10 @@ def models_recommended_cmd(
         models_recommended_payload,
     )
 
+    if work_styles is not None and len(work_styles) > 256:
+        typer.secho("--work-styles must be <= 256 chars", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
     styles: tuple[str, ...] = ()
     if work_styles:
         styles = tuple(s.strip() for s in work_styles.split(",") if s.strip())

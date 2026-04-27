@@ -10,10 +10,30 @@ resolver / API endpoint (read side).
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# Hardening (0.8.8): every id-typed string field must match a tight
+# regex. The registry is filled from external sources (Ollama library,
+# HF Hub) — this guards against a compromised source slipping a
+# command-injection vector into a model id, which is later written
+# verbatim into `config.exploration.exploration_model` by apply.py.
+# Generous enough to accept Ollama tag conventions
+# (``family:NNb-instruct-q4_K_M``) and HF repo ids
+# (``Author/Repo-Name-suffix``) but refuses spaces, control chars,
+# slashes-into-traversals, semicolons, ampersands, etc.
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,191}$")
+_FAMILY_RE = re.compile(r"^[a-z0-9][a-z0-9.+-]{0,63}$")
+_RANK_HINT_RE = re.compile(r"^[A-Za-z0-9._:/-]{0,63}$")
+
+# Cap the number of models a Registry may hold. The script's TOP_PER_BAND
+# × len(PARAM_BANDS) yields ≤ 21 entries today; 200 is comfortably above
+# that and well below "this would OOM the daemon at load time."
+_MAX_MODELS = 200
+_MAX_SOURCES = 16
 
 # A short list of intent slugs the resolver consumes. Mirrors (a
 # subset of) WorkStyle from setup.enums; we don't import that
@@ -42,25 +62,32 @@ class RegistrySource(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    name: str = Field(..., description="Source identifier, e.g. 'ollama-library'.")
+    name: str = Field(..., min_length=1, max_length=64, description="Source identifier, e.g. 'ollama-library'.")
     snapshot_at: datetime = Field(..., description="When the source was queried.")
     note: str | None = Field(
         default=None,
+        max_length=512,
         description="Optional human-readable note (e.g. 'fallback to cached snapshot — primary unreachable').",
     )
 
 
 class RecommendedModel(BaseModel):
-    """A single registry entry — one model the resolver may pick."""
+    """A single registry entry — one model the resolver may pick.
+
+    Field validators enforce a tight regex on every string id —
+    defense-in-depth against a compromised external source feeding
+    something the daemon later writes into ``exploration_model``.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str = Field(..., description="Canonical id used internally (typically the Ollama tag).")
     family: str = Field(..., description="Vendor/family slug, e.g. 'qwen', 'llama', 'gemma'.")
-    params_b: float = Field(..., gt=0.0, description="Parameter count in billions (e.g. 7.0, 32.0).")
+    params_b: float = Field(..., gt=0.0, le=10_000.0, description="Parameter count in billions (e.g. 7.0, 32.0).")
     min_effective_gb_q4: float = Field(
         ...,
         gt=0.0,
+        le=10_000.0,
         description="Minimum MemoryBudget.effective_gb_q4 this model fits in.",
     )
     intent_lean: tuple[IntentLean, ...] = Field(
@@ -75,8 +102,8 @@ class RecommendedModel(BaseModel):
         default=None,
         description="Hugging Face repo id (e.g. 'Qwen/Qwen3-32B-Instruct-GGUF'). May be null.",
     )
-    context_length: int = Field(..., gt=0, description="Maximum context the model supports.")
-    popularity_rank: int = Field(..., gt=0, description="1 = most popular within the source.")
+    context_length: int = Field(..., gt=0, le=10_000_000, description="Maximum context the model supports.")
+    popularity_rank: int = Field(..., gt=0, le=100_000, description="1 = most popular within the source.")
     rank_source: RankSource = Field(..., description="Which signal produced popularity_rank.")
 
     @field_validator("intent_lean", mode="before")
@@ -86,9 +113,42 @@ class RecommendedModel(BaseModel):
             return tuple(v)  # type: ignore[return-value]
         return v  # type: ignore[return-value]
 
+    @field_validator("id", "ollama_id", "huggingface_id")
+    @classmethod
+    def _validate_id_shape(cls, v: str | None) -> str | None:
+        # ``ollama_id`` / ``huggingface_id`` are nullable; allow None
+        # but reject empty strings and anything that doesn't match the
+        # tight model-id pattern. The id is later written verbatim
+        # into config.exploration.exploration_model — be strict.
+        if v is None:
+            return None
+        if not _MODEL_ID_RE.fullmatch(v):
+            raise ValueError(f"model id failed shape validation: {v!r}")
+        # Defence-in-depth against path-traversal sequences. The
+        # character class above admits ``/`` and ``.`` because real
+        # HF repo ids use both ("Author/Repo-Name.suffix"), but a
+        # standalone ``..`` is never legitimate.
+        if ".." in v:
+            raise ValueError(f"model id contains path-traversal sequence: {v!r}")
+        return v
+
+    @field_validator("family")
+    @classmethod
+    def _validate_family(cls, v: str) -> str:
+        if not _FAMILY_RE.fullmatch(v):
+            raise ValueError(f"family slug failed shape validation: {v!r}")
+        return v
+
 
 class Registry(BaseModel):
-    """The complete registry document loaded from ``data.json``."""
+    """The complete registry document loaded from ``data.json``.
+
+    Length-bounded on both ``sources`` and ``models``: a malicious /
+    oversized ``data.json`` cannot blow the daemon's memory at load
+    time, even with the loader's fallback path. The bound is
+    comfortably above the script's natural output (≤ 21 entries
+    today).
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -96,10 +156,11 @@ class Registry(BaseModel):
     generated_at: datetime
     generator: str = Field(
         ...,
+        max_length=256,
         description="Identifier of the producing script + git sha, e.g. 'refresh_recommended_models.py@abc1234'.",
     )
-    sources: tuple[RegistrySource, ...] = Field(default=())
-    models: tuple[RecommendedModel, ...] = Field(default=())
+    sources: tuple[RegistrySource, ...] = Field(default=(), max_length=_MAX_SOURCES)
+    models: tuple[RecommendedModel, ...] = Field(default=(), max_length=_MAX_MODELS)
 
     @field_validator("sources", "models", mode="before")
     @classmethod

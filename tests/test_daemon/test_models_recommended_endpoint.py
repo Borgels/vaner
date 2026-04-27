@@ -250,3 +250,35 @@ def test_blank_work_styles_ignored(
     assert resp.status_code == 200
     # Empty string → treated as no intent; still returns a pick.
     assert resp.json()["selected"]["id"] == "synthetic:7b-instruct"
+
+
+# ---------------------------------------------------------------------------
+# Hardening (0.8.8): the work_styles query string is length-capped
+# ---------------------------------------------------------------------------
+
+
+def test_work_styles_length_cap_returns_400(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pathological query string is rejected with a 400, not silently truncated."""
+    _patch_registry(monkeypatch, _registry_with(_model()))
+    _force_hardware(client)
+
+    huge = "a" * 257
+    resp = client.get(f"/models/recommended?work_styles={huge}")
+    assert resp.status_code == 400
+    assert "256 chars" in resp.json()["detail"]
+
+
+def test_work_styles_at_cap_accepted(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exactly 256 chars is allowed (boundary)."""
+    _patch_registry(monkeypatch, _registry_with(_model()))
+    _force_hardware(client)
+
+    boundary = "a" * 256
+    resp = client.get(f"/models/recommended?work_styles={boundary}")
+    assert resp.status_code == 200

@@ -638,6 +638,12 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
           resolver to break ties in favour of intent-aligned models.
           Empty / omitted → no intent bias.
 
+        Hardening: the query string is capped at 256 chars (a comfy
+        margin above the legitimate 16 × 32 ceiling). Per-token
+        sanitisation lives in
+        :func:`vaner.setup.recommended.payload.sanitize_work_styles`,
+        called inside the payload assembler.
+
         Response shape mirrors
         :func:`vaner.setup.recommended.models_recommended_payload`.
         Empty registries produce ``selected=null`` so the desktop
@@ -649,6 +655,12 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             load_registry,
             models_recommended_payload,
         )
+
+        if work_styles is not None and len(work_styles) > 256:
+            raise HTTPException(
+                status_code=400,
+                detail="work_styles query string must be <= 256 chars",
+            )
 
         styles: tuple[str, ...] = ()
         if work_styles:

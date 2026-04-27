@@ -9,6 +9,7 @@ client wiring.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Any
 
@@ -16,6 +17,40 @@ from vaner.setup.hardware import HardwareProfile
 from vaner.setup.memory_budget import MemoryBudget, memory_budget_for
 from vaner.setup.recommended.resolver import alternatives_for, pick_for
 from vaner.setup.recommended.schema import RecommendedModel, Registry
+
+# Hardening (0.8.8): work_styles enters via untrusted surfaces (HTTP
+# query string, MCP tool arg, CLI flag). The resolver only consults
+# values that match a fixed mapping, so unknowns fall through harmlessly,
+# but we still cap the input size to avoid pathological cases (a
+# 1 MB query string hitting the daemon).
+_WORK_STYLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_MAX_WORK_STYLES = 16
+
+
+def sanitize_work_styles(raw: Iterable[str]) -> tuple[str, ...]:
+    """Filter an untrusted iterable down to safe WorkStyle slugs.
+
+    Drops empty strings, rejects entries that don't match the
+    work-style regex, deduplicates while preserving first-seen
+    order, and truncates at :data:`_MAX_WORK_STYLES`. Never raises —
+    the resolver treats unknown slugs as no-op intent contributions,
+    so silent filtering is the right policy.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        if not isinstance(value, str):
+            continue
+        candidate = value.strip().lower()
+        if not candidate or candidate in seen:
+            continue
+        if not _WORK_STYLE_RE.fullmatch(candidate):
+            continue
+        seen.add(candidate)
+        out.append(candidate)
+        if len(out) >= _MAX_WORK_STYLES:
+            break
+    return tuple(out)
 
 
 def _budget_to_dict(budget: MemoryBudget) -> dict[str, Any]:
@@ -50,6 +85,11 @@ def models_recommended_payload(
     *,
     alternatives_limit: int = 3,
 ) -> dict[str, Any]:
+    # Sanitise work_styles defensively — the function is reachable from
+    # untrusted HTTP / MCP / CLI surfaces. Sanitisation also caps
+    # length so a pathological caller can't make the resolver iterate
+    # an unbounded set.
+    work_styles = sanitize_work_styles(work_styles)
     """Build the unified wire response for recommendation queries.
 
     Shape:
@@ -104,4 +144,4 @@ def models_recommended_payload(
     }
 
 
-__all__ = ["models_recommended_payload"]
+__all__ = ["models_recommended_payload", "sanitize_work_styles"]

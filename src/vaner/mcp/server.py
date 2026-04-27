@@ -2880,11 +2880,26 @@ def build_server(
 
             raw_styles = args.get("work_styles") if isinstance(args, dict) else None
             styles: tuple[str, ...]
+            # Hardening: cap the input length before splitting so a
+            # pathological caller can't hand us a multi-MB blob. The
+            # payload assembler will further sanitise per-token.
             if raw_styles is None or raw_styles == "":
                 styles = ()
             elif isinstance(raw_styles, str):
+                if len(raw_styles) > 256:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "work_styles string must be <= 256 chars"},
+                        is_error=True,
+                    )
                 styles = tuple(s.strip() for s in raw_styles.split(",") if s.strip())
             elif isinstance(raw_styles, list) and all(isinstance(s, str) for s in raw_styles):
+                if len(raw_styles) > 32:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_input", "message": "work_styles list must have <= 32 entries"},
+                        is_error=True,
+                    )
                 styles = tuple(raw_styles)
             else:
                 await _record("error")
