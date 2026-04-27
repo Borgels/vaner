@@ -1053,4 +1053,43 @@ def _ping_daemon_for_refresh() -> dict[str, Any]:
 _ = dataclasses
 
 
+@setup_app.command(
+    "models-recommended",
+    help=(
+        "Print a hardware-driven model recommendation as JSON. Pure "
+        "read; no config write. The desktop wizard's Recommended-preset "
+        "card consumes this."
+    ),
+)
+def models_recommended_cmd(
+    work_styles: Annotated[
+        str | None,
+        typer.Option(
+            "--work-styles",
+            help="Comma-separated WorkStyle slugs (e.g. 'coding,writing'). Empty = no intent bias.",
+        ),
+    ] = None,
+) -> None:
+    """0.8.8 WS10.6 — CLI surface for the recommended-models endpoint.
+
+    Output shape mirrors :func:`vaner.setup.recommended.payload.models_recommended_payload`
+    so the desktop wizard, MCP tool, and HTTP endpoint stay byte-stable.
+    Empty registry → ``selected=null`` and ``alternatives=[]`` (the
+    safe fallback every consumer expects).
+    """
+    from vaner.setup.recommended import (
+        load_registry,
+        models_recommended_payload,
+    )
+
+    styles: tuple[str, ...] = ()
+    if work_styles:
+        styles = tuple(s.strip() for s in work_styles.split(",") if s.strip())
+
+    hardware = detect()
+    registry = load_registry()
+    payload = models_recommended_payload(registry, hardware, styles)
+    typer.echo(json.dumps(payload, indent=2, default=str))
+
+
 __all__ = ["setup_app"]
