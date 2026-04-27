@@ -339,3 +339,127 @@ def test_engine_unknown_bundle_id_falls_back_safely(tmp_path: Path) -> None:
 
     # No raise; applied_policy is None.
     assert engine._applied_policy is None  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# WS10.3 — hardware-driven exploration_model recommendation
+# ---------------------------------------------------------------------------
+
+
+def _hw_profile(**overrides):
+    """Build a HardwareProfile snapshot for the recommendation tests."""
+    from vaner.setup import hardware as hw
+
+    base = {
+        "os": "linux",
+        "cpu_class": "high",
+        "ram_gb": 64,
+        "gpu": "nvidia",
+        "gpu_vram_gb": 24,
+        "is_battery": False,
+        "thermal_constrained": False,
+        "detected_runtimes": (),
+        "detected_models": (),
+        "tier": "high_performance",
+    }
+    base.update(overrides)
+    return hw.HardwareProfile(**base)
+
+
+def _synthetic_registry(*, params_b: float = 7.0, model_id: str = "synthetic:7b-instruct"):
+    """Build a one-model registry without naming any real-world model."""
+    from datetime import UTC, datetime
+
+    from vaner.setup.recommended.schema import RecommendedModel, Registry
+
+    model = RecommendedModel(
+        id=model_id,
+        family="synthetic",
+        params_b=params_b,
+        min_effective_gb_q4=params_b * 0.6 + 1.0,
+        intent_lean=("coding", "writing", "research", "mixed"),
+        ollama_id=model_id,
+        huggingface_id=None,
+        context_length=8192,
+        popularity_rank=1,
+        rank_source="ollama-library",
+    )
+    return Registry(
+        schema_version=1,
+        generated_at=datetime.now(tz=UTC),
+        generator="test",
+        sources=(),
+        models=(model,),
+    )
+
+
+def test_recommendation_writes_exploration_model_when_empty(tmp_path: Path) -> None:
+    """Fresh install + hardware + registry → exploration_model gets filled."""
+    cfg = _make_config(tmp_path)
+    bundle = bundle_by_id("local_balanced")
+    out = apply_policy_bundle(
+        cfg,
+        bundle,
+        hardware_profile=_hw_profile(),
+        work_styles=("coding",),
+        recommended_registry=_synthetic_registry(),
+    )
+    assert out.config.exploration.exploration_model == "synthetic:7b-instruct"
+    assert any(line.startswith("ExplorationConfig.exploration_model:") for line in out.overrides_applied), out.overrides_applied
+
+
+def test_recommendation_does_not_override_user_choice(tmp_path: Path) -> None:
+    """A user with an explicit exploration_model is never overridden."""
+    cfg = _make_config(
+        tmp_path,
+        exploration=ExplorationConfig(exploration_model="user-chose-this:13b"),
+    )
+    bundle = bundle_by_id("local_balanced")
+    out = apply_policy_bundle(
+        cfg,
+        bundle,
+        hardware_profile=_hw_profile(),
+        work_styles=("coding",),
+        recommended_registry=_synthetic_registry(),
+    )
+    assert out.config.exploration.exploration_model == "user-chose-this:13b"
+    assert not any(line.startswith("ExplorationConfig.exploration_model:") for line in out.overrides_applied)
+
+
+def test_recommendation_no_op_without_hardware(tmp_path: Path) -> None:
+    """Registry alone (no hardware profile) does not touch exploration_model."""
+    cfg = _make_config(tmp_path)
+    bundle = bundle_by_id("local_balanced")
+    out = apply_policy_bundle(
+        cfg,
+        bundle,
+        recommended_registry=_synthetic_registry(),
+    )
+    assert out.config.exploration.exploration_model == ""
+
+
+def test_recommendation_no_op_with_empty_registry(tmp_path: Path) -> None:
+    """Hardware profile alone (no registry) does not touch exploration_model."""
+    cfg = _make_config(tmp_path)
+    bundle = bundle_by_id("local_balanced")
+    out = apply_policy_bundle(
+        cfg,
+        bundle,
+        hardware_profile=_hw_profile(),
+    )
+    assert out.config.exploration.exploration_model == ""
+
+
+def test_recommendation_no_op_when_no_model_fits(tmp_path: Path) -> None:
+    """A registry with no fitting model leaves exploration_model empty."""
+    cfg = _make_config(tmp_path)
+    bundle = bundle_by_id("local_balanced")
+    # Hardware too small for the synthetic 70B-equivalent registry entry.
+    out = apply_policy_bundle(
+        cfg,
+        bundle,
+        hardware_profile=_hw_profile(ram_gb=8, gpu="none", gpu_vram_gb=None),
+        work_styles=("coding",),
+        recommended_registry=_synthetic_registry(params_b=200.0, model_id="synthetic:200b"),
+    )
+    assert out.config.exploration.exploration_model == ""

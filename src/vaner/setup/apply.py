@@ -33,13 +33,17 @@ a domain invariant.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
 from vaner.models.config import VanerConfig
 from vaner.setup.catalog import bundle_by_id
+from vaner.setup.hardware import HardwareProfile
+from vaner.setup.memory_budget import memory_budget_for
 from vaner.setup.policy import VanerPolicyBundle
+from vaner.setup.recommended.resolver import pick_for
+from vaner.setup.recommended.schema import Registry
 
 __all__ = [
     "AppliedPolicy",
@@ -126,6 +130,9 @@ def apply_policy_bundle(
     bundle: VanerPolicyBundle,
     *,
     user_overrides: Mapping[str, Any] | None = None,
+    hardware_profile: HardwareProfile | None = None,
+    work_styles: Iterable[str] = (),
+    recommended_registry: Registry | None = None,
 ) -> AppliedPolicy:
     """Materialise bundle defaults onto a :class:`VanerConfig`.
 
@@ -157,6 +164,20 @@ def apply_policy_bundle(
     :data:`WIDENS_CLOUD_POSTURE_SENTINEL`. Callers should surface
     this to the user before persisting the change.
 
+    Hardware-driven model recommendation (0.8.8 WS10.3):
+
+    When ``hardware_profile`` and ``recommended_registry`` are both
+    provided AND ``config.exploration.exploration_model`` is empty
+    (fresh install — never set), the function consults the registry
+    via :func:`vaner.setup.recommended.resolver.pick_for` and writes
+    the recommended model id into ``exploration_model``. The model
+    field is *never* overridden when the user has set it explicitly;
+    the resolver only fills empty slots.
+
+    The resolver is pure-function over the inputs, so the
+    transparency panel can rerun it deterministically to explain
+    *why* a particular model was picked.
+
     Args:
         config: The current :class:`VanerConfig`. Treated as
             immutable.
@@ -164,6 +185,18 @@ def apply_policy_bundle(
         user_overrides: Optional mapping of per-knob user overrides
             on top of the bundle defaults. Pulled by the caller from
             ``config.policy.bundle_overrides``.
+        hardware_profile: Optional snapshot of the local machine.
+            When supplied alongside ``recommended_registry``, drives
+            the model recommendation written to
+            ``exploration_model``.
+        work_styles: User-selected work styles from the wizard. Used
+            by the resolver to break ties in favour of intent-aligned
+            models. Defaults to empty (resolver picks the largest
+            fitting model regardless of intent).
+        recommended_registry: The registry produced by
+            ``scripts/refresh_recommended_models.py``. Pass
+            ``load_registry()`` from the daemon's setup endpoint;
+            tests pass synthetic registries.
 
     Returns:
         :class:`AppliedPolicy` carrying the materialised config and
@@ -226,6 +259,28 @@ def apply_policy_bundle(
     if cost_sensitive and not config.exploration.economics_first_routing:
         exploration_updates["economics_first_routing"] = True
         overrides_applied.append("ExplorationConfig.economics_first_routing: True")
+
+    # exploration_model — fill from the recommended-models registry
+    # when (a) we have hardware to size against, (b) we have a
+    # registry, and (c) the user has not set a model explicitly.
+    # Never override a user choice; never write something the resolver
+    # could not justify.
+    if (
+        hardware_profile is not None
+        and recommended_registry is not None
+        and recommended_registry.models
+        and not config.exploration.exploration_model
+    ):
+        budget = memory_budget_for(hardware_profile)
+        recommended = pick_for(recommended_registry, budget, work_styles)
+        if recommended is not None:
+            exploration_updates["exploration_model"] = recommended.id
+            overrides_applied.append(
+                f"ExplorationConfig.exploration_model: {recommended.id} "
+                f"(budget {budget.effective_gb_q4:.1f} GB q4, "
+                f"family {recommended.family}, "
+                f"params {recommended.params_b}B)"
+            )
 
     new_exploration = config.exploration.model_copy(update=exploration_updates) if exploration_updates else config.exploration
 
