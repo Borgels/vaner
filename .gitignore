@@ -45,6 +45,7 @@ scripts/*
 !scripts/sync-plugin-primer.sh
 !scripts/bump-plugin-version.sh
 !scripts/sync_agents_primer.py
+!scripts/refresh_recommended_models.py
 # CI-only bootstrap lockfiles — tracked so Scorecard's Pinned-Dependencies
 # check can verify integrity hashes on npm installs (alert #212).
 !scripts/ci/
@@ -59,3 +60,9 @@ docs/engineering/
 # overrides and session locks are not.
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# Recommended-models registry — generated at release time by
+# scripts/refresh_recommended_models.py. Source-tree checkouts that
+# have not run the script return an empty registry; release artefacts
+# carry the generated data.json.
+src/vaner/setup/recommended/data.json
