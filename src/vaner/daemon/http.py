@@ -627,6 +627,39 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             }
         )
 
+    @app.get("/models/recommended")
+    async def models_recommended(work_styles: str | None = None) -> JSONResponse:
+        """Hardware-driven model recommendation (0.8.8 WS10.4).
+
+        Query string:
+
+        - ``work_styles``: optional comma-separated list of WorkStyle
+          slugs (e.g. ``?work_styles=coding,writing``). Used by the
+          resolver to break ties in favour of intent-aligned models.
+          Empty / omitted → no intent bias.
+
+        Response shape mirrors
+        :func:`vaner.setup.recommended.models_recommended_payload`.
+        Empty registries produce ``selected=null`` so the desktop
+        wizard's preset card can fall back gracefully — the daemon
+        never crashes on missing ``data.json``.
+        """
+
+        from vaner.setup.recommended import (
+            load_registry,
+            models_recommended_payload,
+        )
+
+        styles: tuple[str, ...] = ()
+        if work_styles:
+            styles = tuple(s.strip() for s in work_styles.split(",") if s.strip())
+
+        hardware = _get_hardware_profile_cached()
+        registry = load_registry()
+        return JSONResponse(
+            models_recommended_payload(registry, hardware, styles),
+        )
+
     @app.get("/setup/status")
     async def setup_status() -> JSONResponse:
         """Return the same payload shape as the MCP ``vaner.setup.status`` tool.

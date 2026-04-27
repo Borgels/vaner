@@ -1317,6 +1317,31 @@ def build_server(
                     ),
                     inputSchema={"type": "object", "properties": {}},
                 ),
+                Tool(
+                    name="vaner.models.recommended",
+                    description=(
+                        "Return a hardware-driven model recommendation for "
+                        "the local machine. Pure read; no config write. "
+                        "Carries the computed memory budget, the selected "
+                        "model entry, and up to three alternatives so the "
+                        "desktop wizard's Recommended-preset card can render "
+                        "without a second round-trip. Empty registry "
+                        "produces selected=null and alternatives=[] — the "
+                        "wizard falls back gracefully."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "work_styles": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "array", "items": {"type": "string"}},
+                                ],
+                                "description": "WorkStyle id(s) to bias the resolver; single string or list. Empty = no intent bias.",
+                            },
+                        },
+                    },
+                ),
             ]
         )
 
@@ -2845,6 +2870,41 @@ def build_server(
         if name == "vaner.policy.show":
             await _record("ok")
             return _policy_show_handler(active_repo_root)
+
+        if name == "vaner.models.recommended":
+            from vaner.setup.hardware import detect as _hw_detect
+            from vaner.setup.recommended import load_registry as _load_registry
+            from vaner.setup.recommended import (
+                models_recommended_payload as _models_recommended_payload,
+            )
+
+            raw_styles = args.get("work_styles") if isinstance(args, dict) else None
+            styles: tuple[str, ...]
+            if raw_styles is None or raw_styles == "":
+                styles = ()
+            elif isinstance(raw_styles, str):
+                styles = tuple(s.strip() for s in raw_styles.split(",") if s.strip())
+            elif isinstance(raw_styles, list) and all(isinstance(s, str) for s in raw_styles):
+                styles = tuple(raw_styles)
+            else:
+                await _record("error")
+                return _json_result(
+                    {"code": "invalid_input", "message": "work_styles must be a string or array of strings"},
+                    is_error=True,
+                )
+
+            try:
+                hardware = _hw_detect()
+                registry = _load_registry()
+                payload = _models_recommended_payload(registry, hardware, styles)
+            except Exception as exc:  # pragma: no cover - defensive
+                await _record("error")
+                return _json_result(
+                    {"code": "recommend_failed", "message": str(exc)},
+                    is_error=True,
+                )
+            await _record("ok")
+            return _json_result(payload)
 
         if name == "vaner.debug.trace":
             if str(__import__("os").environ.get("VANER_MCP_DEBUG", "0")) != "1":

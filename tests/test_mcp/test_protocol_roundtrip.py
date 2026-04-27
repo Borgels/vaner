@@ -87,6 +87,8 @@ def test_mcp_protocol_roundtrip(temp_repo: Path, monkeypatch: pytest.MonkeyPatch
                 "vaner.setup.apply",
                 "vaner.setup.status",
                 "vaner.policy.show",
+                # 0.8.8 WS10.4: hardware-driven model recommendation.
+                "vaner.models.recommended",
             }
 
             status = await session.call_tool("vaner.status", {})

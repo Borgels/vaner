@@ -24,7 +24,8 @@ falls back gracefully — see WS11.3 in the plan).
 """
 
 from vaner.setup.recommended.loader import load_registry
-from vaner.setup.recommended.resolver import pick_for
+from vaner.setup.recommended.payload import models_recommended_payload
+from vaner.setup.recommended.resolver import alternatives_for, pick_for
 from vaner.setup.recommended.schema import (
     RecommendedModel,
     Registry,
@@ -35,6 +36,8 @@ __all__ = [
     "RecommendedModel",
     "Registry",
     "RegistrySource",
+    "alternatives_for",
     "load_registry",
+    "models_recommended_payload",
     "pick_for",
 ]

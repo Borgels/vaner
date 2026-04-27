@@ -24,8 +24,9 @@ def test_server_boot_initialize_lists_tools_and_status(temp_repo) -> None:
             # tools → 26. 0.8.5 WS5 adds vaner.predictions.dashboard → 27.
             # 0.8.6 WS7 adds 5 vaner.setup.* / vaner.policy.show tools → 32.
             # 0.8.6 WS9 adds vaner.deep_run.defaults → 33.
+            # 0.8.8 WS10.4 adds vaner.models.recommended → 34.
             # Exact set is asserted in test_protocol_roundtrip.
-            assert len(names) == 33
+            assert len(names) == 34
             assert "vaner.status" in names
             assert "vaner.predictions.active" in names
             assert "vaner.predictions.adopt" in names
@@ -40,6 +41,7 @@ def test_server_boot_initialize_lists_tools_and_status(temp_repo) -> None:
             assert "vaner.setup.apply" in names
             assert "vaner.setup.status" in names
             assert "vaner.policy.show" in names
+            assert "vaner.models.recommended" in names
             resolve_schema = schemas["vaner.resolve"]
             assert set(resolve_schema["properties"]) >= {
                 "query",
