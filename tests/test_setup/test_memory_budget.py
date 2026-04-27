@@ -239,3 +239,102 @@ def test_can_offload_to_cpu_set_when_ram_dwarfs_vram() -> None:
     small = memory_budget_for(_profile(gpu="nvidia", gpu_vram_gb=8, ram_gb=12))
     # 12 GB RAM with 8 GB VRAM → can't comfortably spillover (RAM not > 1.5 × VRAM)
     assert not small.can_offload_to_cpu
+
+
+# ---------------------------------------------------------------------------
+# WS10.5 — multi-GPU + datacenter accelerator
+# ---------------------------------------------------------------------------
+
+
+def test_dual_pro_workstation_uses_total_vram() -> None:
+    """A 2× RTX PRO 6000 box (192 GB total) must size against the total."""
+    profile = _profile(
+        ram_gb=128,
+        gpu="nvidia",
+        gpu_vram_gb=96,  # single-card view (legacy field)
+        gpu_count=2,
+        total_vram_gb=192,
+    )
+    budget = memory_budget_for(profile)
+    # 192 × 0.85 = 163.2 — keeps two-card workstations honest.
+    assert 150.0 <= budget.effective_gb_q4 <= 175.0
+    # 2 GPUs is below the cluster threshold (≥4); accelerator stays
+    # "nvidia" so the resolver's nvidia-flavoured family weights still
+    # apply.
+    assert budget.accelerator == "nvidia"
+    assert budget.gpu_count == 2
+
+
+def test_4plus_gpu_rig_flips_to_cluster_accelerator() -> None:
+    """A quad+ GPU rig labels the accelerator 'cluster'."""
+    profile = _profile(
+        ram_gb=512,
+        gpu="nvidia",
+        gpu_vram_gb=80,
+        gpu_count=4,
+        total_vram_gb=320,
+    )
+    budget = memory_budget_for(profile)
+    assert budget.accelerator == "cluster"
+    assert budget.gpu_count == 4
+
+
+def test_datacenter_accelerator_flag_flips_cluster_label() -> None:
+    """A single H200 (datacenter SKU) labels accelerator='cluster' even at gpu_count=1."""
+    profile = _profile(
+        ram_gb=2048,
+        gpu="nvidia",
+        gpu_vram_gb=141,
+        gpu_count=1,
+        total_vram_gb=141,
+        datacenter_accelerator=True,
+    )
+    budget = memory_budget_for(profile)
+    assert budget.accelerator == "cluster"
+    assert any("datacenter-class" in n for n in budget.notes)
+
+
+def test_8x_h200_class_caps_at_600() -> None:
+    """An 8× H200 (1128 GB total) clamps to the 600 GB datacenter cap."""
+    profile = _profile(
+        ram_gb=2048,
+        gpu="nvidia",
+        gpu_vram_gb=141,
+        gpu_count=8,
+        total_vram_gb=1128,
+        datacenter_accelerator=True,
+    )
+    budget = memory_budget_for(profile)
+    assert budget.effective_gb_q4 == 600.0
+    assert budget.accelerator == "cluster"
+    assert budget.gpu_count == 8
+
+
+def test_single_card_unchanged_by_topology_fields() -> None:
+    """The default topology values keep single-card behaviour identical."""
+    profile = _profile(gpu="nvidia", gpu_vram_gb=24, ram_gb=64)
+    budget = memory_budget_for(profile)
+    assert budget.accelerator == "nvidia"
+    assert budget.gpu_count == 1
+    # Same numeric range as the original calibration row.
+    assert 17.0 <= budget.effective_gb_q4 <= 25.0
+
+
+def test_total_vram_gb_overrides_single_when_present() -> None:
+    """If total_vram_gb > gpu_vram_gb, the budget uses total."""
+    single_view = memory_budget_for(_profile(gpu="nvidia", gpu_vram_gb=24, ram_gb=64))
+    multi_view = memory_budget_for(_profile(gpu="nvidia", gpu_vram_gb=24, ram_gb=64, gpu_count=2, total_vram_gb=48))
+    assert multi_view.effective_gb_q4 > single_view.effective_gb_q4
+
+
+def test_datacenter_marker_helper() -> None:
+    """The marker helper recognises common datacenter SKUs and ignores workstation cards."""
+    from vaner.setup.hardware import _is_datacenter_gpu_name
+
+    assert _is_datacenter_gpu_name("NVIDIA H100 80GB HBM3")
+    assert _is_datacenter_gpu_name("NVIDIA H200 141GB HBM3e")
+    assert _is_datacenter_gpu_name("NVIDIA A100-SXM4-80GB")
+    assert _is_datacenter_gpu_name("NVIDIA B200")
+    assert not _is_datacenter_gpu_name("NVIDIA RTX 4090")
+    assert not _is_datacenter_gpu_name("NVIDIA RTX PRO 6000 Blackwell")
+    assert not _is_datacenter_gpu_name("AMD Radeon RX 7900 XTX")

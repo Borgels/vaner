@@ -46,6 +46,12 @@ class HardwareProfile:
 
     The ``tier`` field is computed once at construction time so consumers do
     not need to re-derive it.
+
+    Multi-GPU fields (``gpu_count`` / ``total_vram_gb`` /
+    ``datacenter_accelerator``) default to single-card values so that
+    pre-0.8.8 callers constructing a ``HardwareProfile`` do not break.
+    The 0.8.8 nvidia probe populates them; other GPU paths leave them
+    at the defaults.
     """
 
     os: OS
@@ -58,6 +64,10 @@ class HardwareProfile:
     detected_runtimes: tuple[Runtime, ...]
     detected_models: tuple[tuple[str, str, str], ...]
     tier: HardwareTier = field(default="unknown")
+    # 0.8.8 WS10.5 — multi-GPU + datacenter-accelerator detection.
+    gpu_count: int = 1
+    total_vram_gb: int | None = None
+    datacenter_accelerator: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +196,42 @@ def _probe_cpu_and_ram() -> tuple[CPUClass, int]:
 # ---------------------------------------------------------------------------
 
 
+# Names that mark a card as a datacenter accelerator. Match is
+# case-insensitive substring on the GPU's NVML name. Conservative —
+# only well-known SKUs land here. Others (RTX PRO 6000, A6000, etc.)
+# are workstation cards and stay in the standard ``nvidia`` branch
+# even though they may have datacenter-class VRAM.
+_DATACENTER_GPU_MARKERS: tuple[str, ...] = (
+    "h100",
+    "h200",
+    "h800",
+    "b100",
+    "b200",
+    "a100",
+    "a800",
+    "v100",
+    "p100",
+    "t4 datacenter",
+    "l40s",
+    "l40",
+    "l4",
+)
+
+
+def _is_datacenter_gpu_name(name: str) -> bool:
+    """Return ``True`` when ``name`` matches a known datacenter SKU."""
+    lowered = name.lower()
+    return any(marker in lowered for marker in _DATACENTER_GPU_MARKERS)
+
+
 def _probe_gpu_nvidia() -> tuple[GPU, int | None] | None:
-    """Use pynvml when available to identify NVIDIA GPUs + VRAM."""
+    """Single-card nvidia view (kind + VRAM of GPU 0).
+
+    Backwards-compatible legacy entry point — kept verbatim so the
+    existing ``_probe_gpu`` chain returns the same shape pre-0.8.8
+    callers expect. The richer multi-GPU + datacenter detection is in
+    :func:`_probe_gpu_topology`.
+    """
     try:
         import pynvml  # type: ignore[import-not-found]
     except ImportError:
@@ -298,6 +342,70 @@ def _probe_gpu() -> tuple[GPU, int | None]:
     except Exception:
         logger.debug("GPU probe failed", exc_info=True)
         return "none", None
+
+
+def _probe_gpu_topology() -> tuple[int, int | None, bool]:
+    """Multi-GPU + datacenter view (0.8.8 WS10.5).
+
+    Returns ``(gpu_count, total_vram_gb, datacenter_accelerator)``:
+
+    - ``gpu_count``: how many GPUs the host exposes. ``1`` for
+      single-card workstations + Apple Silicon; ``>1`` for prosumer /
+      datacenter rigs.
+    - ``total_vram_gb``: sum of per-card VRAM in GB. ``None`` when
+      VRAM cannot be read (Linux lspci-only path, integrated
+      graphics, etc.).
+    - ``datacenter_accelerator``: ``True`` when at least one card's
+      reported name matches a known datacenter SKU
+      (:data:`_DATACENTER_GPU_MARKERS`). The desktop wizard surfaces
+      this so the user sees "we detected H100/H200/etc." rather than
+      "an NVIDIA card."
+
+    NVIDIA via pynvml is the only path that yields a real count +
+    sum today. AMD ROCm + Apple Silicon are single-card from the
+    pynvml-equivalent's perspective, so we report ``(1, vram_or_none,
+    False)`` and let the caller use it. The function never raises.
+    """
+    try:
+        import pynvml  # type: ignore[import-not-found]
+    except ImportError:
+        return (1, None, False)
+    except Exception:
+        logger.debug("pynvml import failed", exc_info=True)
+        return (1, None, False)
+
+    try:
+        pynvml.nvmlInit()
+        try:
+            count = pynvml.nvmlDeviceGetCount()
+            if count <= 0:
+                return (1, None, False)
+            total_vram_bytes = 0
+            datacenter = False
+            for i in range(count):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                try:
+                    mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    total_vram_bytes += int(mem.total)
+                except Exception:  # pragma: no cover - per-card defensive
+                    logger.debug("nvmlDeviceGetMemoryInfo failed for GPU %d", i, exc_info=True)
+                try:
+                    raw_name = pynvml.nvmlDeviceGetName(handle)
+                    name = raw_name.decode("utf-8", errors="replace") if isinstance(raw_name, bytes) else str(raw_name)
+                except Exception:  # pragma: no cover - per-card defensive
+                    name = ""
+                if _is_datacenter_gpu_name(name):
+                    datacenter = True
+            total_gb: int | None = max(1, round(total_vram_bytes / (1024**3))) if total_vram_bytes else None
+            return (count, total_gb, datacenter)
+        finally:
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:  # pragma: no cover - cleanup
+                logger.debug("nvmlShutdown failed", exc_info=True)
+    except Exception:
+        logger.debug("pynvml topology probe failed", exc_info=True)
+        return (1, None, False)
 
 
 # ---------------------------------------------------------------------------
@@ -584,6 +692,7 @@ def detect() -> HardwareProfile:
     os_kind = _probe_os()
     cpu_class, ram_gb = _probe_cpu_and_ram()
     gpu, gpu_vram_gb = _probe_gpu()
+    gpu_count, total_vram_gb, datacenter = _probe_gpu_topology() if gpu == "nvidia" else (1, gpu_vram_gb, False)
     is_battery = _probe_battery()
     thermal = _probe_thermal()
     runtimes = _probe_runtimes()
@@ -605,6 +714,9 @@ def detect() -> HardwareProfile:
         detected_runtimes=runtimes,
         detected_models=models,
         tier="unknown",
+        gpu_count=gpu_count,
+        total_vram_gb=total_vram_gb,
+        datacenter_accelerator=datacenter,
     )
     final_tier: HardwareTier = "unknown" if os_kind is None else tier_for(profile)
     return HardwareProfile(
@@ -618,6 +730,9 @@ def detect() -> HardwareProfile:
         detected_runtimes=runtimes,
         detected_models=models,
         tier=final_tier,
+        gpu_count=gpu_count,
+        total_vram_gb=total_vram_gb,
+        datacenter_accelerator=datacenter,
     )
 
 

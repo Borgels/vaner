@@ -146,21 +146,37 @@ def memory_budget_for(profile: HardwareProfile) -> MemoryBudget:
 
     if profile.gpu in ("nvidia", "amd") and profile.gpu_vram_gb:
         # Discrete GPU with known VRAM: the GPU itself is the budget.
-        # System RAM beyond VRAM is only useful for llama.cpp spillover,
-        # which we flag separately so the resolver can choose to
-        # consider larger models with degraded speed.
-        gpu_budget = profile.gpu_vram_gb * _DISCRETE_VRAM_USABLE_FRACTION
-        can_offload = profile.ram_gb > profile.gpu_vram_gb * 1.5
+        # When the topology probe reported total_vram_gb across multiple
+        # cards, prefer that — a 2× RTX PRO 6000 rig should not be
+        # sized as one 96 GB card. System RAM beyond VRAM is only
+        # useful for llama.cpp spillover, which we flag separately so
+        # the resolver can choose to consider larger models with
+        # degraded speed.
+        usable_vram_gb = profile.total_vram_gb or profile.gpu_vram_gb
+        gpu_count = profile.gpu_count if profile.gpu_count > 0 else 1
+        gpu_budget = usable_vram_gb * _DISCRETE_VRAM_USABLE_FRACTION
+        can_offload = profile.ram_gb > usable_vram_gb * 1.5
         if profile.is_battery:
             gpu_budget *= _BATTERY_PENALTY
             notes.append("battery-throttled")
-        notes.append(f"{profile.gpu} discrete GPU, {profile.gpu_vram_gb} GB VRAM")
+        # Cluster accelerator label fires when ≥ 4 GPUs or any
+        # datacenter SKU (H100/H200/A100/B200/...) is present. The
+        # resolver and desktop wizard branch on this to surface
+        # "you have more headroom than we model" copy.
+        is_cluster = gpu_count >= 4 or profile.datacenter_accelerator
+        accelerator: Accelerator = "cluster" if is_cluster else profile.gpu  # type: ignore[assignment]
+        if profile.datacenter_accelerator:
+            notes.append("datacenter-class accelerator detected")
+        if gpu_count > 1:
+            notes.append(f"{gpu_count} GPUs detected, {usable_vram_gb} GB total VRAM")
+        else:
+            notes.append(f"{profile.gpu} discrete GPU, {usable_vram_gb} GB VRAM")
         if can_offload:
             notes.append(f"CPU offload available ({profile.ram_gb} GB system RAM)")
         return MemoryBudget(
             effective_gb_q4=_clamp(gpu_budget),
-            accelerator=profile.gpu,  # type: ignore[arg-type]
-            gpu_count=1,
+            accelerator=accelerator,
+            gpu_count=gpu_count,
             can_offload_to_cpu=can_offload,
             notes=tuple(notes),
         )
