@@ -32,6 +32,7 @@ def openai_llm(
         api_key=api_key,
         base_url=base_url,
         timeout=timeout,
+        reasoning_mode="off",
     )
 
     async def _call(prompt: str) -> str:

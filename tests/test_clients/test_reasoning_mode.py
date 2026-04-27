@@ -4,7 +4,7 @@
 Verifies the four reasoning_mode values produce correct request shaping and
 response-validation behaviour:
 
-- ``off``: inject ``enable_thinking=false`` (openai) or ``/no_think`` (ollama);
+- ``off``: inject ``enable_thinking=false`` (openai) or ``think=false`` (ollama);
   reject responses that still emit a thinking preamble.
 - ``allowed``: thinking preamble permitted; adapter strips it.
 - ``required``: provider must emit a thinking preamble; error otherwise.

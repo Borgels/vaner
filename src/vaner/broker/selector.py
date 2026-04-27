@@ -25,25 +25,89 @@ _COMMON_WORDS = frozenset(
     " all any get has had its may not new one out per set via was yet you"
     # short common programming words that dilute scoring
     " work works working longer seems look looks correct correctly already just"
-    " which would could should need needs using between only still over under".split()
+    " which would could should need needs using between only still over under"
+    " how does explain describe walk through".split()
 )
+
+
+def _prompt_terms(prompt: str) -> list[str]:
+    """Extract searchable prompt terms, splitting code-style identifiers."""
+
+    terms: list[str] = []
+    for raw in _identifier_chunks(prompt):
+        lowered = raw.lower()
+        terms.append(lowered)
+        terms.extend(part.lower() for part in raw.split("_") if len(part) > 2)
+        terms.extend(part.lower() for part in _camel_parts(raw) if len(part) > 2)
+    return list(dict.fromkeys(term for term in terms if term and term not in _COMMON_WORDS))
+
+
+def _identifier_chunks(text: str, *, max_len: int = 128) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    for char in text:
+        if char.isascii() and (char.isalnum() or char == "_"):
+            if not current and not char.isalpha():
+                continue
+            if len(current) < max_len:
+                current.append(char)
+            continue
+        if len(current) > 2:
+            chunks.append("".join(current))
+        current = []
+    if len(current) > 2:
+        chunks.append("".join(current))
+    return chunks
+
+
+def _camel_parts(identifier: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    for index in range(1, len(identifier)):
+        previous = identifier[index - 1]
+        current = identifier[index]
+        next_char = identifier[index + 1] if index + 1 < len(identifier) else ""
+        boundary = (
+            (previous.islower() and current.isupper())
+            or (previous.isalpha() and current.isdigit())
+            or (previous.isdigit() and current.isalpha())
+            or (previous.isupper() and current.isupper() and next_char.islower())
+        )
+        if boundary:
+            parts.append(identifier[start:index])
+            start = index
+    parts.append(identifier[start:])
+    return parts
 
 
 def score_artefact(prompt: str, artefact: Artefact, *, factor_sink: list[ScoreFactor] | None = None) -> float:
     # Extract identifiers: split on non-alphanumeric boundaries so
     # "col_insert()" → "col_insert", "Matrix.foo" → ["matrix", "foo"]
-    raw_terms = re.findall(r"[a-z][a-z0-9_]{2,}", prompt.lower())
-    text = f"{artefact.source_path} {artefact.content}".lower()
+    raw_terms = _prompt_terms(prompt)
+    path_text = artefact.source_path.lower()
+    basename = path_text.rsplit("/", 1)[-1]
+    content_text = artefact.content.lower()
 
     keyword_overlap = 0.0
     for term in raw_terms:
         if term in _COMMON_WORDS:
             continue
-        if term not in text:
+        path_hit = term in path_text
+        content_hit = term in content_text
+        if not path_hit and not content_hit:
             continue
         # Code identifiers (containing underscore) are stronger signals
         weight = 3.0 if "_" in term else 1.0
-        keyword_overlap += weight
+        if path_hit:
+            keyword_overlap += weight * (5.0 if term in basename else 3.0)
+        if content_hit:
+            keyword_overlap += weight
+
+    prompt_mentions_tests = any(term in {"test", "tests", "testing", "spec", "specs"} for term in raw_terms)
+    if path_text.startswith(("src/", "lib/", "app/", "packages/")):
+        keyword_overlap += 0.7
+    elif path_text.startswith(("tests/", "test/")) and not prompt_mentions_tests:
+        keyword_overlap -= 6.0
 
     recency_bonus = _recency_bonus(artefact)
     if factor_sink is not None:
@@ -73,7 +137,7 @@ def _is_origin_question(prompt: str) -> bool:
 
 
 def _origin_bonus(prompt: str, content: str) -> float:
-    prompt_tokens = {token for token in re.findall(r"[a-z0-9_]+", prompt.lower()) if len(token) > 2}
+    prompt_tokens = set(_prompt_terms(prompt))
     def_terms = set(re.findall(r"`([a-zA-Z_][a-zA-Z0-9_]*)`", content))
     def_terms |= set(re.findall(r"\*\*([a-zA-Z_][a-zA-Z0-9_]*)\*\*", content))
     def_terms |= set(re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\(", content))
@@ -89,8 +153,7 @@ def _origin_bonus(prompt: str, content: str) -> float:
 
 def _build_fts_query(prompt: str) -> str:
     """Build a safe FTS5 query string from a natural-language prompt."""
-    tokens = re.findall(r"[a-z][a-z0-9_]{2,}", prompt.lower())
-    filtered = [t for t in tokens if t not in _COMMON_WORDS][:15]
+    filtered = _prompt_terms(prompt)[:15]
     return " ".join(filtered)
 
 

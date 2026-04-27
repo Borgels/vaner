@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ActivePredictionsPanel, type PredictionRow } from './ActivePredictionsPanel'
 
@@ -42,11 +42,7 @@ function makeFetcher(rows: PredictionRow[]) {
 }
 
 describe('ActivePredictionsPanel', () => {
-  beforeEach(() => {
-    vi.useFakeTimers()
-  })
   afterEach(() => {
-    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 

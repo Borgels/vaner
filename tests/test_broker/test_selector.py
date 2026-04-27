@@ -89,6 +89,60 @@ def test_select_artefacts_origin_rerank_prefers_definition_files():
     assert selected[0].key == "file_summary:b.py"
 
 
+def test_select_artefacts_splits_camelcase_identifiers():
+    artefacts = [
+        Artefact(
+            key="file_summary:src/vaner/intent/frontier.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/vaner/intent/frontier.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="Exploration frontier priority queue and admission control.",
+        ),
+        Artefact(
+            key="file_summary:src/vaner/models/signal.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/vaner/models/signal.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="Signal event payloads and lifecycle metadata.",
+        ),
+    ]
+
+    selected = select_artefacts("How does ExplorationFrontier choose scenarios?", artefacts, top_n=1)
+
+    assert selected[0].source_path == "src/vaner/intent/frontier.py"
+
+
+def test_select_artefacts_prefers_source_over_incidental_tests():
+    artefacts = [
+        Artefact(
+            key="file_summary:tests/test_cache.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="tests/test_cache.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="TieredPredictionCache full hit partial hit warm start cold miss assertions.",
+        ),
+        Artefact(
+            key="file_summary:src/vaner/intent/cache.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/vaner/intent/cache.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="Classes: TieredPredictionCache Functions: match store_entry candidate_anchor_units.",
+        ),
+    ]
+
+    selected = select_artefacts("Explain TieredPredictionCache full hit and cold miss logic", artefacts, top_n=1)
+
+    assert selected[0].source_path == "src/vaner/intent/cache.py"
+
+
 def test_select_artefacts_custom_scorer_changes_ranking():
     artefacts = [
         Artefact(

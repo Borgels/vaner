@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
+
+import httpx
 
 from vaner.daemon.engine import generator as generator_mod
-from vaner.daemon.engine.generator import agenerate_file_summary, generate_artefact, generate_diff_summary
-from vaner.models.config import GenerationConfig, VanerConfig
+from vaner.daemon.engine.generator import _llm_summarize, agenerate_file_summary, generate_artefact, generate_diff_summary
+from vaner.models.config import BackendConfig, GenerationConfig, VanerConfig
+
+_real_async_client = httpx.AsyncClient
+
+
+def _stub_async_client(handler):
+    def _factory(**_kwargs):
+        return _real_async_client(transport=httpx.MockTransport(handler))
+
+    return _factory
 
 
 def test_generate_artefact_for_normal_file(temp_repo):
@@ -71,6 +83,33 @@ def test_agenerate_file_summary_uses_llm_when_enabled(temp_repo, monkeypatch):
     )
     assert artefact.content == "LLM precise summary"
     assert artefact.metadata["summary_mode"] == "llm"
+
+
+def test_llm_summarize_uses_native_ollama_chat_with_thinking_disabled(temp_repo, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _handler(req: httpx.Request) -> httpx.Response:
+        captured["path"] = req.url.path
+        captured["body"] = json.loads(req.content or b"{}")
+        return httpx.Response(200, json={"message": {"content": "native summary"}})
+
+    monkeypatch.setattr(httpx, "AsyncClient", _stub_async_client(_handler))
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+        backend=BackendConfig(name="ollama", base_url="http://127.0.0.1:11434/v1", model="qwen3.5:35b"),
+        generation=GenerationConfig(use_llm=True, summary_max_tokens=64),
+    )
+
+    result = asyncio.run(_llm_summarize("def x(): pass", "summarize", config, "x.py"))
+
+    assert result == "native summary"
+    assert captured["path"] == "/api/chat"
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["think"] is False
+    assert body["options"] == {"num_predict": 64}
 
 
 def test_agenerate_file_summary_falls_back_to_heuristic_when_llm_fails(temp_repo, monkeypatch):

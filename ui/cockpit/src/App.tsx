@@ -87,6 +87,7 @@ function App() {
   const bootstrap = useBootstrap()
   const pipeline = usePipelineEvents({ path: '/events/stream' })
   const [cockpit, setCockpit] = useState<CockpitSettings>(DEFAULT_COCKPIT_SETTINGS)
+  const [query, setQuery] = useState('why is the ponder loop dropping scenarios after reweight?')
   const { scenarios, setScenarios, scenarioMap, setScenarioMap } = useScenarios(cockpit.topK, pipeline.events)
   const [backend, setBackend] = useState<BackendSettings | null>(null)
   const [compute, setCompute] = useState<ComputeSettings | null>(null)
@@ -522,6 +523,8 @@ function App() {
     <div className="cockpit-root">
       <TopBar
         mode={mode}
+        query={query}
+        onQuery={setQuery}
         running={streamLive}
         onToggleRun={() => void refreshAll()}
         packageState={packageState}

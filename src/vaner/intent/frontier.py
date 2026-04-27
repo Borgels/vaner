@@ -784,6 +784,7 @@ class ExplorationFrontier:
         valid_paths = [p for p in miss_paths if p in available_set]
         if not valid_paths:
             return 0
+        scenario_paths = valid_paths[:8]
         priority = self._score(
             source="graph",
             graph_proximity=1.0,
@@ -794,13 +795,60 @@ class ExplorationFrontier:
             depth=0,
         )
         scenario = ExplorationScenario(
-            id=file_set_fingerprint(valid_paths),
-            file_paths=valid_paths,
+            id=file_set_fingerprint(scenario_paths),
+            file_paths=scenario_paths,
             anchor="miss_recovery",
             source="graph",
             priority=priority,
             depth=0,
             reason="recovery from cold-miss query",
+            layer="tactical",
+        )
+        return 1 if self.push(scenario) else 0
+
+    def seed_from_focus_paths(
+        self,
+        paths: list[str],
+        available_paths: list[str],
+        *,
+        reason: str = "recent intent focus",
+        priority_floor: float = 0.95,
+    ) -> int:
+        """Seed a high-priority scenario from paths selected by intent signals.
+
+        Unlike ``seed_from_miss``, this is not recovery from a failed query. It
+        represents paths that the current cycle's query/workspace heuristics
+        already consider relevant, so the frontier should explore them before
+        broad category buckets such as docs, CI, or generic configuration.
+        """
+        if not paths:
+            return 0
+        available_set = set(available_paths)
+        valid_paths = list(dict.fromkeys(p for p in paths if p in available_set))
+        if not valid_paths:
+            return 0
+        scenario_paths = valid_paths[:8]
+        priority = max(
+            float(priority_floor),
+            self._score(
+                source="graph",
+                graph_proximity=1.0,
+                arc_probability=0.15,
+                coverage_gap=1.0,
+                pattern_strength=0.1,
+                freshness_decay=1.0,
+                depth=0,
+                layer="tactical",
+            ),
+        )
+        scenario = ExplorationScenario(
+            id=file_set_fingerprint(scenario_paths),
+            file_paths=scenario_paths,
+            anchor="intent_focus",
+            source="graph",
+            priority=priority,
+            depth=0,
+            reason=reason,
             layer="tactical",
         )
         return 1 if self.push(scenario) else 0

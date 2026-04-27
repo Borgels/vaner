@@ -74,12 +74,7 @@ def test_cockpit_support_endpoints_return_payloads(temp_repo) -> None:
     skill_path = temp_repo / ".cursor" / "skills" / "vaner" / "sample" / "SKILL.md"
     skill_path.parent.mkdir(parents=True, exist_ok=True)
     skill_path.write_text(
-        "---\n"
-        "name: sample-skill\n"
-        "description: Helps with cockpit smoke tests\n"
-        "tags: [debug]\n"
-        "---\n"
-        "# Sample\n",
+        "---\nname: sample-skill\ndescription: Helps with cockpit smoke tests\ntags: [debug]\n---\n# Sample\n",
         encoding="utf-8",
     )
 

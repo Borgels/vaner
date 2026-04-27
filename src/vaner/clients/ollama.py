@@ -26,6 +26,7 @@ def ollama_llm(
         model=model,
         base_url=base_url,
         timeout=timeout,
+        reasoning_mode="off",
     )
 
     async def _call(prompt: str) -> str:
@@ -71,7 +72,12 @@ def ollama_llm_structured(
     async def _call(prompt: str, *, max_tokens: int | None = max_tokens) -> LLMResponse:
         import httpx
 
-        body: dict = {"model": model, "prompt": prompt, "stream": False}
+        use_chat_api = reasoning_mode == "off"
+        body: dict
+        if use_chat_api:
+            body = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
+        else:
+            body = {"model": model, "prompt": prompt, "stream": False}
         options: dict = {}
         if max_tokens is not None and max_tokens > 0:
             options["num_predict"] = int(max_tokens)
@@ -83,16 +89,37 @@ def ollama_llm_structured(
                 body["format"] = "json"
         merged_extra = dict(extra_body or {})
         if reasoning_mode == "off":
-            body["prompt"] = prompt + "\n/no_think"
+            # Modern Ollama reasoning models support a top-level ``think``
+            # switch and return reasoning in a separate ``thinking`` field.
+            # The chat API is the reliable path for current Qwen/Gemma
+            # models; the generate API may still spend the full budget in
+            # the hidden thinking channel and return empty ``response``.
+            body["think"] = False
         body.update(merged_extra)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(f"{_base}/api/generate", json=body)
+            endpoint = "/api/chat" if use_chat_api else "/api/generate"
+            response = await client.post(f"{_base}{endpoint}", json=body)
             response.raise_for_status()
             payload = response.json()
-            raw = str(payload.get("response", ""))
+            if use_chat_api:
+                message = payload.get("message")
+                if isinstance(message, dict):
+                    raw = str(message.get("content", ""))
+                    provider_thinking = str(message.get("thinking", ""))
+                else:
+                    raw = ""
+                    provider_thinking = ""
+            else:
+                raw = str(payload.get("response", ""))
+                provider_thinking = str(payload.get("thinking", ""))
 
         split = split_thinking_and_content(raw)
+        if provider_thinking:
+            thinking = provider_thinking.strip()
+            if split.thinking:
+                thinking = f"{thinking}\n{split.thinking}".strip()
+            split = LLMResponse(thinking=thinking, content=split.content, raw=raw)
 
         if reasoning_mode == "required" and not split.thinking:
             raise ValueError(
