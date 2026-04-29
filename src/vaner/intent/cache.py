@@ -41,6 +41,18 @@ def _token_similarity(a: str, b: str) -> float:
     return overlap / union
 
 
+def _is_intentional_prediction_source(source: str) -> bool:
+    """Sources whose cache entries represent a user-intent prediction."""
+    return source in {
+        "structured_direct",
+        "structured_graph_expand",
+        "llm_branch",
+        "arc",
+        "pattern",
+        "predicted_response",
+    }
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
@@ -144,13 +156,8 @@ class TieredPredictionCache:
         for record in records:
             enrichment = record.get("enrichment") if isinstance(record.get("enrichment"), dict) else {}
             enrichment = enrichment or {}
-            # Only consider intentional predictions (LLM scenarios, arc-model
-            # phase hints). Graph-walk "dependency neighbourhood" entries are
-            # mechanical file-expansion and add noise when unioned into the
-            # query's relevant_paths — benchmark shows that including them
-            # regresses learner/researcher archetypes.
             exploration_source = str(enrichment.get("exploration_source") or "")
-            if exploration_source not in ("llm_branch", "arc"):
+            if not _is_intentional_prediction_source(exploration_source):
                 continue
             units: list[str] = []
             for key in ("anchor_units", "source_units", "anchor_files", "source_paths"):

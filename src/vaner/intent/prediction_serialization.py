@@ -8,6 +8,7 @@ free of MCP/FastAPI imports so both surfaces can use it.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from vaner.intent.prediction import PredictedPrompt
@@ -127,6 +128,8 @@ def serialize_prediction_flat(prompt: PredictedPrompt, *, rank: int | None = Non
         "has_draft": artifacts.draft_answer is not None,
         "has_briefing": artifacts.prepared_briefing is not None,
     }
+    if spec.structured is not None:
+        payload["structured"] = asdict(spec.structured)
     payload.update(prediction_card_payload(prompt, rank=rank))
     return payload
 
@@ -148,6 +151,7 @@ def serialize_prediction_nested(prompt: PredictedPrompt, *, rank: int | None = N
             "hypothesis_type": spec.hypothesis_type,
             "specificity": spec.specificity,
             "created_at": spec.created_at,
+            "structured": asdict(spec.structured) if spec.structured is not None else None,
         },
         "run": {
             "weight": run.weight,

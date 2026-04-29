@@ -12,7 +12,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
@@ -55,6 +55,8 @@ from vaner.intent.deep_run_maturation import (
 )
 from vaner.intent.drafter import Drafter
 from vaner.intent.ev import jaccard_reuse
+from vaner.intent.evidence_hygiene import evidence_path_kind, filter_evidence_paths, is_evidence_path_allowed
+from vaner.intent.evidence_resolver import evidence_readiness, resolve_evidence_targets
 from vaner.intent.features import extract_hybrid_features
 from vaner.intent.frontier import ExplorationFrontier, ExplorationScenario, file_set_fingerprint
 from vaner.intent.governor import PredictionGovernor
@@ -73,10 +75,16 @@ from vaner.intent.prediction import (
     prediction_id,
 )
 from vaner.intent.prediction_registry import PredictionRegistry
+from vaner.intent.prediction_v2 import (
+    StructuredPrediction,
+    compatibility_for_query,
+    structured_from_prediction_fields,
+)
 from vaner.intent.profile import UserProfile
 from vaner.intent.reasoner import CorpusReasoner, PredictionScenario
 from vaner.intent.scorer import IntentScorer
 from vaner.intent.scoring_policy import ScoringPolicy
+from vaner.intent.symbol_index import rank_exact_paths
 from vaner.intent.taxonomy import EmbeddingTaxonomyClassifier, classify_taxonomy
 from vaner.intent.timing import ActivityTimingModel
 from vaner.intent.trainer import IntentTrainer
@@ -514,6 +522,7 @@ class VanerEngine:
         if snapshot is not None:
             try:
                 await self._composer_signal_pump.publish(snapshot)
+                await self._on_composer_snapshot(snapshot, composer_event_id=event.id)
             except Exception:  # pragma: no cover - defensive
                 # The signal is already persisted. A future cycle can
                 # re-derive prediction state from signal_events; losing
@@ -528,6 +537,80 @@ class VanerEngine:
         for tests. The engine owns the pump for its lifetime.
         """
         return self._composer_signal_pump
+
+    def _ensure_prediction_registry(self) -> PredictionRegistry:
+        if self._prediction_registry is None:
+            ecfg = self.config.exploration
+            cycle_token_pool = max(512, int(ecfg.frontier_max_size) * 32)
+            self._prediction_registry = PredictionRegistry(cycle_token_pool=cycle_token_pool)
+        return self._prediction_registry
+
+    async def _on_composer_snapshot(self, snapshot: DraftIntentSnapshot, *, composer_event_id: str = "") -> None:
+        """Turn metadata-only composer lifecycle signals into v2 predictions."""
+        if snapshot.lifecycle_state in {"cleared", "abandoned"}:
+            return
+        label = (snapshot.inferred_intent_label or "").strip()
+        if not label:
+            label = f"Composer intent: {snapshot.field_role or snapshot.capabilities.host_kind}"
+        strength_by_state = {
+            "observing": 0.20,
+            "tentative": 0.35,
+            "stabilizing": 0.55,
+            "actionable": 0.80,
+            "submitted": 0.70,
+        }
+        lifecycle_strength = strength_by_state.get(snapshot.lifecycle_state, 0.25)
+        inferred = float(snapshot.inferred_intent_confidence or 0.0)
+        confidence = max(lifecycle_strength, min(1.0, inferred))
+        structured = structured_from_prediction_fields(
+            label=label,
+            description=f"Composer lifecycle {snapshot.lifecycle_state}",
+            anchor=snapshot.session_id,
+            readiness_mode="evidence_ready",
+            confidence=confidence,
+            reason_codes=("composer_lifecycle", snapshot.lifecycle_state),
+        )
+        pid = prediction_id("composer_intent", snapshot.session_id, label)
+        spec = PredictionSpec(
+            id=pid,
+            label=label,
+            description="Live composer intent signal",
+            source="composer_intent",
+            anchor=snapshot.session_id,
+            confidence=confidence,
+            hypothesis_type="likely_next" if confidence >= 0.6 else "possible_branch",
+            specificity="concrete" if snapshot.inferred_intent_label else "anchor",
+            structured=structured,
+        )
+        registry = self._ensure_prediction_registry()
+        touched = registry.merge([spec], cycle_n=self._precompute_cycles)
+        prompt = registry.get(pid)
+        if prompt is None:
+            return
+        prompt.run.compose_signal_strength = confidence
+        prompt.artifacts.composer_metadata = {
+            "composer_event_id": composer_event_id,
+            "session_id": snapshot.session_id,
+            "lifecycle_state": snapshot.lifecycle_state,
+            "host_kind": snapshot.capabilities.host_kind,
+            "field_role": snapshot.field_role,
+            "length_bucket": self._composer_length_bucket(snapshot.length_chars),
+        }
+        if touched and prompt.run.readiness == "queued":
+            try:
+                registry.transition(pid, "grounding", reason="composer lifecycle observed")
+            except Exception:
+                pass
+
+    @staticmethod
+    def _composer_length_bucket(length_chars: int) -> str:
+        if length_chars <= 0:
+            return "empty"
+        if length_chars < 80:
+            return "short"
+        if length_chars < 400:
+            return "medium"
+        return "long"
 
     async def prepare(self, changed_files: list[Path] | None = None) -> int:
         await self.initialize()
@@ -654,6 +737,7 @@ class VanerEngine:
                             item.category: max(0.0, float(item.confidence)) / total_conf for item in prior_predictions
                         }
             _quick_artefacts = await self.store.list(limit=2000)
+            _available_quick_paths = sorted({artefact.source_path for artefact in _quick_artefacts if artefact.source_path})
             _quick_paths = {
                 artefact.source_path
                 for artefact in select_artefacts(
@@ -666,6 +750,14 @@ class VanerEngine:
                 )
                 if artefact.source_path
             }
+            _quick_paths |= set(
+                rank_exact_paths(
+                    self.config.repo_root,
+                    prompt,
+                    available_paths=_available_quick_paths,
+                    max_paths=8,
+                )
+            )
             # Let precompute's speculative predictions participate in path-overlap
             # scoring even when the heuristic selector disagrees. Without this
             # union, the bench finds 96% of precompute entries never get consumed
@@ -1403,11 +1495,50 @@ class VanerEngine:
         _ws_boost = 1.10 * self._cycle_work_style_adjustments.artefact_alignment_weight_multiplier
         frontier.set_artefact_aligned_paths(aligned_paths, boost=_ws_boost)
 
+        # Collect artefacts once for package building and structured target
+        # resolution. Resolver scoring uses summaries/content when available,
+        # but never emits absolute paths or raw drafts.
+        artefacts_by_key = {a.key: a for a in await self.store.list(limit=2000)}
+
         # Order matters: Jaccard-dedup is first-admitted-wins, and
-        # seed_from_workflow_phase produces arc-sourced scenarios whose file
-        # sets overlap with seed_from_arc's. We seed the pid-tagged ones FIRST
-        # so prediction-tagging survives dedup; workflow-phase fills in the
-        # non-overlapping remainder.
+        # structured v2 predictions carry the most concrete evidence targets.
+        # Seed them before broad arc/category/macro predictions so direct
+        # evidence cannot be crowded out by generic path-keyword matches.
+        if self._prediction_registry is not None:
+            for prompt in self._prediction_registry.active():
+                structured = prompt.spec.structured
+                if structured is None:
+                    continue
+                targets = resolve_evidence_targets(
+                    structured,
+                    available_paths=available_paths,
+                    artefacts_by_key=artefacts_by_key,
+                    graph=graph,
+                    recent_queries=recent_query_text,
+                    aligned_paths=aligned_paths,
+                    working_set=self._working_set,
+                    top_k=8,
+                )
+                ready, readiness_reason = evidence_readiness(targets, structured)
+                target_paths = tuple(target.path for target in targets)
+                updated_structured = replace(
+                    structured,
+                    evidence_targets=target_paths,
+                    abstain_reason="" if ready else readiness_reason,
+                )
+                prompt.spec = replace(prompt.spec, structured=updated_structured)
+                if not ready:
+                    continue
+                frontier.seed_from_structured_prediction(
+                    prediction_id=prompt.id,
+                    structured=updated_structured,
+                    targets=targets,
+                    available_paths=available_paths,
+                    graph=graph,
+                )
+
+        # Legacy seeders remain as fallback; workflow-phase can overlap with
+        # arc file sets, so pid-tagged arc/macro scenarios still run first.
         frontier.seed_from_arc(
             self._arc_model,
             recent_query_text,
@@ -1435,7 +1566,8 @@ class VanerEngine:
                 line.strip()
                 for line in (str(git_state.get("recent_diff", "")) + "\n" + str(git_state.get("staged", ""))).splitlines()
                 if line.strip()
-            ][:20]
+            ]
+            changed_paths = filter_evidence_paths(changed_paths)[:20]
             no_regret_paths: set[str] = set(changed_paths)
             # Expand the no-regret slice with one-hop graph neighbors.
             for changed in changed_paths:
@@ -1448,9 +1580,6 @@ class VanerEngine:
                 frontier.seed_from_miss([changed], available_paths)
         except Exception:
             changed_paths = []
-
-        # Collect artefacts once for package building (avoid repeated DB reads)
-        artefacts_by_key = {a.key: a for a in await self.store.list(limit=2000)}
 
         # Heuristic paths for diversity bonus
         heuristic_paths: set[str] = set()
@@ -1555,7 +1684,7 @@ class VanerEngine:
                 llm_semantic_intent = ""
                 follow_on: list[dict[str, object]] = []
                 llm_confidence = 0.0
-                effective_paths: list[str] = list(scenario.file_paths)
+                effective_paths: list[str] = filter_evidence_paths(scenario.file_paths)
 
                 # WS1.e: register the scenario against its parent prediction
                 # before the optional LLM call. This drives the queued →
@@ -1586,7 +1715,7 @@ class VanerEngine:
                         # Individual scenario failure must not kill the cycle.
                         ranked_files, follow_on, llm_semantic_intent, llm_confidence = [], [], "", 0.0
                     if ranked_files:
-                        effective_paths = list(ranked_files)
+                        effective_paths = filter_evidence_paths(ranked_files)
 
                     # Route LLM outcomes back to the parent prediction. Tokens
                     # approximated by content length (real counts land in WS2
@@ -1731,7 +1860,7 @@ class VanerEngine:
                         branch_files_raw = branch.get("files", [])
                         if not isinstance(branch_files_raw, list):
                             continue
-                        branch_files: list[str] = [str(f) for f in branch_files_raw if f]
+                        branch_files: list[str] = filter_evidence_paths([str(f) for f in branch_files_raw if f])
                         if not branch_files:
                             continue
                         branch_conf = float(branch.get("confidence", llm_confidence or 0.5))
@@ -2180,6 +2309,23 @@ class VanerEngine:
     # WS8: unified resolve_query — single canonical query → Resolution entry
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _structured_prediction_for_prompt(prompt: PredictedPrompt) -> StructuredPrediction:
+        if prompt.spec.structured is not None:
+            return prompt.spec.structured
+        evidence_targets = tuple(prompt.artifacts.file_content_hashes.keys())
+        if not evidence_targets and prompt.artifacts.prepared_briefing:
+            evidence_targets = (prompt.spec.anchor,)
+        return structured_from_prediction_fields(
+            label=prompt.spec.label,
+            description=prompt.spec.description,
+            anchor=prompt.spec.anchor,
+            evidence_targets=evidence_targets,
+            readiness_mode="draft_ready" if prompt.artifacts.draft_answer else "evidence_ready",
+            confidence=prompt.spec.confidence,
+            reason_codes=(prompt.spec.source,),
+        )
+
     async def resolve_query(
         self,
         query: str,
@@ -2247,55 +2393,48 @@ class VanerEngine:
             "general": "record",
         }.get(domain, "record")
 
-        # Step 1: prediction-registry match on label similarity.
+        # Step 1: prediction-registry match on v2 structured compatibility.
         matched_prediction: PredictedPrompt | None = None
         alternatives: list[Alternative] = []
         if self._prediction_registry is not None:
             active = self._prediction_registry.active()
-            # Only consider predictions that actually have artefacts to
-            # return — otherwise the MCP caller would see a "matched"
-            # row with empty briefing. The label-match is a cheap
-            # contains-check in both directions; a more refined
-            # similarity score is a WS8.1 follow-up.
-            query_lower = query.lower()
-            goal_tokens = set()
-            if context_envelope is not None and context_envelope.agent_goal:
-                goal_tokens = set(w for w in context_envelope.agent_goal.lower().split() if len(w) > 2)
-            artifact_hint = (context_envelope.current_artifact or "").lower() if context_envelope is not None else ""
-            candidates: list[tuple[float, PredictedPrompt]] = []
+            candidates: list[tuple[float, PredictedPrompt, str]] = []
             for prompt in active:
-                label_lower = prompt.spec.label.lower()
-                overlap = 0.0
-                if query_lower in label_lower or label_lower in query_lower:
-                    overlap = 1.0
-                else:
-                    # Simple word-overlap heuristic so "add tests for
-                    # parser" and "write parser tests" still match.
-                    q_tokens = set(w for w in query_lower.split() if len(w) > 2)
-                    l_tokens = set(w for w in label_lower.split() if len(w) > 2)
-                    if q_tokens and l_tokens:
-                        overlap = len(q_tokens & l_tokens) / max(1, len(q_tokens | l_tokens))
-                    if goal_tokens and l_tokens:
-                        overlap += min(0.15, len(goal_tokens & l_tokens) * 0.05)
-                if artifact_hint and prompt.spec.anchor and prompt.spec.anchor.lower() in artifact_hint:
-                    overlap += 0.1
-                if overlap > 0:
-                    candidates.append((min(1.0, overlap), prompt))
+                if prompt.run.spent or prompt.run.readiness == "stale":
+                    continue
+                if not (
+                    (prompt.artifacts.prepared_briefing and prompt.artifacts.prepared_briefing.strip())
+                    or (prompt.artifacts.draft_answer and prompt.artifacts.draft_answer.strip())
+                ):
+                    continue
+                structured = self._structured_prediction_for_prompt(prompt)
+                result = compatibility_for_query(
+                    query,
+                    structured,
+                    invalidation_reason=prompt.run.invalidation_reason,
+                )
+                if result.compatible:
+                    candidates.append((result.score, prompt, result.reason))
             candidates.sort(key=lambda pair: pair[0], reverse=True)
-            if candidates and candidates[0][0] >= 0.5:
+            if candidates:
                 matched_prediction = candidates[0][1]
                 # Runners-up → Alternative rows for honest provenance.
-                for score, prompt in candidates[1:4]:
+                for score, prompt, reason in candidates[1:4]:
                     alternatives.append(
                         Alternative(
                             source=prompt.spec.source,
-                            reason_rejected=(f"runner-up prediction (overlap={score:.2f}): {prompt.spec.label}"),
+                            reason_rejected=(f"runner-up v2 prediction (score={score:.2f}, {reason}): {prompt.spec.label}"),
                         )
                     )
 
         if matched_prediction is not None:
             briefing = self._briefing_assembler.from_prediction(matched_prediction)
-            predicted_response = matched_prediction.artifacts.draft_answer if include_predicted_response else None
+            structured = self._structured_prediction_for_prompt(matched_prediction)
+            predicted_response = (
+                matched_prediction.artifacts.draft_answer
+                if include_predicted_response and structured.readiness_mode == "draft_ready"
+                else None
+            )
             evidence = [
                 EvidenceItem(
                     id=sid,
@@ -2730,6 +2869,15 @@ class VanerEngine:
                             confidence=confidence,
                             hypothesis_type=hypothesis_type,
                             specificity=specificity,
+                            structured=structured_from_prediction_fields(
+                                label=label,
+                                description=description,
+                                anchor=item_id,
+                                evidence_targets=tuple(str(item) for item in related_files) if isinstance(related_files, list) else (),
+                                readiness_mode="evidence_ready",
+                                confidence=confidence,
+                                reason_codes=("artefact_item", state),
+                            ),
                         )
                     )
         return specs
@@ -2902,14 +3050,7 @@ class VanerEngine:
         are consumed by the frontier seed methods so scenarios get tagged
         with their parent prediction_id.
         """
-        ecfg = self.config.exploration
-        if self._prediction_registry is None:
-            # Pool sized by expected scenarios × rough token cost; fixed at
-            # engine-init time because it's a budgeting concept that
-            # shouldn't drift once predictions start accumulating state.
-            cycle_token_pool = max(512, int(ecfg.frontier_max_size) * 32)
-            self._prediction_registry = PredictionRegistry(cycle_token_pool=cycle_token_pool)
-        registry = self._prediction_registry
+        registry = self._ensure_prediction_registry()
         specs: list[PredictionSpec] = []
         # Routing maps the engine hands to frontier.seed_from_*. Built in-step
         # with spec enrolment so every spec has a mapping entry. When multiple
@@ -2938,6 +3079,14 @@ class VanerEngine:
                         confidence=min(1.0, max(0.0, float(desc.confidence))),
                         hypothesis_type=desc.hypothesis_type,  # type: ignore[arg-type]
                         specificity=desc.specificity,  # type: ignore[arg-type]
+                        structured=structured_from_prediction_fields(
+                            label=desc.label,
+                            description=desc.description,
+                            anchor=desc.anchor,
+                            readiness_mode="evidence_ready",
+                            confidence=min(1.0, max(0.0, float(desc.confidence))),
+                            reason_codes=("arc", desc.category),
+                        ),
                     )
                 )
                 # First-wins: arc predictions get routing priority over history
@@ -2964,6 +3113,14 @@ class VanerEngine:
                     confidence=confidence,
                     hypothesis_type="likely_next" if confidence >= 0.6 else "possible_branch",
                     specificity="concrete",
+                    structured=structured_from_prediction_fields(
+                        label=label,
+                        description=f"Prompt macro '{macro_key}' ({use_count}x) in category {category}",
+                        anchor=macro_key,
+                        readiness_mode="evidence_ready",
+                        confidence=confidence,
+                        reason_codes=("pattern", category),
+                    ),
                 )
             )
             macro_to_pid.setdefault(macro_key, pid)
@@ -2983,9 +3140,42 @@ class VanerEngine:
                     confidence=0.4,
                     hypothesis_type="possible_branch",
                     specificity="category",
+                    structured=structured_from_prediction_fields(
+                        label=label,
+                        description=f"Continuation of the most recent {last_category} turn",
+                        anchor=last_category,
+                        readiness_mode="evidence_ready",
+                        confidence=0.4,
+                        reason_codes=("history", last_category),
+                    ),
                 )
             )
             category_to_pid.setdefault(last_category, pid)
+
+            last_query = recent_query_text[-1].strip()
+            if last_query:
+                concrete_label = f"Continue related work: {last_query[:80]}"
+                concrete_pid = prediction_id("history_query", last_query, concrete_label)
+                specs.append(
+                    PredictionSpec(
+                        id=concrete_pid,
+                        label=concrete_label,
+                        description=f"Likely follow-up to the most recent user question: {last_query}",
+                        source="history",
+                        anchor=last_query,
+                        confidence=0.55,
+                        hypothesis_type="possible_branch",
+                        specificity="concrete",
+                        structured=structured_from_prediction_fields(
+                            label=concrete_label,
+                            description=f"Likely follow-up to the most recent user question: {last_query}",
+                            anchor=last_query,
+                            readiness_mode="evidence_ready",
+                            confidence=0.55,
+                            reason_codes=("history_query", last_category),
+                        ),
+                    )
+                )
 
         # WS7: goal source — active workspace goals seed predictions with
         # long-horizon anchors. Each goal becomes a prediction whose
@@ -3017,6 +3207,14 @@ class VanerEngine:
                     # anchor for invested preparation.
                     hypothesis_type="possible_branch",
                     specificity="anchor",
+                    structured=structured_from_prediction_fields(
+                        label=label,
+                        description=str(row.get("description", "")) or f"Workspace goal: {title}",
+                        anchor=anchor,
+                        readiness_mode="evidence_ready",
+                        confidence=min(1.0, max(0.0, confidence)),
+                        reason_codes=("goal",),
+                    ),
                 )
             )
 
@@ -3148,7 +3346,25 @@ class VanerEngine:
         recent_hint = "\n".join(reversed(recent_queries[-8:])) or "none"
         covered_hint = "\n".join(sorted(covered_paths)[:20]) or "none"
         uncovered = [p for p in available_paths if p not in covered_paths]
-        available_hint = "\n".join(uncovered[:50]) or "none"
+        candidate_paths = list(dict.fromkeys(filter_evidence_paths([*scenario.file_paths, *uncovered])))
+        if parent_pid is not None and self._prediction_registry is not None:
+            prompt_obj = self._prediction_registry.get(parent_pid)
+            if prompt_obj is not None and prompt_obj.spec.structured is not None:
+                resolved = resolve_evidence_targets(
+                    prompt_obj.spec.structured,
+                    available_paths=candidate_paths,
+                    artefacts_by_key=artefacts_by_key,
+                    recent_queries=recent_queries,
+                    aligned_paths=set(),
+                    working_set=self._working_set,
+                    top_k=24,
+                )
+                candidate_paths = [target.path for target in resolved] + [
+                    path for path in candidate_paths if path not in {target.path for target in resolved}
+                ]
+        candidate_paths = candidate_paths[:40]
+        primary_hint = "\n".join(path for path in candidate_paths if evidence_path_kind(path) in {"source", "config", "test"}) or "none"
+        supporting_hint = "\n".join(path for path in candidate_paths if evidence_path_kind(path) == "docs") or "none"
 
         ecfg = self.config.exploration
         if high_priority:
@@ -3181,10 +3397,13 @@ class VanerEngine:
             f"Reason: {scenario.reason}\n\n"
             f"File summaries:\n{summaries_text}\n\n"
             f"Already covered (do NOT repeat):\n{covered_hint}\n\n"
-            f"Available uncovered paths (candidates for follow-on):\n{available_hint}\n\n"
+            f"Primary evidence candidates (prefer these for mechanism/debug/implementation questions):\n{primary_hint}\n\n"
+            "Supporting evidence candidates "
+            f"(use only alongside primary evidence unless docs were explicitly requested):\n{supporting_hint}\n\n"
             "Tasks:\n"
             "1. Rank these files by likely relevance to the developer's next interaction.\n"
-            "   Drop any that seem irrelevant given the developer's trajectory.\n"
+            "   Prefer implementation/config/test files as primary evidence. Drop generated bindings,\n"
+            "   data assets, diagrams, and broad docs unless the user intent explicitly needs them.\n"
             f"{follow_on_guidance}"
             "3. Write a short semantic_intent (1-2 sentences) describing what developer\n"
             "   need this scenario addresses (e.g. 'authentication middleware, JWT validation').\n"
@@ -3246,7 +3465,7 @@ class VanerEngine:
 
         available_set = set(available_paths)
         ranked_raw = _as_str_list(obj.get("ranked_files", []))
-        ranked_files = [p for p in ranked_raw if p in available_set][:8]
+        ranked_files = filter_evidence_paths([p for p in ranked_raw if p in available_set])[:8]
 
         # Parse semantic_intent (richer description for cache matching)
         semantic_intent = str(obj.get("semantic_intent", "")).strip()
@@ -3266,7 +3485,7 @@ class VanerEngine:
         for item in raw_follow_on[:max_follow_on]:
             if not isinstance(item, dict):
                 continue
-            files = [p for p in _as_str_list(item.get("files", [])) if p in available_set]
+            files = filter_evidence_paths([p for p in _as_str_list(item.get("files", [])) if p in available_set])
             if files:
                 item_conf = 0.0
                 try:
@@ -3444,6 +3663,14 @@ class VanerEngine:
                     confidence=posterior_confidence,
                     hypothesis_type="likely_next" if posterior_confidence >= 0.6 else "possible_branch",
                     specificity="concrete",
+                    structured=structured_from_prediction_fields(
+                        label=f"Recurring: {macro_key[:60]}",
+                        description=f"Prompt macro '{macro_key}' in category {category}",
+                        anchor=macro_key,
+                        readiness_mode="evidence_ready",
+                        confidence=posterior_confidence,
+                        reason_codes=("pattern", category),
+                    ),
                 )
                 prompt_obj_for_draft = PredictedPrompt(
                     spec=synthetic_spec,
@@ -4095,7 +4322,7 @@ class VanerEngine:
         paths: list[str] = []
         for item in list(items) + extra_items:
             path = str(item.metadata.get("path", "")).strip()
-            if path:
+            if path and is_evidence_path_allowed(path):
                 paths.append(path)
         return sorted(set(paths))
 
@@ -4228,6 +4455,12 @@ class VanerEngine:
     ) -> list[str]:
         selected = [path for path in current_paths if path]
         selected_set = set(selected)
+        for path in rank_exact_paths(self.config.repo_root, question, available_paths=available_paths, max_paths=max_paths):
+            if path not in selected_set:
+                selected.append(path)
+                selected_set.add(path)
+            if len(selected) >= max_paths:
+                return selected[:max_paths]
         question_tokens = self._tokenize(question)
         if not question_tokens:
             return selected[:max_paths]

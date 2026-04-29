@@ -14,6 +14,7 @@ import aiosqlite
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.models.session import WorkingSet
 from vaner.models.signal import SignalEvent
+from vaner.policy.privacy import sanitize_no_absolute_paths
 
 
 class ArtefactStore:
@@ -778,6 +779,7 @@ class ArtefactStore:
         )
 
     async def insert_signal_event(self, event: SignalEvent) -> None:
+        event.payload = sanitize_no_absolute_paths(event.payload)
         corpus_id = str(event.payload.get("corpus_id", "default"))
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(

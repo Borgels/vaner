@@ -85,11 +85,9 @@ def eta_bucket(prompt: PredictedPrompt) -> EtaBucket | None:
 def is_adoptable(prompt: PredictedPrompt) -> bool:
     """A prediction is adoptable when it has something material to hand off.
 
-    The rules: readiness is drafting or ready (so artifacts exist), a
-    non-empty briefing or draft is present, and the prediction hasn't
-    been spent by a previous adoption. Freshness is enforced upstream via
-    invalidation.py; this check only looks at the prompt's intrinsic
-    state.
+    v2 distinguishes evidence-ready from draft-ready. Evidence-ready
+    predictions can hand off prepared context; draft-ready predictions
+    additionally require a draft and are semantically gated at resolve time.
     """
     run = prompt.run
     if run.spent:
@@ -97,10 +95,13 @@ def is_adoptable(prompt: PredictedPrompt) -> bool:
     if run.readiness not in ("drafting", "ready"):
         return False
     artifacts = prompt.artifacts
-    has_material = bool(
-        (artifacts.prepared_briefing and artifacts.prepared_briefing.strip()) or (artifacts.draft_answer and artifacts.draft_answer.strip())
-    )
-    return has_material
+    structured = prompt.spec.structured
+    readiness_mode = structured.readiness_mode if structured is not None else "evidence_ready"
+    has_briefing = bool(artifacts.prepared_briefing and artifacts.prepared_briefing.strip())
+    has_draft = bool(artifacts.draft_answer and artifacts.draft_answer.strip())
+    if readiness_mode == "evidence_ready":
+        return has_briefing or has_draft
+    return has_draft
 
 
 def suppression_reason(prompt: PredictedPrompt) -> str | None:

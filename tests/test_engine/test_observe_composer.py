@@ -91,6 +91,25 @@ async def test_valid_composer_payload_publishes_to_pump_and_persists(tmp_path: P
     assert rows[0].kind == KIND_COMPOSER_LIFECYCLE
 
 
+async def test_composer_payload_creates_metadata_only_v2_prediction(tmp_path: Path) -> None:
+    engine = _make_engine(tmp_path / "repo")
+    payload = _valid_snapshot_payload()
+    payload["inferred_intent_label"] = "Add parser tests"
+    payload["inferred_intent_confidence"] = 0.82
+
+    await engine.observe(_signal(payload, event_id="evt-v2"))
+
+    active = engine.get_active_predictions()
+    composer = [item for item in active if item.spec.source == "composer_intent"]
+    assert len(composer) == 1
+    prompt = composer[0]
+    assert prompt.spec.structured is not None
+    assert prompt.spec.structured.readiness_mode == "evidence_ready"
+    assert prompt.spec.structured.action_type == "test"
+    assert prompt.artifacts.composer_metadata["composer_event_id"] == "evt-v2"
+    assert "text_hash" not in prompt.artifacts.composer_metadata
+
+
 async def test_malformed_composer_payload_raises_and_does_not_persist(tmp_path: Path) -> None:
     engine = _make_engine(tmp_path / "repo")
     bad = _valid_snapshot_payload()
