@@ -187,7 +187,7 @@ _CORE_ARCHITECTURE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
-        "tiered prediction cache and semantic matching",
+        "prediction-cache tiering and semantic matching",
         (
             "src/vaner/intent/cache.py",
             "src/vaner/clients/embeddings.py",
@@ -1680,6 +1680,43 @@ class VanerEngine:
         # Collect artefacts once for package building (avoid repeated DB reads)
         artefacts_by_key = {a.key: a for a in await self.store.list(limit=2000)}
 
+        # Order matters: Jaccard-dedup is first-admitted-wins, and
+        # structured v2 predictions carry the most concrete evidence targets.
+        # Seed them before heuristic/core/arc scenarios so direct evidence
+        # cannot be crowded out by generic path-keyword matches.
+        if self._prediction_registry is not None:
+            for prompt in self._prediction_registry.active():
+                structured = prompt.spec.structured
+                if structured is None:
+                    continue
+                targets = resolve_evidence_targets(
+                    structured,
+                    available_paths=available_paths,
+                    artefacts_by_key=artefacts_by_key,
+                    graph=graph,
+                    recent_queries=recent_query_text,
+                    aligned_paths=aligned_paths,
+                    working_set=self._working_set,
+                    top_k=8,
+                )
+                ready, readiness_reason = evidence_readiness(targets, structured)
+                target_paths = tuple(target.path for target in targets)
+                updated_structured = replace(
+                    structured,
+                    evidence_targets=target_paths,
+                    abstain_reason="" if ready else readiness_reason,
+                )
+                prompt.spec = replace(prompt.spec, structured=updated_structured)
+                if not ready:
+                    continue
+                frontier.seed_from_structured_prediction(
+                    prediction_id=prompt.id,
+                    structured=updated_structured,
+                    targets=targets,
+                    available_paths=available_paths,
+                    graph=graph,
+                )
+
         # Heuristic paths for this cycle's recent intent.  Seed them before
         # broad arc/category buckets: frontier dedup is first-admitted-wins, so
         # intent-specific source files must not lose to generic docs/CI/config
@@ -1734,43 +1771,6 @@ class VanerEngine:
                 reason="broad supplementary core architecture coverage",
                 priority_floor=0.72,
             )
-
-        # Order matters: Jaccard-dedup is first-admitted-wins, and
-        # structured v2 predictions carry the most concrete evidence targets.
-        # Seed them before broad arc/category/macro predictions so direct
-        # evidence cannot be crowded out by generic path-keyword matches.
-        if self._prediction_registry is not None:
-            for prompt in self._prediction_registry.active():
-                structured = prompt.spec.structured
-                if structured is None:
-                    continue
-                targets = resolve_evidence_targets(
-                    structured,
-                    available_paths=available_paths,
-                    artefacts_by_key=artefacts_by_key,
-                    graph=graph,
-                    recent_queries=recent_query_text,
-                    aligned_paths=aligned_paths,
-                    working_set=self._working_set,
-                    top_k=8,
-                )
-                ready, readiness_reason = evidence_readiness(targets, structured)
-                target_paths = tuple(target.path for target in targets)
-                updated_structured = replace(
-                    structured,
-                    evidence_targets=target_paths,
-                    abstain_reason="" if ready else readiness_reason,
-                )
-                prompt.spec = replace(prompt.spec, structured=updated_structured)
-                if not ready:
-                    continue
-                frontier.seed_from_structured_prediction(
-                    prediction_id=prompt.id,
-                    structured=updated_structured,
-                    targets=targets,
-                    available_paths=available_paths,
-                    graph=graph,
-                )
 
         # Legacy seeders remain as fallback; workflow-phase can overlap with
         # arc file sets, so pid-tagged arc/macro scenarios still run first.

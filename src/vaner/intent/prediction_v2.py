@@ -281,7 +281,7 @@ def _has_exact_evidence(target_terms: tuple[str, ...], evidence_targets: tuple[s
     evidence_norms = {normalize_component(target) for target in evidence_targets}
     for target in evidence_targets:
         evidence_norms.update(component_terms(target))
-    return bool(set(target_terms) & evidence_norms)
+    return bool(target_terms and target_terms[0] in evidence_norms)
 
 
 def _is_docs_contract_shaped(text: str) -> bool:

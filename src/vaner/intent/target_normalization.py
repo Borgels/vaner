@@ -82,7 +82,19 @@ def component_terms(text: str) -> tuple[str, ...]:
 def path_component_terms(path: str) -> tuple[str, ...]:
     parts = [part for part in re.split(r"[/.\-_]+", path) if part]
     normalized = [normalize_component(part) for part in parts]
-    return tuple(term for term in normalized if term and len(term) >= 3 and term not in _STOPWORDS)
+    combined: list[str] = []
+    basename = PurePosixPath(path).stem
+    if basename:
+        combined.append(normalize_component(basename))
+    if "-" in basename or "_" in basename:
+        combined.append(normalize_component(basename.replace("-", "").replace("_", "")))
+    return tuple(
+        dict.fromkeys(
+            term
+            for term in [*normalized, *combined]
+            if term and len(term) >= 3 and term not in _STOPWORDS
+        )
+    )
 
 
 def _singularize(token: str) -> str:
