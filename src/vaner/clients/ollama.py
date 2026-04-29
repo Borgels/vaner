@@ -7,6 +7,7 @@ from typing import Literal
 
 from vaner.clients.llm_response import LLMResponse, approx_tokens, split_thinking_and_content
 from vaner.defaults.loader import reasoning_defaults_for_model
+from vaner.models.cost import TokenUsage, usage_from_ollama_payload
 
 ReasoningMode = Literal["off", "allowed", "required", "provider_default"]
 
@@ -115,11 +116,25 @@ def ollama_llm_structured(
                 provider_thinking = str(payload.get("thinking", ""))
 
         split = split_thinking_and_content(raw)
+        usage = usage_from_ollama_payload(payload, prompt=prompt, completion=split.content, thinking=split.thinking)
         if provider_thinking:
             thinking = provider_thinking.strip()
             if split.thinking:
                 thinking = f"{thinking}\n{split.thinking}".strip()
-            split = LLMResponse(thinking=thinking, content=split.content, raw=raw)
+            thinking_tokens = max(int(usage.thinking_tokens or 0), approx_tokens(thinking))
+            usage = TokenUsage(
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                thinking_tokens=thinking_tokens,
+                cached_input_tokens=usage.cached_input_tokens,
+                total_tokens=max(usage.total_tokens, usage.prompt_tokens + usage.completion_tokens + thinking_tokens),
+                usage_source=usage.usage_source,
+                usage_estimated=usage.usage_estimated,
+                provider_usage_raw=usage.provider_usage_raw,
+            )
+            split = LLMResponse(thinking=thinking, content=split.content, raw=raw, usage=usage)
+        else:
+            split = LLMResponse(thinking=split.thinking, content=split.content, raw=split.raw, usage=usage)
 
         if reasoning_mode == "required" and not split.thinking:
             raise ValueError(

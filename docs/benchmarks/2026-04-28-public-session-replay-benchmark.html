@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vaner Public Session-Replay Benchmark - April 28, 2026</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #101113;
+        --panel: #181a1f;
+        --panel2: #20242a;
+        --ink: #f4f0e8;
+        --muted: #aaa59b;
+        --line: #363a43;
+        --green: #82d58c;
+        --blue: #8ab8ff;
+        --amber: #f2c66e;
+        --red: #ff8f8f;
+        --display: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--display); -webkit-font-smoothing: antialiased; }
+      main { width: min(1240px, calc(100vw - 34px)); margin: 0 auto; padding: 34px 0 52px; }
+      h1, h2, h3, p { margin: 0; }
+      h1 { max-width: 980px; margin-top: 9px; font-size: clamp(42px, 5.4vw, 78px); font-weight: 650; line-height: .96; letter-spacing: 0; }
+      h2 { margin-bottom: 14px; font-size: 22px; font-weight: 650; }
+      h3 { font-size: 16px; font-weight: 650; line-height: 1.25; }
+      p, li, .small, .note { color: var(--muted); line-height: 1.45; }
+      a { color: var(--blue); }
+      code { color: var(--ink); font-family: var(--mono); font-size: .92em; }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+      td strong { color: var(--green); }
+      pre { margin: 0; padding: 14px; overflow: auto; border: 1px solid var(--line); background: #0c0d0f; color: #d7d1c4; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
+      .page { min-height: 100vh; padding-bottom: 34px; }
+      .hero, .card { border: 1px solid var(--line); background: var(--panel); }
+      header { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; }
+      .hero { padding: 30px; }
+      .eyebrow { color: var(--amber); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; }
+      .subtitle { max-width: 940px; margin-top: 18px; color: #d9d2c5; font-size: 18px; line-height: 1.45; }
+      .card { padding: 18px; }
+      .tag { display: inline-flex; width: fit-content; min-height: 28px; align-items: center; padding: 5px 10px; border: 1px solid color-mix(in srgb, var(--green), transparent 42%); background: color-mix(in srgb, var(--green), transparent 88%); color: var(--green); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+      .tag.warn { border-color: color-mix(in srgb, var(--amber), transparent 42%); background: color-mix(in srgb, var(--amber), transparent 88%); color: var(--amber); }
+      .tag.bad { border-color: color-mix(in srgb, var(--red), transparent 42%); background: color-mix(in srgb, var(--red), transparent 88%); color: var(--red); }
+      .grid { display: grid; gap: 16px; }
+      .questions { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 16px; }
+      .two { grid-template-columns: 1.05fr .95fr; margin-top: 16px; }
+      .three { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px; }
+      .answer { margin-top: 12px; font-size: 31px; font-weight: 760; line-height: 1; }
+      .good { color: var(--green); }
+      .mixed { color: var(--amber); }
+      .bad { color: var(--red); }
+      .note { margin-top: 10px; font-size: 13px; }
+      .chart { display: grid; gap: 12px; }
+      .bar-row { display: grid; grid-template-columns: 190px minmax(0, 1fr) 74px; gap: 12px; align-items: center; font-size: 13px; }
+      .track { position: relative; height: 24px; overflow: hidden; background: var(--panel2); border: 1px solid var(--line); }
+      .bar { display: block; height: 100%; background: var(--green); }
+      .bar.blue { background: var(--blue); }
+      .bar.amber { background: var(--amber); }
+      .bar.red { background: var(--red); }
+      .metric { display: grid; gap: 7px; }
+      .metric strong { font-size: 34px; line-height: 1; color: var(--ink); }
+      .list { display: grid; gap: 11px; }
+      .item { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+      .dot { display: grid; width: 28px; height: 28px; place-items: center; background: var(--panel2); border: 1px solid var(--line); color: var(--blue); font-family: var(--mono); font-weight: 700; font-size: 12px; }
+      .item strong { display: block; margin-bottom: 2px; font-size: 14px; color: var(--ink); }
+      .item span { color: var(--muted); font-size: 13px; line-height: 1.36; }
+      .example { display: grid; gap: 12px; }
+      .compare { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+      .mini { min-height: 148px; padding: 13px; border: 1px solid var(--line); background: var(--panel2); }
+      .mini h3 { margin-bottom: 8px; color: var(--ink); font-family: var(--mono); font-size: 11px; letter-spacing: .07em; text-transform: uppercase; }
+      .mini p { font-size: 13px; }
+      .why { border-left: 4px solid var(--green); }
+      .caution { border-left: 4px solid var(--amber); }
+      footer { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+      @media (max-width: 980px) {
+        header, .two { grid-template-columns: 1fr; }
+        .questions, .three, .compare { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @media (max-width: 640px) {
+        main { width: min(100vw - 22px, 1240px); padding-top: 18px; }
+        .questions, .three, .compare { grid-template-columns: 1fr; }
+        .bar-row { grid-template-columns: 1fr; gap: 6px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="page">
+        <header>
+          <section class="hero">
+            <p class="eyebrow">Public session-replay benchmark - April 28, 2026</p>
+            <h1>Vaner is better when the question needs the right evidence, not just a fluent answer.</h1>
+            <p class="subtitle">
+              This run compares the same primary model answering the same public-corpus questions with no context,
+              naive RAG context, raw Vaner context, and Vaner's answerable evidence package. The short version:
+              Vaner wins because it turns scattered files into usable answer evidence.
+            </p>
+          </section>
+          <aside class="card">
+            <span class="tag">Completed run</span>
+            <h2>Bottom line</h2>
+            <p>Best Vaner product path averaged <strong>7.39/10</strong>, versus <strong>4.95/10</strong> for naive RAG and <strong>3.61/10</strong> for the naked primary model.</p>
+            <p class="note">That is a <strong>+1.65</strong> uplift against the stronger of naked or RAG across <strong>384</strong> judged live answer paths.</p>
+          </aside>
+        </header>
+
+        <section class="grid questions">
+          <article class="card">
+            <h3>Why better?</h3>
+            <p class="answer good">Evidence</p>
+            <p class="note">Vaner put direct docs/files first and gave the primary model a plan for using them.</p>
+          </article>
+          <article class="card">
+            <h3>Prediction accuracy?</h3>
+            <p class="answer mixed">Partial</p>
+            <p class="note">58.3% had a prepared package; exact next-prompt prediction was weak. The win came from packaging and evidence floors.</p>
+          </article>
+          <article class="card">
+            <h3>Quality lift?</h3>
+            <p class="answer good">+1.65</p>
+            <p class="note">Best Vaner path beat best(naked, RAG), not only the no-context baseline.</p>
+          </article>
+          <article class="card">
+            <h3>Cost story?</h3>
+            <p class="answer mixed">Not yet</p>
+            <p class="note">Quality improved; final-answer latency and total cloud-cost reduction are not proven by this run.</p>
+          </article>
+        </section>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>Average answer quality</h2>
+            <div class="chart">
+              <div class="bar-row"><span>Naked primary model</span><div class="track"><span class="bar red" style="width: 36%"></span></div><strong>3.61</strong></div>
+              <div class="bar-row"><span>Naive RAG</span><div class="track"><span class="bar amber" style="width: 50%"></span></div><strong>4.95</strong></div>
+              <div class="bar-row"><span>Raw Vaner</span><div class="track"><span class="bar blue" style="width: 59%"></span></div><strong>5.85</strong></div>
+              <div class="bar-row"><span>Answerable Vaner</span><div class="track"><span class="bar" style="width: 68%"></span></div><strong>6.78</strong></div>
+              <div class="bar-row"><span>Best Vaner product path</span><div class="track"><span class="bar" style="width: 74%"></span></div><strong>7.39</strong></div>
+            </div>
+            <p class="note">Score is a blind judge grade out of 10. The main product gain is the jump from raw Vaner to answerable Vaner: same general evidence pool, better packaging.</p>
+          </article>
+
+          <article class="card">
+            <h2>Plain-English answer</h2>
+            <div class="list">
+              <div class="item"><div class="dot">1</div><div><strong>Vaner found task-specific evidence.</strong><span>For code questions, it surfaced the exact test or implementation file instead of nearby docs. For docs questions, it surfaced the canonical English tutorial page instead of broad translated or incidental mentions.</span></div></div>
+              <div class="item"><div class="dot">2</div><div><strong>Vaner shaped evidence for the answer model.</strong><span>The answerable layer separated direct evidence, supporting context, lower-confidence context, and answer plan. That reduced vague “the context does not say” answers.</span></div></div>
+              <div class="item"><div class="dot">3</div><div><strong>Vaner usually avoided false confidence.</strong><span>Exact intent prediction was not strong, but false-ready rate was only 1.6% and correct abstain rate was 97.9%.</span></div></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="grid three">
+          <article class="card metric">
+            <span class="tag">Evidence packaging</span>
+            <strong>276 full</strong>
+            <p class="small">Answerability labels: 276 full, 96 weak, 12 none. Most briefings were usable before final answer generation.</p>
+          </article>
+          <article class="card metric">
+            <span class="tag">Evidence use</span>
+            <strong>349 / 384</strong>
+            <p class="small">The primary model used evidence correctly or partially in 349 judged live paths.</p>
+          </article>
+          <article class="card metric">
+            <span class="tag warn">Prediction</span>
+            <strong>20 partial</strong>
+            <p class="small">Prompt prediction had 20 partial matches and no exact public intent hits. This is the biggest product caveat.</p>
+          </article>
+        </section>
+      </section>
+
+      <section class="page">
+        <header>
+          <section class="hero">
+            <p class="eyebrow">Concrete examples</p>
+            <h1>How quality improved in practice.</h1>
+            <p class="subtitle">
+              The numbers matter, but the user-visible difference is simpler: Vaner gave the primary model the
+              missing source material and a better interpretation of which source mattered.
+            </p>
+          </section>
+          <aside class="card">
+            <span class="tag">Representative turns</span>
+            <h2>Reading guide</h2>
+            <p>These are not cherry-picked model transcripts for marketing copy. They are representative high-uplift turns from the run, shown to explain the mechanism behind the aggregate score.</p>
+          </aside>
+        </header>
+
+        <section class="grid example" style="margin-top: 16px">
+          <article class="card">
+            <span class="tag">Code example - Flask CLI tests</span>
+            <h2>Question: “Where are the existing CLI tests? I need to add one for this new command.”</h2>
+            <div class="compare">
+              <div class="mini"><h3>Naked model</h3><p>No project context was provided, so it could only ask the user to share a file tree. Score: <strong>2/10</strong>.</p></div>
+              <div class="mini"><h3>Naive RAG</h3><p>Still said there was no direct information about existing CLI tests. Score: <strong>4/10</strong>.</p></div>
+              <div class="mini why"><h3>Vaner</h3><p>Surfaced <code>tests/test_cli.py</code> plus related test fixtures. The answer identified where to add the test and what neighboring test structure to follow. Score: <strong>9/10</strong>.</p></div>
+            </div>
+          </article>
+
+          <article class="card">
+            <span class="tag">Documentation example - FastAPI security</span>
+            <h2>Question: “Give me the simple OAuth2 example with password flow — no JWT yet.”</h2>
+            <div class="compare">
+              <div class="mini"><h3>Naked model</h3><p>Could not ground the answer in the docs and fell back to saying no context was available. Score: <strong>1/10</strong>.</p></div>
+              <div class="mini"><h3>Naive RAG</h3><p>Gave a partial generic summary of password flow, but missed the stronger source ordering. Score: <strong>6/10</strong>.</p></div>
+              <div class="mini why"><h3>Vaner</h3><p>Put <code>docs/en/docs/tutorial/security/simple-oauth2.md</code>, <code>first-steps.md</code>, and related security references in the package. Score: <strong>9/10</strong>.</p></div>
+            </div>
+          </article>
+
+          <article class="card">
+            <span class="tag">Learning-code example - path sum</span>
+            <h2>Question: “What’s the path-sum problem? Show me both variants covered in the repo.”</h2>
+            <div class="compare">
+              <div class="mini"><h3>Naked model</h3><p>No repository context, so it could not identify the repo variants. Score: <strong>2/10</strong>.</p></div>
+              <div class="mini"><h3>Naive RAG</h3><p>Retrieved irrelevant math/problem snippets and said the context did not contain path-sum details. Score: <strong>2/10</strong>.</p></div>
+              <div class="mini why"><h3>Vaner</h3><p>Found <code>binary_tree_path_sum.py</code> and <code>binary_tree_node_sum.py</code>, letting the answer compare the actual variants. Score: <strong>9/10</strong>.</p></div>
+            </div>
+          </article>
+
+          <article class="card caution">
+            <span class="tag warn">Where it still struggles</span>
+            <h2>Question: “Quicksort — compare its partition scheme with merge sort’s split.”</h2>
+            <p>Vaner often had useful sorting context, but extra context sometimes made the final answer worse than the stronger baseline. This is why the report separates retrieval, packaging, and final answer use. The next layer should not blindly add more context; it should decide when context is helpful, redundant, or distracting.</p>
+          </article>
+        </section>
+      </section>
+
+      <section class="page">
+        <header>
+          <section class="hero">
+            <p class="eyebrow">Prediction and readiness</p>
+            <h1>Vaner did not win because it perfectly guessed the next prompt.</h1>
+            <p class="subtitle">
+              The benchmark is useful precisely because it separates “prediction readiness” from “answer quality.”
+              In this run, prompt prediction was weak; evidence packaging carried the product result.
+            </p>
+          </section>
+          <aside class="card">
+            <span class="tag warn">Important caveat</span>
+            <h2>No metric inflation</h2>
+            <p>Prepared-only readiness remains reported separately. The headline quality lift should not be described as exact prompt prediction performance.</p>
+          </aside>
+        </header>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>Prediction metrics</h2>
+            <table>
+              <thead><tr><th>Metric</th><th>Value</th><th>What it means</th></tr></thead>
+              <tbody>
+                <tr><td>Prediction available rate</td><td><strong>58.3%</strong></td><td>Vaner often had a pre-turn package, but availability is not the same as exact prediction.</td></tr>
+                <tr><td>Intent prediction buckets</td><td><strong>20 partial</strong>, 364 unrelated</td><td>No exact public intent hits. The predictor saw broad session direction more often than exact next prompt.</td></tr>
+                <tr><td>Adoptable prediction rate</td><td><strong>2.1%</strong></td><td>Very few predictions were ready enough to adopt directly as an answer.</td></tr>
+                <tr><td>False-ready rate</td><td><strong>1.6%</strong></td><td>Low, but any false-ready case is high-risk for trust.</td></tr>
+                <tr><td>Correct abstain rate</td><td><strong>97.9%</strong></td><td>Vaner usually avoided pretending it had a ready answer when it did not.</td></tr>
+              </tbody>
+            </table>
+          </article>
+
+          <article class="card">
+            <h2>So what worked?</h2>
+            <div class="list">
+              <div class="item"><div class="dot">A</div><div><strong>Answerable evidence packaging.</strong><span>Raw Vaner scored 5.85; answerable Vaner scored 6.78. That delta is packaging, ranking, and answer-plan value.</span></div></div>
+              <div class="item"><div class="dot">B</div><div><strong>Evidence-use reliability.</strong><span>The primary model used the evidence correctly in 226 cases and partially in 123 cases.</span></div></div>
+              <div class="item"><div class="dot">C</div><div><strong>Domain fit.</strong><span>Docs and code tasks benefited most. Literature was still positive, but more mixed.</span></div></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="grid three">
+          <article class="card metric"><span class="tag">Docs</span><strong>+2.70</strong><p class="small">Best Vaner uplift over best baseline. Strongest domain in the run.</p></article>
+          <article class="card metric"><span class="tag">Code</span><strong>+2.03</strong><p class="small">Large gains when exact implementation/test files matter.</p></article>
+          <article class="card metric"><span class="tag warn">Literature</span><strong>+0.43</strong><p class="small">Positive but mixed; synthesis tasks do not always need more retrieved context.</p></article>
+        </section>
+      </section>
+
+      <section class="page">
+        <header>
+          <section class="hero">
+            <p class="eyebrow">Developer appendix</p>
+            <h1>The detailed tables are still here.</h1>
+            <p class="subtitle">
+              The user-facing story should be readable without these tables, but the benchmark remains auditable:
+              protocol, corpus, scores, cost, readiness, and reproducibility are preserved below.
+            </p>
+          </section>
+          <aside class="card">
+            <span class="tag">Protocol</span>
+            <h2>Run shape</h2>
+            <p>8 sessions, 8 turns each, 6 live configs, 384 judged live answer paths.</p>
+          </aside>
+        </header>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>Protocol</h2>
+            <table>
+              <tbody>
+                <tr><th>Vaner prep model</th><td>qwen3.5:35b via local Ollama on RTX 5090</td></tr>
+                <tr><th>Primary user model</th><td>claude-sonnet-4-6</td></tr>
+                <tr><th>Judge model</th><td>claude-opus-4-7</td></tr>
+                <tr><th>Answer paths</th><td>naked primary model, naive RAG, raw Vaner, answerable Vaner, best Vaner product path</td></tr>
+                <tr><th>Live configs</th><td>idle multipliers 0, 0.25, 1.0 crossed with evidence assembly shadow and safe</td></tr>
+                <tr><th>Pricing snapshot</th><td>anthropic-2026-04-28-manual, as-run estimates preserved</td></tr>
+              </tbody>
+            </table>
+          </article>
+
+          <article class="card">
+            <h2>Public corpora</h2>
+            <table>
+              <thead><tr><th>Corpus</th><th>Use</th></tr></thead>
+              <tbody>
+                <tr><td><a href="https://github.com/pallets/flask">Flask</a></td><td>Codebase and documentation tasks</td></tr>
+                <tr><td><a href="https://github.com/fastapi/fastapi">FastAPI</a></td><td>Documentation and API usage tasks</td></tr>
+                <tr><td><a href="https://github.com/TheAlgorithms/Python">TheAlgorithms/Python</a></td><td>Learning-code and implementation-study tasks</td></tr>
+                <tr><td><a href="https://www.gutenberg.org/ebooks/11">Alice in Wonderland</a></td><td>Literary synthesis tasks</td></tr>
+              </tbody>
+            </table>
+          </article>
+        </section>
+
+        <section class="card" style="margin-top: 16px">
+          <h2>Results by domain</h2>
+          <table>
+            <thead><tr><th>Domain</th><th>N</th><th>Naked</th><th>RAG</th><th>Answerable</th><th>Best Vaner</th><th>Uplift</th><th>Win/Tie/Loss</th><th>Context tokens</th></tr></thead>
+            <tbody>
+              <tr><td>Code</td><td>96</td><td>3.30</td><td>5.20</td><td>6.30</td><td><strong>7.42</strong></td><td>+2.03</td><td>83 / 11 / 2</td><td>979</td></tr>
+              <tr><td>Docs</td><td>96</td><td>2.99</td><td>4.55</td><td>7.97</td><td><strong>8.10</strong></td><td>+2.70</td><td>83 / 8 / 5</td><td>1,000</td></tr>
+              <tr><td>Learning code</td><td>96</td><td>4.46</td><td>4.82</td><td>7.25</td><td><strong>7.70</strong></td><td>+1.45</td><td>52 / 19 / 25</td><td>983</td></tr>
+              <tr><td>Literature</td><td>96</td><td>3.71</td><td>5.23</td><td>5.61</td><td><strong>6.32</strong></td><td>+0.43</td><td>45 / 26 / 25</td><td>794</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="card" style="margin-top: 16px">
+          <h2>Live conditions</h2>
+          <table>
+            <thead><tr><th>Idle</th><th>Assembly</th><th>N</th><th>Naked</th><th>RAG</th><th>Raw</th><th>Answerable</th><th>Best</th><th>Uplift</th><th>Win/Tie/Loss</th><th>Context</th></tr></thead>
+            <tbody>
+              <tr><td>0.0</td><td>safe</td><td>64</td><td>3.78</td><td>4.97</td><td>5.62</td><td>7.02</td><td><strong>7.56</strong></td><td>+1.81</td><td>41 / 14 / 9</td><td>978</td></tr>
+              <tr><td>0.0</td><td>shadow</td><td>64</td><td>3.62</td><td>4.98</td><td>5.78</td><td>7.19</td><td><strong>7.72</strong></td><td>+1.89</td><td>45 / 14 / 5</td><td>971</td></tr>
+              <tr><td>0.25</td><td>safe</td><td>64</td><td>3.31</td><td>4.89</td><td>5.66</td><td>6.56</td><td><strong>7.20</strong></td><td>+1.62</td><td>43 / 10 / 11</td><td>948</td></tr>
+              <tr><td>0.25</td><td>shadow</td><td>64</td><td>3.44</td><td>4.92</td><td>6.12</td><td>6.72</td><td><strong>7.30</strong></td><td>+1.67</td><td>48 / 8 / 8</td><td>863</td></tr>
+              <tr><td>1.0</td><td>safe</td><td>64</td><td>3.94</td><td>5.03</td><td>5.94</td><td>6.50</td><td><strong>7.19</strong></td><td>+1.25</td><td>42 / 10 / 12</td><td>932</td></tr>
+              <tr><td>1.0</td><td>shadow</td><td>64</td><td>3.59</td><td>4.91</td><td>6.00</td><td>6.72</td><td><strong>7.34</strong></td><td>+1.66</td><td>44 / 8 / 12</td><td>942</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>Cost ledger view</h2>
+            <table>
+              <tbody>
+                <tr><th>Total estimated cloud cost</th><td>$5.7672</td></tr>
+                <tr><th>Primary answer model cost</th><td>$2.2329</td></tr>
+                <tr><th>Judge model cost</th><td>$3.5343</td></tr>
+                <tr><th>Mean incremental primary input cost</th><td>$0.0028 per turn</td></tr>
+                <tr><th>Cost per best-quality point</th><td>$0.0031</td></tr>
+              </tbody>
+            </table>
+          </article>
+
+          <article class="card">
+            <h2>Reproducibility</h2>
+            <table>
+              <tbody>
+                <tr><th>Raw artifact</th><td><code>.vaner/bench-runs/20260428T094217Z-publishable-public-full/public-session-replay-full.json</code></td></tr>
+                <tr><th>Summary artifact</th><td><code>docs/benchmarks/2026-04-28-public-session-replay-benchmark.summary.json</code></td></tr>
+                <tr><th>Vaner repo SHA</th><td><code>07f519dfd4fdd6b45ea18b15b6b61fb91764240e</code></td></tr>
+                <tr><th>vaner-train SHA</th><td><code>0df58b519e0ebda7b217bd957e5a024acf878329</code></td></tr>
+                <tr><th>Random seed</th><td><code>42</code></td></tr>
+              </tbody>
+            </table>
+          </article>
+        </section>
+
+        <section class="card" style="margin-top: 16px">
+          <h2>Caveats</h2>
+          <ul>
+            <li>This is a public-corpus session-replay benchmark with a repeatable protocol, not a third-party leaderboard.</li>
+            <li>Prepared-only predictive readiness was weak. The headline result is evidence packaging quality, not exact next-prompt prediction.</li>
+            <li>File recall did not improve over the cold baseline in this run: cold mean recall was 75.7%, live best mean recall was 68.5%.</li>
+            <li>Final answer generation was slower than naked and RAG in this harness. A speed win needs prepared draft adoption or tighter client-side timing signals.</li>
+            <li>Cost is an as-run estimate from the configured pricing snapshot. Runtime cost ledgers should be used for product-facing cost claims.</li>
+          </ul>
+        </section>
+
+        <footer>
+          <span>Run ID: <code>20260428T094217</code></span>
+          <span>Report generated for April 28, 2026 benchmark review</span>
+        </footer>
+      </section>
+    </main>
+  </body>
+</html>

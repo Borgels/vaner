@@ -163,7 +163,7 @@ The headline change: ordinary users now configure Vaner by **outcome** (work sty
 - **Dependabot alerts #3, #4, #5 dismissed as `tolerable_risk`** (GHSA-58qw-9mgm-455v / CVE-2026-3219 against `pip <= 26.0.1`). No upstream patch available (pip 26.0.1 is both the latest and the vulnerable version as of ship date). Compensating control: CI uses `pip --require-hashes` against `requirements/ci.txt`, bounding archive-parsing drift. Re-open when pip ships a patch.
 
 ### Internal
-- **Cleanup**: removed hardcoded `/home/abo/` paths from `.cursor/mcp.json` (now uses `vaner` on `$PATH`) and purged three outdated testing docs (`docs/cockpit-dogfood-report.md`, `docs/testing/2026-04-v0.6.0-install-findings.md`, `docs/testing/2026-04-v0.6.1-install-findings.md`) from git — all referenced v0.6.x install flows superseded by the 0.8 release line.
+- **Cleanup**: removed hardcoded `<home>/` paths from `.cursor/mcp.json` (now uses `vaner` on `$PATH`) and purged three outdated testing docs (`docs/cockpit-dogfood-report.md`, `docs/testing/2026-04-v0.6.0-install-findings.md`, `docs/testing/2026-04-v0.6.1-install-findings.md`) from git — all referenced v0.6.x install flows superseded by the 0.8 release line.
 - Tests: +51 new Vaner tests (12 WS3 engine + 21 WS4 store + 10 WS4 engine + 11 WS1 schema round-trip + a few MCP smoke updates for the 0.8.3 tool-list carried forward). Vaner-train: +4 external-judge scaffolding tests. Full Vaner suite: 1071 passing, 14 skipped (zero new skips).
 
 ### Safety gate behaviour in 0.8.4

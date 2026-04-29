@@ -18,6 +18,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
+from vaner.broker.answerable import build_answerable_briefing, build_answerable_briefing_from_text
 from vaner.broker.assembler import assemble_context_package
 from vaner.broker.selector import select_artefacts, select_artefacts_fts
 from vaner.cli.commands.config import load_config
@@ -74,10 +75,16 @@ from vaner.intent.prediction import (
     prediction_id,
 )
 from vaner.intent.prediction_registry import PredictionRegistry
+from vaner.intent.prediction_v2 import (
+    StructuredPrediction,
+    compatibility_for_query,
+    structured_from_prediction_fields,
+)
 from vaner.intent.profile import UserProfile
 from vaner.intent.reasoner import CorpusReasoner, PredictionScenario
 from vaner.intent.scorer import IntentScorer
 from vaner.intent.scoring_policy import ScoringPolicy
+from vaner.intent.symbol_index import rank_exact_paths
 from vaner.intent.taxonomy import EmbeddingTaxonomyClassifier, classify_taxonomy
 from vaner.intent.timing import ActivityTimingModel
 from vaner.intent.trainer import IntentTrainer
@@ -97,6 +104,7 @@ from vaner.learning.reward import RewardInput, compute_reward
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.models.config import ComputeConfig, ExplorationConfig, VanerConfig
 from vaner.models.context import ContextPackage
+from vaner.models.cost import CostLedgerEntry, ModelPricing, estimate_cost, estimate_usage
 from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor
 from vaner.models.signal import KIND_COMPOSER_LIFECYCLE, SignalEvent
 from vaner.setup.apply import AppliedPolicy, apply_policy_bundle
@@ -678,6 +686,7 @@ class VanerEngine:
         if snapshot is not None:
             try:
                 await self._composer_signal_pump.publish(snapshot)
+                await self._on_composer_snapshot(snapshot, composer_event_id=event.id)
             except Exception:  # pragma: no cover - defensive
                 # The signal is already persisted. A future cycle can
                 # re-derive prediction state from signal_events; losing
@@ -692,6 +701,80 @@ class VanerEngine:
         for tests. The engine owns the pump for its lifetime.
         """
         return self._composer_signal_pump
+
+    def _ensure_prediction_registry(self) -> PredictionRegistry:
+        if self._prediction_registry is None:
+            ecfg = self.config.exploration
+            cycle_token_pool = max(512, int(ecfg.frontier_max_size) * 32)
+            self._prediction_registry = PredictionRegistry(cycle_token_pool=cycle_token_pool)
+        return self._prediction_registry
+
+    async def _on_composer_snapshot(self, snapshot: DraftIntentSnapshot, *, composer_event_id: str = "") -> None:
+        """Turn metadata-only composer lifecycle signals into v2 predictions."""
+        if snapshot.lifecycle_state in {"cleared", "abandoned"}:
+            return
+        label = (snapshot.inferred_intent_label or "").strip()
+        if not label:
+            label = f"Composer intent: {snapshot.field_role or snapshot.capabilities.host_kind}"
+        strength_by_state = {
+            "observing": 0.20,
+            "tentative": 0.35,
+            "stabilizing": 0.55,
+            "actionable": 0.80,
+            "submitted": 0.70,
+        }
+        lifecycle_strength = strength_by_state.get(snapshot.lifecycle_state, 0.25)
+        inferred = float(snapshot.inferred_intent_confidence or 0.0)
+        confidence = max(lifecycle_strength, min(1.0, inferred))
+        structured = structured_from_prediction_fields(
+            label=label,
+            description=f"Composer lifecycle {snapshot.lifecycle_state}",
+            anchor=snapshot.session_id,
+            readiness_mode="evidence_ready",
+            confidence=confidence,
+            reason_codes=("composer_lifecycle", snapshot.lifecycle_state),
+        )
+        pid = prediction_id("composer_intent", snapshot.session_id, label)
+        spec = PredictionSpec(
+            id=pid,
+            label=label,
+            description="Live composer intent signal",
+            source="composer_intent",
+            anchor=snapshot.session_id,
+            confidence=confidence,
+            hypothesis_type="likely_next" if confidence >= 0.6 else "possible_branch",
+            specificity="concrete" if snapshot.inferred_intent_label else "anchor",
+            structured=structured,
+        )
+        registry = self._ensure_prediction_registry()
+        touched = registry.merge([spec], cycle_n=self._precompute_cycles)
+        prompt = registry.get(pid)
+        if prompt is None:
+            return
+        prompt.run.compose_signal_strength = confidence
+        prompt.artifacts.composer_metadata = {
+            "composer_event_id": composer_event_id,
+            "session_id": snapshot.session_id,
+            "lifecycle_state": snapshot.lifecycle_state,
+            "host_kind": snapshot.capabilities.host_kind,
+            "field_role": snapshot.field_role,
+            "length_bucket": self._composer_length_bucket(snapshot.length_chars),
+        }
+        if touched and prompt.run.readiness == "queued":
+            try:
+                registry.transition(pid, "grounding", reason="composer lifecycle observed")
+            except Exception:
+                pass
+
+    @staticmethod
+    def _composer_length_bucket(length_chars: int) -> str:
+        if length_chars <= 0:
+            return "empty"
+        if length_chars < 80:
+            return "short"
+        if length_chars < 400:
+            return "medium"
+        return "long"
 
     async def prepare(self, changed_files: list[Path] | None = None) -> int:
         await self.initialize()
@@ -824,6 +907,13 @@ class VanerEngine:
                             item.category: max(0.0, float(item.confidence)) / total_conf for item in prior_predictions
                         }
             _quick_artefacts = await self.store.list(limit=2000)
+            _available_quick_paths = sorted(
+                {
+                    artefact.source_path
+                    for artefact in _quick_artefacts
+                    if artefact.source_path
+                }
+            )
             _quick_paths = {
                 artefact.source_path
                 for artefact in select_artefacts(
@@ -836,6 +926,15 @@ class VanerEngine:
                 )
                 if artefact.source_path
             }
+            exact_symbol_paths = set(
+                rank_exact_paths(
+                    self.config.repo_root,
+                    prompt,
+                    available_paths=_available_quick_paths,
+                    max_paths=8,
+                )
+            )
+            _quick_paths |= exact_symbol_paths
             # Let precompute's speculative predictions participate in path-overlap
             # scoring even when the heuristic selector disagrees. Without this
             # union, the bench finds 96% of precompute entries never get consumed
@@ -1016,6 +1115,9 @@ class VanerEngine:
                     score_map=score_map,
                     factor_map=factor_map,
                     drop_reasons=drop_reasons,
+                    evidence_assembly_mode=self.config.evidence_assembly.mode,
+                    evidence_assembly_quality_bias=self.config.evidence_assembly.quality_bias,
+                    evidence_assembly_cost_sensitivity=self.config.evidence_assembly.cost_sensitivity,
                     return_decision=True,
                 )
             else:
@@ -2390,6 +2492,23 @@ class VanerEngine:
     # WS8: unified resolve_query — single canonical query → Resolution entry
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _structured_prediction_for_prompt(prompt: PredictedPrompt) -> StructuredPrediction:
+        if prompt.spec.structured is not None:
+            return prompt.spec.structured
+        evidence_targets = tuple(prompt.artifacts.file_content_hashes.keys())
+        if not evidence_targets and prompt.artifacts.prepared_briefing:
+            evidence_targets = (prompt.spec.anchor,)
+        return structured_from_prediction_fields(
+            label=prompt.spec.label,
+            description=prompt.spec.description,
+            anchor=prompt.spec.anchor,
+            evidence_targets=evidence_targets,
+            readiness_mode="draft_ready" if prompt.artifacts.draft_answer else "evidence_ready",
+            confidence=prompt.spec.confidence,
+            reason_codes=(prompt.spec.source,),
+        )
+
     async def resolve_query(
         self,
         query: str,
@@ -2438,47 +2557,55 @@ class VanerEngine:
 
         resolution_id = f"resolve-{uuid.uuid4().hex[:12]}"
 
-        # Step 1: prediction-registry match on label similarity.
+        # Step 1: prediction-registry match on v2 structured compatibility.
         matched_prediction: PredictedPrompt | None = None
         alternatives: list[Alternative] = []
         if self._prediction_registry is not None:
             active = self._prediction_registry.active()
-            # Only consider predictions that actually have artefacts to
-            # return — otherwise the MCP caller would see a "matched"
-            # row with empty briefing. The label-match is a cheap
-            # contains-check in both directions; a more refined
-            # similarity score is a WS8.1 follow-up.
-            query_lower = query.lower()
-            candidates: list[tuple[float, PredictedPrompt]] = []
+            candidates: list[tuple[float, PredictedPrompt, str]] = []
             for prompt in active:
-                label_lower = prompt.spec.label.lower()
-                overlap = 0.0
-                if query_lower in label_lower or label_lower in query_lower:
-                    overlap = 1.0
-                else:
-                    # Simple word-overlap heuristic so "add tests for
-                    # parser" and "write parser tests" still match.
-                    q_tokens = set(w for w in query_lower.split() if len(w) > 2)
-                    l_tokens = set(w for w in label_lower.split() if len(w) > 2)
-                    if q_tokens and l_tokens:
-                        overlap = len(q_tokens & l_tokens) / max(1, len(q_tokens | l_tokens))
-                if overlap > 0:
-                    candidates.append((overlap, prompt))
+                if prompt.run.spent or prompt.run.readiness == "stale":
+                    continue
+                if not (
+                    (prompt.artifacts.prepared_briefing and prompt.artifacts.prepared_briefing.strip())
+                    or (prompt.artifacts.draft_answer and prompt.artifacts.draft_answer.strip())
+                ):
+                    continue
+                structured = self._structured_prediction_for_prompt(prompt)
+                result = compatibility_for_query(
+                    query,
+                    structured,
+                    invalidation_reason=prompt.run.invalidation_reason,
+                )
+                if result.compatible:
+                    candidates.append((result.score, prompt, result.reason))
             candidates.sort(key=lambda pair: pair[0], reverse=True)
-            if candidates and candidates[0][0] >= 0.5:
+            if candidates:
                 matched_prediction = candidates[0][1]
                 # Runners-up → Alternative rows for honest provenance.
-                for score, prompt in candidates[1:4]:
+                for score, prompt, reason in candidates[1:4]:
                     alternatives.append(
                         Alternative(
                             source=prompt.spec.source,
-                            reason_rejected=(f"runner-up prediction (overlap={score:.2f}): {prompt.spec.label}"),
+                            reason_rejected=(f"runner-up v2 prediction (score={score:.2f}, {reason}): {prompt.spec.label}"),
                         )
                     )
 
         if matched_prediction is not None:
             briefing = self._briefing_assembler.from_prediction(matched_prediction)
-            predicted_response = matched_prediction.artifacts.draft_answer if include_predicted_response else None
+            answerable_briefing = build_answerable_briefing_from_text(
+                query,
+                briefing.text,
+                channel="prediction",
+                max_tokens=max(400, briefing.token_count),
+                assembly_mode=self.config.evidence_assembly.mode,
+            )
+            structured = self._structured_prediction_for_prompt(matched_prediction)
+            predicted_response = (
+                matched_prediction.artifacts.draft_answer
+                if include_predicted_response and structured.readiness_mode == "draft_ready"
+                else None
+            )
             evidence = [
                 EvidenceItem(
                     id=sid,
@@ -2508,6 +2635,9 @@ class VanerEngine:
                 predicted_response=predicted_response,
                 briefing_token_used=briefing.token_count,
                 briefing_token_budget=matched_prediction.run.token_budget,
+                answerable_briefing=answerable_briefing if include_briefing else None,
+                answerability=answerable_briefing.metadata.answerability,
+                answerability_metadata=answerable_briefing.metadata,
             )
 
         # Step 2: heuristic fallback via existing query() path.
@@ -2519,6 +2649,16 @@ class VanerEngine:
             intent=query,
             artefacts=artefacts_for_briefing,
             paths=paths,
+        )
+        answerable_briefing = package.answerable_briefing or build_answerable_briefing(
+            query,
+            artefacts_for_briefing,
+            repo_root=self.config.repo_root,
+            max_tokens=max(package.token_budget, briefing.token_count),
+            conflict_notes=package.conflict_notes,
+            assembly_mode=self.config.evidence_assembly.mode,
+            quality_bias=self.config.evidence_assembly.quality_bias,
+            cost_sensitivity=self.config.evidence_assembly.cost_sensitivity,
         )
         tier = package.cache_tier or "miss"
         provenance_mode = {
@@ -2540,6 +2680,9 @@ class VanerEngine:
                 kind="file",
                 locator={"path": sel.source_path, "artefact_key": sel.artefact_key},
                 reason=sel.rationale or f"selected by tier={tier}",
+                channel=sel.provenance
+                if sel.provenance in {"prediction", "vaner_resolve", "retrieval_floor", "external_rag"}
+                else "vaner_resolve",
             )
             for sel in package.selections[:8]
         ]
@@ -2559,6 +2702,9 @@ class VanerEngine:
             predicted_response=None,
             briefing_token_used=briefing.token_count,
             briefing_token_budget=max(package.token_budget, briefing.token_count),
+            answerable_briefing=answerable_briefing if include_briefing else None,
+            answerability=answerable_briefing.metadata.answerability,
+            answerability_metadata=answerable_briefing.metadata,
         )
 
     # ------------------------------------------------------------------
@@ -2905,7 +3051,18 @@ class VanerEngine:
                             confidence=confidence,
                             hypothesis_type=hypothesis_type,
                             specificity=specificity,
-                        )
+                            structured=structured_from_prediction_fields(
+                                label=label,
+                                description=description,
+                                anchor=item_id,
+                                evidence_targets=tuple(str(item) for item in related_files)
+                                if isinstance(related_files, list)
+                                else (),
+                                readiness_mode="evidence_ready",
+                                confidence=confidence,
+                                reason_codes=("artefact_item", state),
+                            ),
+	                        )
                     )
         return specs
 
@@ -3077,14 +3234,7 @@ class VanerEngine:
         are consumed by the frontier seed methods so scenarios get tagged
         with their parent prediction_id.
         """
-        ecfg = self.config.exploration
-        if self._prediction_registry is None:
-            # Pool sized by expected scenarios × rough token cost; fixed at
-            # engine-init time because it's a budgeting concept that
-            # shouldn't drift once predictions start accumulating state.
-            cycle_token_pool = max(512, int(ecfg.frontier_max_size) * 32)
-            self._prediction_registry = PredictionRegistry(cycle_token_pool=cycle_token_pool)
-        registry = self._prediction_registry
+        registry = self._ensure_prediction_registry()
         specs: list[PredictionSpec] = []
         # Routing maps the engine hands to frontier.seed_from_*. Built in-step
         # with spec enrolment so every spec has a mapping entry. When multiple
@@ -3113,6 +3263,14 @@ class VanerEngine:
                         confidence=min(1.0, max(0.0, float(desc.confidence))),
                         hypothesis_type=desc.hypothesis_type,  # type: ignore[arg-type]
                         specificity=desc.specificity,  # type: ignore[arg-type]
+                        structured=structured_from_prediction_fields(
+                            label=desc.label,
+                            description=desc.description,
+                            anchor=desc.anchor,
+                            readiness_mode="evidence_ready",
+                            confidence=min(1.0, max(0.0, float(desc.confidence))),
+                            reason_codes=("arc", desc.category),
+                        ),
                     )
                 )
                 # First-wins: arc predictions get routing priority over history
@@ -3139,6 +3297,14 @@ class VanerEngine:
                     confidence=confidence,
                     hypothesis_type="likely_next" if confidence >= 0.6 else "possible_branch",
                     specificity="concrete",
+                    structured=structured_from_prediction_fields(
+                        label=label,
+                        description=f"Prompt macro '{macro_key}' ({use_count}x) in category {category}",
+                        anchor=macro_key,
+                        readiness_mode="evidence_ready",
+                        confidence=confidence,
+                        reason_codes=("pattern", category),
+                    ),
                 )
             )
             macro_to_pid.setdefault(macro_key, pid)
@@ -3158,6 +3324,14 @@ class VanerEngine:
                     confidence=0.4,
                     hypothesis_type="possible_branch",
                     specificity="category",
+                    structured=structured_from_prediction_fields(
+                        label=label,
+                        description=f"Continuation of the most recent {last_category} turn",
+                        anchor=last_category,
+                        readiness_mode="evidence_ready",
+                        confidence=0.4,
+                        reason_codes=("history", last_category),
+                    ),
                 )
             )
             category_to_pid.setdefault(last_category, pid)
@@ -3192,6 +3366,14 @@ class VanerEngine:
                     # anchor for invested preparation.
                     hypothesis_type="possible_branch",
                     specificity="anchor",
+                    structured=structured_from_prediction_fields(
+                        label=label,
+                        description=str(row.get("description", "")) or f"Workspace goal: {title}",
+                        anchor=anchor,
+                        readiness_mode="evidence_ready",
+                        confidence=min(1.0, max(0.0, confidence)),
+                        reason_codes=("goal",),
+                    ),
                 )
             )
 
@@ -3387,15 +3569,61 @@ class VanerEngine:
         # JSON-parsing path sees only the content field and never chokes on
         # preambles. Legacy bare-string `self.llm` remains the fallback.
         captured_thinking: str = ""
+        usage_event: CostLedgerEntry | None = None
+        llm_started = time.monotonic()
         try:
             if self.structured_llm is not None:
                 response: LLMResponse = await self.structured_llm(prompt, max_tokens=prediction_max_tokens)
                 llm_output = response.content
                 captured_thinking = response.thinking
+                model_name = self.config.exploration.exploration_model or self.config.backend.model or "unknown"
+                endpoint = self.config.exploration.exploration_endpoint or self.config.backend.base_url or ""
+                provider = self.config.exploration.exploration_backend
+                local_or_cloud = "local" if ("127.0.0.1" in endpoint or "localhost" in endpoint or not endpoint) else "cloud"
+                pricing = self.config.cost.model_pricing.get(model_name)
+                if pricing is None and local_or_cloud == "local":
+                    pricing = ModelPricing(local_or_cloud="local", source="unknown_zero")
+                usage_event = CostLedgerEntry(
+                    prediction_id=parent_pid or "",
+                    cycle_id=str(self._precompute_cycles),
+                    provider=provider,
+                    model=model_name,
+                    endpoint=endpoint,
+                    call_role="precompute",
+                    local_or_cloud=local_or_cloud,
+                    usage=response.usage,
+                    cost=estimate_cost(response.usage, pricing),
+                    latency_ms=(time.monotonic() - llm_started) * 1000.0,
+                )
             else:
                 llm_output = await self.llm(prompt)  # type: ignore[misc]
+                usage = estimate_usage(prompt, str(llm_output), source="char_estimated")
+                usage_event = CostLedgerEntry(
+                    prediction_id=parent_pid or "",
+                    cycle_id=str(self._precompute_cycles),
+                    provider="legacy",
+                    model=self.config.exploration.exploration_model or "unknown",
+                    endpoint=self.config.exploration.exploration_endpoint or "",
+                    call_role="precompute",
+                    local_or_cloud="unknown",
+                    usage=usage,
+                    cost=estimate_cost(usage, None),
+                    latency_ms=(time.monotonic() - llm_started) * 1000.0,
+                )
         except Exception:
             return [], [], "", 0.0
+
+        if usage_event is not None:
+            try:
+                await self._metrics_store.record_llm_usage(usage_event)
+                if parent_pid:
+                    await self._metrics_store.rollup_prediction_cost(
+                        parent_pid,
+                        cycle_id=str(self._precompute_cycles),
+                        status="ready",
+                    )
+            except Exception:
+                pass
 
         # Record the thinking trace against the parent prediction (best-effort).
         if captured_thinking and parent_pid is not None and self._prediction_registry is not None:
@@ -3625,6 +3853,14 @@ class VanerEngine:
                     confidence=posterior_confidence,
                     hypothesis_type="likely_next" if posterior_confidence >= 0.6 else "possible_branch",
                     specificity="concrete",
+                    structured=structured_from_prediction_fields(
+                        label=f"Recurring: {macro_key[:60]}",
+                        description=f"Prompt macro '{macro_key}' in category {category}",
+                        anchor=macro_key,
+                        readiness_mode="evidence_ready",
+                        confidence=posterior_confidence,
+                        reason_codes=("pattern", category),
+                    ),
                 )
                 prompt_obj_for_draft = PredictedPrompt(
                     spec=synthetic_spec,
@@ -4513,6 +4749,18 @@ class VanerEngine:
     ) -> list[str]:
         selected = [path for path in current_paths if path]
         selected_set = set(selected)
+        exact_paths = rank_exact_paths(
+            self.config.repo_root,
+            question,
+            available_paths=available_paths,
+            max_paths=max_paths,
+        )
+        for path in exact_paths:
+            if path not in selected_set:
+                selected.append(path)
+                selected_set.add(path)
+            if len(selected) >= max_paths:
+                return selected[:max_paths]
         question_tokens = self._tokenize(question)
         if not question_tokens:
             return selected[:max_paths]
@@ -4606,6 +4854,9 @@ class VanerEngine:
             repo_root=self.config.repo_root,
             max_age_seconds=self.config.max_age_seconds,
             score_map=score_map,
+            evidence_assembly_mode=self.config.evidence_assembly.mode,
+            evidence_assembly_quality_bias=self.config.evidence_assembly.quality_bias,
+            evidence_assembly_cost_sensitivity=self.config.evidence_assembly.cost_sensitivity,
             return_decision=True,
         )
         return package, selected_keys
@@ -4946,6 +5197,9 @@ class VanerEngine:
             score_map=score_map,
             factor_map=factor_map,
             drop_reasons=drop_reasons,
+            evidence_assembly_mode=self.config.evidence_assembly.mode,
+            evidence_assembly_quality_bias=self.config.evidence_assembly.quality_bias,
+            evidence_assembly_cost_sensitivity=self.config.evidence_assembly.cost_sensitivity,
             return_decision=True,
         )
         return package, selected, decision_record

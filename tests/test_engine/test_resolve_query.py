@@ -68,6 +68,8 @@ async def test_resolve_query_returns_predictive_hit_when_prediction_matches(temp
     assert "TENTATIVE" in resolution.predicted_response
     assert resolution.prepared_briefing is not None
     assert "parser.py" in resolution.prepared_briefing
+    assert resolution.answerable_briefing is not None
+    assert resolution.answerability in {"weak", "full"}
     # Token accounting is honest — non-zero and budget >= used.
     assert resolution.briefing_token_used > 0
     assert resolution.briefing_token_budget >= resolution.briefing_token_used
@@ -128,6 +130,7 @@ async def test_resolve_query_falls_back_to_heuristic_path(temp_repo: Path):
     # Intent is carried through.
     assert resolution.intent == "unrelated orthogonal question"
     assert resolution.resolution_id.startswith("resolve-")
+    assert resolution.answerability_metadata is not None
 
 
 @pytest.mark.asyncio

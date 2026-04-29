@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from vaner.models.cost import ModelPricing
 from vaner.setup.enums import (
     BackgroundPosture,
     CloudPosture,
@@ -97,6 +98,31 @@ class ProxyConfig(BaseModel):
     max_requests_per_minute: int = 120
     ssl_certfile: str | None = None
     ssl_keyfile: str | None = None
+
+
+class CostConfig(BaseModel):
+    daily_cloud_budget_usd: float = 0.0
+    monthly_cloud_budget_usd: float = 0.0
+    speculative_cloud_budget_usd: float = 0.0
+    default_pricing_mode: Literal["estimated", "actual", "unknown_zero"] = "estimated"
+    show_cost_cards: bool = True
+    allow_cloud_speculation: bool = False
+    vaner_prep_mode: Literal["local_first", "local_only", "cloud_allowed"] = "local_first"
+    max_injected_context_tokens: int = 2500
+    model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+
+
+class EvidenceAssemblyConfig(BaseModel):
+    mode: Literal["off", "shadow", "advisory", "safe", "active"] = "shadow"
+    quality_bias: Literal["protect_recall", "balanced"] = "protect_recall"
+    cost_sensitivity: Literal["low", "balanced", "high"] = "balanced"
+    preserve_provenance: bool = True
+    preserve_conflicts: bool = True
+    protect_direct_evidence: bool = True
+    allow_safe_dedupe: bool = True
+    allow_metadata_compaction: bool = True
+    allow_low_confidence_demote: bool = True
+    allow_semantic_compression: bool = False
 
 
 class GatewayConfig(BaseModel):
@@ -710,3 +736,5 @@ class VanerConfig(BaseModel):
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     setup: SetupConfig = Field(default_factory=SetupConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
+    cost: CostConfig = Field(default_factory=CostConfig)
+    evidence_assembly: EvidenceAssemblyConfig = Field(default_factory=EvidenceAssemblyConfig)

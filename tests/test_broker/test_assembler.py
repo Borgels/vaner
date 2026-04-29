@@ -39,3 +39,19 @@ def test_assembler_sets_stale_flag_from_age():
     artefact = _artefact("old", "old.py", "content", generated_at=time.time() - 10_000)
     package = assemble_context_package("old", [artefact], max_tokens=400, max_age_seconds=60)
     assert package.selections[0].stale is True
+
+
+def test_assembler_carries_provenance_and_conflict_notes():
+    artefact = _artefact("floor", "docs/floor.md", "retrieval floor content")
+    package = assemble_context_package(
+        "floor",
+        [artefact],
+        max_tokens=400,
+        provenance_by_key={"floor": "retrieval_floor"},
+        conflict_notes_by_key={"floor": ["disjoint from prediction evidence"]},
+        conflict_notes=["prediction and floor evidence disagree"],
+    )
+
+    assert package.selections[0].provenance == "retrieval_floor"
+    assert package.selections[0].conflict_notes == ["disjoint from prediction evidence"]
+    assert package.conflict_notes == ["prediction and floor evidence disagree"]

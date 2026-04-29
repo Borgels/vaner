@@ -19,7 +19,9 @@ Strategy order (hierarchical, not mutually exclusive):
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from vaner.models.cost import TokenUsage
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +37,7 @@ class LLMResponse:
     thinking: str
     content: str
     raw: str
+    usage: TokenUsage = field(default_factory=TokenUsage, compare=False, hash=False)
 
     def __str__(self) -> str:
         # Legacy callers that treat an LLM response as a bare string see

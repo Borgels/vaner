@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from vaner.models.answerable import AnswerabilityMetadata, AnswerableBriefing
+
 
 class ContextSelection(BaseModel):
     artefact_key: str
@@ -14,6 +16,9 @@ class ContextSelection(BaseModel):
     rationale: str
     corpus_id: str = "default"
     privacy_zone: str = "local"
+    provenance: str = "prediction"
+    """Evidence source label: prediction | vaner_resolve | retrieval_floor | external_rag."""
+    conflict_notes: list[str] = Field(default_factory=list)
 
 
 class ContextPackage(BaseModel):
@@ -24,6 +29,9 @@ class ContextPackage(BaseModel):
     token_used: int
     selections: list[ContextSelection] = Field(default_factory=list)
     injected_context: str = ""
+    conflict_notes: list[str] = Field(default_factory=list)
+    answerable_briefing: AnswerableBriefing | None = None
+    answerability_metadata: AnswerabilityMetadata | None = None
     cache_tier: str = "miss"
     """How this package was sourced: ``"full_hit"`` | ``"partial_hit"`` | ``"miss"``."""
     partial_similarity: float = 0.0

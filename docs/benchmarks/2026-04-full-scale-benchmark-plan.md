@@ -14,7 +14,7 @@ The old reference points are:
 
 - `docs/benchmarks/README.md`: 0.8.0 session-replay results. Best local qwen3.5:35b Q4 result was aggregate `+1.22` at idle multiplier `0.5`; best Spark Qwen3.5-35B-A3B-FP8 result was `+1.73` at idle multiplier `2.0`.
 - `docs/benchmarks/0.8.3-deep-run-validation.md`: Deep-Run gates were defined but real labelled-run numbers were deferred.
-- `/home/abo/repos/Vaner-train/eval/benchmark/runs/spark_comparison.md`: earlier Spark run saturated recall but had `mean_prediction_lift=0.0`; Qwen3.6-35B-A3B failed on an older vLLM stack due unsupported `qwen3_5_moe`.
+- `<vaner-train-repo>/eval/benchmark/runs/spark_comparison.md`: earlier Spark run saturated recall but had `mean_prediction_lift=0.0`; Qwen3.6-35B-A3B failed on an older vLLM stack due unsupported `qwen3_5_moe`.
 
 ## Current Environment Baseline
 
@@ -95,11 +95,11 @@ Ship gates:
 
 ### Track B: Deep-Run Maturation
 
-Harness: `/home/abo/repos/Vaner-train/eval/run_deep_run_bench.py`.
+Harness: `<vaner-train-repo>/eval/run_deep_run_bench.py`.
 
 Corpus:
 
-- `/home/abo/repos/Vaner-train/tests/fixtures/deep_run/`
+- `<vaner-train-repo>/tests/fixtures/deep_run/`
 - 10 synthetic labelled sessions each for developer, planner, researcher, writer.
 - If possible, add a small human-labelled slice before the final run.
 
@@ -235,7 +235,7 @@ Mirror final human-readable reports into `docs/benchmarks/`.
 
 ## Immediate Next Actions
 
-1. Keep cockpit running from the current checkout and watch `/tmp/vaner-cockpit.log`.
+1. Keep cockpit running from the current checkout and watch `<tmp>/vaner-cockpit.log`.
 2. Pull or serve the first Gemma model on `spark02`, because it is currently free.
 3. Download and serve `Intel/Qwen3.5-122B-A10B-int4-AutoRound` across `spark01` + `spark02` with `max_model_len=65536` for smoke testing.
 
@@ -244,7 +244,7 @@ Mirror final human-readable reports into `docs/benchmarks/`.
 Run root:
 
 ```text
-/home/abo/repos/vaner/.vaner/bench-runs/full-scale-20260426T215931Z/track-d-smoke/scenario-time-sweep-spark-qwen122b-final-thematic/
+<vaner-repo>/.vaner/bench-runs/full-scale-20260426T215931Z/track-d-smoke/scenario-time-sweep-spark-qwen122b-final-thematic/
 ```
 
 Model and endpoint:

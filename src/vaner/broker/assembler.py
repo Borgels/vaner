@@ -6,8 +6,10 @@ import hashlib
 import time
 from pathlib import Path
 
+from vaner.broker.answerable import build_answerable_briefing
 from vaner.broker.compressor import compress_context
 from vaner.broker.selector import score_artefact
+from vaner.models.answerable import EvidenceAssemblyMode
 from vaner.models.artefact import Artefact
 from vaner.models.context import ContextPackage, ContextSelection
 from vaner.models.decision import DecisionRecord, ScoreFactor, SelectionDecision
@@ -34,6 +36,12 @@ def assemble_context_package(
     score_map: dict[str, float] | None = None,
     factor_map: dict[str, list[ScoreFactor]] | None = None,
     drop_reasons: dict[str, str] | None = None,
+    provenance_by_key: dict[str, str] | None = None,
+    conflict_notes_by_key: dict[str, list[str]] | None = None,
+    conflict_notes: list[str] | None = None,
+    evidence_assembly_mode: EvidenceAssemblyMode = "shadow",
+    evidence_assembly_quality_bias: str = "protect_recall",
+    evidence_assembly_cost_sensitivity: str = "balanced",
     return_decision: bool = False,
 ) -> ContextPackage | tuple[ContextPackage, DecisionRecord]:
     resolved_score_map = score_map or {artefact.key: score_artefact(prompt, artefact) for artefact in artefacts}
@@ -76,6 +84,11 @@ def assemble_context_package(
                     rationale=decision.rationale,
                     corpus_id=str(artefact.metadata.get("corpus_id", "default")),
                     privacy_zone=str(artefact.metadata.get("privacy_zone", "local")),
+                    provenance=(provenance_by_key or {}).get(
+                        artefact.key,
+                        str(artefact.metadata.get("provenance", "prediction")),
+                    ),
+                    conflict_notes=list((conflict_notes_by_key or {}).get(artefact.key, [])),
                 )
             )
     prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -87,7 +100,27 @@ def assemble_context_package(
         token_used=used,
         selections=context_selections,
         injected_context=injected_context,
+        conflict_notes=list(conflict_notes or []),
     )
+    answerable = build_answerable_briefing(
+        prompt,
+        [artefact for artefact in artefacts if artefact.key in kept_keys],
+        repo_root=repo_root,
+        max_tokens=max_tokens,
+        channels_by_key={
+            artefact.key: (provenance_by_key or {}).get(
+                artefact.key,
+                str(artefact.metadata.get("provenance", "vaner_resolve")),
+            )
+            for artefact in artefacts
+        },
+        conflict_notes=conflict_notes,
+        assembly_mode=evidence_assembly_mode,
+        quality_bias=evidence_assembly_quality_bias,
+        cost_sensitivity=evidence_assembly_cost_sensitivity,
+    )
+    context_package.answerable_briefing = answerable
+    context_package.answerability_metadata = answerable.metadata
     decision_record = DecisionRecord(
         id=context_package.id,
         prompt=prompt,

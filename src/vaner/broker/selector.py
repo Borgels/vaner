@@ -37,9 +37,22 @@ def _prompt_terms(prompt: str) -> list[str]:
     for raw in _identifier_chunks(prompt):
         lowered = raw.lower()
         terms.append(lowered)
+        terms.extend(_term_variants(lowered))
         terms.extend(part.lower() for part in raw.split("_") if len(part) > 2)
-        terms.extend(part.lower() for part in _camel_parts(raw) if len(part) > 2)
-    return list(dict.fromkeys(term for term in terms if term and term not in _COMMON_WORDS))
+        if lowered not in {"fastapi", "openapi"}:
+            terms.extend(part.lower() for part in _camel_parts(raw) if len(part) > 2)
+    return list(dict.fromkeys(term for term in terms if len(term) > 2 and term not in _COMMON_WORDS))
+
+
+def _term_variants(term: str) -> list[str]:
+    variants: list[str] = []
+    if len(term) > 4 and term.endswith("ies"):
+        variants.append(f"{term[:-3]}y")
+    if len(term) > 4 and term.endswith("es"):
+        variants.append(term[:-2])
+    if len(term) > 3 and term.endswith("s"):
+        variants.append(term[:-1])
+    return variants
 
 
 def _identifier_chunks(text: str, *, max_len: int = 128) -> list[str]:
@@ -103,6 +116,13 @@ def score_artefact(prompt: str, artefact: Artefact, *, factor_sink: list[ScoreFa
         if content_hit:
             keyword_overlap += weight
 
+    doc_language_bonus = _doc_language_bonus(prompt, path_text)
+    keyword_overlap += doc_language_bonus
+    doc_domain_bonus = _doc_domain_bonus(path_text, content_text, raw_terms)
+    keyword_overlap += doc_domain_bonus
+    direct_lookup_bonus = _direct_lookup_bonus(prompt, path_text, content_text, raw_terms)
+    keyword_overlap += direct_lookup_bonus
+
     prompt_mentions_tests = any(term in {"test", "tests", "testing", "spec", "specs"} for term in raw_terms)
     if path_text.startswith(("src/", "lib/", "app/", "packages/")):
         keyword_overlap += 0.7
@@ -119,6 +139,30 @@ def score_artefact(prompt: str, artefact: Artefact, *, factor_sink: list[ScoreFa
                     detail="prompt terms matched source path/content",
                 )
             )
+        if direct_lookup_bonus:
+            factor_sink.append(
+                ScoreFactor(
+                    name="direct_lookup_floor",
+                    contribution=direct_lookup_bonus,
+                    detail="direct documentation/origin lookup matched path/content",
+                )
+            )
+        if doc_language_bonus:
+            factor_sink.append(
+                ScoreFactor(
+                    name="doc_language_preference",
+                    contribution=doc_language_bonus,
+                    detail="English prompt prefers English documentation sources",
+                )
+            )
+        if doc_domain_bonus:
+            factor_sink.append(
+                ScoreFactor(
+                    name="doc_domain_match",
+                    contribution=doc_domain_bonus,
+                    detail="documentation path/content matched the prompt domain",
+                )
+            )
         factor_sink.append(
             ScoreFactor(
                 name="recency",
@@ -127,6 +171,115 @@ def score_artefact(prompt: str, artefact: Artefact, *, factor_sink: list[ScoreFa
             )
         )
     return keyword_overlap + recency_bonus
+
+
+def _is_direct_lookup_prompt(prompt: str) -> bool:
+    q = prompt.lower()
+    return any(
+        phrase in q
+        for phrase in (
+            "where ",
+            "official documentation",
+            "documentation",
+            "docs",
+            "introduce",
+            "introduced",
+            "defined",
+            "implemented",
+            "explain where",
+        )
+    )
+
+
+def _needs_lexical_floor(prompt: str) -> bool:
+    terms = set(_prompt_terms(prompt))
+    return _is_direct_lookup_prompt(prompt) or bool(
+        terms
+        & {
+            "auth",
+            "authentication",
+            "security",
+            "oauth",
+            "token",
+            "scheme",
+            "dependency",
+            "dependencies",
+            "documentation",
+            "tutorial",
+            "first",
+            "steps",
+        }
+    )
+
+
+def _doc_language_bonus(prompt: str, path_text: str) -> float:
+    if not _english_prompt_likely(prompt):
+        return 0.0
+    if not ("/docs/" in path_text or path_text.startswith(("docs/", "doc/"))):
+        return 0.0
+    english_doc_path = path_text.startswith("docs/en/") or "/en/docs/" in path_text
+    non_english_doc_path = bool(re.search(r"(^|/)docs/[a-z]{2}(-[a-z]{2})?/", path_text)) and not english_doc_path
+    if english_doc_path:
+        return 6.0
+    if non_english_doc_path:
+        return -8.0
+    return 0.0
+
+
+def _doc_domain_bonus(path_text: str, content_text: str, terms: list[str]) -> float:
+    term_set = set(terms)
+    bonus = 0.0
+    security_terms = {"auth", "authentication", "security", "oauth", "token", "scheme"}
+    dependency_terms = {"dependency", "dependencies", "depends"}
+    if term_set & security_terms:
+        if "/security/" in path_text:
+            bonus += 8.0
+        if any(term in content_text for term in ("security", "oauth", "authentication", "token", "bearer")):
+            bonus += 3.0
+    if {"first", "steps"} <= term_set and "first-steps" in path_text:
+        bonus += 8.0
+    if term_set & dependency_terms:
+        if "/dependencies/" in path_text:
+            bonus += 8.0
+        if "dependency injection" in content_text:
+            bonus += 3.0
+    return bonus
+
+
+def _direct_lookup_bonus(prompt: str, path_text: str, content_text: str, terms: list[str]) -> float:
+    if not _is_direct_lookup_prompt(prompt):
+        return 0.0
+
+    bonus = 0.0
+    doc_path = "/docs/" in path_text or path_text.startswith(("docs/", "doc/"))
+    tutorial_path = "/tutorial/" in path_text or path_text.endswith("/tutorial/index.md")
+
+    if doc_path:
+        bonus += 2.0
+    if tutorial_path:
+        bonus += 2.0
+    if ("dependency" in path_text or "dependencies" in path_text or "dependency" in content_text) and "injection" in content_text:
+        bonus += 8.0
+
+    term_hits = 0
+    for term in terms:
+        if len(term) < 4 or term in _COMMON_WORDS:
+            continue
+        if term in path_text:
+            term_hits += 2
+        elif term in content_text:
+            term_hits += 1
+    if term_hits >= 3:
+        bonus += min(4.0, float(term_hits) * 0.45)
+    return bonus
+
+
+def _english_prompt_likely(prompt: str) -> bool:
+    ascii_chars = sum(1 for char in prompt if ord(char) < 128)
+    ratio = ascii_chars / max(1, len(prompt))
+    lowered = prompt.lower()
+    asks_translation = any(term in lowered for term in ("translate", "translation", "non-english", "localized"))
+    return ratio > 0.95 and not asks_translation
 
 
 def _is_origin_question(prompt: str) -> bool:
@@ -260,6 +413,20 @@ def select_artefacts(
                     detail="intent scorer baseline for prompt and artefact",
                 )
             )
+            if _needs_lexical_floor(prompt):
+                lexical_factors: list[ScoreFactor] = []
+                lexical_score = score_artefact(prompt, artefact, factor_sink=lexical_factors)
+                lexical_floor = max(0.0, lexical_score - _recency_bonus(artefact))
+                if lexical_floor:
+                    score += lexical_floor
+                    factors.extend(lexical_factors)
+                    factors.append(
+                        ScoreFactor(
+                            name="lexical_retrieval_floor",
+                            contribution=lexical_floor,
+                            detail="bounded lexical floor for direct lookup prompts",
+                        )
+                    )
         else:
             score = score_artefact(prompt, artefact, factor_sink=factors)
         if apply_origin_rerank:

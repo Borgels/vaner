@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
+from vaner.intent.prediction_v2 import StructuredPrediction
+
 ReadinessState = Literal[
     "queued",
     "grounding",
@@ -97,6 +99,7 @@ class PredictionSpec:
     hypothesis_type: HypothesisType
     specificity: Specificity
     created_at: float = field(default_factory=time.time)
+    structured: StructuredPrediction | None = None
 
 
 @dataclass(slots=True)

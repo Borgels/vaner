@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vaner Benchmark Canvas: Fair User Architecture</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #101113;
+        --panel: #181a1f;
+        --panel2: #20242a;
+        --ink: #f4f0e8;
+        --muted: #aaa59b;
+        --line: #363a43;
+        --green: #82d58c;
+        --blue: #8ab8ff;
+        --amber: #f2c66e;
+        --red: #ff8f8f;
+        --display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+        --editorial: "Instrument Serif", Georgia, serif;
+        --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--display); -webkit-font-smoothing: antialiased; }
+      main { width: min(1240px, calc(100vw - 34px)); margin: 0 auto; padding: 34px 0 48px; }
+      h1, h2, h3, p { margin: 0; }
+      .page { min-height: 100vh; padding-bottom: 34px; }
+      .hero, .card { border: 1px solid var(--line); background: var(--panel); }
+      header { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; }
+      .hero { padding: 30px; }
+      .eyebrow { color: var(--amber); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; }
+      h1 { max-width: 940px; margin-top: 9px; font-size: clamp(42px, 5.2vw, 72px); font-weight: 600; line-height: .98; }
+      .subtitle { max-width: 920px; margin-top: 18px; color: #d9d2c5; font-size: 18px; line-height: 1.45; }
+      .card { padding: 18px; }
+      h2 { margin-bottom: 14px; font-size: 21px; font-weight: 600; }
+      h3 { font-size: 16px; font-weight: 600; line-height: 1.25; }
+      p, .small, .note { color: var(--muted); line-height: 1.45; }
+      .note { margin-top: 10px; font-size: 13px; }
+      .tag { display: inline-flex; width: fit-content; min-height: 28px; align-items: center; padding: 5px 10px; border: 1px solid color-mix(in srgb, var(--green), transparent 42%); background: color-mix(in srgb, var(--green), transparent 88%); color: var(--green); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+      .tag.warn { border-color: color-mix(in srgb, var(--amber), transparent 42%); background: color-mix(in srgb, var(--amber), transparent 88%); color: var(--amber); }
+      .tag.bad { border-color: color-mix(in srgb, var(--red), transparent 42%); background: color-mix(in srgb, var(--red), transparent 88%); color: var(--red); }
+      .grid { display: grid; gap: 16px; }
+      .questions { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 16px; }
+      .two { grid-template-columns: 1.02fr .98fr; margin-top: 16px; }
+      .three { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px; }
+      .answer { margin-top: 12px; font-size: 30px; font-weight: 700; line-height: 1; }
+      .good { color: var(--green); }
+      .mixed { color: var(--amber); }
+      .bad { color: var(--red); }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+      td strong { color: var(--green); }
+      code { color: var(--ink); font-family: var(--mono); font-size: .92em; }
+      .chart { display: grid; gap: 12px; }
+      .bar-row { display: grid; grid-template-columns: 190px minmax(0, 1fr) 74px; gap: 12px; align-items: center; font-size: 13px; }
+      .track { position: relative; height: 24px; overflow: hidden; background: var(--panel2); border: 1px solid var(--line); }
+      .bar { display: block; height: 100%; background: var(--green); }
+      .bar.blue { background: var(--blue); }
+      .bar.amber { background: var(--amber); }
+      .bar.red { background: var(--red); }
+      .metric { display: grid; gap: 7px; }
+      .metric strong { font-size: 29px; line-height: 1; color: var(--ink); }
+      .metric em { color: var(--green); font-style: normal; }
+      .list { display: grid; gap: 10px; }
+      .item { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+      .dot { display: grid; width: 28px; height: 28px; place-items: center; background: var(--panel2); border: 1px solid var(--line); color: var(--blue); font-family: var(--mono); font-weight: 700; font-size: 12px; }
+      .item strong { display: block; margin-bottom: 2px; font-size: 14px; color: var(--ink); }
+      .item span { color: var(--muted); font-size: 13px; line-height: 1.36; }
+      .quote { padding: 12px; background: var(--panel2); border: 1px solid var(--line); color: #d8d2c5; font-size: 13px; line-height: 1.42; }
+      footer { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+      @media (max-width: 980px) {
+        header, .two { grid-template-columns: 1fr; }
+        .questions, .three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @media (max-width: 640px) {
+        main { width: min(100vw - 22px, 1240px); padding-top: 18px; }
+        .questions, .three { grid-template-columns: 1fr; }
+        .bar-row { grid-template-columns: 1fr; gap: 6px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="page">
+        <header>
+          <section class="hero">
+            <p class="eyebrow">Fair user-architecture benchmark</p>
+            <h1>Vaner improves answer quality without bloating context versus RAG.</h1>
+            <p class="subtitle">
+              Latest run uses the intended product shape: Vaner prepares with a local model,
+              the user's primary AI answers with Claude Sonnet, and Claude Opus judges.
+              The headline is no longer raw briefing alone; it reports raw Vaner,
+              answerable Vaner, and the best valid Vaner product path.
+            </p>
+          </section>
+          <aside class="card">
+            <span class="tag">Completed run</span>
+            <h2>Bottom line</h2>
+            <p>Across <strong>48 judged live turns</strong>, best Vaner product path averaged <strong>7.83/10</strong>, naive RAG averaged <strong>5.98/10</strong>, and naked Sonnet averaged <strong>2.90/10</strong>.</p>
+            <p class="note">The best Vaner path beat best(naked, RAG) by <strong>+1.40</strong> judge points while sending roughly the same amount of context as RAG.</p>
+          </aside>
+        </header>
+
+        <section class="grid questions">
+          <article class="card">
+            <h3>Better than naked?</h3>
+            <p class="answer good">Yes</p>
+            <p class="note">Best Vaner path: 7.83/10 vs naked Sonnet: 2.90/10.</p>
+          </article>
+          <article class="card">
+            <h3>Better than RAG?</h3>
+            <p class="answer good">Often</p>
+            <p class="note">29 wins, 13 ties, 6 losses against best(naked, RAG).</p>
+          </article>
+          <article class="card">
+            <h3>Does it bloat context?</h3>
+            <p class="answer good">No</p>
+            <p class="note">Vaner sent 840 tokens on average, about 4 tokens less than RAG.</p>
+          </article>
+          <article class="card">
+            <h3>Golden trifecta?</h3>
+            <p class="answer mixed">Quality + cost</p>
+            <p class="note">Quality and context efficiency are strong. Answer latency still trails naked and is slightly slower than RAG.</p>
+          </article>
+        </section>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>Average answer quality</h2>
+            <div class="chart">
+              <div class="bar-row">
+                <span>Naked Claude Sonnet</span>
+                <div class="track"><span class="bar red" style="width: 29%"></span></div>
+                <strong>2.90</strong>
+              </div>
+              <div class="bar-row">
+                <span>Naive RAG + Sonnet</span>
+                <div class="track"><span class="bar amber" style="width: 60%"></span></div>
+                <strong>5.98</strong>
+              </div>
+              <div class="bar-row">
+                <span>Raw Vaner + Sonnet</span>
+                <div class="track"><span class="bar blue" style="width: 68%"></span></div>
+                <strong>6.79</strong>
+              </div>
+              <div class="bar-row">
+                <span>Answerable Vaner + Sonnet</span>
+                <div class="track"><span class="bar" style="width: 73%"></span></div>
+                <strong>7.33</strong>
+              </div>
+              <div class="bar-row">
+                <span>Best Vaner product path</span>
+                <div class="track"><span class="bar" style="width: 78%"></span></div>
+                <strong>7.83</strong>
+              </div>
+            </div>
+            <p class="note">Scale is Opus judge score out of 10. Best product path takes the best valid Vaner arm per turn: raw, answerable, prepared/adoption when present.</p>
+          </article>
+
+          <article class="card">
+            <h2>Context and cost efficiency</h2>
+            <table>
+              <thead><tr><th>Metric</th><th>Value</th><th>Interpretation</th></tr></thead>
+              <tbody>
+                <tr><td>Vaner context sent</td><td><strong>840 tokens</strong></td><td>Mean answerable context injected into Sonnet.</td></tr>
+                <tr><td>RAG context sent</td><td>844 tokens</td><td>Naive top-K RAG used essentially the same budget.</td></tr>
+                <tr><td>Overhead vs RAG</td><td><strong>-4 tokens</strong></td><td>Vaner did not win by filling the context window.</td></tr>
+                <tr><td>Incremental Sonnet input cost</td><td>$0.0025 / turn</td><td>Estimated from Sonnet 4.6 input pricing.</td></tr>
+                <tr><td>Cost per Vaner quality point</td><td><strong>$0.0031</strong></td><td>Estimated primary cost per point of best-path uplift.</td></tr>
+                <tr><td>Total cloud cost of run</td><td>$0.4166</td><td>Primary + judge estimate for the benchmark run.</td></tr>
+              </tbody>
+            </table>
+            <p class="note">Cost is estimated from configured pricing: Sonnet 4.6 at $0.003/$0.015 per 1k input/output and Opus 4.7 at $0.005/$0.025 per 1k input/output.</p>
+          </article>
+        </section>
+
+        <section class="grid three">
+          <article class="card metric">
+            <span class="tag">Quality lift</span>
+            <strong>+1.40</strong>
+            <p class="small">Best Vaner product-path uplift over best(naked, RAG).</p>
+          </article>
+          <article class="card metric">
+            <span class="tag">Context value</span>
+            <strong>2.70</strong>
+            <p class="small">Quality points per 1k injected tokens on positive-uplift turns.</p>
+          </article>
+          <article class="card metric">
+            <span class="tag warn">Latency</span>
+            <strong>5.15s</strong>
+            <p class="small">Answerable path mean answer latency, versus 4.12s for RAG and 2.76s naked.</p>
+          </article>
+        </section>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>Benchmark architecture</h2>
+            <div class="list">
+              <div class="item"><div class="dot">V</div><div><strong>Vaner prep model</strong><span>Local Ollama <code>qwen3.5:35b</code> on the RTX 5090. This is the cheap/background worker, not the user's primary model.</span></div></div>
+              <div class="item"><div class="dot">P</div><div><strong>Primary user model</strong><span><code>claude-sonnet-4-6</code>. Naked, RAG, raw Vaner, and answerable Vaner all ask the same primary model.</span></div></div>
+              <div class="item"><div class="dot">J</div><div><strong>Judge</strong><span><code>claude-opus-4-7</code>. Separate from the primary model for cleaner evaluation.</span></div></div>
+              <div class="item"><div class="dot">D</div><div><strong>Dataset</strong><span>Public 2-turn sessions across Flask, FastAPI docs, TheAlgorithms/Python, and Alice in Wonderland. No local Vaner-codebase diagnostics are included in headline claims.</span></div></div>
+            </div>
+          </article>
+
+          <article class="card">
+            <h2>What changed from the old canvas</h2>
+            <table>
+              <thead><tr><th>Old framing</th><th>New framing</th></tr></thead>
+              <tbody>
+                <tr><td>Same 122B model for Vaner, answer, and judge</td><td><strong>Local Vaner, cloud primary, separate judge</strong></td></tr>
+                <tr><td>Raw Vaner briefing as headline</td><td><strong>Raw, answerable, and best product path separated</strong></td></tr>
+                <tr><td>Quality and latency only</td><td><strong>Quality, latency, context tokens, and estimated cost</strong></td></tr>
+                <tr><td>Context size noted descriptively</td><td><strong>Context overhead vs RAG and cost per quality point</strong></td></tr>
+              </tbody>
+            </table>
+          </article>
+        </section>
+
+        <footer>
+          <span>Run artifact: <code>.vaner/bench-runs/20260428T073931Z-fair-local-vaner-anthropic-primary/public-v2-local-vaner-sonnet-primary-opus-judge.json</code></span>
+          <span>Generated for April 28, 2026 benchmark review</span>
+        </footer>
+      </section>
+
+      <section class="page">
+        <header>
+          <section class="hero">
+            <p class="eyebrow">Page 2: where Vaner helps and what to optimize</p>
+            <h1>The next product layer is an evidence budget optimizer.</h1>
+            <p class="subtitle">
+              The run shows Vaner can beat RAG without using more context. The next step is
+              making this adaptive in the product: include more when it buys quality, send less
+              when the marginal evidence is weak, and avoid treating a fixed token cap as the strategy.
+            </p>
+          </section>
+          <aside class="card">
+            <span class="tag warn">Super-judge read</span>
+            <h2>Continue, but optimize</h2>
+            <p>Vaner’s strongest slices are docs and code questions where the prepared package can shape the primary model’s answer. The weakest slices are direct lookup or broad literature cases where RAG or naked is already strong.</p>
+          </aside>
+        </header>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>Best and worst slices</h2>
+            <table>
+              <thead><tr><th>Slice</th><th>Signal</th><th>Read</th></tr></thead>
+              <tbody>
+                <tr><td>FastAPI auth</td><td><strong>+3 to +4 best uplift</strong></td><td>Good evidence shaping; Vaner beats RAG without extra context.</td></tr>
+                <tr><td>FastAPI dependency injection</td><td><strong>+2 to +2.5</strong></td><td>Stable product win; both raw and answerable paths strong.</td></tr>
+                <tr><td>Flask debug session cookie</td><td><strong>+2 to +3.5</strong></td><td>Code/doc context helps primary model answer beyond RAG.</td></tr>
+                <tr><td>Algorithms sorting</td><td><strong>+3 to +4</strong></td><td>Answerable packaging was the main win.</td></tr>
+                <tr><td>Algorithms trees</td><td class="bad">-1 to -2</td><td>RAG found better evidence; Vaner selected or shaped the wrong context.</td></tr>
+                <tr><td>Alice wordplay</td><td class="bad">-1 to 0</td><td>Naked/RAG often sufficient; Vaner should abstain or compress harder.</td></tr>
+              </tbody>
+            </table>
+          </article>
+
+          <article class="card">
+            <h2>Optimization target</h2>
+            <div class="quote">
+              Maximize useful answer lift per primary-model token. Do not optimize for small context alone, and do not optimize for quality by dumping large context. Vaner should estimate marginal evidence value and stop when extra context no longer improves answerability.
+            </div>
+            <div class="list" style="margin-top: 12px">
+              <div class="item"><div class="dot">1</div><div><strong>Direct evidence first</strong><span>Rank exact-language, topic-specific, official/current evidence before predictive or broad support.</span></div></div>
+              <div class="item"><div class="dot">2</div><div><strong>Marginal utility per token</strong><span>Add an excerpt only if it contributes answer-critical facts not already covered.</span></div></div>
+              <div class="item"><div class="dot">3</div><div><strong>Adaptive budget</strong><span>Use compact, balanced, or expanded packets based on answerability and query breadth, not a blunt cap.</span></div></div>
+              <div class="item"><div class="dot">4</div><div><strong>Abstain or defer</strong><span>If RAG/naked is likely enough or Vaner’s evidence is weak, avoid sending distracting context.</span></div></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="grid three">
+          <article class="card">
+            <span class="tag">Evidence recall</span>
+            <h2>Current gap</h2>
+            <p>Live file recall was <strong>0.719</strong>, below cold recall <strong>0.813</strong>. That means quality gains are coming from packaging and synthesis in many turns, but recall still needs work.</p>
+          </article>
+          <article class="card">
+            <span class="tag warn">Prepared-only readiness</span>
+            <h2>Not proven here</h2>
+            <p>The run reports no prepared-only wins: <code>prepared_briefing_available_rate=0</code>. This is a product-quality run, not a proof that Vaner had the final answer before the prompt.</p>
+          </article>
+          <article class="card">
+            <span class="tag">Typed signals</span>
+            <h2>Next benchmark</h2>
+            <p>Composer/pre-submit text should be a separate condition. If Vaner sees the user typing before send, it can prepare sharper evidence and may reduce context while improving quality.</p>
+          </article>
+        </section>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>Acceptance gates for the next layer</h2>
+            <table>
+              <thead><tr><th>Gate</th><th>Target</th></tr></thead>
+              <tbody>
+                <tr><td>Best Vaner uplift</td><td>&gt; +1.0 vs best(naked, RAG)</td></tr>
+                <tr><td>Context overhead vs RAG</td><td>&le; 0 average unless quality gain is material</td></tr>
+                <tr><td>Cost per quality point</td><td>Tracked per primary model and visible in report</td></tr>
+                <tr><td>Severe loss rate</td><td>Decrease on direct lookup / literature slices</td></tr>
+                <tr><td>Answerability</td><td>Improve full/weak classification without inflating false-ready claims</td></tr>
+              </tbody>
+            </table>
+          </article>
+
+          <article class="card">
+            <h2>Public claim wording</h2>
+            <div class="list">
+              <div class="item"><div class="dot">✓</div><div><strong>Use</strong><span>“In a fair local-Vaner/cloud-primary benchmark, Vaner improved answer quality by +1.40 points over best(naked, RAG) while using about the same context as RAG.”</span></div></div>
+              <div class="item"><div class="dot">✓</div><div><strong>Use</strong><span>“Answerable packaging, not raw context volume, was the main product improvement.”</span></div></div>
+              <div class="item"><div class="dot">!</div><div><strong>Avoid</strong><span>“Vaner always beats RAG” or “Vaner predicted the exact next prompt.” This run does not prove those claims.</span></div></div>
+            </div>
+          </article>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

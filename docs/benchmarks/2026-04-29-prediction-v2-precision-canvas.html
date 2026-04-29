@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vaner Prediction Engine v2 Precision Benchmark</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #101113;
+        --panel: #181a1f;
+        --panel2: #20242a;
+        --ink: #f4f0e8;
+        --muted: #aaa59b;
+        --line: #363a43;
+        --green: #82d58c;
+        --blue: #8ab8ff;
+        --amber: #f2c66e;
+        --red: #ff8f8f;
+        --display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+        --editorial: "Instrument Serif", Georgia, serif;
+        --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--display); -webkit-font-smoothing: antialiased; }
+      main { width: min(1240px, calc(100vw - 34px)); margin: 0 auto; padding: 34px 0 48px; }
+      h1, h2, h3, p { margin: 0; }
+      .page { min-height: 100vh; padding-bottom: 34px; }
+      .hero, .card { border: 1px solid var(--line); background: var(--panel); }
+      header { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; }
+      .hero { padding: 30px; }
+      .eyebrow { color: var(--amber); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; }
+      h1 { max-width: 940px; margin-top: 9px; font-size: clamp(42px, 5.2vw, 72px); font-weight: 600; line-height: .98; }
+      .subtitle { max-width: 920px; margin-top: 18px; color: #d9d2c5; font-size: 18px; line-height: 1.45; }
+      .card { padding: 18px; }
+      h2 { margin-bottom: 14px; font-size: 21px; font-weight: 600; }
+      h3 { font-size: 16px; font-weight: 600; line-height: 1.25; }
+      p, .small, .note { color: var(--muted); line-height: 1.45; }
+      .note { margin-top: 10px; font-size: 13px; }
+      .tag { display: inline-flex; width: fit-content; min-height: 28px; align-items: center; padding: 5px 10px; border: 1px solid color-mix(in srgb, var(--green), transparent 42%); background: color-mix(in srgb, var(--green), transparent 88%); color: var(--green); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+      .tag.warn { border-color: color-mix(in srgb, var(--amber), transparent 42%); background: color-mix(in srgb, var(--amber), transparent 88%); color: var(--amber); }
+      .tag.bad { border-color: color-mix(in srgb, var(--red), transparent 42%); background: color-mix(in srgb, var(--red), transparent 88%); color: var(--red); }
+      .grid { display: grid; gap: 16px; }
+      .questions { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 16px; }
+      .two { grid-template-columns: 1.02fr .98fr; margin-top: 16px; }
+      .three { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px; }
+      .answer { margin-top: 12px; font-size: 30px; font-weight: 700; line-height: 1; }
+      .good { color: var(--green); }
+      .mixed { color: var(--amber); }
+      .bad { color: var(--red); }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+      td strong { color: var(--green); }
+      code { color: var(--ink); font-family: var(--mono); font-size: .92em; }
+      .chart { display: grid; gap: 12px; }
+      .bar-row { display: grid; grid-template-columns: 200px minmax(0, 1fr) 78px; gap: 12px; align-items: center; font-size: 13px; }
+      .track { position: relative; height: 24px; overflow: hidden; background: var(--panel2); border: 1px solid var(--line); }
+      .bar { display: block; height: 100%; background: var(--green); }
+      .bar.blue { background: var(--blue); }
+      .bar.amber { background: var(--amber); }
+      .bar.red { background: var(--red); }
+      .metric { display: grid; gap: 7px; }
+      .metric strong { font-size: 29px; line-height: 1; color: var(--ink); }
+      .metric em { color: var(--green); font-style: normal; }
+      .list { display: grid; gap: 10px; }
+      .item { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+      .dot { display: grid; width: 28px; height: 28px; place-items: center; background: var(--panel2); border: 1px solid var(--line); color: var(--blue); font-family: var(--mono); font-weight: 700; font-size: 12px; }
+      .item strong { display: block; margin-bottom: 2px; font-size: 14px; color: var(--ink); }
+      .item span { color: var(--muted); font-size: 13px; line-height: 1.36; }
+      .quote { padding: 12px; background: var(--panel2); border: 1px solid var(--line); color: #d8d2c5; font-size: 13px; line-height: 1.42; }
+      footer { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+      @media (max-width: 980px) {
+        header, .two { grid-template-columns: 1fr; }
+        .questions, .three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @media (max-width: 640px) {
+        main { width: min(100vw - 22px, 1240px); padding-top: 18px; }
+        .questions, .three { grid-template-columns: 1fr; }
+        .bar-row { grid-template-columns: 1fr; gap: 6px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="page">
+        <header>
+          <section class="hero">
+            <p class="eyebrow">Prediction Engine v2 precision benchmark</p>
+            <h1>Source-first evidence improved exact hits, but target recall is now the bottleneck.</h1>
+            <p class="subtitle">
+              Vaner prepared locally on the RTX 5090 with <code>qwen3.5:35b</code>.
+              Claude Sonnet generated the user-facing answers and Claude Opus judged them.
+              The run confirms the evidence hygiene fix worked: no supporting-only packages.
+              It also shows the next problem clearly: when Vaner chooses the wrong primary source file,
+              the warm answer can get worse.
+            </p>
+          </section>
+          <aside class="card">
+            <span class="tag bad">Promotion gate failed</span>
+            <h2>Bottom line</h2>
+            <p>
+              Exact prediction rose from <strong>0/15</strong> to <strong>2/15</strong>,
+              and mean relevance rose from <strong>0.15</strong> to <strong>0.31</strong>.
+              But related coverage fell to <strong>5/15</strong> and quality A/B was only
+              <strong>1 win, 1 tie, 1 loss</strong>.
+            </p>
+            <p class="note">The product moved from broad-but-safe context toward precise evidence. The next fix is better component and symbol target recall.</p>
+          </aside>
+        </header>
+
+        <section class="grid questions">
+          <article class="card">
+            <h3>Exact predictions</h3>
+            <p class="answer mixed">2/15</p>
+            <p class="note">Improved from 0/15 before the source-first evidence pass.</p>
+          </article>
+          <article class="card">
+            <h3>Related coverage</h3>
+            <p class="answer bad">5/15</p>
+            <p class="note">Dropped from 6/15; the stricter gate discarded broad docs-only context.</p>
+          </article>
+          <article class="card">
+            <h3>Primary evidence</h3>
+            <p class="answer good">9/15</p>
+            <p class="note">Source/config/test evidence was present in 60% of turns.</p>
+          </article>
+          <article class="card">
+            <h3>Quality A/B</h3>
+            <p class="answer mixed">1 / 1 / 1</p>
+            <p class="note">One Vaner win, one tie, one cold-start win.</p>
+          </article>
+        </section>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>Before vs after</h2>
+            <div class="chart">
+              <div class="bar-row">
+                <span>Exact hits before</span>
+                <div class="track"><span class="bar red" style="width: 0%"></span></div>
+                <strong>0%</strong>
+              </div>
+              <div class="bar-row">
+                <span>Exact hits after</span>
+                <div class="track"><span class="bar amber" style="width: 13%"></span></div>
+                <strong>13%</strong>
+              </div>
+              <div class="bar-row">
+                <span>Related before</span>
+                <div class="track"><span class="bar blue" style="width: 40%"></span></div>
+                <strong>40%</strong>
+              </div>
+              <div class="bar-row">
+                <span>Related after</span>
+                <div class="track"><span class="bar amber" style="width: 33%"></span></div>
+                <strong>33%</strong>
+              </div>
+              <div class="bar-row">
+                <span>Mean relevance before</span>
+                <div class="track"><span class="bar blue" style="width: 15%"></span></div>
+                <strong>0.15</strong>
+              </div>
+              <div class="bar-row">
+                <span>Mean relevance after</span>
+                <div class="track"><span class="bar" style="width: 31%"></span></div>
+                <strong>0.31</strong>
+              </div>
+            </div>
+            <p class="note">The old run used Claude Sonnet as judge; this run used Claude Opus, so compare directionally, not as a perfectly controlled A/B.</p>
+          </article>
+
+          <article class="card">
+            <h2>Current failure modes</h2>
+            <table>
+              <thead><tr><th>Miss reason</th><th>Count</th><th>Meaning</th></tr></thead>
+              <tbody>
+                <tr><td>No primary evidence</td><td><strong>6/15</strong></td><td>No source/config/test target was ready.</td></tr>
+                <tr><td>Wrong primary target</td><td><strong>4/15</strong></td><td>Vaner found source files, but not the mechanism the user asked for.</td></tr>
+                <tr><td>Tangential primary evidence</td><td><strong>3/15</strong></td><td>Source evidence was nearby but incomplete.</td></tr>
+                <tr><td>Supporting-only misses</td><td><strong>0/15</strong></td><td>The hygiene/readiness fix removed the old docs/generated/data-only failure.</td></tr>
+              </tbody>
+            </table>
+          </article>
+        </section>
+
+        <section class="grid three">
+          <article class="card metric">
+            <span class="tag">Mean precompute</span>
+            <strong>62.2s</strong>
+            <p class="small">Local 35B exploration, serial concurrency, 90s cycle cap.</p>
+          </article>
+          <article class="card metric">
+            <span class="tag warn">Cache lookup</span>
+            <strong>342ms</strong>
+            <p class="small">Warm lookup stayed interactive; preparation cost is background work.</p>
+          </article>
+          <article class="card metric">
+            <span class="tag bad">Quality sample</span>
+            <strong>33%</strong>
+            <p class="small">Vaner won 1/3 sampled answer comparisons under Opus judging.</p>
+          </article>
+        </section>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>What improved</h2>
+            <div class="list">
+              <div class="item"><div class="dot">1</div><div><strong>Primary evidence is now visible</strong><span>The report tracks primary vs supporting evidence, so failure is no longer hidden behind one relevance score.</span></div></div>
+              <div class="item"><div class="dot">2</div><div><strong>Docs/generated artifacts stopped dominating</strong><span>Generated bindings, diagrams, runtime data, and broad docs no longer make mechanism predictions look evidence-ready by themselves.</span></div></div>
+              <div class="item"><div class="dot">3</div><div><strong>Exact hits appeared</strong><span>Two turns landed direct mechanism evidence under a stricter Opus judge.</span></div></div>
+            </div>
+          </article>
+
+          <article class="card">
+            <h2>What to fix next</h2>
+            <div class="list">
+              <div class="item"><div class="dot">A</div><div><strong>Component-name target recall</strong><span>Queries naming components such as stores, scorers, assemblers, daemon runners, and config loaders need better symbol-to-file resolution.</span></div></div>
+              <div class="item"><div class="dot">B</div><div><strong>Wrong-primary guardrail</strong><span>If primary evidence points to a neighboring mechanism, Vaner should abstain or keep the package evidence-ready only, not let it drive answer quality down.</span></div></div>
+              <div class="item"><div class="dot">C</div><div><strong>Answer generation robustness</strong><span>One quality sample tied because both Claude answers failed to produce useful content. The harness should capture answer errors separately from Vaner quality.</span></div></div>
+            </div>
+          </article>
+        </section>
+
+        <footer>
+          <span>Run artifact: <code>eval/benchmark/runs/v2_precision_local5090_sonnet_opus_15turn/report.json</code></span>
+          <span>Generated April 29, 2026</span>
+        </footer>
+      </section>
+    </main>
+  </body>
+</html>

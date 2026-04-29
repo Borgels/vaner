@@ -172,6 +172,76 @@ def test_select_artefacts_custom_scorer_changes_ranking():
     assert selected[0].key == "file_summary:b.py"
 
 
+def test_select_artefacts_uses_lexical_floor_for_direct_doc_lookup():
+    artefacts = [
+        Artefact(
+            key="file_summary:docs/zh/docs/deployment/fastapicloud.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/zh/docs/deployment/fastapicloud.md",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="FastAPI Cloud deployment dashboard login project hosting.",
+        ),
+        Artefact(
+            key="file_summary:docs/en/docs/tutorial/dependencies/index.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/en/docs/tutorial/dependencies/index.md",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="Tutorial - User Guide. Dependency Injection. FastAPI has a very powerful but intuitive Dependency Injection system.",
+        ),
+    ]
+
+    def misleading_intent_scorer(_: str, artefact: Artefact) -> float:
+        return 5.0 if "fastapicloud" in artefact.source_path else 0.0
+
+    selected = select_artefacts(
+        "Where does the official documentation introduce FastAPI dependency injection?",
+        artefacts,
+        top_n=1,
+        scorer=misleading_intent_scorer,
+    )
+
+    assert selected[0].source_path == "docs/en/docs/tutorial/dependencies/index.md"
+
+
+def test_select_artefacts_prefers_english_docs_for_english_direct_lookup():
+    artefacts = [
+        Artefact(
+            key="file_summary:docs/zh/docs/tutorial/security/first-steps.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/zh/docs/tutorial/security/first-steps.md",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="FastAPI security first steps OAuth2 password bearer token authentication.",
+        ),
+        Artefact(
+            key="file_summary:docs/en/docs/tutorial/security/first-steps.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/en/docs/tutorial/security/first-steps.md",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="FastAPI security first steps OAuth2 password bearer token authentication.",
+        ),
+    ]
+
+    def translation_biased_scorer(_: str, artefact: Artefact) -> float:
+        return 4.0 if "/zh/" in artefact.source_path else 0.0
+
+    selected = select_artefacts(
+        "Where do the official FastAPI docs introduce the security first steps?",
+        artefacts,
+        top_n=1,
+        scorer=translation_biased_scorer,
+    )
+
+    assert selected[0].source_path == "docs/en/docs/tutorial/security/first-steps.md"
+
+
 def test_select_artefacts_excludes_private_zone_when_requested():
     artefacts = [
         Artefact(

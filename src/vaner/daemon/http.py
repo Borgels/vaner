@@ -5,6 +5,7 @@ import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -978,6 +979,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 "hypothesis_type": spec.hypothesis_type,
                 "specificity": spec.specificity,
                 "created_at": spec.created_at,
+                "structured": asdict(spec.structured) if getattr(spec, "structured", None) is not None else None,
             },
             "run": {
                 "weight": run.weight,

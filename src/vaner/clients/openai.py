@@ -7,6 +7,7 @@ from typing import Literal
 
 from vaner.clients.llm_response import LLMResponse, approx_tokens, split_thinking_and_content
 from vaner.defaults.loader import reasoning_defaults_for_model
+from vaner.models.cost import usage_from_openai_payload
 
 ReasoningMode = Literal["off", "allowed", "required", "provider_default"]
 
@@ -121,10 +122,21 @@ def openai_llm_structured(
             payload = response.json()
             choices = payload.get("choices", [])
             if not choices:
-                return LLMResponse(thinking="", content="[]", raw="")
+                return LLMResponse(
+                    thinking="",
+                    content="[]",
+                    raw="",
+                    usage=usage_from_openai_payload(payload, prompt=prompt, completion="[]"),
+                )
             raw = str(choices[0]["message"].get("content", ""))
 
         split = split_thinking_and_content(raw)
+        split = LLMResponse(
+            thinking=split.thinking,
+            content=split.content,
+            raw=split.raw,
+            usage=usage_from_openai_payload(payload, prompt=prompt, completion=split.content, thinking=split.thinking),
+        )
 
         if reasoning_mode == "required" and not split.thinking:
             raise ValueError(

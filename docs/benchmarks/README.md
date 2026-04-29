@@ -1,8 +1,9 @@
 # Vaner Benchmarks
 
-This page describes how Vaner is benchmarked and links to every rendered run
-result. The raw JSON for each run is committed alongside its markdown report so
-a reader can reproduce it exactly.
+This page describes how Vaner is benchmarked and links to rendered run results.
+Large raw artifacts may stay in the local run directory; committed reports
+include either the raw JSON or a compact summary artifact with reproducibility
+metadata.
 
 ## What we measure
 
@@ -89,6 +90,7 @@ raw JSON (for full transparency) and the rendered markdown.
 
 | Date | Answer + judge model | Hardware | Sessions | Idle cap/mult | Aggregate uplift | Link |
 |---|---|---|---:|---|---:|---|
+| **2026-04-28** | **Vaner: qwen3.5:35b, answer: Claude Sonnet 4.6, judge: Claude Opus 4.7** | **RTX 5090 local prep + Anthropic primary/judge** | **8** | **60s cap, mult={0,0.25,1.0}, assembly={shadow,safe}** | **+1.65 vs best(naked,RAG)** | [publishable report](./2026-04-28-public-session-replay-benchmark.html) |
 | 2026-04-23 | qwen2.5-coder:7b | RTX 5090 (ollama) | 8 | 60s cap, mult=0.5 | **+0.66** | [run](https://github.com/abolsen/Vaner-train/blob/main/eval/runs/session/quality-local-20260423T072226Z/primary.md) |
 | 2026-04-23 | Qwen/Qwen3.5-35B-A3B-FP8 | spark01 DGX (vLLM) | 8 | 60s cap, mult=0.5 | **+0.66** | [run](https://github.com/abolsen/Vaner-train/tree/main/eval/runs/session/ship-spark01-a3b-) |
 | 2026-04-23 | qwen3.5:35b Q4_K_M | RTX 5090 (ollama) | 8 | 60s cap, mult=0.5 | **−0.23** | [run](https://github.com/abolsen/Vaner-train/tree/main/eval/runs/session/ship-qwen35b-) |

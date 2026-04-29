@@ -508,6 +508,7 @@ def _serialize_prediction_for_mcp(prompt: Any, *, rank: int | None = None) -> di
     MCP Apps clients and text-fallback renderers share one shape.
     """
     from vaner.intent.prediction_card import derive_card_fields
+    from dataclasses import asdict
 
     spec = prompt.spec
     run = prompt.run
@@ -539,6 +540,8 @@ def _serialize_prediction_for_mcp(prompt: Any, *, rank: int | None = None) -> di
         "source_label": card.source_label,
         "ui_summary": card.ui_summary,
     }
+    if getattr(spec, "structured", None) is not None:
+        payload["structured"] = asdict(spec.structured)
     if rank is not None:
         payload["rank"] = rank
     # 0.8.7 WS8: surface composer-engagement metadata only for
@@ -1691,6 +1694,8 @@ def build_server(
                 estimated_cost_per_1k = float(args.get("estimated_cost_per_1k_tokens", 0.0) or 0.0)
                 estimated_cost_usd = (total_context_tokens / 1000.0) * estimated_cost_per_1k
                 cache_tier = str(resolution.provenance.cache) if resolution.provenance.cache in {"cold", "warm", "hot"} else "cold"
+                assembly_metadata = resolution.answerability_metadata.evidence_assembly if resolution.answerability_metadata else None
+                answerable_context_tokens = assembly_metadata.result_context_tokens if assembly_metadata else 0
                 resolution = resolution.model_copy(
                     update={
                         "metrics": ResolutionMetrics(
@@ -1702,6 +1707,19 @@ def build_server(
                             elapsed_ms=(time.monotonic() - resolve_started_monotonic) * 1000.0,
                             estimated_cost_per_1k_tokens=estimated_cost_per_1k,
                             estimated_cost_usd=estimated_cost_usd,
+                            injected_context_tokens=total_context_tokens,
+                            expected_incremental_primary_cost_usd=estimated_cost_usd,
+                            primary_llm_usage_known=False,
+                            total_known_cloud_cost_usd=0.0,
+                            total_estimated_cloud_cost_usd=estimated_cost_usd,
+                            pricing_snapshot_id="mcp-call-configured-rate" if estimated_cost_per_1k > 0 else "unknown-zero",
+                            usage_source_summary="mcp_context_only",
+                            assembly_mode=assembly_metadata.assembly_mode if assembly_metadata else "off",
+                            answerable_context_tokens=answerable_context_tokens,
+                            assembly_token_delta=assembly_metadata.token_delta if assembly_metadata else 0,
+                            assembly_items_protected=assembly_metadata.items_protected if assembly_metadata else 0,
+                            assembly_items_deduped=assembly_metadata.items_deduped if assembly_metadata else 0,
+                            assembly_technical_limit_hit=assembly_metadata.technical_limit_hit if assembly_metadata else None,
                         ),
                     }
                 )
