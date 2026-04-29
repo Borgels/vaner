@@ -8,6 +8,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from vaner.setup.answers import SetupAnswers
+from vaner.setup.serializers import AnswersValidationError, answers_from_payload
 
 
 def _valid_answers() -> SetupAnswers:
@@ -64,3 +65,22 @@ def test_setup_answers_is_hashable() -> None:
     a2 = _valid_answers()
     assert hash(a1) == hash(a2)
     assert a1 == a2
+
+
+def test_answers_from_payload_normalizes_defaults_and_string_work_style() -> None:
+    answers = answers_from_payload({"work_styles": "coding"})
+    assert answers.work_styles == ("coding",)
+    assert answers.priority == "balanced"
+    assert answers.compute_posture == "balanced"
+    assert answers.cloud_posture == "ask_first"
+    assert answers.background_posture == "normal"
+
+
+def test_answers_from_payload_rejects_non_object() -> None:
+    with pytest.raises(AnswersValidationError, match="answers payload must be a JSON object"):
+        answers_from_payload([])
+
+
+def test_answers_from_payload_rejects_non_string_work_styles() -> None:
+    with pytest.raises(AnswersValidationError, match="work_styles must be a list of strings"):
+        answers_from_payload({"work_styles": [1, 2, 3]})

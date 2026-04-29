@@ -83,6 +83,11 @@ def test_predictions_active_returns_live_predictions(temp_repo):
     assert row["run"]["readiness"] == "queued"
     assert "token_budget" in row["run"]
     assert row["artifacts"]["has_draft"] is False
+    assert row["readiness_label"] == "Queued"
+    assert row["trust_status"] == "preparing"
+    assert row["freshness"] == "recent"
+    assert row["watched_sources"] == []
+    assert row["diagnostic_status"] == "not_checked"
 
 
 def test_predictions_single_returns_404_when_registry_absent(temp_repo):
@@ -165,6 +170,8 @@ def test_adopt_returns_resolution_with_prepared_package(temp_repo):
     assert body["predicted_response"] == "Here is a suggested answer."
     assert body["intent"] == "Write the next test"
     assert body["provenance"]["mode"] == "predictive_hit"
+    descriptors = registry.consume_pending_adoption_descriptors()
+    assert [item["prediction_id"] for item in descriptors] == [pid]
 
 
 def test_adopt_returns_404_for_unknown_id(temp_repo):

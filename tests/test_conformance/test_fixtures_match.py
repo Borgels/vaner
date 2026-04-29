@@ -62,6 +62,14 @@ ARTIFACTS_KEYS = {
     "has_briefing": bool,
     "thinking_trace_count": int,
 }
+PREDICTION_TRUST_KEYS = {
+    "trust_status": str,
+    "freshness": str,
+    "invalidated_by": list,
+    "watched_sources": list,
+    "changed_sources": list,
+    "diagnostic_status": str,
+}
 
 
 def _assert_shape(row: dict, expected: dict[str, type]) -> None:
@@ -89,6 +97,7 @@ def test_predictions_active_envelope_shape():
 
     for row in body["predictions"]:
         _assert_shape(row, PREDICTION_SHAPE_KEYS)
+        _assert_shape(row, PREDICTION_TRUST_KEYS)
         _assert_shape(row["spec"], SPEC_KEYS)
         _assert_shape(row["run"], RUN_KEYS)
         _assert_shape(row["artifacts"], ARTIFACTS_KEYS)
@@ -113,11 +122,14 @@ def test_predictions_active_envelope_shape():
             "ready",
             "stale",
         }
+        assert row["trust_status"] in {"ready", "preparing", "invalidated"}
+        assert row["freshness"] in {"fresh", "recent", "stale"}
 
 
 def test_predictions_single_shape():
     row = _load("predictions_single_sample.json")
     _assert_shape(row, PREDICTION_SHAPE_KEYS)
+    _assert_shape(row, PREDICTION_TRUST_KEYS)
     _assert_shape(row["spec"], SPEC_KEYS)
     _assert_shape(row["run"], RUN_KEYS)
     _assert_shape(row["artifacts"], ARTIFACTS_KEYS)

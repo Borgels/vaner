@@ -124,6 +124,45 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
     if cockpit_dist is not None and (cockpit_dist / "assets").exists():
         app.mount("/assets", StaticFiles(directory=cockpit_dist / "assets"), name="cockpit-assets")
 
+    def _prediction_health() -> dict[str, Any]:
+        readiness_counts = {state: 0 for state in ["queued", "grounding", "evidence_gathering", "drafting", "ready", "stale"]}
+        if engine is None or getattr(engine, "prediction_registry", None) is None:
+            return {
+                "engine_available": engine is not None,
+                "daemon_with_engine": engine is not None,
+                "active_prediction_count": 0,
+                "total_prediction_count": 0,
+                "readiness_counts": readiness_counts,
+                "pending_adoption_outcomes": 0,
+                "stale_or_invalidated_reasons": [],
+                "diagnostic_status": "engine_unavailable" if engine is None else "cold",
+            }
+        registry = engine.prediction_registry
+        prompts = registry.all()
+        stale_reasons: list[str] = []
+        for prompt in prompts:
+            readiness_counts[prompt.run.readiness] = readiness_counts.get(prompt.run.readiness, 0) + 1
+            if prompt.run.invalidation_reason:
+                stale_reasons.append(prompt.run.invalidation_reason)
+        pending_lock = getattr(registry, "_pending_adoption_lock", None)
+        pending_queue = getattr(registry, "_pending_adoption_descriptors", [])
+        if pending_lock is not None:
+            with pending_lock:
+                pending_adoptions = len(pending_queue)
+        else:
+            pending_adoptions = len(pending_queue)
+        active_count = len(registry.active())
+        return {
+            "engine_available": True,
+            "daemon_with_engine": True,
+            "active_prediction_count": active_count,
+            "total_prediction_count": len(prompts),
+            "readiness_counts": readiness_counts,
+            "pending_adoption_outcomes": pending_adoptions,
+            "stale_or_invalidated_reasons": stale_reasons[-8:],
+            "diagnostic_status": "healthy" if active_count > 0 else "cold",
+        }
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -160,6 +199,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 "top_scenario": top[0].id if top else None,
                 "prediction_metrics": prediction_metrics,
                 "prediction_calibration": calibration,
+                "prediction_health": _prediction_health(),
             }
         )
 
@@ -266,20 +306,17 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         read — no side effects.
         """
 
-        from vaner.cli.commands.setup import (
-            _default_answers,
-            _read_policy_section,
-            _read_setup_section,
-        )
+        from vaner.cli.commands.setup import _default_answers
         from vaner.intent.deep_run_defaults import (
             deep_run_defaults_for,
             defaults_to_dict,
         )
         from vaner.setup.answers import SetupAnswers
         from vaner.setup.catalog import bundle_by_id
+        from vaner.setup.config_io import read_policy_section, read_setup_section
 
         repo_root = config.repo_root
-        policy_section = _read_policy_section(repo_root)
+        policy_section = read_policy_section(repo_root)
         selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
         try:
             bundle = bundle_by_id(str(selected_bundle_id))
@@ -289,13 +326,13 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 detail=f"unknown bundle id {selected_bundle_id!r}; run `vaner setup wizard`",
             ) from None
 
-        setup_section = _read_setup_section(repo_root)
+        setup_section = read_setup_section(repo_root)
         answers: SetupAnswers
         if setup_section:
             try:
-                from vaner.cli.commands.setup import _answers_from_payload
+                from vaner.setup.serializers import answers_from_payload
 
-                answers = _answers_from_payload(setup_section)
+                answers = answers_from_payload(setup_section)
             except Exception:
                 answers = _default_answers()
         else:
@@ -307,9 +344,9 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
     # ------------------------------------------------------------------
     # 0.8.6 WS8 — Setup HTTP surface. Mirrors the WS7 MCP tools so
     # desktop apps that prefer HTTP can drive the wizard end-to-end.
-    # Reuses WS6's serialisation helpers (vaner.cli.commands.setup) as
-    # the canonical contract for the JSON shapes; the MCP tools use the
-    # same helpers so both surfaces stay in lock-step.
+    # Reuses setup serialisation helpers as the canonical contract for
+    # the JSON shapes; the MCP tools use the same helpers so both
+    # surfaces stay in lock-step.
     #
     # Hardware detection is cached for the daemon process lifetime
     # because probing reaches into /sys, runs subprocesses, etc — once
@@ -336,132 +373,50 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
     app.state.engine = engine
 
     def _read_setup_section_for_http(repo_root: Path) -> dict[str, Any]:
-        from vaner.cli.commands.setup import _read_setup_section
+        from vaner.setup.config_io import read_setup_section
 
-        return _read_setup_section(repo_root)
+        return read_setup_section(repo_root)
 
     def _read_policy_section_for_http(repo_root: Path) -> dict[str, Any]:
-        from vaner.cli.commands.setup import _read_policy_section
+        from vaner.setup.config_io import read_policy_section
 
-        return _read_policy_section(repo_root)
+        return read_policy_section(repo_root)
 
     def _bundle_to_dict_http(bundle: Any) -> dict[str, Any]:
-        from vaner.cli.commands.setup import _bundle_to_dict
+        from vaner.setup.serializers import bundle_to_dict
 
-        return _bundle_to_dict(bundle)
+        return bundle_to_dict(bundle)
 
     def _selection_to_dict_http(result: Any) -> dict[str, Any]:
-        from vaner.cli.commands.setup import _selection_to_dict
+        from vaner.setup.serializers import selection_to_dict
 
-        return _selection_to_dict(result)
+        return selection_to_dict(result)
 
     def _hardware_to_dict_http(hw: Any) -> dict[str, Any]:
-        from vaner.cli.commands.setup import _hardware_to_dict
+        from vaner.setup.serializers import hardware_to_dict
 
-        return _hardware_to_dict(hw)
+        return hardware_to_dict(hw)
 
     def _answers_from_payload_http(raw: Any) -> Any:
-        # Mirror the CLI helper but raise HTTPException(400) on bad input
-        # — typer.BadParameter would 500 the request.
-        from vaner.setup.answers import SetupAnswers
+        from vaner.setup.serializers import (
+            AnswersValidationError,
+            answers_from_payload,
+        )
 
-        if not isinstance(raw, dict):
-            raise HTTPException(status_code=400, detail="answers must be a JSON object")
-        work_styles = raw.get("work_styles") or ["mixed"]
-        if isinstance(work_styles, str):
-            work_styles = [work_styles]
-        if not isinstance(work_styles, list) or not all(isinstance(s, str) for s in work_styles):
-            raise HTTPException(status_code=400, detail="work_styles must be a list of strings")
         try:
-            return SetupAnswers(
-                work_styles=tuple(work_styles),
-                priority=str(raw.get("priority", "balanced")),  # type: ignore[arg-type]
-                compute_posture=str(raw.get("compute_posture", "balanced")),  # type: ignore[arg-type]
-                cloud_posture=str(raw.get("cloud_posture", "ask_first")),  # type: ignore[arg-type]
-                background_posture=str(raw.get("background_posture", "normal")),  # type: ignore[arg-type]
-            )
+            return answers_from_payload(raw)
+        except AnswersValidationError as exc:
+            detail = str(exc)
+            if detail == "answers payload must be a JSON object":
+                detail = "answers must be a JSON object"
+            raise HTTPException(status_code=400, detail=detail) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # The five Simple-Mode questions in the wire shape MCP + HTTP both
-    # consume. Kept as a constant so /setup/questions is a pure read.
-    _SETUP_QUESTIONS_PAYLOAD: dict[str, Any] = {
-        "version": 1,
-        "questions": [
-            {
-                "id": "work_styles",
-                "title": "What kind of work do you want help with?",
-                "kind": "multi",
-                "default": ["mixed"],
-                "choices": [
-                    {"value": "writing", "label": "Writing — drafting, editing, narrative"},
-                    {"value": "research", "label": "Research — surveys, deep reading, citations"},
-                    {"value": "planning", "label": "Planning — design docs, roadmaps, project layout"},
-                    {"value": "support", "label": "Support — answering questions, troubleshooting"},
-                    {"value": "learning", "label": "Learning — studying, exploring a new domain"},
-                    {"value": "coding", "label": "Coding — software development"},
-                    {"value": "general", "label": "General — knowledge work, mixed light tasks"},
-                    {"value": "mixed", "label": "Mixed — a bit of everything (safe default)"},
-                    {"value": "unsure", "label": "Unsure — I'd rather Vaner picks for me"},
-                ],
-            },
-            {
-                "id": "priority",
-                "title": "What matters most?",
-                "kind": "single",
-                "default": "balanced",
-                "choices": [
-                    {"value": "balanced", "label": "Balanced — a sensible middle"},
-                    {"value": "speed", "label": "Speed — snappy responses"},
-                    {"value": "quality", "label": "Quality — best answer, even if slow"},
-                    {"value": "privacy", "label": "Privacy — keep data on this machine"},
-                    {"value": "cost", "label": "Cost — minimise spend"},
-                    {"value": "low_resource", "label": "Low-resource — go easy on this machine"},
-                ],
-            },
-            {
-                "id": "compute_posture",
-                "title": "How hard should this machine work for you?",
-                "kind": "single",
-                "default": "balanced",
-                "choices": [
-                    {"value": "light", "label": "Light — barely use the CPU/GPU"},
-                    {"value": "balanced", "label": "Balanced — work with what's idle"},
-                    {"value": "available_power", "label": "Available-power — use what this box has"},
-                ],
-            },
-            {
-                "id": "cloud_posture",
-                "title": "How do you feel about cloud LLMs?",
-                "kind": "single",
-                "default": "ask_first",
-                "choices": [
-                    {"value": "local_only", "label": "Local only — never reach for cloud LLMs"},
-                    {"value": "ask_first", "label": "Ask first — confirm before any cloud call"},
-                    {
-                        "value": "hybrid_when_worth_it",
-                        "label": "Hybrid — cloud when it's clearly worth it",
-                    },
-                    {"value": "best_available", "label": "Best available — use the best model for the job"},
-                ],
-            },
-            {
-                "id": "background_posture",
-                "title": "How aggressive should background pondering be?",
-                "kind": "single",
-                "default": "normal",
-                "choices": [
-                    {"value": "minimal", "label": "Minimal — barely ponder when idle"},
-                    {"value": "normal", "label": "Normal — moderate background pondering"},
-                    {"value": "idle_more", "label": "Idle-more — ponder broadly when the box is idle"},
-                    {
-                        "value": "deep_run_aggressive",
-                        "label": "Deep-Run-aggressive — happy to run overnight",
-                    },
-                ],
-            },
-        ],
-    }
+    from vaner.setup.questions import setup_questions_for_http
+
+    # The five Simple-Mode questions in the stable daemon wire shape.
+    _SETUP_QUESTIONS_PAYLOAD = setup_questions_for_http()
 
     @app.get("/setup/questions")
     async def setup_questions() -> JSONResponse:
@@ -512,17 +467,15 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         ``written=false`` unless ``confirm_cloud_widening=true``.
         """
 
-        from vaner.cli.commands.setup import (
-            _answers_from_payload,
-            _default_answers,
-            _persist_setup_and_policy,
-        )
+        from vaner.cli.commands.setup import _default_answers
         from vaner.setup.apply import (
             WIDENS_CLOUD_POSTURE_SENTINEL,
             apply_policy_bundle,
         )
         from vaner.setup.catalog import bundle_by_id
+        from vaner.setup.config_io import persist_setup_and_policy
         from vaner.setup.select import select_policy_bundle
+        from vaner.setup.serializers import answers_from_payload
 
         try:
             body = await request.json()
@@ -552,7 +505,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 existing = _read_setup_section_for_http(repo_root)
                 if existing:
                     try:
-                        answers = _answers_from_payload(existing)
+                        answers = answers_from_payload(existing)
                     except Exception:
                         answers = _default_answers()
                 else:
@@ -572,7 +525,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                         ),
                     )
                 try:
-                    answers = _answers_from_payload(existing)
+                    answers = answers_from_payload(existing)
                 except Exception as exc:
                     raise HTTPException(
                         status_code=400,
@@ -628,7 +581,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             )
 
         completed_at = datetime.now(UTC)
-        config_path = _persist_setup_and_policy(repo_root, answers, chosen_bundle_id, completed_at=completed_at)
+        config_path = persist_setup_and_policy(repo_root, answers, chosen_bundle_id, completed_at=completed_at)
 
         return JSONResponse(
             {
@@ -965,40 +918,9 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
 
     def _serialize_prediction(prompt: Any) -> dict[str, Any]:
         """Render a PredictedPrompt into a JSON-safe dict."""
-        spec = prompt.spec
-        run = prompt.run
-        artifacts = prompt.artifacts
-        return {
-            "id": spec.id,
-            "spec": {
-                "label": spec.label,
-                "description": spec.description,
-                "source": spec.source,
-                "anchor": spec.anchor,
-                "confidence": spec.confidence,
-                "hypothesis_type": spec.hypothesis_type,
-                "specificity": spec.specificity,
-                "created_at": spec.created_at,
-                "structured": asdict(spec.structured) if getattr(spec, "structured", None) is not None else None,
-            },
-            "run": {
-                "weight": run.weight,
-                "token_budget": run.token_budget,
-                "tokens_used": run.tokens_used,
-                "model_calls": run.model_calls,
-                "scenarios_spawned": run.scenarios_spawned,
-                "scenarios_complete": run.scenarios_complete,
-                "readiness": run.readiness,
-                "updated_at": run.updated_at,
-            },
-            "artifacts": {
-                "scenario_ids": list(artifacts.scenario_ids),
-                "evidence_score": artifacts.evidence_score,
-                "has_draft": artifacts.draft_answer is not None,
-                "has_briefing": artifacts.prepared_briefing is not None,
-                "thinking_trace_count": len(artifacts.thinking_traces),
-            },
-        }
+        from vaner.intent.prediction_serialization import serialize_prediction_nested
+
+        return serialize_prediction_nested(prompt)
 
     @app.get("/predictions/active")
     async def predictions_active() -> JSONResponse:
@@ -1144,6 +1066,11 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         from vaner.mcp.server import _build_adopt_resolution
 
         resolution = _build_adopt_resolution(prompt)
+        try:
+            async with engine.prediction_registry.lock:
+                engine.prediction_registry.record_adoption(pid)
+        except Exception:
+            pass
         return JSONResponse(resolution.model_dump(mode="json"))
 
     @app.post("/signals/composer")
@@ -1299,10 +1226,15 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 {"code": "invalid_input", "message": "query is required"},
                 status_code=400,
             )
+        from vaner.clients.daemon import (
+            RESOLVE_INCLUDE_BRIEFING_DEFAULT,
+            RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT,
+        )
+
         context_raw = body.get("context")
         context = context_raw if isinstance(context_raw, dict) else None
-        include_briefing = bool(body.get("include_briefing", True))
-        include_predicted_response = bool(body.get("include_predicted_response", True))
+        include_briefing = bool(body.get("include_briefing", RESOLVE_INCLUDE_BRIEFING_DEFAULT))
+        include_predicted_response = bool(body.get("include_predicted_response", RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT))
         resolution = await engine.resolve_query(
             query,
             context=context,

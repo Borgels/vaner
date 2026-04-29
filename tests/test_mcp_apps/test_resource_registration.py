@@ -40,6 +40,8 @@ def test_list_resources_includes_ui_bundle_when_enabled(tmp_path: Path) -> None:
     uris = {str(r.uri) for r in resources}
     assert "ui://vaner/active-predictions" in uris
     assert "vaner://guidance/current" in uris
+    assert "vaner://guidance/current?variant=weak" in uris
+    assert "vaner://guidance/current?variant=strong" in uris
 
 
 def test_list_resources_omits_ui_bundle_when_disabled(tmp_path: Path) -> None:
@@ -56,6 +58,7 @@ def test_list_resources_omits_ui_bundle_when_disabled(tmp_path: Path) -> None:
     uris = {str(r.uri) for r in resources}
     assert "ui://vaner/active-predictions" not in uris
     assert "vaner://guidance/current" in uris  # guidance resource still advertised
+    assert "vaner://guidance/current?variant=weak" in uris
 
 
 def test_read_resource_returns_ui_html(tmp_path: Path) -> None:
@@ -79,3 +82,41 @@ def test_read_resource_returns_ui_html(tmp_path: Path) -> None:
     html = asyncio.run(_run())
     assert "<!doctype html>" in html.lower()
     assert "Vaner" in html
+
+
+@pytest.mark.parametrize("apps_ui_enabled", [True, False])
+def test_listed_resources_are_readable(tmp_path: Path, apps_ui_enabled: bool) -> None:
+    server = _build(tmp_path, apps_ui_enabled=apps_ui_enabled)
+
+    async def _run() -> dict[str, str]:
+        from mcp.types import (
+            ListResourcesRequest,
+            ReadResourceRequest,
+            ReadResourceRequestParams,
+        )
+        from pydantic import AnyUrl
+
+        list_handler = server.request_handlers[ListResourcesRequest]
+        read_handler = server.request_handlers[ReadResourceRequest]
+        resources = list((await list_handler(ListResourcesRequest(method="resources/list"))).root.resources)
+        contents: dict[str, str] = {}
+        for resource in resources:
+            uri = str(resource.uri)
+            result = await read_handler(
+                ReadResourceRequest(
+                    method="resources/read",
+                    params=ReadResourceRequestParams(uri=AnyUrl(uri)),
+                )
+            )
+            contents[uri] = result.root.contents[0].text
+        return contents
+
+    contents_by_uri = asyncio.run(_run())
+    assert "vaner://guidance/current" in contents_by_uri
+    assert contents_by_uri["vaner://guidance/current"]
+    assert "vaner://guidance/current?variant=weak" in contents_by_uri
+    assert contents_by_uri["vaner://guidance/current?variant=weak"]
+    if apps_ui_enabled:
+        assert "<!doctype html>" in contents_by_uri["ui://vaner/active-predictions"].lower()
+    else:
+        assert "ui://vaner/active-predictions" not in contents_by_uri

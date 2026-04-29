@@ -13,7 +13,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
@@ -57,6 +57,8 @@ from vaner.intent.deep_run_maturation import (
 )
 from vaner.intent.drafter import Drafter
 from vaner.intent.ev import jaccard_reuse
+from vaner.intent.evidence_hygiene import evidence_path_kind, filter_evidence_paths, is_evidence_path_allowed
+from vaner.intent.evidence_resolver import evidence_readiness, resolve_evidence_targets
 from vaner.intent.features import extract_hybrid_features
 from vaner.intent.frontier import ExplorationFrontier, ExplorationScenario, file_set_fingerprint
 from vaner.intent.governor import PredictionGovernor
@@ -1734,10 +1736,44 @@ class VanerEngine:
             )
 
         # Order matters: Jaccard-dedup is first-admitted-wins, and
-        # seed_from_workflow_phase produces arc-sourced scenarios whose file
-        # sets overlap with seed_from_arc's. We seed the pid-tagged ones FIRST
-        # so prediction-tagging survives dedup; workflow-phase fills in the
-        # non-overlapping remainder.
+        # structured v2 predictions carry the most concrete evidence targets.
+        # Seed them before broad arc/category/macro predictions so direct
+        # evidence cannot be crowded out by generic path-keyword matches.
+        if self._prediction_registry is not None:
+            for prompt in self._prediction_registry.active():
+                structured = prompt.spec.structured
+                if structured is None:
+                    continue
+                targets = resolve_evidence_targets(
+                    structured,
+                    available_paths=available_paths,
+                    artefacts_by_key=artefacts_by_key,
+                    graph=graph,
+                    recent_queries=recent_query_text,
+                    aligned_paths=aligned_paths,
+                    working_set=self._working_set,
+                    top_k=8,
+                )
+                ready, readiness_reason = evidence_readiness(targets, structured)
+                target_paths = tuple(target.path for target in targets)
+                updated_structured = replace(
+                    structured,
+                    evidence_targets=target_paths,
+                    abstain_reason="" if ready else readiness_reason,
+                )
+                prompt.spec = replace(prompt.spec, structured=updated_structured)
+                if not ready:
+                    continue
+                frontier.seed_from_structured_prediction(
+                    prediction_id=prompt.id,
+                    structured=updated_structured,
+                    targets=targets,
+                    available_paths=available_paths,
+                    graph=graph,
+                )
+
+        # Legacy seeders remain as fallback; workflow-phase can overlap with
+        # arc file sets, so pid-tagged arc/macro scenarios still run first.
         frontier.seed_from_arc(
             self._arc_model,
             recent_query_text,
@@ -1765,7 +1801,8 @@ class VanerEngine:
                 line.strip()
                 for line in (str(git_state.get("recent_diff", "")) + "\n" + str(git_state.get("staged", ""))).splitlines()
                 if line.strip()
-            ][:20]
+            ]
+            changed_paths = filter_evidence_paths(changed_paths)[:20]
             no_regret_paths: set[str] = set(changed_paths)
             # Expand the no-regret slice with one-hop graph neighbors.
             for changed in changed_paths:
@@ -1867,7 +1904,7 @@ class VanerEngine:
                 llm_semantic_intent = ""
                 follow_on: list[dict[str, object]] = []
                 llm_confidence = 0.0
-                effective_paths: list[str] = list(scenario.file_paths)
+                effective_paths: list[str] = filter_evidence_paths(scenario.file_paths)
 
                 # WS1.e: register the scenario against its parent prediction
                 # before the optional LLM call. This drives the queued →
@@ -1898,7 +1935,7 @@ class VanerEngine:
                         # Individual scenario failure must not kill the cycle.
                         ranked_files, follow_on, llm_semantic_intent, llm_confidence = [], [], "", 0.0
                     if ranked_files:
-                        effective_paths = list(ranked_files)
+                        effective_paths = filter_evidence_paths(ranked_files)
 
                     # Route LLM outcomes back to the parent prediction. Tokens
                     # approximated by content length (real counts land in WS2
@@ -2043,7 +2080,7 @@ class VanerEngine:
                         branch_files_raw = branch.get("files", [])
                         if not isinstance(branch_files_raw, list):
                             continue
-                        branch_files: list[str] = [str(f) for f in branch_files_raw if f]
+                        branch_files: list[str] = filter_evidence_paths([str(f) for f in branch_files_raw if f])
                         if not branch_files:
                             continue
                         branch_conf = float(branch.get("confidence", llm_confidence or 0.5))
@@ -2540,22 +2577,41 @@ class VanerEngine:
         and reports real token counts via the assembler's tokenizer
         path.
 
-        ``context`` is accepted for symmetry with the MCP surface but
-        not consumed here; future goal-aware biasing (WS7 scoring
-        integration) can read from it. ``include_briefing`` /
-        ``include_predicted_response`` mirror the MCP opt-in flags.
+        ``context`` is parsed into a ContextEnvelope and used as a light
+        domain/goal bias for prediction reuse and evidence labelling.
+        ``include_briefing`` / ``include_predicted_response`` mirror the MCP
+        opt-in flags.
         """
         await self.initialize()
         # Late import keeps the engine module free of pydantic at
         # import time for callers that only need precompute_cycle.
         from vaner.mcp.contracts import (
             Alternative,
+            ContextEnvelope,
             EvidenceItem,
             Provenance,
             Resolution,
         )
 
         resolution_id = f"resolve-{uuid.uuid4().hex[:12]}"
+        context_envelope: ContextEnvelope | None = None
+        if isinstance(context, dict):
+            try:
+                context_envelope = ContextEnvelope.model_validate(context)
+            except Exception:
+                context_envelope = None
+        domain = context_envelope.domain if context_envelope is not None else "code"
+        domain_kind = {
+            "code": "file",
+            "docs": "doc",
+            "research": "doc",
+            "planning": "record",
+            "learning": "doc",
+            "writing": "doc",
+            "support": "record",
+            "operations": "record",
+            "general": "record",
+        }.get(domain, "record")
 
         # Step 1: prediction-registry match on v2 structured compatibility.
         matched_prediction: PredictedPrompt | None = None
@@ -2616,6 +2672,9 @@ class VanerEngine:
                         "scenario_id": sid,
                     },
                     reason=(f"scenario explored under prediction {matched_prediction.spec.label!r}"),
+                    overlay="predicted",
+                    freshness="fresh",
+                    confidence=float(matched_prediction.spec.confidence),
                 )
                 for sid in matched_prediction.artifacts.scenario_ids
             ]
@@ -2625,6 +2684,7 @@ class VanerEngine:
                 summary=matched_prediction.spec.description or matched_prediction.spec.label,
                 evidence=evidence,
                 alternatives_considered=alternatives,
+                context_envelope=context_envelope,
                 provenance=Provenance(
                     mode="predictive_hit",
                     cache="warm",
@@ -2677,12 +2737,15 @@ class VanerEngine:
             EvidenceItem(
                 id=sel.artefact_key,
                 source=tier,
-                kind="file",
+                kind=domain_kind,
                 locator={"path": sel.source_path, "artefact_key": sel.artefact_key},
                 reason=sel.rationale or f"selected by tier={tier}",
                 channel=sel.provenance
                 if sel.provenance in {"prediction", "vaner_resolve", "retrieval_floor", "external_rag"}
                 else "vaner_resolve",
+                overlay="indexed",
+                freshness="fresh",
+                confidence=0.5 if tier == "miss" else 0.7,
             )
             for sel in package.selections[:8]
         ]
@@ -2692,6 +2755,7 @@ class VanerEngine:
             summary=f"Heuristic context for: {query}",
             evidence=evidence,
             alternatives_considered=alternatives,
+            context_envelope=context_envelope,
             provenance=Provenance(
                 mode=provenance_mode,  # type: ignore[arg-type]
                 cache=cache_label,  # type: ignore[arg-type]
@@ -3062,7 +3126,7 @@ class VanerEngine:
                                 confidence=confidence,
                                 reason_codes=("artefact_item", state),
                             ),
-	                        )
+                        )
                     )
         return specs
 
@@ -3336,6 +3400,31 @@ class VanerEngine:
             )
             category_to_pid.setdefault(last_category, pid)
 
+            last_query = recent_query_text[-1].strip()
+            if last_query:
+                concrete_label = f"Continue related work: {last_query[:80]}"
+                concrete_pid = prediction_id("history_query", last_query, concrete_label)
+                specs.append(
+                    PredictionSpec(
+                        id=concrete_pid,
+                        label=concrete_label,
+                        description=f"Likely follow-up to the most recent user question: {last_query}",
+                        source="history",
+                        anchor=last_query,
+                        confidence=0.55,
+                        hypothesis_type="possible_branch",
+                        specificity="concrete",
+                        structured=structured_from_prediction_fields(
+                            label=concrete_label,
+                            description=f"Likely follow-up to the most recent user question: {last_query}",
+                            anchor=last_query,
+                            readiness_mode="evidence_ready",
+                            confidence=0.55,
+                            reason_codes=("history_query", last_category),
+                        ),
+                    )
+                )
+
         # WS7: goal source — active workspace goals seed predictions with
         # long-horizon anchors. Each goal becomes a prediction whose
         # scenarios can accumulate across many cycles (WS6 persistence
@@ -3505,13 +3594,25 @@ class VanerEngine:
         recent_hint = "\n".join(reversed(recent_queries[-8:])) or "none"
         covered_hint = "\n".join(sorted(covered_paths)[:20]) or "none"
         uncovered = [p for p in available_paths if p not in covered_paths]
-        focused_paths = set(self._last_heuristic_paths) | set(self._working_set.keys())
-        ranked_uncovered = self._rank_paths_for_recent_intent(
-            uncovered,
-            recent_queries,
-            focused_paths=focused_paths,
-        )
-        available_hint = "\n".join(ranked_uncovered[:50]) or "none"
+        candidate_paths = list(dict.fromkeys(filter_evidence_paths([*scenario.file_paths, *uncovered])))
+        if parent_pid is not None and self._prediction_registry is not None:
+            prompt_obj = self._prediction_registry.get(parent_pid)
+            if prompt_obj is not None and prompt_obj.spec.structured is not None:
+                resolved = resolve_evidence_targets(
+                    prompt_obj.spec.structured,
+                    available_paths=candidate_paths,
+                    artefacts_by_key=artefacts_by_key,
+                    recent_queries=recent_queries,
+                    aligned_paths=set(),
+                    working_set=self._working_set,
+                    top_k=24,
+                )
+                candidate_paths = [target.path for target in resolved] + [
+                    path for path in candidate_paths if path not in {target.path for target in resolved}
+                ]
+        candidate_paths = candidate_paths[:40]
+        primary_hint = "\n".join(path for path in candidate_paths if evidence_path_kind(path) in {"source", "config", "test"}) or "none"
+        supporting_hint = "\n".join(path for path in candidate_paths if evidence_path_kind(path) == "docs") or "none"
 
         ecfg = self.config.exploration
         if high_priority:
@@ -3544,10 +3645,13 @@ class VanerEngine:
             f"Reason: {scenario.reason}\n\n"
             f"File summaries:\n{summaries_text}\n\n"
             f"Already covered (do NOT repeat):\n{covered_hint}\n\n"
-            f"Available uncovered paths (candidates for follow-on):\n{available_hint}\n\n"
+            f"Primary evidence candidates (prefer these for mechanism/debug/implementation questions):\n{primary_hint}\n\n"
+            "Supporting evidence candidates "
+            f"(use only alongside primary evidence unless docs were explicitly requested):\n{supporting_hint}\n\n"
             "Tasks:\n"
             "1. Rank these files by likely relevance to the developer's next interaction.\n"
-            "   Drop any that seem irrelevant given the developer's trajectory.\n"
+            "   Prefer implementation/config/test files as primary evidence. Drop generated bindings,\n"
+            "   data assets, diagrams, and broad docs unless the user intent explicitly needs them.\n"
             f"{follow_on_guidance}"
             "3. Write a short semantic_intent (1-2 sentences) describing what developer\n"
             "   need this scenario addresses (e.g. 'authentication middleware, JWT validation').\n"
@@ -3655,7 +3759,7 @@ class VanerEngine:
 
         available_set = set(available_paths)
         ranked_raw = _as_str_list(obj.get("ranked_files", []))
-        ranked_files = [p for p in ranked_raw if p in available_set][:8]
+        ranked_files = filter_evidence_paths([p for p in ranked_raw if p in available_set])[:8]
 
         # Parse semantic_intent (richer description for cache matching)
         semantic_intent = str(obj.get("semantic_intent", "")).strip()
@@ -3675,7 +3779,7 @@ class VanerEngine:
         for item in raw_follow_on[:max_follow_on]:
             if not isinstance(item, dict):
                 continue
-            files = [p for p in _as_str_list(item.get("files", [])) if p in available_set]
+            files = filter_evidence_paths([p for p in _as_str_list(item.get("files", [])) if p in available_set])
             if files:
                 item_conf = 0.0
                 try:
@@ -4616,7 +4720,7 @@ class VanerEngine:
         paths: list[str] = []
         for item in list(items) + extra_items:
             path = str(item.metadata.get("path", "")).strip()
-            if path:
+            if path and is_evidence_path_allowed(path):
                 paths.append(path)
         return sorted(set(paths))
 

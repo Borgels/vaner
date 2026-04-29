@@ -27,18 +27,39 @@ Local contributor checks:
 ```bash
 ruff check .
 ruff format --check .
-mypy src
-pytest
+# CI currently runs a curated mypy scope from `.github/workflows/ci.yml`.
+# `mypy src` is useful locally when tightening types, but it is broader than
+# the required merge gate.
+mypy src/vaner/__init__.py src/vaner/server.py src/vaner/cli/main.py
+pytest tests -m "not slow and not integration"
 pre-commit run --all-files
+```
+
+`slow` and `integration` tests are opt-in locally because they may need external
+services or longer-running model/runtime setup. Run them explicitly when your
+change touches those paths:
+
+```bash
+pytest tests -m slow
+pytest tests -m integration
 ```
 
 CI checks on pull requests and pushes:
 
 - Lint and formatting checks
 - Type checking
-- Automated test suite (`pytest`)
+- Automated test suite (`pytest tests -m "not slow and not integration"`)
 - Pre-commit hooks
 - Security checks such as `pip-audit`
+
+Compatibility CI also runs a Linux/macOS matrix plus a lightweight Windows
+subset. The Windows job is a signal while CLI/async teardown behavior is being
+stabilized, not the full required test gate.
+
+Release builds run from the release workflow's pinned Python version, currently
+Python 3.11, while the primary quality job runs on Python 3.12 and compatibility
+adds Python 3.11/3.13 signals. Rust contract checks are path-gated to
+`Cargo.toml`, `crates/**`, conformance fixtures, and the Rust workflow itself.
 
 Pull requests are expected to pass required CI checks before merge.
 
@@ -95,7 +116,7 @@ Run checks before opening a PR:
 ruff check .
 ruff format --check .
 mypy src
-pytest
+pytest tests -m "not slow and not integration"
 pre-commit run --all-files
 ```
 

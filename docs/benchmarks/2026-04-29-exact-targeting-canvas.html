@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vaner Exact Targeting Benchmark</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #101113;
+        --panel: #181a1f;
+        --panel2: #20242a;
+        --ink: #f4f0e8;
+        --muted: #aaa59b;
+        --line: #363a43;
+        --green: #82d58c;
+        --blue: #8ab8ff;
+        --amber: #f2c66e;
+        --red: #ff8f8f;
+        --display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+        --editorial: "Instrument Serif", Georgia, serif;
+        --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--display); -webkit-font-smoothing: antialiased; }
+      main { width: min(1240px, calc(100vw - 34px)); margin: 0 auto; padding: 34px 0 48px; }
+      h1, h2, h3, p { margin: 0; }
+      .page { min-height: 100vh; padding-bottom: 34px; }
+      .hero, .card { border: 1px solid var(--line); background: var(--panel); }
+      header { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; }
+      .hero { padding: 30px; }
+      .eyebrow { color: var(--amber); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; }
+      h1 { max-width: 940px; margin-top: 9px; font-size: clamp(42px, 5.2vw, 72px); font-weight: 600; line-height: .98; letter-spacing: 0; }
+      .subtitle { max-width: 920px; margin-top: 18px; color: #d9d2c5; font-size: 18px; line-height: 1.45; }
+      .card { padding: 18px; }
+      h2 { margin-bottom: 14px; font-size: 21px; font-weight: 600; letter-spacing: 0; }
+      h3 { font-size: 16px; font-weight: 600; line-height: 1.25; letter-spacing: 0; }
+      p, .small, .note { color: var(--muted); line-height: 1.45; }
+      .note { margin-top: 10px; font-size: 13px; }
+      .tag { display: inline-flex; width: fit-content; min-height: 28px; align-items: center; padding: 5px 10px; border: 1px solid color-mix(in srgb, var(--green), transparent 42%); background: color-mix(in srgb, var(--green), transparent 88%); color: var(--green); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+      .tag.warn { border-color: color-mix(in srgb, var(--amber), transparent 42%); background: color-mix(in srgb, var(--amber), transparent 88%); color: var(--amber); }
+      .tag.bad { border-color: color-mix(in srgb, var(--red), transparent 42%); background: color-mix(in srgb, var(--red), transparent 88%); color: var(--red); }
+      .grid { display: grid; gap: 16px; }
+      .questions { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 16px; }
+      .two { grid-template-columns: 1.02fr .98fr; margin-top: 16px; }
+      .three { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px; }
+      .answer { margin-top: 12px; font-size: 30px; font-weight: 700; line-height: 1; }
+      .good { color: var(--green); }
+      .mixed { color: var(--amber); }
+      .bad { color: var(--red); }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+      td strong { color: var(--green); }
+      code { color: var(--ink); font-family: var(--mono); font-size: .92em; overflow-wrap: anywhere; }
+      .chart { display: grid; gap: 12px; }
+      .bar-row { display: grid; grid-template-columns: 206px minmax(0, 1fr) 78px; gap: 12px; align-items: center; font-size: 13px; }
+      .track { position: relative; height: 24px; overflow: hidden; background: var(--panel2); border: 1px solid var(--line); }
+      .bar { display: block; height: 100%; background: var(--green); }
+      .bar.blue { background: var(--blue); }
+      .bar.amber { background: var(--amber); }
+      .bar.red { background: var(--red); }
+      .metric { display: grid; gap: 7px; }
+      .metric strong { font-size: 29px; line-height: 1; color: var(--ink); }
+      .metric em { color: var(--green); font-style: normal; }
+      .list { display: grid; gap: 10px; }
+      .item { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+      .dot { display: grid; width: 28px; height: 28px; place-items: center; background: var(--panel2); border: 1px solid var(--line); color: var(--blue); font-family: var(--mono); font-weight: 700; font-size: 12px; }
+      .item strong { display: block; margin-bottom: 2px; font-size: 14px; color: var(--ink); }
+      .item span { color: var(--muted); font-size: 13px; line-height: 1.36; }
+      footer { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+      @media (max-width: 980px) {
+        header, .two { grid-template-columns: 1fr; }
+        .questions, .three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @media (max-width: 640px) {
+        main { width: min(100vw - 22px, 1240px); padding-top: 18px; }
+        .questions, .three { grid-template-columns: 1fr; }
+        .bar-row { grid-template-columns: 1fr; gap: 6px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="page">
+        <header>
+          <section class="hero">
+            <p class="eyebrow">Exact component targeting benchmark</p>
+            <h1>Exact targeting cleared the coverage gate; policy drift is the remaining blocker.</h1>
+            <p class="subtitle">
+              Vaner prepared locally with <code>qwen3.5:35b</code>. Claude Sonnet generated
+              cold and warm answers; Claude Opus judged prediction relevance and answer quality.
+              The run improved related coverage from <code>5/15</code> to <code>8/15</code>
+              and mean relevance from <code>0.31</code> to <code>0.36</code> versus the prior
+              precision run, while preserving <code>2/15</code> exact hits.
+            </p>
+          </section>
+          <aside class="card">
+            <span class="tag warn">One gate still failed</span>
+            <h2>Bottom line</h2>
+            <p>
+              Five of six promotion checks passed: related coverage, exact hits,
+              mean relevance, weight drift, and source drift. The only failed check was
+              <strong>max numeric policy drift</strong>, so the accuracy layer is better
+              but the adaptive policy still moves too far during the run.
+            </p>
+            <p class="note">The important product signal: warm answers won <strong>2/3</strong> Claude-judged quality comparisons.</p>
+          </aside>
+        </header>
+
+        <section class="grid questions">
+          <article class="card">
+            <h3>Exact predictions</h3>
+            <p class="answer mixed">2/15</p>
+            <p class="note">Meets the current exact-hit gate and matches the prior precision run.</p>
+          </article>
+          <article class="card">
+            <h3>Related coverage</h3>
+            <p class="answer good">8/15</p>
+            <p class="note">Up from 5/15; now above the 45% promotion threshold.</p>
+          </article>
+          <article class="card">
+            <h3>Mean relevance</h3>
+            <p class="answer good">0.36</p>
+            <p class="note">Just over the 0.35 gate; prior precision run was 0.31.</p>
+          </article>
+          <article class="card">
+            <h3>Quality A/B</h3>
+            <p class="answer good">2 / 0 / 1</p>
+            <p class="note">Vaner wins / ties / cold wins under Claude Opus judging.</p>
+          </article>
+        </section>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>Baseline vs Current</h2>
+            <div class="chart">
+              <div class="bar-row">
+                <span>Exact hits baseline</span>
+                <div class="track"><span class="bar amber" style="width: 13%"></span></div>
+                <strong>2/15</strong>
+              </div>
+              <div class="bar-row">
+                <span>Exact hits current</span>
+                <div class="track"><span class="bar amber" style="width: 13%"></span></div>
+                <strong>2/15</strong>
+              </div>
+              <div class="bar-row">
+                <span>Related baseline</span>
+                <div class="track"><span class="bar blue" style="width: 33%"></span></div>
+                <strong>5/15</strong>
+              </div>
+              <div class="bar-row">
+                <span>Related current</span>
+                <div class="track"><span class="bar" style="width: 53%"></span></div>
+                <strong>8/15</strong>
+              </div>
+              <div class="bar-row">
+                <span>Mean relevance baseline</span>
+                <div class="track"><span class="bar blue" style="width: 31%"></span></div>
+                <strong>0.31</strong>
+              </div>
+              <div class="bar-row">
+                <span>Mean relevance current</span>
+                <div class="track"><span class="bar" style="width: 36%"></span></div>
+                <strong>0.36</strong>
+              </div>
+            </div>
+            <p class="note">Baseline: <code>v2_precision_local5090_sonnet_opus_15turn</code>. Current: <code>v2_exact_targeting_local5090_sonnet_opus_15turn</code>.</p>
+          </article>
+
+          <article class="card">
+            <h2>Promotion Gate</h2>
+            <table>
+              <thead><tr><th>Criterion</th><th>Status</th><th>Result</th></tr></thead>
+              <tbody>
+                <tr><td>Related rate >= 45%</td><td><strong>Pass</strong></td><td>53%</td></tr>
+                <tr><td>Exact rate >= 10%</td><td><strong>Pass</strong></td><td>13%</td></tr>
+                <tr><td>Mean score >= 0.35</td><td><strong>Pass</strong></td><td>0.36</td></tr>
+                <tr><td>Weight drift <= 0.20</td><td><strong>Pass</strong></td><td>0.0432</td></tr>
+                <tr><td>Source drift <= 0.60</td><td><strong>Pass</strong></td><td>0.2282</td></tr>
+                <tr><td>Numeric policy drift <= 0.80</td><td class="bad">Fail</td><td>Above threshold</td></tr>
+              </tbody>
+            </table>
+          </article>
+        </section>
+
+        <section class="grid three">
+          <article class="card metric">
+            <span class="tag">Mean precompute</span>
+            <strong>53.4s</strong>
+            <p class="small">Local 35B background preparation per turn, down from 62.2s on the prior precision run.</p>
+          </article>
+          <article class="card metric">
+            <span class="tag warn">Cache lookup</span>
+            <strong>1.18s</strong>
+            <p class="small">Higher than the previous 342ms, but still outside answer generation and dominated by local preparation strategy.</p>
+          </article>
+          <article class="card metric">
+            <span class="tag">Path leak scan</span>
+            <strong>0</strong>
+            <p class="small">No absolute local paths found in the new benchmark artifact or this canvas.</p>
+          </article>
+        </section>
+
+        <section class="grid two">
+          <article class="card">
+            <h2>What Improved</h2>
+            <div class="list">
+              <div class="item"><div class="dot">1</div><div><strong>Coverage crossed the gate</strong><span>Related prebuilt context rose to 53%, meeting the target that the previous precision run missed.</span></div></div>
+              <div class="item"><div class="dot">2</div><div><strong>Mean relevance crossed the gate</strong><span>Exact targeting lifted average relevance enough to pass the 0.35 threshold under the same Sonnet/Opus setup.</span></div></div>
+              <div class="item"><div class="dot">3</div><div><strong>Warm answer quality improved</strong><span>Claude Opus preferred the Vaner-warm answer on proxy flow and IntentScorer questions.</span></div></div>
+            </div>
+          </article>
+
+          <article class="card">
+            <h2>Remaining Failures</h2>
+            <div class="list">
+              <div class="item"><div class="dot">A</div><div><strong>Tangential primary evidence</strong><span>Six misses had primary evidence, but it was incomplete or nearby rather than exact.</span></div></div>
+              <div class="item"><div class="dot">B</div><div><strong>No primary evidence</strong><span>Five misses still lacked source/config/test evidence for the named mechanism.</span></div></div>
+              <div class="item"><div class="dot">C</div><div><strong>Policy drift</strong><span>The adaptive scoring policy still changes too much numerically during the run, even though source and weight drift are controlled.</span></div></div>
+            </div>
+          </article>
+        </section>
+
+        <footer>
+          <span>Run artifact: <code>eval/benchmark/runs/v2_exact_targeting_local5090_sonnet_opus_15turn/report.json</code></span>
+          <span>Generated April 29, 2026</span>
+          <span>Harness: <code>scenario_match_bench.py</code></span>
+        </footer>
+      </section>
+    </main>
+  </body>
+</html>

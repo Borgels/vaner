@@ -172,6 +172,7 @@ mod tests {
             briefing_token_used: 100,
             briefing_token_budget: 2048,
             adopted_from_prediction_id: Some("p-1".into()),
+            context_envelope: None,
             alternatives_considered: vec![],
             gaps: vec![],
             next_actions: vec![],

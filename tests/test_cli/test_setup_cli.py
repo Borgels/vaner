@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from vaner.cli.commands import setup as setup_commands
 from vaner.cli.commands.app import app
 from vaner.cli.commands.setup import setup_app
 from vaner.setup.hardware import HardwareProfile
@@ -400,6 +401,22 @@ def test_hardware_json(fake_hardware: HardwareProfile) -> None:
     assert parsed["cpu_class"] == "mid"
     assert parsed["ram_gb"] == 16
     assert parsed["tier"] == "capable"
+
+
+def test_ping_daemon_for_refresh_uses_env_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, str] = {}
+
+    def _fake_probe(base_url: str) -> dict[str, object]:
+        seen["base_url"] = base_url
+        return {"reachable": True, "url": base_url}
+
+    monkeypatch.setenv("VANER_DAEMON_URL", "http://127.0.0.1:9999")
+    monkeypatch.setattr(setup_commands, "probe_daemon_status", _fake_probe)
+
+    result = setup_commands._ping_daemon_for_refresh()
+
+    assert seen["base_url"] == "http://127.0.0.1:9999"
+    assert result["note"] == "daemon will pick up changes on next config reload"
 
 
 # ---------------------------------------------------------------------------

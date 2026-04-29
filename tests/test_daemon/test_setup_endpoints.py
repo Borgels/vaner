@@ -116,6 +116,13 @@ def test_post_setup_recommend_invalid_work_styles(client: TestClient) -> None:
     bad["work_styles"] = [1, 2, 3]  # not strings
     resp = client.post("/setup/recommend", json=bad)
     assert resp.status_code == 400
+    assert resp.json()["detail"] == "work_styles must be a list of strings"
+
+
+def test_post_setup_recommend_non_object_body(client: TestClient) -> None:
+    resp = client.post("/setup/recommend", json=[])
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "answers must be a JSON object"
 
 
 # ---------------------------------------------------------------------------

@@ -159,7 +159,10 @@ jobs:
         run: pytest tests -m "not slow and not integration"
       - name: Tests (windows)
         if: matrix.test-kind == 'windows'
-        # Keep a lightweight Windows signal until asyncio/CLI teardown flakes are stabilized.
+          # Keep a lightweight Windows signal until asyncio/CLI teardown
+          # flakes are stabilized. This is intentionally a compatibility
+          # signal rather than the required full-suite gate; see
+          # CONTRIBUTING.md for the local/CI test matrix.
         run: |
           pytest tests/test_api.py tests/test_broker tests/test_policy tests/test_store -p no:randomly
 

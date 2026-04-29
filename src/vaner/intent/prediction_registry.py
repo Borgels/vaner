@@ -20,6 +20,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 
+from vaner.intent.evidence_hygiene import filter_evidence_paths
 from vaner.intent.prediction import (
     PredictedPrompt,
     PredictionArtifacts,
@@ -378,7 +379,7 @@ class PredictionRegistry:
             # the prediction and clear its briefing.
             prompt.artifacts.file_content_hashes.update(file_content_hashes)
             if prompt.spec.structured is not None:
-                targets = tuple(sorted(prompt.artifacts.file_content_hashes.keys()))
+                targets = tuple(sorted(filter_evidence_paths(set(prompt.artifacts.file_content_hashes.keys()))))
                 prompt.spec = replace(
                     prompt.spec,
                     structured=replace(prompt.spec.structured, evidence_targets=targets),

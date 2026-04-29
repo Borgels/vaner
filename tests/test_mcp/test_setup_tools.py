@@ -37,6 +37,16 @@ def _call(server, name: str, arguments: dict | None = None) -> dict:
     return asyncio.run(_run())
 
 
+def _list_tool_schemas(server) -> dict[str, dict]:
+    handler = server.request_handlers[ListToolsRequest]
+
+    async def _run() -> dict[str, dict]:
+        resp = await handler(ListToolsRequest(method="tools/list"))
+        return {tool.name: tool.inputSchema for tool in resp.root.tools}
+
+    return asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # vaner.setup.questions
 # ---------------------------------------------------------------------------
@@ -123,6 +133,47 @@ def test_recommend_accepts_single_string_work_style(temp_repo) -> None:
     out = _call(server, "vaner.setup.recommend", {"work_styles": "coding"})
     assert out["isError"] is False
     assert out["payload"]["bundle"]["id"]
+
+
+def test_recommend_rejects_invalid_work_styles_with_structured_error(temp_repo) -> None:
+    _seed_repo(temp_repo)
+    server = build_server(temp_repo)
+    out = _call(server, "vaner.setup.recommend", {"work_styles": [1, 2, 3]})
+    assert out["isError"] is True
+    assert out["payload"]["code"] == "invalid_input"
+    assert out["payload"]["message"] == "work_styles must be a list of strings"
+
+
+def test_recommend_schema_constrains_scalar_setup_fields(temp_repo) -> None:
+    _seed_repo(temp_repo)
+    server = build_server(temp_repo)
+
+    schema = _list_tool_schemas(server)["vaner.setup.recommend"]
+    properties = schema["properties"]
+
+    assert properties["work_styles"]["anyOf"] == [{"type": "string"}, {"type": "array"}]
+    assert "items" not in properties["work_styles"]
+    assert set(properties["priority"]["enum"]) == {
+        "balanced",
+        "speed",
+        "quality",
+        "privacy",
+        "cost",
+        "low_resource",
+    }
+    assert properties["compute_posture"]["enum"] == ["light", "balanced", "available_power"]
+    assert properties["cloud_posture"]["enum"] == [
+        "local_only",
+        "ask_first",
+        "hybrid_when_worth_it",
+        "best_available",
+    ]
+    assert properties["background_posture"]["enum"] == [
+        "minimal",
+        "normal",
+        "idle_more",
+        "deep_run_aggressive",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +279,15 @@ def test_apply_requires_answers_or_bundle_id(temp_repo) -> None:
     out = _call(server, "vaner.setup.apply", {})
     assert out["isError"] is True
     assert out["payload"]["code"] == "invalid_input"
+
+
+def test_apply_rejects_invalid_answers_payload(temp_repo) -> None:
+    _seed_repo(temp_repo)
+    server = build_server(temp_repo)
+    out = _call(server, "vaner.setup.apply", {"answers": {"work_styles": [1, 2, 3]}})
+    assert out["isError"] is True
+    assert out["payload"]["code"] == "invalid_input"
+    assert out["payload"]["message"] == "work_styles must be a list of strings"
 
 
 # ---------------------------------------------------------------------------

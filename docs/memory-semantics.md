@@ -16,7 +16,8 @@ Memory does not auto-promote on every `useful` feedback. Promotion to `trusted` 
 - explicit pin intent (`preferred_items`)
 - repeated useful outcomes (`>= 2` streak)
 - high confidence + multi-evidence + low contradiction
-- correction later confirmed by useful feedback
+- correction later confirmed by useful feedback (a previously wrong candidate
+  receives later `useful` feedback)
 
 `partial` keeps candidate memory, `wrong`/`irrelevant` drive demotion or staleness.
 

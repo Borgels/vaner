@@ -64,6 +64,14 @@ fn predictions_active_envelope_decodes() {
     );
     assert_eq!(ready.suppression_reason, None);
     assert_eq!(ready.source_label.as_deref(), Some("Arc"));
+    assert_eq!(ready.trust_status.as_deref(), Some("ready"));
+    assert_eq!(ready.freshness.as_deref(), Some("fresh"));
+    assert_eq!(
+        ready.watched_sources,
+        vec!["payments-svc/webhook.js".to_string()]
+    );
+    assert!(ready.changed_sources.is_empty());
+    assert!(ready.invalidated_by.is_empty());
 
     let goal = &envelope.predictions[1];
     assert_eq!(goal.spec.source, PredictionSource::Goal);
@@ -99,6 +107,7 @@ fn predictions_single_decodes() {
     assert_eq!(prediction.eta_bucket, Some(EtaBucket::ReadyNow));
     assert_eq!(prediction.rank, Some(1));
     assert_eq!(prediction.adoptable, Some(true));
+    assert_eq!(prediction.trust_status.as_deref(), Some("ready"));
 }
 
 #[test]
@@ -115,6 +124,18 @@ fn adopt_rich_response_decodes_including_ws8_fields() {
     assert_eq!(resolution.provenance.mode, "predictive_hit");
     assert!(resolution.prepared_briefing.as_deref().is_some());
     assert!(resolution.predicted_response.as_deref().is_some());
+    assert_eq!(
+        resolution
+            .context_envelope
+            .as_ref()
+            .and_then(|c| c.domain.as_deref()),
+        Some("code")
+    );
+    assert_eq!(
+        resolution.evidence[0].overlay.as_deref(),
+        Some("working_tree")
+    );
+    assert_eq!(resolution.evidence[0].freshness.as_deref(), Some("fresh"));
 
     // WS8 additive fields (0.8.0) — populated only on the rich sample.
     assert_eq!(resolution.alternatives_considered.len(), 1);

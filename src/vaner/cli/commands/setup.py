@@ -38,12 +38,10 @@ import os
 import shutil
 import subprocess
 import sys
-import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-import httpx
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -51,6 +49,7 @@ from rich.table import Table
 
 from vaner.cli.commands.config import load_config
 from vaner.cli.commands.init import init_repo
+from vaner.clients.daemon import DEFAULT_BASE_URL, daemon_base_url_from_env, probe_daemon_status
 from vaner.setup.answers import SetupAnswers
 from vaner.setup.apply import (
     WIDENS_CLOUD_POSTURE_SENTINEL,
@@ -58,6 +57,13 @@ from vaner.setup.apply import (
     apply_policy_bundle,
 )
 from vaner.setup.catalog import bundle_by_id
+from vaner.setup.config_io import (
+    persist_setup_and_policy,
+    read_policy_section,
+    read_setup_section,
+    toml_literal,
+    update_toml_section,
+)
 from vaner.setup.hardware import HardwareProfile, detect
 from vaner.setup.select import SelectionResult, select_policy_bundle
 from vaner.setup.serializers import (
@@ -74,7 +80,7 @@ setup_app = typer.Typer(
 )
 
 _console = Console()
-_DAEMON_URL = "http://127.0.0.1:8473"
+_DAEMON_URL = DEFAULT_BASE_URL
 
 # ---------------------------------------------------------------------------
 # Path / config helpers
@@ -102,29 +108,13 @@ def _read_setup_section(repo_root: Path) -> dict[str, Any]:
     Returns an empty dict when the file or section is absent.
     """
 
-    config_path = repo_root / ".vaner" / "config.toml"
-    if not config_path.exists():
-        return {}
-    try:
-        parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    section = parsed.get("setup", {})
-    return section if isinstance(section, dict) else {}
+    return read_setup_section(repo_root)
 
 
 def _read_policy_section(repo_root: Path) -> dict[str, Any]:
     """Read the raw ``[policy]`` table from ``.vaner/config.toml``."""
 
-    config_path = repo_root / ".vaner" / "config.toml"
-    if not config_path.exists():
-        return {}
-    try:
-        parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    section = parsed.get("policy", {})
-    return section if isinstance(section, dict) else {}
+    return read_policy_section(repo_root)
 
 
 def _toml_literal(value: object) -> str:
@@ -136,23 +126,7 @@ def _toml_literal(value: object) -> str:
     arrays — not the JSON-string the init helper would emit.
     """
 
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if value is None:
-        return '""'
-    if isinstance(value, list):
-        items = []
-        for item in value:
-            if isinstance(item, str):
-                escaped = item.replace("\\", "\\\\").replace('"', '\\"')
-                items.append(f'"{escaped}"')
-            else:
-                items.append(_toml_literal(item))
-        return "[" + ", ".join(items) + "]"
-    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    return toml_literal(value)
 
 
 def _update_section(text: str, section: str, values: dict[str, object]) -> str:
@@ -163,43 +137,7 @@ def _update_section(text: str, section: str, values: dict[str, object]) -> str:
     matches the shape the wizard writes.
     """
 
-    if not values:
-        return text
-    lines = text.splitlines()
-    header = f"[{section}]"
-    start: int | None = None
-    for idx, line in enumerate(lines):
-        if line.strip() == header:
-            start = idx
-            break
-    if start is None:
-        lines.append("")
-        lines.append(header)
-        for key, val in values.items():
-            lines.append(f"{key} = {_toml_literal(val)}")
-        return "\n".join(lines) + ("\n" if not text.endswith("\n") else "")
-
-    end = len(lines)
-    for idx in range(start + 1, len(lines)):
-        stripped = lines[idx].strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            end = idx
-            break
-    remaining = dict(values)
-    for idx in range(start + 1, end):
-        stripped = lines[idx].lstrip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        key = stripped.split("=", 1)[0].strip()
-        if key in remaining:
-            lines[idx] = f"{key} = {_toml_literal(remaining.pop(key))}"
-    if remaining:
-        insert_at = end
-        for key, val in remaining.items():
-            lines.insert(insert_at, f"{key} = {_toml_literal(val)}")
-            insert_at += 1
-    out = "\n".join(lines)
-    return out + ("\n" if not out.endswith("\n") else "")
+    return update_toml_section(text, section, values)
 
 
 def _persist_setup_and_policy(
@@ -216,27 +154,7 @@ def _persist_setup_and_policy(
     responsible for any user confirmation upstream.
     """
 
-    config_path = init_repo(repo_root)
-    text = config_path.read_text(encoding="utf-8")
-    setup_values: dict[str, object] = {
-        "mode": "simple",
-        "work_styles": list(answers.work_styles),
-        "priority": answers.priority,
-        "compute_posture": answers.compute_posture,
-        "cloud_posture": answers.cloud_posture,
-        "background_posture": answers.background_posture,
-        "version": 1,
-    }
-    if completed_at is not None:
-        setup_values["completed_at"] = completed_at.isoformat()
-    text = _update_section(text, "setup", setup_values)
-    text = _update_section(
-        text,
-        "policy",
-        {"selected_bundle_id": bundle_id, "auto_select": True},
-    )
-    config_path.write_text(text, encoding="utf-8")
-    return config_path
+    return persist_setup_and_policy(repo_root, answers, bundle_id, completed_at=completed_at)
 
 
 # ---------------------------------------------------------------------------
@@ -597,8 +515,8 @@ def wizard_cmd(
 
     config = load_config(repo_root)
     # Reflect the on-disk previous bundle id into the runtime config so
-    # the cloud-widening guard fires correctly. ``load_config`` does
-    # not yet re-read ``[policy]`` so we patch it from the raw section.
+    # the cloud-widening guard fires correctly even for caller-constructed
+    # configs that were not hydrated through load_config().
     prior_policy_section = _read_policy_section(repo_root)
     prior_bundle_id = prior_policy_section.get("selected_bundle_id")
     if isinstance(prior_bundle_id, str) and prior_bundle_id:
@@ -1013,7 +931,7 @@ def hardware_cmd(
 # ---------------------------------------------------------------------------
 
 
-def _ping_daemon_for_refresh() -> dict[str, Any]:
+def _ping_daemon_for_refresh(base_url: str | None = None) -> dict[str, Any]:
     """Best-effort liveness probe of the local daemon HTTP surface.
 
     Returns a dict suitable for JSON output. The daemon currently has
@@ -1023,26 +941,10 @@ def _ping_daemon_for_refresh() -> dict[str, Any]:
     config writes propagate without a daemon restart.
     """
 
-    try:
-        with httpx.Client(timeout=1.0) as client:
-            resp = client.get(f"{_DAEMON_URL}/status")
-            if resp.status_code == 200:
-                return {
-                    "reachable": True,
-                    "url": _DAEMON_URL,
-                    "note": "daemon will pick up changes on next config reload",
-                }
-            return {
-                "reachable": False,
-                "url": _DAEMON_URL,
-                "status_code": resp.status_code,
-            }
-    except (httpx.HTTPError, OSError) as exc:
-        return {
-            "reachable": False,
-            "url": _DAEMON_URL,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
+    result = probe_daemon_status(base_url or daemon_base_url_from_env(_DAEMON_URL))
+    if result.get("reachable"):
+        result["note"] = "daemon will pick up changes on next config reload"
+    return result
 
 
 # Defensive: keep ``dataclasses`` imported even if unused above so that

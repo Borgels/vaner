@@ -12,7 +12,7 @@ Vaner is a local-first predictive context engine for coding assistants.
 
 ## Core packages
 
-- `src/vaner/engine/`: orchestration and runtime loop
+- `src/vaner/engine.py`: orchestration and runtime loop
 - `src/vaner/intent/`: prediction, scoring, and frontier state
 - `src/vaner/store/`: persistence and retrieval for artefacts/signals
 - `src/vaner/broker/`: context selection and package assembly

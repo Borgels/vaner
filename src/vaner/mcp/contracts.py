@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 
 from vaner.models.answerable import AnswerabilityMetadata, AnswerableBriefing, EvidenceChannel
 
-Domain = Literal["code", "docs", "support", "operations", "research", "general"]
+Domain = Literal["code", "docs", "support", "operations", "research", "planning", "learning", "writing", "general"]
+EvidenceOverlay = Literal["indexed", "working_tree", "staged", "live", "predicted", "memory", "external"]
 ProvenanceMode = Literal["predictive_hit", "cached_result", "fresh_resolution", "retrieval_fallback"]
 Budget = Literal["low", "medium", "high"]
 AbstainReason = Literal["low_confidence", "ambiguous_intent", "insufficient_evidence", "memory_conflict"]
@@ -35,6 +36,12 @@ class EvidenceItem(BaseModel):
     reason: str = ""
     fingerprint: str | None = None
     channel: EvidenceChannel = "vaner_resolve"
+    overlay: EvidenceOverlay | None = None
+    freshness: Literal["fresh", "recent", "stale"] | None = None
+    captured_at: float | None = None
+    validated_at: float | None = None
+    confidence: float | None = None
+    dependencies: list[dict] = Field(default_factory=list)
 
 
 class Alternative(BaseModel):

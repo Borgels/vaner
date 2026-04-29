@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import time
 
+import aiosqlite
 import pytest
 
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.store.artefacts import ArtefactStore
+from vaner.store.scenarios.sqlite import ScenarioStore
 
 
 @pytest.mark.asyncio
@@ -71,3 +73,40 @@ async def test_purge_expired(tmp_path):
 
     assert removed == 1
     assert keys == [fresh.key]
+
+
+@pytest.mark.asyncio
+async def test_scenario_store_initialize_migrates_legacy_scenarios_table(tmp_path):
+    db_path = tmp_path / "scenarios.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """
+            CREATE TABLE scenarios (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                score REAL NOT NULL,
+                confidence REAL NOT NULL,
+                entities_json TEXT NOT NULL,
+                prepared_context TEXT NOT NULL,
+                coverage_gaps_json TEXT NOT NULL,
+                freshness TEXT NOT NULL,
+                cost_to_expand TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expanded_at REAL,
+                last_refreshed_at REAL NOT NULL,
+                last_outcome TEXT
+            )
+            """
+        )
+        await db.commit()
+
+    store = ScenarioStore(db_path)
+    await store.initialize()
+
+    async with aiosqlite.connect(db_path) as db:
+        columns = [row[1] for row in await (await db.execute("PRAGMA table_info(scenarios)")).fetchall()]
+
+    assert "memory_state" in columns
+    assert "memory_confidence" in columns
+    assert "memory_evidence_hashes_json" in columns
+    assert "prior_successes" in columns
