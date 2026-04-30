@@ -87,6 +87,13 @@ def test_mcp_protocol_roundtrip(temp_repo: Path, monkeypatch: pytest.MonkeyPatch
                 "vaner.setup.apply",
                 "vaner.setup.status",
                 "vaner.policy.show",
+                # 0.8.8: unified Prepared Work + WorkProduct surfaces.
+                "vaner.prepared_work.dashboard",
+                "vaner.work_products.list",
+                "vaner.work_products.inspect",
+                "vaner.work_products.export",
+                "vaner.work_products.dismiss",
+                "vaner.work_products.feedback",
             }
 
             status = await session.call_tool("vaner.status", {})

@@ -92,6 +92,7 @@ from vaner.intent.timing import ActivityTimingModel
 from vaner.intent.trainer import IntentTrainer
 from vaner.intent.transfer import bootstrap_transfer_priors
 from vaner.intent.volatility import semantic_volatility_profile
+from vaner.intent.work_products import generate_work_products
 from vaner.intent.work_style_priors import (
     IntentPriorAdjustments,
 )
@@ -101,7 +102,6 @@ from vaner.intent.work_style_priors import (
 from vaner.intent.work_style_priors import (
     default_adjustments as default_work_style_adjustments,
 )
-from vaner.intent.work_products import generate_work_products
 from vaner.learning.counterfactual import CounterfactualAnalyzer
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.models.artefact import Artefact, ArtefactKind
@@ -204,7 +204,7 @@ _CORE_ARCHITECTURE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
-        "tiered prediction cache full_hit partial_hit warm_start cold_miss decision thresholds and semantic matching",
+        "prediction cache tiers full_hit partial_hit warm_start cold_miss decision thresholds and semantic matching",
         (
             "src/vaner/intent/cache.py",
             "src/vaner/intent/scoring_policy.py",
@@ -1676,8 +1676,6 @@ class VanerEngine:
         if isinstance(c, set):
             covered_paths = c
 
-        frontier.seed_from_graph(anchor_working_set, graph, available_paths, covered_paths)
-
         recent_queries = await self.store.list_query_history(limit=10)
         recent_query_text = [str(entry["query_text"]) for entry in reversed(recent_queries)]
         prompt_macros = await self.store.list_prompt_macros(limit=25)
@@ -1869,6 +1867,11 @@ class VanerEngine:
                 reason="recent query exact target focus",
                 priority_floor=0.99,
             )
+
+        # Stale working-set graph neighbors are useful support, but named or
+        # query-matched component evidence must be admitted first so broad graph
+        # clusters cannot win Jaccard dedup against exact targets.
+        frontier.seed_from_graph(anchor_working_set, graph, available_paths, covered_paths)
 
         core_group_paths: set[str] = set()
         available_path_set = set(available_paths)
@@ -2330,6 +2333,25 @@ class VanerEngine:
             for result in results:
                 if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                     raise result
+
+        source_priority = {
+            "structured_direct": 0,
+            "structured_graph_expand": 1,
+            "core_architecture": 2,
+            "graph": 3,
+            "arc": 4,
+            "pattern": 5,
+            "skill": 6,
+            "llm_branch": 7,
+        }
+        self._last_explored_scenarios.sort(
+            key=lambda item: (
+                source_priority.get(item.source, 99),
+                -float(item.priority),
+                int(item.depth),
+                item.anchor,
+            )
+        )
 
         full_packages = full_packages_box[0]
 
@@ -3823,6 +3845,11 @@ class VanerEngine:
         covered_hint = "\n".join(sorted(covered_paths)[:20]) or "none"
         uncovered = [p for p in available_paths if p not in covered_paths]
         candidate_paths = list(dict.fromkeys(filter_evidence_paths([*scenario.file_paths, *uncovered])))
+        candidate_paths = self._rank_paths_for_recent_intent(
+            candidate_paths,
+            recent_queries,
+            focused_paths=set(scenario.file_paths) | self._last_heuristic_paths,
+        )
         if parent_pid is not None and self._prediction_registry is not None:
             prompt_obj = self._prediction_registry.get(parent_pid)
             if prompt_obj is not None and prompt_obj.spec.structured is not None:

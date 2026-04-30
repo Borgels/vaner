@@ -41,7 +41,7 @@ _WORK_PRODUCT_VERSION = "work_product.v1"
 
 
 def _stable_id(kind: WorkProductType, target_key: str, body: str) -> str:
-    digest = hashlib.sha1(f"{kind.value}\n{target_key}\n{body}".encode("utf-8")).hexdigest()[:16]  # noqa: S324
+    digest = hashlib.sha1(f"{kind.value}\n{target_key}\n{body}".encode()).hexdigest()[:16]  # noqa: S324
     return f"wp-{kind.value}-{digest}"
 
 
@@ -197,7 +197,10 @@ def _generate_virtual_diff(repo_root: Path, paths: list[str]) -> WorkProduct | N
             patched_text = f"{text}\n"
             reason = "adds the missing trailing newline so tooling sees a complete final line"
         elif any(line.rstrip("\n").rstrip("\r").endswith((" ", "\t")) for line in original):
-            patched_text = "".join(line.rstrip("\n").rstrip("\r").rstrip(" \t") + ("\n" if line.endswith(("\n", "\r")) else "") for line in original)
+            patched_text = "".join(
+                line.rstrip("\n").rstrip("\r").rstrip(" \t") + ("\n" if line.endswith(("\n", "\r")) else "")
+                for line in original
+            )
             reason = "removes trailing whitespace without changing program structure"
         if not reason or patched_text == text:
             continue

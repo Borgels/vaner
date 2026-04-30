@@ -14,7 +14,6 @@ from vaner.models.retrieval_floor import (
 )
 from vaner.policy.budget import count_tokens
 
-
 RetrievalFloorProvider = Callable[[RetrievalFloorRequest], RetrievalFloorResponse]
 
 

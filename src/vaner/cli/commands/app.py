@@ -31,6 +31,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from vaner import __version__, api
+from vaner.broker.prompting import build_evidence_bound_context_prompt
 from vaner.cli.commands import mcp_clients
 from vaner.cli.commands.clients import clients_app
 from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
@@ -73,7 +74,6 @@ from vaner.daemon.http import create_daemon_http_app
 from vaner.daemon.preflight import check_repo_root
 from vaner.daemon.runner import VanerDaemon
 from vaner.eval import evaluate_repo, run_eval
-from vaner.broker.prompting import build_evidence_bound_context_prompt
 from vaner.models.config import VanerConfig
 from vaner.router.backends import forward_chat_completion_with_request
 from vaner.router.proxy import create_app

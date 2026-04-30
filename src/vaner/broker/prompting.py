@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-
 EVIDENCE_BOUND_CONTEXT_HEADER = """Use the Vaner-prepared evidence below when it is relevant.
 
 Evidence rules:

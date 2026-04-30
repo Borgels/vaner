@@ -62,7 +62,7 @@ class TokenUsage(BaseModel):
     provider_usage_raw: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _fill_total(self) -> "TokenUsage":
+    def _fill_total(self) -> TokenUsage:
         if self.total_tokens <= 0:
             self.total_tokens = max(
                 0,

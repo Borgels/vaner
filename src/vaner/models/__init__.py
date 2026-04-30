@@ -10,6 +10,8 @@ from vaner.models.answerable import (
     EvidenceAssemblyMetadata,
 )
 from vaner.models.artefact import Artefact, ArtefactKind
+from vaner.models.config import VanerConfig
+from vaner.models.context import ContextPackage, ContextSelection
 from vaner.models.cost import (
     CostEstimate,
     CostLedgerEntry,
@@ -20,8 +22,6 @@ from vaner.models.cost import (
     TokenUsage,
     TurnCostSummary,
 )
-from vaner.models.config import VanerConfig
-from vaner.models.context import ContextPackage, ContextSelection
 from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor, SelectionDecision
 from vaner.models.scenario import EvidenceRef, Scenario
 from vaner.models.session import SessionState, WorkingSet

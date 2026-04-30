@@ -269,7 +269,10 @@ def test_select_artefacts_keeps_cache_tier_policy_files_competitive():
             source_mtime=time.time(),
             generated_at=time.time(),
             model="test",
-            content="cache_full_hit_path_threshold cache_partial_hit_path_threshold cache_full_hit_similarity_threshold cache_partial_hit_similarity_threshold",
+            content=(
+                "cache_full_hit_path_threshold cache_partial_hit_path_threshold "
+                "cache_full_hit_similarity_threshold cache_partial_hit_similarity_threshold"
+            ),
         ),
     ]
 
@@ -296,7 +299,10 @@ def test_select_artefacts_does_not_treat_warm_start_as_cold_start_bootstrap():
             source_mtime=time.time(),
             generated_at=time.time(),
             model="test",
-            content="cache_full_hit_path_threshold cache_partial_hit_path_threshold cache_full_hit_similarity_threshold cache_partial_hit_similarity_threshold",
+            content=(
+                "cache_full_hit_path_threshold cache_partial_hit_path_threshold "
+                "cache_full_hit_similarity_threshold cache_partial_hit_similarity_threshold"
+            ),
         ),
         Artefact(
             key="file_summary:tests/test_intent/test_cache.py",

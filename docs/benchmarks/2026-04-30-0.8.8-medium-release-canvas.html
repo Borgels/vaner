@@ -99,7 +99,7 @@
       <header>
         <div>
           <div class="eyebrow">0.8.8 release validation · public canvas</div>
-          <h1>Vaner is useful when it has the right context. Coverage is still the bottleneck.</h1>
+          <h1>Exact targeting is strong. Broad lifecycle prompts are the remaining bottleneck.</h1>
           <p class="subtitle">
             This run combines the 0.8.8 scenario benchmark, a broad public naked/RAG/Vaner comparison,
             and the deep-run maturation suite. It uses public corpora or public-layout fixtures and reports
@@ -108,9 +108,9 @@
         </div>
         <div class="stamp">
           <div class="label">Run date</div>
-          <div class="value">2026-04-29</div>
+          <div class="value">2026-04-30</div>
           <div class="label" style="margin-top:14px">Models</div>
-          <div class="note">Vaner: <code>ollama:qwen3.5:35b</code><br>Answer: <code>claude:sonnet</code><br>Judge: <code>claude:opus</code></div>
+          <div class="note">Vaner: <code>openai:Qwen/Qwen3.6-35B-A3B-FP8</code><br>Answer: <code>claude:sonnet</code><br>Judge: <code>claude:opus</code></div>
         </div>
       </header>
 
@@ -118,12 +118,12 @@
         
       <div class="card metric good">
         <div class="number">20/20</div>
-        <div class="caption"><strong>Scenario related coverage</strong><br>100% related, 85% exact; promotion gate passed.</div>
+        <div class="caption"><strong>Scenario related coverage</strong><br>100% related, 90% exact; promotion gate passed.</div>
       </div>
         
       <div class="card metric good">
-        <div class="number">5/8</div>
-        <div class="caption"><strong>Quality A/B</strong><br>Vaner-context answers won 62% of judged pairs.</div>
+        <div class="number">6/8</div>
+        <div class="caption"><strong>Quality A/B</strong><br>Vaner-context answers won 75% of judged pairs.</div>
       </div>
         
       <div class="card metric good">
@@ -143,8 +143,8 @@
           <table>
             <thead><tr><th>Layer</th><th>Benchmark</th><th>Result</th><th>Read</th></tr></thead>
             <tbody>
-              <tr><td>Prediction / exact targeting</td><td>20 Vaner repo mechanism queries</td><td>17 exact, 3 partial, 0 no-scenario cycles</td><td>Exact targeting is now strong on named components; remaining partials are mostly broad process questions.</td></tr>
-              <tr><td>Answer quality</td><td>8 Claude-judged pairs</td><td>5 Vaner wins, 3 cold wins, 0 ties</td><td>When useful context is present, the answer improves; weak/empty context can lose.</td></tr>
+              <tr><td>Prediction / exact targeting</td><td>20 Vaner repo mechanism queries</td><td>18 exact, 2 partial, 0 no-scenario cycles</td><td>Exact targeting is now strong on named components; remaining partials are mostly broad process questions.</td></tr>
+              <tr><td>Answer quality</td><td>8 Claude-judged pairs</td><td>6 Vaner wins, 2 cold wins, 0 ties</td><td>When useful context is present, the answer improves; weak/empty context can lose.</td></tr>
               <tr><td>Naked vs RAG vs Vaner</td><td>125 public cases</td><td>Vaner quality 8.13 vs RAG 7.70 vs naked 4.80</td><td>Vaner beats naked and edges RAG in this deterministic public harness, with similar hit/recall and lower estimated cost than RAG.</td></tr>
               <tr><td>Deep-run maturation</td><td>40 sessions / 40 outcomes</td><td>Mean improvement +0.844; stale rate 0%</td><td>Strong reference-ceiling maturation signal; raw anti-self-judging gates remain visible and are non-blocking only in this scaffold mode.</td></tr>
               <tr><td>Agent-with-tools layer</td><td>Harness restored and CLI import validated</td><td>Not included as a scored release claim</td><td>Needs a configured OpenAI-compatible tool-calling answer endpoint and running Vaner daemon; not faked in this pass.</td></tr>
@@ -155,10 +155,10 @@
         <div class="card">
           <h2>Answer The Question</h2>
           <div class="list">
-            <div class="item"><div class="dot">1</div><div><strong>When Vaner is better</strong><span>Best on codebase tasks where the needed object/path is present in prepared context. The quality judge favored Vaner in 5 of 8 paired scenario answers, and the broad public harness shows +3.33 quality over naked and +0.43 over RAG.</span></div></div>
+            <div class="item"><div class="dot">1</div><div><strong>When Vaner is better</strong><span>Best on codebase tasks where the needed object/path is present in prepared context. The quality judge favored Vaner in 6 of 8 paired scenario answers, and the broad public harness shows +3.33 quality over naked and +0.43 over RAG.</span></div></div>
             <div class="item"><div class="dot">2</div><div><strong>Why it works</strong><span>It front-loads context selection before the final answer: exact component hints, symbol/path signals, and cached packages reduce answer-time search and can correct cold-answer misunderstandings.</span></div></div>
-            <div class="item"><div class="dot">3</div><div><strong>Where it is weaker</strong><span>Weakness is precision under broad lifecycle prompts: 3 of 20 turns were only partial, with cold-start still under-specified. No turns lacked relevant context.</span></div></div>
-            <div class="item"><div class="dot">4</div><div><strong>Cost and performance</strong><span>Scenario precompute averaged 12.5s; cache lookup averaged 2.2s. Warm answer latency was 91.4s vs 118.8s cold in the judged sample. Broad public estimated cost was $1.155 for Vaner vs $1.230 for RAG and $0.883 naked.</span></div></div>
+            <div class="item"><div class="dot">3</div><div><strong>Where it is weaker</strong><span>Weakness is precision under broad lifecycle prompts: 2 of 20 turns were only partial, with cold-start still under-specified. No turns lacked relevant context.</span></div></div>
+            <div class="item"><div class="dot">4</div><div><strong>Cost and performance</strong><span>Scenario precompute averaged 71.4s; cache lookup averaged 2.2s. Warm answer latency was 63.9s vs 171.4s cold in the judged sample. Broad public estimated cost was $1.155 for Vaner vs $1.230 for RAG and $0.883 naked.</span></div></div>
           </div>
         </div>
       </section>
@@ -168,8 +168,8 @@
           <h2>Scenario Gate</h2>
           <table>
             <tbody>
-              <tr><td>Engine LLM</td><td>wired via local Ollama</td></tr>
-              <tr><td>Mean relevance</td><td>0.84</td></tr>
+              <tr><td>Engine LLM</td><td>wired via openai:Qwen/Qwen3.6-35B-A3B-FP8</td></tr>
+              <tr><td>Mean relevance</td><td>0.86</td></tr>
               <tr><td>No-scenario cycles</td><td>0/20 (0%)</td></tr>
               <tr><td>Gate status</td><td>5/5 passed; PASS</td></tr>
             </tbody>

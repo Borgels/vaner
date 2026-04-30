@@ -7,6 +7,39 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-04-30
+
+### Added
+
+- Prepared Work is now the primary user-facing surface for Vaner-prepared review notes, bug hypotheses, docs drift, virtual diffs, research briefs, and prediction-backed opportunities.
+- WorkProduct storage, lifecycle, self-evaluation gates, non-mutating inspect/export/dismiss/feedback surfaces, and stale/supersession handling.
+- Exact component targeting for predictions through deterministic target normalization and lightweight symbol indexing across Python, TypeScript, JavaScript, Rust, and Go.
+- Evidence-bound answer prompting so warm answers stay grounded in selected paths and explicitly flag evidence gaps instead of inventing missing details.
+- Retrieval-floor and answerability scoring for context packages, including transparent quality, cost, and readiness signals.
+- Benchmark governance profiles with stable gates, reproducibility metadata, leak scanning, and schema-locked release reports.
+
+### Changed
+
+- Named definitions, tests, and usages now outrank broad working-set, graph-neighbor, recency, docs, and generated-file evidence when a concrete component is named.
+- Weak component matches remain evidence-ready only instead of becoming draft-ready.
+- Prepared Work cards hide internal prediction/work-product lifecycle terms from normal UI clients while preserving diagnostic fields for debug surfaces.
+- Release benchmark reporting now compares naked, RAG, and Vaner across writer, researcher, learner, developer/SWE, and codebase-navigation archetypes.
+
+### Fixed
+
+- Broad or stale clusters can no longer drive draft adoption when an exact named component is missing.
+- Cold-start and evidence packaging paths now abstain more conservatively when the primary evidence is weak.
+- Public benchmark/report artifacts are scanned for absolute local paths and private workspace wording before release publication.
+- GitHub release verification handles per-artifact attestation checks without relying on unsupported glob behavior.
+
+### Validation
+
+- 0.8.8 medium release benchmark passed on 2026-04-30 with Qwen 3.6 for Vaner exploration, Claude Sonnet as the answer model, and Claude Opus as judge.
+- Scenario benchmark: 20/20 related coverage, 18/20 exact matches, 0 misses, mean relevance 0.856.
+- Quality A/B: Vaner-context answers won 6/8 judged pairs.
+- Broad public benchmark: 125 cases across five required archetypes; Vaner quality 8.13 vs RAG 7.70 vs naked 4.80.
+- Release gates passed: schema, coverage, quality, regression, performance, cost, leak scan, and reproducibility.
+
 ## [0.8.7] - 2026-04-26
 
 ### Added
