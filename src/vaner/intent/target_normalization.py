@@ -88,13 +88,7 @@ def path_component_terms(path: str) -> tuple[str, ...]:
         combined.append(normalize_component(basename))
     if "-" in basename or "_" in basename:
         combined.append(normalize_component(basename.replace("-", "").replace("_", "")))
-    return tuple(
-        dict.fromkeys(
-            term
-            for term in [*normalized, *combined]
-            if term and len(term) >= 3 and term not in _STOPWORDS
-        )
-    )
+    return tuple(dict.fromkeys(term for term in [*normalized, *combined] if term and len(term) >= 3 and term not in _STOPWORDS))
 
 
 def _singularize(token: str) -> str:

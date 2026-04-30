@@ -2667,9 +2667,7 @@ def build_server(
 
             artefact_db_path = active_repo_root / ".vaner" / "artefacts.db"
             prepared_store = (
-                engine.store
-                if engine is not None and getattr(engine, "store", None) is not None
-                else ArtefactStore(artefact_db_path)
+                engine.store if engine is not None and getattr(engine, "store", None) is not None else ArtefactStore(artefact_db_path)
             )
             await prepared_store.initialize()
             products = await prepared_store.list_work_products(include_hidden=True, include_terminal=True, limit=200)
@@ -2699,9 +2697,7 @@ def build_server(
 
             artefact_db_path = active_repo_root / ".vaner" / "artefacts.db"
             work_product_store = (
-                engine.store
-                if engine is not None and getattr(engine, "store", None) is not None
-                else ArtefactStore(artefact_db_path)
+                engine.store if engine is not None and getattr(engine, "store", None) is not None else ArtefactStore(artefact_db_path)
             )
             await work_product_store.initialize()
 

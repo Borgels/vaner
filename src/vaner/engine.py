@@ -157,12 +157,7 @@ _SOURCE_EXTENSIONS = (".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".java"
 
 def _is_cold_start_intent_text(text: str) -> bool:
     terms = set(re.findall(r"[a-z0-9]+", text.lower()))
-    return (
-        {"cold", "start"} <= terms
-        or "bootstrap" in terms
-        or ({"no", "cached"} <= terms)
-        or ({"empty", "cache"} <= terms)
-    )
+    return {"cold", "start"} <= terms or "bootstrap" in terms or ({"no", "cached"} <= terms) or ({"empty", "cache"} <= terms)
 
 
 _CORE_ARCHITECTURE_STEMS: dict[str, int] = {
@@ -357,18 +352,10 @@ def _core_group_matches_recent_query(reason: str, recent_queries: list[str]) -> 
     query_text = " ".join(recent_queries[-3:]).lower()
     if not query_text:
         return False
-    reason_terms = {
-        token
-        for token in re.findall(r"[a-z0-9]+", reason.lower())
-        if len(token) >= 3 and token not in _PATH_INTENT_STOPWORDS
-    }
+    reason_terms = {token for token in re.findall(r"[a-z0-9]+", reason.lower()) if len(token) >= 3 and token not in _PATH_INTENT_STOPWORDS}
     if not reason_terms:
         return False
-    query_terms = {
-        token
-        for token in re.findall(r"[a-z0-9]+", query_text)
-        if len(token) >= 3 and token not in _PATH_INTENT_STOPWORDS
-    }
+    query_terms = {token for token in re.findall(r"[a-z0-9]+", query_text) if len(token) >= 3 and token not in _PATH_INTENT_STOPWORDS}
     # Require at least two overlapping group terms so broad words like "flow"
     # do not pull an architecture group into unrelated turns.
     return len(reason_terms & query_terms) >= 2
@@ -1004,13 +991,7 @@ class VanerEngine:
                             item.category: max(0.0, float(item.confidence)) / total_conf for item in prior_predictions
                         }
             _quick_artefacts = await self.store.list(limit=2000)
-            _available_quick_paths = sorted(
-                {
-                    artefact.source_path
-                    for artefact in _quick_artefacts
-                    if artefact.source_path
-                }
-            )
+            _available_quick_paths = sorted({artefact.source_path for artefact in _quick_artefacts if artefact.source_path})
             _quick_paths = {
                 artefact.source_path
                 for artefact in select_artefacts(
@@ -2051,11 +2032,7 @@ class VanerEngine:
             """Explore one scenario; mutate shared state under state_lock."""
             async with cycle_sem:
                 use_llm = self._should_use_llm(scenario, ecfg)
-                if (
-                    cycle_deadline is not None
-                    and time.monotonic() >= cycle_deadline
-                    and (self._last_explored_scenarios or use_llm)
-                ):
+                if cycle_deadline is not None and time.monotonic() >= cycle_deadline and (self._last_explored_scenarios or use_llm):
                     return
                 # High-priority scenarios (and anything already carrying a
                 # depth bonus from a high-priority ancestor) get wider LLM
@@ -3369,9 +3346,7 @@ class VanerEngine:
                                 label=label,
                                 description=description,
                                 anchor=item_id,
-                                evidence_targets=tuple(str(item) for item in related_files)
-                                if isinstance(related_files, list)
-                                else (),
+                                evidence_targets=tuple(str(item) for item in related_files) if isinstance(related_files, list) else (),
                                 readiness_mode="evidence_ready",
                                 confidence=confidence,
                                 reason_codes=("artefact_item", state),

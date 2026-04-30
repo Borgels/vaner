@@ -134,10 +134,7 @@ def _card_from_work_product(
     target_label = _target_label(product.source_snapshot.relative_paths, product.target_key)
     refs: list[PreparedWorkDiagnosticRef] = []
     if include_diagnostics:
-        refs = [
-            PreparedWorkDiagnosticRef(kind=ref.kind, path=ref.path, reason=ref.reason)
-            for ref in product.evidence_refs[:8]
-        ]
+        refs = [PreparedWorkDiagnosticRef(kind=ref.kind, path=ref.path, reason=ref.reason) for ref in product.evidence_refs[:8]]
         refs.append(PreparedWorkDiagnosticRef(kind="work_product", id=product.id, reason=product.target_key))
     score = _score(
         kind=kind,

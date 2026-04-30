@@ -91,4 +91,3 @@ async def test_work_products_http_blocks_non_exportable(temp_repo: Path) -> None
 
     assert response.status_code == 409
     assert response.json()["code"] == "not_exportable"
-

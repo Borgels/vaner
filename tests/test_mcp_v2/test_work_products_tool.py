@@ -73,9 +73,7 @@ def test_work_product_tools_list_inspect_export_and_dismiss(temp_repo: Path) -> 
     exported = parse_content(call_tool(server, "vaner.work_products.export", {"work_product_id": pid}))
     assert exported["body"] == "Body"
 
-    feedback = parse_content(
-        call_tool(server, "vaner.work_products.feedback", {"work_product_id": pid, "feedback_state": "partial"})
-    )
+    feedback = parse_content(call_tool(server, "vaner.work_products.feedback", {"work_product_id": pid, "feedback_state": "partial"}))
     assert feedback["ok"] is True
 
     dismissed = parse_content(call_tool(server, "vaner.work_products.dismiss", {"work_product_id": pid}))
@@ -89,4 +87,3 @@ def test_work_product_export_blocks_inspectable_artifact(temp_repo: Path) -> Non
 
     result = parse_content(call_tool(server, "vaner.work_products.export", {"work_product_id": pid}))
     assert result["code"] == "not_exportable"
-

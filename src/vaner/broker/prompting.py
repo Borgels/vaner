@@ -22,7 +22,7 @@ def build_evidence_bound_context_prompt(
 ) -> str:
     """Build a system prompt that keeps answer generation anchored to evidence."""
 
-    bounded_context = context if max_chars is None else context[:max(0, int(max_chars))]
+    bounded_context = context if max_chars is None else context[: max(0, int(max_chars))]
     facet_lines = [facet.strip() for facet in facets if facet.strip()]
     facet_block = ""
     if facet_lines:

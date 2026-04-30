@@ -54,4 +54,3 @@ async def test_engine_work_product_pass_does_not_mutate_tracked_files(tmp_path: 
     products = await engine.store.list_work_products(include_hidden=True)
     assert any(product.type == WorkProductType.VIRTUAL_DIFF for product in products)
     assert (repo / "sample.py").read_text(encoding="utf-8") == "def prepared():\n    return 1"
-

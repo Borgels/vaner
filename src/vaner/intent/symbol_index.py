@@ -125,11 +125,7 @@ def symbol_candidates_for_terms(
         elif suffix in _DOC_SUFFIXES:
             relation_hint = "doc_match"
         definitions = _extract_definitions(rel_path, content)
-        definition_norms = {
-            normalize_component(symbol): symbol
-            for symbol in definitions
-            if not _is_generic_lower_symbol(symbol)
-        }
+        definition_norms = {normalize_component(symbol): symbol for symbol in definitions if not _is_generic_lower_symbol(symbol)}
         path_terms = set(path_component_terms(rel_path))
         for term in terms:
             if term in definition_norms:
@@ -198,9 +194,7 @@ def rank_exact_paths(
 def _candidate_paths(root: Path, available_paths: list[str] | tuple[str, ...] | None, *, max_files: int) -> list[str]:
     if available_paths is not None:
         return [
-            path
-            for path in available_paths
-            if (root / path).is_file() and (root / path).suffix.lower() in _SOURCE_SUFFIXES | _DOC_SUFFIXES
+            path for path in available_paths if (root / path).is_file() and (root / path).suffix.lower() in _SOURCE_SUFFIXES | _DOC_SUFFIXES
         ][:max_files]
     paths: list[str] = []
     for path in root.rglob("*"):

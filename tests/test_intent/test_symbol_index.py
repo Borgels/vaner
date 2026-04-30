@@ -11,16 +11,12 @@ def test_python_ast_definition_beats_test_and_usage(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "src" / "frontier.py").write_text(
-        "class ExplorationFrontier:\n"
-        "    def plan_next(self):\n"
-        "        return None\n",
+        "class ExplorationFrontier:\n    def plan_next(self):\n        return None\n",
         encoding="utf-8",
     )
     (tmp_path / "src" / "runner.py").write_text("from src.frontier import ExplorationFrontier\n", encoding="utf-8")
     (tmp_path / "tests" / "test_frontier.py").write_text(
-        "from src.frontier import ExplorationFrontier\n"
-        "def test_frontier():\n"
-        "    assert ExplorationFrontier\n",
+        "from src.frontier import ExplorationFrontier\ndef test_frontier():\n    assert ExplorationFrontier\n",
         encoding="utf-8",
     )
 
@@ -76,14 +72,11 @@ def test_generic_lowercase_methods_do_not_outrank_component_paths(tmp_path: Path
     (tmp_path / "src" / "vaner" / "intent").mkdir(parents=True)
     (tmp_path / "src" / "vaner" / "cli").mkdir(parents=True)
     (tmp_path / "src" / "vaner" / "intent" / "cache.py").write_text(
-        "class TieredPredictionCache:\n"
-        "    def match(self):\n"
-        "        return 'full_hit partial_hit warm_start'\n",
+        "class TieredPredictionCache:\n    def match(self):\n        return 'full_hit partial_hit warm_start'\n",
         encoding="utf-8",
     )
     (tmp_path / "src" / "vaner" / "cli" / "commands.py").write_text(
-        "def start():\n"
-        "    return None\n",
+        "def start():\n    return None\n",
         encoding="utf-8",
     )
 

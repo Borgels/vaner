@@ -198,8 +198,7 @@ def _generate_virtual_diff(repo_root: Path, paths: list[str]) -> WorkProduct | N
             reason = "adds the missing trailing newline so tooling sees a complete final line"
         elif any(line.rstrip("\n").rstrip("\r").endswith((" ", "\t")) for line in original):
             patched_text = "".join(
-                line.rstrip("\n").rstrip("\r").rstrip(" \t") + ("\n" if line.endswith(("\n", "\r")) else "")
-                for line in original
+                line.rstrip("\n").rstrip("\r").rstrip(" \t") + ("\n" if line.endswith(("\n", "\r")) else "") for line in original
             )
             reason = "removes trailing whitespace without changing program structure"
         if not reason or patched_text == text:
@@ -217,13 +216,7 @@ def _generate_virtual_diff(repo_root: Path, paths: list[str]) -> WorkProduct | N
         diff_text = "\n".join(diff_lines)
         if not diff_text or len(diff_lines) > 80 or len(diff_text) > 6000:
             continue
-        body = (
-            f"Rationale: {reason}.\n\n"
-            f"Target: `{path}`\n\n"
-            "```diff\n"
-            f"{diff_text}\n"
-            "```"
-        )
+        body = f"Rationale: {reason}.\n\nTarget: `{path}`\n\n```diff\n{diff_text}\n```"
         return _make_product(
             repo_root=repo_root,
             kind=WorkProductType.VIRTUAL_DIFF,
@@ -257,8 +250,7 @@ def _generate_bug_hypothesis(repo_root: Path, paths: list[str]) -> WorkProduct |
                 continue
             line = _line_number(text, match.group(0).splitlines()[0])
             body = (
-                f"`{path}:{line}` has a possible risk: {reason}.\n\n"
-                "This is advisory until inspected against the surrounding control flow."
+                f"`{path}:{line}` has a possible risk: {reason}.\n\nThis is advisory until inspected against the surrounding control flow."
             )
             return _make_product(
                 repo_root=repo_root,

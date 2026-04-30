@@ -67,7 +67,10 @@ def test_detect_floor_conflicts_marks_disjoint_evidence():
         prediction_paths=["src/predicted.py"],
         floor_paths=["docs/retrieved.md"],
     ) == ["prediction_evidence and retrieval_floor_evidence selected disjoint source paths"]
-    assert detect_floor_conflicts(
-        prediction_paths=["src/shared.py"],
-        floor_paths=["src/shared.py"],
-    ) == []
+    assert (
+        detect_floor_conflicts(
+            prediction_paths=["src/shared.py"],
+            floor_paths=["src/shared.py"],
+        )
+        == []
+    )

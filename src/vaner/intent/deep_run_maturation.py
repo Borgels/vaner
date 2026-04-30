@@ -450,9 +450,7 @@ def _intent_anchor(prediction: PredictedPrompt) -> str:
     if structured is not None and structured.semantic_hint:
         return structured.semantic_hint.strip()
     return " ".join(
-        part.strip()
-        for part in (prediction.spec.label, prediction.spec.description, prediction.spec.anchor)
-        if part and part.strip()
+        part.strip() for part in (prediction.spec.label, prediction.spec.description, prediction.spec.anchor) if part and part.strip()
     )
 
 
@@ -474,13 +472,7 @@ def _intent_terms_for_prediction(prediction: PredictedPrompt) -> tuple[str, ...]
             raw_terms = (normalized,) if normalized else ()
     elif prediction.spec.specificity == "concrete":
         raw_terms = component_terms(_intent_anchor(prediction))
-    return tuple(
-        dict.fromkeys(
-            term
-            for term in raw_terms
-            if term and len(term) >= 5 and term not in _GENERIC_INTENT_TERMS
-        )
-    )
+    return tuple(dict.fromkeys(term for term in raw_terms if term and len(term) >= 5 and term not in _GENERIC_INTENT_TERMS))
 
 
 # ---------------------------------------------------------------------------

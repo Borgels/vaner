@@ -578,9 +578,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
             metrics.primary_llm_thinking_tokens = usage.thinking_tokens
             metrics.primary_llm_cost_usd = cost.total_cost_usd
             if pricing is not None:
-                metrics.expected_incremental_primary_cost_usd = (
-                    metrics.injected_context_tokens / 1000.0
-                ) * pricing.input_cost_per_1k
+                metrics.expected_incremental_primary_cost_usd = (metrics.injected_context_tokens / 1000.0) * pricing.input_cost_per_1k
             metrics.primary_llm_usage_known = not usage.usage_estimated
             metrics.total_known_cloud_cost_usd = cost.total_cost_usd if local_or_cloud == "cloud" and not cost.estimated else 0.0
             metrics.total_estimated_cloud_cost_usd = cost.total_cost_usd if local_or_cloud == "cloud" else 0.0

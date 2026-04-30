@@ -66,10 +66,7 @@ class TokenUsage(BaseModel):
         if self.total_tokens <= 0:
             self.total_tokens = max(
                 0,
-                int(self.prompt_tokens)
-                + int(self.completion_tokens)
-                + int(self.thinking_tokens)
-                + int(self.cached_input_tokens),
+                int(self.prompt_tokens) + int(self.completion_tokens) + int(self.thinking_tokens) + int(self.cached_input_tokens),
             )
         return self
 

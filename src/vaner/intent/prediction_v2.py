@@ -230,13 +230,7 @@ def compatibility_for_query(
     if structured.contradicted_by or invalidation_reason:
         freshness_score = 0.0
 
-    score = (
-        0.30 * action_score
-        + 0.25 * target_score
-        + 0.20 * answer_shape_score
-        + 0.15 * evidence_score
-        + 0.10 * freshness_score
-    )
+    score = 0.30 * action_score + 0.25 * target_score + 0.20 * answer_shape_score + 0.15 * evidence_score + 0.10 * freshness_score
 
     if structured.readiness_mode == "draft_ready":
         action_compatible = action_score >= 0.9 or (

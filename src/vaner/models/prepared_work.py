@@ -63,4 +63,3 @@ class PreparedWorkCard(BaseModel):
     primary_action: PreparedWorkAction | None = None
     secondary_actions: list[PreparedWorkAction] = Field(default_factory=list)
     diagnostic_refs: list[PreparedWorkDiagnosticRef] = Field(default_factory=list)
-
