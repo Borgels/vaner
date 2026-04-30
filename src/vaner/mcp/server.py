@@ -2672,7 +2672,7 @@ def build_server(
             await prepared_store.initialize()
             products = await prepared_store.list_work_products(include_hidden=True, include_terminal=True, limit=200)
             predictions = list(engine.get_active_predictions()) if engine is not None else []
-            cards = build_prepared_work_cards(
+            prepared_cards = build_prepared_work_cards(
                 work_products=products,
                 predictions=predictions,
                 include_advisory=include_advisory,
@@ -2682,7 +2682,7 @@ def build_server(
                 limit=limit,
             )
             await _record("ok")
-            prepared_payload = {"prepared_work": [card.model_dump(mode="json") for card in cards]}
+            prepared_payload = {"prepared_work": [card.model_dump(mode="json") for card in prepared_cards]}
             return _prepared_work_result(prepared_payload)
 
         if name in {
