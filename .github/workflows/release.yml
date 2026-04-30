@@ -61,8 +61,7 @@ jobs:
         id: slsa_subjects
         run: |
           set -euo pipefail
-          mapfile -t subjects < <(printf '%s\n' dist/* sbom.json sbom.json.sigstore.json | sort -u)
-          sha256sum "${subjects[@]}" | base64 --wrap=0 > /tmp/slsa-subjects.b64
+          python scripts/release/preflight.py slsa-subjects > /tmp/slsa-subjects.b64
           echo "value=$(cat /tmp/slsa-subjects.b64)" >> "$GITHUB_OUTPUT"
       - name: Attest build provenance
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
@@ -82,11 +81,7 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --generate-notes
           fi
-          # Collect assets into a deduped set so we don't pass the same sigstore
-          # JSONs twice (dist/* already matches them alongside the wheel/sdist).
-          # Prior runs hit `HTTP 422 ReleaseAsset.name already exists` when the
-          # duplicates raced --clobber. Sort -u keeps the list canonical.
-          assets=$(printf '%s\n' dist/* sbom.json sbom.json.sigstore.json | sort -u)
+          assets=$(python scripts/release/preflight.py assets)
           # shellcheck disable=SC2086
           gh release upload "$TAG" $assets --clobber
           # 0.8.5 WS11 — auto-publish a drafted release after assets attach.
@@ -139,6 +134,9 @@ jobs:
       id-token: write
       attestations: read
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          persist-credentials: false
       - name: Download built artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -173,10 +171,9 @@ jobs:
           if compgen -G "provenance/*.intoto.jsonl" > /dev/null; then
             provenance_file="$(printf '%s\n' provenance/*.intoto.jsonl | head -n 1)"
           fi
-          for artifact in dist-assets/dist/*; do
-            case "$artifact" in
-              *.sigstore.json) continue ;;
-            esac
+          python scripts/release/preflight.py primary-artifacts --dist-dir dist-assets/dist --sbom dist-assets/sbom.json > /tmp/primary-artifacts.txt
+          while IFS= read -r artifact; do
+            [ -n "$artifact" ] || continue
             gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
             bundle="${artifact}.sigstore.json"
             cosign verify-blob \
@@ -190,4 +187,4 @@ jobs:
                 --source-uri "github.com/${GITHUB_REPOSITORY}" \
                 --source-tag "${GITHUB_REF_NAME}"
             fi
-          done
+          done < /tmp/primary-artifacts.txt

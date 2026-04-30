@@ -5,6 +5,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+sbom.json
+*.sigstore.json
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -45,6 +47,9 @@ scripts/*
 !scripts/sync-plugin-primer.sh
 !scripts/bump-plugin-version.sh
 !scripts/sync_agents_primer.py
+!scripts/__init__.py
+!scripts/release/
+!scripts/release/*.py
 # CI-only bootstrap lockfiles — tracked so Scorecard's Pinned-Dependencies
 # check can verify integrity hashes on npm installs (alert #212).
 !scripts/ci/
