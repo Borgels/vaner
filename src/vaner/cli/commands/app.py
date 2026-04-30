@@ -73,6 +73,7 @@ from vaner.daemon.http import create_daemon_http_app
 from vaner.daemon.preflight import check_repo_root
 from vaner.daemon.runner import VanerDaemon
 from vaner.eval import evaluate_repo, run_eval
+from vaner.broker.prompting import build_evidence_bound_context_prompt
 from vaner.models.config import VanerConfig
 from vaner.router.backends import forward_chat_completion_with_request
 from vaner.router.proxy import create_app
@@ -1376,7 +1377,7 @@ def compare(
         package = await api.aquery(prompt, repo_root, config=config, top_n=6)
         enriched_payload = {
             "messages": [
-                {"role": "system", "content": "Use provided context when relevant.\n\n" + package.injected_context},
+                {"role": "system", "content": build_evidence_bound_context_prompt(package.injected_context)},
                 {"role": "user", "content": prompt},
             ],
             "stream": False,

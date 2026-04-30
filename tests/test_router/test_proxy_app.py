@@ -119,6 +119,40 @@ def test_proxy_preserves_authorization_header_in_passthrough(temp_repo, monkeypa
     assert "X-Vaner-Decision" in response.headers
 
 
+def test_proxy_injects_evidence_bound_context_prompt(temp_repo, monkeypatch):
+    class _Package:
+        injected_context = "### src/example.py\nsupported detail"
+        cache_tier = "miss"
+        partial_similarity = 0.0
+        token_used = 5
+
+    captured: dict[str, object] = {}
+
+    async def _fake_aquery(prompt, repo_root, config=None, top_n=6):
+        return _Package()
+
+    async def _fake_forward_chat_completion(config, payload, *, authorization_header=None):
+        captured["payload"] = payload
+        return {"id": "ok"}
+
+    monkeypatch.setattr(proxy_module, "aquery", _fake_aquery)
+    monkeypatch.setattr(proxy_module, "forward_chat_completion_with_request", _fake_forward_chat_completion)
+    app = create_app(
+        _make_config(temp_repo, gateway=GatewayConfig(passthrough_enabled=True)),
+        ArtefactStore(temp_repo / ".vaner" / "store.db"),
+    )
+    client = TestClient(app)
+
+    response = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+
+    assert response.status_code == 200
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    system = payload["messages"][0]["content"]
+    assert "Do not invent files, symbols, constants" in system
+    assert "### src/example.py" in system
+
+
 def test_cockpit_endpoints(temp_repo, monkeypatch):
     vaner_dir = temp_repo / ".vaner"
     vaner_dir.mkdir(parents=True, exist_ok=True)

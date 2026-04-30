@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from vaner.api import aquery
+from vaner.broker.prompting import build_evidence_bound_context_prompt
 from vaner.cli.commands.config import load_config, set_compute_value
 from vaner.daemon.cockpit_html import build_cockpit_html
 from vaner.events.bus import build_stage_payloads
@@ -37,7 +38,7 @@ from vaner.telemetry.metrics import MetricsStore, RequestMetrics
 
 def _inject_context(payload: dict[str, Any], context: str) -> dict[str, Any]:
     messages = payload.get("messages", [])
-    system_content = "Use provided context when relevant.\n\n" + context
+    system_content = build_evidence_bound_context_prompt(context)
     system_message = {"role": "system", "content": system_content}
     return {**payload, "messages": [system_message, *messages]}
 
