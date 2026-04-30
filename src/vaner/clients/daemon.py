@@ -230,7 +230,7 @@ class VanerDaemonClient:
     async def inspect_work_product(self, product_id: str) -> dict[str, Any]:
         async with self._session() as client:
             try:
-                response = await client.get(f"{self._base}/work-products/{product_id}")
+                response = await client.get(f"{self._base}/work-products/{product_id}/inspect")
             except (httpx.TransportError, httpx.TimeoutException) as exc:
                 raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
             if response.status_code == 404:
@@ -243,7 +243,7 @@ class VanerDaemonClient:
     async def get_prepared_work(
         self,
         *,
-        limit: int = 20,
+        limit: int = 3,
         include_advisory: bool = False,
         include_diagnostics: bool = False,
         context_id: str | None = None,

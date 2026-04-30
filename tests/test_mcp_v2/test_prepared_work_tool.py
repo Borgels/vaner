@@ -9,7 +9,9 @@ from pathlib import Path
 from vaner.models.work_product import (
     WorkProduct,
     WorkProductAdoptability,
+    WorkProductEvidenceRef,
     WorkProductFreshness,
+    WorkProductSelfEval,
     WorkProductSourceSnapshot,
     WorkProductStatus,
     WorkProductType,
@@ -31,6 +33,7 @@ def test_prepared_work_dashboard_returns_cards(mcp_server, temp_repo: Path) -> N
                 title="Brief prepared",
                 summary="Source-backed brief is ready.",
                 body="Brief body",
+                evidence_refs=[WorkProductEvidenceRef(kind="file", path="notes.md", reason="source evidence")],
                 source_snapshot=WorkProductSourceSnapshot(
                     project_id="proj",
                     relative_paths=["notes.md"],
@@ -41,6 +44,11 @@ def test_prepared_work_dashboard_returns_cards(mcp_server, temp_repo: Path) -> N
                 freshness=WorkProductFreshness.FRESH,
                 status=WorkProductStatus.SURFACED,
                 adoptability=WorkProductAdoptability.INSPECTABLE,
+                self_eval=WorkProductSelfEval(
+                    evidence_coverage=0.8,
+                    groundedness=0.8,
+                    reason="direct source evidence supports this prepared work",
+                ),
                 created_at=now,
                 updated_at=now,
                 target_key="notes.md",

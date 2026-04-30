@@ -14,7 +14,7 @@ Vaner ships a supported [Claude Code plugin](https://code.claude.com/docs/en/plu
 ## Install
 
 ```text
-/plugin marketplace add Borgels/Vaner
+/plugin marketplace add Borgels/vaner
 /plugin install vaner@vaner
 ```
 
@@ -72,7 +72,11 @@ claude --plugin-dir ./plugins/vaner \
 
 ### MCP tool naming
 
-The canonical primer (`src/vaner/defaults/prompts/agent-primer.md`) and the `/vaner:next` skill refer to tools by their conceptual names: `vaner.status`, `vaner.resolve`, `vaner.search`, `vaner.suggest`, `vaner.expand`, `vaner.feedback`, `vaner.explain`, `vaner.warm`, `vaner.inspect`, `vaner.debug.trace`.
+The canonical primer (`src/vaner/defaults/prompts/agent-primer.md`) and the
+`/vaner:next` skill refer to tools by their conceptual names, including
+`vaner.status`, `vaner.prepared_work.dashboard`, `vaner.resolve`,
+`vaner.search`, `vaner.suggest`, `vaner.expand`, `vaner.feedback`,
+`vaner.explain`, `vaner.warm`, `vaner.inspect`, and `vaner.debug.trace`.
 
 Claude Code exposes plugin MCP tools with a namespaced prefix: `mcp__plugin_<plugin-name>_<server-name>__<tool>`. For the Vaner plugin that resolves to `mcp__plugin_vaner_vaner__vaner.status`, `mcp__plugin_vaner_vaner__vaner.resolve`, and so on. Confirm the exact names in a session with:
 
@@ -86,7 +90,12 @@ The model generally maps the conceptual names to the prefixed names without help
 
 ### Required CLI version
 
-The plugin targets the v1.0 MCP tool surface introduced in Vaner **0.6.0**. Older installs (0.5.x and below) expose a legacy 5-tool surface (`list_scenarios`, `get_scenario`, `expand_scenario`, `compare_scenarios`, `report_outcome`) — the primer's tool references will not match and the `/vaner:next` skill will not find the tools it expects. Check with `vaner --help` (look for `suggest`, `resolve`, and `feedback` subcommands) and upgrade via the canonical installer if needed:
+The plugin targets Vaner's namespaced MCP tool surface. Older installs (0.5.x
+and below) expose a legacy 5-tool surface (`list_scenarios`, `get_scenario`,
+`expand_scenario`, `compare_scenarios`, `report_outcome`) — the primer's tool
+references will not match and the `/vaner:next` skill will not find the tools
+it expects. Check with `vaner --help` and upgrade via the canonical installer
+if needed:
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 https://vaner.ai/install.sh | bash -s -- --yes

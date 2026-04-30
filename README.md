@@ -11,13 +11,15 @@
 
 ## What is Vaner?
 
-Vaner is a local-first context engine for coding agents that turns idle compute into useful future context.
-Instead of waiting for a prompt and then starting retrieval from cold, Vaner continuously prepares likely
-next-context packages, scores them, and serves the best fit quickly when the real question arrives.
+Vaner is a local-first preparation engine for AI coding agents. It turns idle
+compute into evidence-backed Prepared Work: review notes, bug hypotheses, docs
+drift, virtual diffs, research briefs, and ready prediction-backed drafts.
 
-Vaner predicts what the user will likely ask next and prepares evidence-backed context packages in advance.
-Instead of reacting from a cold start, it continuously turns idle compute into prepared context that can be
-served quickly when the real prompt arrives.
+Instead of waiting for a prompt and starting retrieval from cold, Vaner
+continuously prepares likely useful work, scores it, and serves the best fit
+quickly when the real question arrives. Prepared Work is non-mutating by
+default: virtual diffs and exports require explicit user action, and Vaner does
+not silently edit your files.
 
 It is built around evidence-backed scenario memory, not chat-log accumulation:
 
@@ -110,7 +112,7 @@ Start / verify runtime:
 ```bash
 vaner up --path .
 vaner status
-vaner logs --daemon
+vaner logs --path .
 vaner down
 ```
 
@@ -162,7 +164,7 @@ Vaner exposes context to your agent over [MCP](https://modelcontextprotocol.io/)
 
 | Client | One command |
 | --- | --- |
-| Claude Code (plugin, recommended) | `/plugin marketplace add Borgels/Vaner` then `/plugin install vaner@vaner` |
+| Claude Code (plugin, recommended) | `/plugin marketplace add Borgels/vaner` then `/plugin install vaner@vaner` |
 | Claude Code (manual MCP) | `claude mcp add --transport stdio --scope user vaner -- vaner mcp --path .` |
 | Codex CLI   | `codex mcp add vaner -- vaner mcp --path .` |
 | Cursor / VS Code / Zed / Windsurf / Continue / Claude Desktop / Cline / Roo | see [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp) |
@@ -179,7 +181,7 @@ vaner mcp --path .                  # smoke-test the MCP server in stdio mode
 ### 3. Run it
 
 ```bash
-vaner daemon start --no-once --path .
+vaner up --path .
 vaner query "where is auth enforced?" --explain --path .
 vaner inspect --last --path .
 ```
@@ -189,7 +191,7 @@ Asciinema demo: coming soon.
 ## Cockpit live pipeline view
 
 Vaner ships a cockpit UI that doubles as a real-time control surface for the
-daemon. Open it at `http://127.0.0.1:8473/` (after `vaner daemon start`) or
+daemon. Open it at `http://127.0.0.1:8473/` after `vaner up --path .`, or
 co-mounted at `/cockpit/` when serving MCP over SSE.
 
 The cockpit view is organised around the actual daemon control flow:
@@ -216,6 +218,7 @@ Everything is driven by the unified event bus in `src/vaner/events/bus.py`,
 which the daemon runner, LLM helpers, proxy, and scenario store publish to.
 The SSE endpoint `/events/stream` accepts a `?stages=model,artefacts` filter
 for scripted consumers.
+
 ## Documentation
 
 Most documentation lives at [docs.vaner.ai](https://docs.vaner.ai):
@@ -229,20 +232,22 @@ Most documentation lives at [docs.vaner.ai](https://docs.vaner.ai):
 - MCP tools: [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp)
 - Examples: [docs.vaner.ai/examples](https://docs.vaner.ai/examples)
 
-## MCP (v1.0)
+## MCP
 
-Vaner exposes the following MCP tools:
+Vaner exposes namespaced MCP tools. Normal clients should start with Prepared
+Work:
 
-- `vaner.status`
-- `vaner.suggest`
-- `vaner.resolve`
-- `vaner.expand`
-- `vaner.search`
-- `vaner.explain`
-- `vaner.feedback`
-- `vaner.warm`
-- `vaner.inspect`
-- `vaner.debug.trace`
+- `vaner.prepared_work.dashboard` — UI-safe cards for prepared artifacts and
+  ready prediction-backed opportunities.
+- `vaner.work_products.list` / `inspect` / `export` / `dismiss` / `feedback` —
+  diagnostic artifact flows. Export returns content and never applies patches.
+- `vaner.resolve`, `vaner.suggest`, `vaner.search`, `vaner.expand`,
+  `vaner.inspect`, `vaner.explain`, `vaner.feedback`, `vaner.warm` — query
+  resolution and scenario navigation.
+- `vaner.predictions.*`, `vaner.goals.*`, `vaner.artefacts.*`,
+  `vaner.sources.status`, `vaner.setup.*`, `vaner.policy.show`, and
+  `vaner.deep_run.*` — advanced/diagnostic surfaces for predictions, goals,
+  artifacts, setup, policy, and Deep-Run.
 
 Memory behavior details: `docs/memory-semantics.md`.
 

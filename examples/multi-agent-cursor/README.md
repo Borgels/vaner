@@ -6,7 +6,7 @@ Use this when Cursor runs multiple agents in parallel and each agent should fetc
 
 ```bash
 vaner init --profile advanced --path .
-vaner daemon start --no-once --path .
+vaner up --path .
 vaner mcp --path .
 ```
 

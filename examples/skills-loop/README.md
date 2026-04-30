@@ -1,41 +1,47 @@
 # Vaner Skills Loop Example
 
-This example shows the full closed loop between Agent Skills and Vaner MCP tools.
+This example shows the closed loop between Agent Skills, Prepared Work, and
+Vaner MCP tools.
 
-## 1) Initialize Vaner and managed feedback skill
+## 1. Initialize Vaner and managed feedback skill
 
 ```bash
 vaner init --path .
+vaner up --path .
 ```
 
-This writes MCP config and installs the managed `vaner-feedback` skill in compatible client skill folders.
+This writes MCP config and installs the managed `vaner-feedback` skill in
+compatible client skill folders.
 
-## 2) Discover scenarios in your agent
+## 2. Use Vaner from your agent
 
-Use MCP tools:
+Use current MCP tools:
 
-- `list_scenarios`
-- `get_scenario`
-- `expand_scenario`
+- `vaner.prepared_work.dashboard`
+- `vaner.resolve`
+- `vaner.inspect`
+- `vaner.feedback`
+- `vaner.work_products.feedback`
 
 Pass the active skill name through the optional `skill` argument where possible.
 
-## 3) Report outcome
+## 3. Report outcome
 
-After task completion:
+After task completion, submit feedback through MCP:
 
 ```json
 {
-  "id": "scn_123",
-  "result": "useful",
+  "resolution_id": "res_123",
+  "rating": "useful",
   "note": "included relevant tests",
   "skill": "vaner-feedback"
 }
 ```
 
-Submit through MCP `report_outcome`.
+For Prepared Work artifacts, use `vaner.work_products.feedback` with
+`feedback_state` set to `useful`, `partial`, `irrelevant`, or `not_useful`.
 
-## 4) Distill proven decisions into reusable skills
+## 4. Distill proven decisions into reusable skills
 
 ```bash
 vaner why --list --path .
@@ -43,50 +49,3 @@ vaner distill-skill <decision-id> --path .
 ```
 
 The generated `SKILL.md` can be reused in future tasks.
-# Skills Loop Example
-
-1. Initialize Vaner and MCP configs:
-
-```bash
-vaner init --path .
-```
-
-2. Run an agent session using Vaner MCP tools.
-3. Review the decision:
-
-```bash
-vaner why --path .
-```
-
-4. Distill a reusable skill:
-
-```bash
-vaner distill-skill --path . --name "repo-playbook"
-```
-
-5. In later sessions, the distilled skill is discovered and used as a prediction prior.
-# Skills Loop Example
-
-This example shows Vaner's Agent Skills closed loop:
-
-1. Initialize the repo and MCP configs:
-
-```bash
-vaner init --path .
-```
-
-2. Run an agent session using Vaner MCP tools (`list_scenarios`, `get_scenario`, `report_outcome`).
-
-3. Inspect why Vaner chose a package:
-
-```bash
-vaner why --path .
-```
-
-4. Distill the latest decision into a reusable skill:
-
-```bash
-vaner distill-skill --path . --name "repo-playbook"
-```
-
-5. In future sessions, the distilled skill contributes signals and frontier seeds.

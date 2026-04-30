@@ -43,6 +43,7 @@ class WorkProductFeedbackState(StrEnum):
     USEFUL = "useful"
     PARTIAL = "partial"
     IRRELEVANT = "irrelevant"
+    NOT_USEFUL = "not_useful"
 
 
 def _is_absolute_path(value: str) -> bool:
@@ -137,7 +138,7 @@ class WorkProduct(BaseModel):
     def can_export(self, *, now: float | None = None) -> bool:
         if self.adoptability != WorkProductAdoptability.EXPORTABLE:
             return False
-        if self.freshness == WorkProductFreshness.STALE:
+        if self.freshness != WorkProductFreshness.FRESH:
             return False
         if self.status in {
             WorkProductStatus.CANDIDATE,

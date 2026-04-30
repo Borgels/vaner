@@ -486,6 +486,19 @@ class ArtefactStore:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_type ON work_products(type)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_target_key ON work_products(target_key)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_updated_at ON work_products(updated_at DESC)")
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS work_product_events (
+                    id TEXT PRIMARY KEY,
+                    product_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    metadata_json TEXT NOT NULL
+                )
+                """
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_work_product_events_product ON work_product_events(product_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_work_product_events_ts ON work_product_events(timestamp DESC)")
             async with db.execute("PRAGMA table_info(signal_events)") as cursor:
                 signal_columns = [row[1] for row in await cursor.fetchall()]
             if "corpus_id" not in signal_columns:
@@ -956,6 +969,52 @@ class ArtefactStore:
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    async def record_work_product_event(
+        self,
+        product_id: str,
+        event_type: str,
+        *,
+        metadata: dict[str, object] | None = None,
+        timestamp: float | None = None,
+    ) -> str:
+        event_id = str(uuid.uuid4())
+        clean_metadata = sanitize_no_absolute_paths(metadata or {})
+        ts = time.time() if timestamp is None else float(timestamp)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO work_product_events(id, product_id, event_type, timestamp, metadata_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (event_id, product_id, str(event_type), ts, json.dumps(clean_metadata)),
+            )
+            await db.commit()
+        return event_id
+
+    async def list_work_product_events(self, product_id: str, *, limit: int = 50) -> list[dict[str, object]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT id, product_id, event_type, timestamp, metadata_json
+                FROM work_product_events
+                WHERE product_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (product_id, max(1, min(200, int(limit)))),
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "id": str(row[0]),
+                "product_id": str(row[1]),
+                "event_type": str(row[2]),
+                "timestamp": float(row[3]),
+                "metadata": json.loads(str(row[4] or "{}")),
+            }
+            for row in rows
+        ]
 
     async def feedback_work_product(self, product_id: str, feedback_state: WorkProductFeedbackState | str) -> bool:
         feedback = feedback_state if isinstance(feedback_state, WorkProductFeedbackState) else WorkProductFeedbackState(str(feedback_state))

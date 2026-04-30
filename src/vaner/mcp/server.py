@@ -1146,7 +1146,7 @@ def build_server(
                             "work_product_id": {"type": "string"},
                             "feedback_state": {
                                 "type": "string",
-                                "enum": ["none", "useful", "partial", "irrelevant"],
+                                "enum": ["none", "useful", "partial", "irrelevant", "not_useful"],
                             },
                         },
                         "required": ["work_product_id", "feedback_state"],
@@ -2607,7 +2607,7 @@ def build_server(
             return _json_result(resolution.model_dump(mode="json"))
 
         if name == "vaner.prepared_work.dashboard":
-            limit = max(1, min(100, int(args.get("limit", 20))))
+            limit = max(1, min(100, int(args.get("limit", 3))))
             include_advisory = bool(args.get("include_advisory") or False)
             include_diagnostics = bool(args.get("include_diagnostics") or False)
             context_id = str(args.get("context_id", "")).strip() or None
@@ -2670,6 +2670,7 @@ def build_server(
                 engine.store if engine is not None and getattr(engine, "store", None) is not None else ArtefactStore(artefact_db_path)
             )
             await prepared_store.initialize()
+            await prepared_store.refresh_work_product_staleness(active_repo_root)
             products = await prepared_store.list_work_products(include_hidden=True, include_terminal=True, limit=200)
             predictions = list(engine.get_active_predictions()) if engine is not None else []
             prepared_cards = build_prepared_work_cards(
@@ -2692,6 +2693,7 @@ def build_server(
             "vaner.work_products.dismiss",
             "vaner.work_products.feedback",
         }:
+            from vaner.intent.prepared_work import build_work_product_inspection
             from vaner.models.work_product import WorkProductFeedbackState, WorkProductType
             from vaner.store.artefacts import ArtefactStore
 
@@ -2700,6 +2702,7 @@ def build_server(
                 engine.store if engine is not None and getattr(engine, "store", None) is not None else ArtefactStore(artefact_db_path)
             )
             await work_product_store.initialize()
+            await work_product_store.refresh_work_product_staleness(active_repo_root)
 
             if name == "vaner.work_products.list":
                 raw_type = args.get("type")
@@ -2714,6 +2717,18 @@ def build_server(
                             is_error=True,
                         )
                 limit = int(args.get("limit", 50))
+                if engine is None:
+                    try:
+                        body = await _daemon().list_work_products(
+                            include_hidden=bool(args.get("include_hidden") or False),
+                            include_terminal=bool(args.get("include_terminal") or False),
+                            type=product_type.value if product_type is not None else None,
+                            limit=max(1, min(200, limit)),
+                        )
+                        await _record("ok")
+                        return _json_result(body)
+                    except VanerDaemonUnavailable:
+                        pass
                 products = await work_product_store.list_work_products(
                     include_hidden=bool(args.get("include_hidden") or False),
                     include_terminal=bool(args.get("include_terminal") or False),
@@ -2731,6 +2746,46 @@ def build_server(
                     is_error=True,
                 )
 
+            if engine is None:
+                try:
+                    if name == "vaner.work_products.inspect":
+                        body = await _daemon().inspect_work_product(product_id)
+                    elif name == "vaner.work_products.export":
+                        body = await _daemon().export_work_product(product_id)
+                    elif name == "vaner.work_products.dismiss":
+                        body = await _daemon().dismiss_work_product(product_id)
+                    elif name == "vaner.work_products.feedback":
+                        raw_feedback = str(args.get("feedback_state", "")).strip()
+                        if raw_feedback == "not-useful":
+                            raw_feedback = "not_useful"
+                        body = await _daemon().feedback_work_product(product_id, raw_feedback)
+                    else:  # pragma: no cover - guarded by enclosing name set
+                        body = {}
+                    await _record("ok")
+                    return _json_result(body)
+                except VanerDaemonNotFound:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such work product: {product_id}"},
+                        is_error=True,
+                    )
+                except PermissionError as exc:
+                    await _record("error")
+                    message = str(exc)
+                    code = "stale_work_product" if "stale" in message.lower() else "not_exportable"
+                    return _json_result(
+                        {"code": code, "message": message},
+                        is_error=True,
+                    )
+                except ValueError as exc:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "invalid_feedback", "message": str(exc)},
+                        is_error=True,
+                    )
+                except VanerDaemonUnavailable:
+                    pass
+
             if name == "vaner.work_products.inspect":
                 product = await work_product_store.get_work_product(product_id)
                 if product is None:
@@ -2739,10 +2794,18 @@ def build_server(
                         {"code": "not_found", "message": f"no such work product: {product_id}"},
                         is_error=True,
                     )
+                await work_product_store.record_work_product_event(product_id, "inspect", metadata={"surface": "mcp"})
                 await _record("ok")
-                return _json_result(product.model_dump(mode="json"))
+                return _json_result(build_work_product_inspection(product).model_dump(mode="json"))
 
             if name == "vaner.work_products.export":
+                product = await work_product_store.get_work_product(product_id)
+                if product is not None and product.freshness.value == "stale":
+                    await _record("error")
+                    return _json_result(
+                        {"code": "stale_work_product", "message": "work product is stale; regenerate it before export"},
+                        is_error=True,
+                    )
                 try:
                     exported = await work_product_store.export_work_product(product_id)
                 except KeyError:
@@ -2757,6 +2820,7 @@ def build_server(
                         {"code": "not_exportable", "message": str(exc)},
                         is_error=True,
                     )
+                await work_product_store.record_work_product_event(product_id, "export", metadata={"surface": "mcp"})
                 await _record("ok")
                 return _json_result(exported.model_dump(mode="json"))
 
@@ -2768,11 +2832,14 @@ def build_server(
                         {"code": "not_found", "message": f"no such work product: {product_id}"},
                         is_error=True,
                     )
+                await work_product_store.record_work_product_event(product_id, "dismiss", metadata={"surface": "mcp"})
                 await _record("ok")
                 return _json_result({"ok": True})
 
             if name == "vaner.work_products.feedback":
                 raw_feedback = str(args.get("feedback_state", "")).strip()
+                if raw_feedback == "not-useful":
+                    raw_feedback = "not_useful"
                 try:
                     feedback = WorkProductFeedbackState(raw_feedback)
                 except ValueError:
@@ -2780,7 +2847,7 @@ def build_server(
                     return _json_result(
                         {
                             "code": "invalid_feedback",
-                            "message": "feedback_state must be one of none|useful|partial|irrelevant",
+                            "message": "feedback_state must be one of none|useful|partial|irrelevant|not_useful",
                         },
                         is_error=True,
                     )
@@ -2791,6 +2858,11 @@ def build_server(
                         {"code": "not_found", "message": f"no such work product: {product_id}"},
                         is_error=True,
                     )
+                await work_product_store.record_work_product_event(
+                    product_id,
+                    "feedback",
+                    metadata={"surface": "mcp", "feedback_state": feedback.value},
+                )
                 await _record("ok")
                 return _json_result({"ok": True})
 

@@ -142,7 +142,8 @@ Metrics:
 Required smoke checks before every long run:
 
 - `vaner doctor --path . --cockpit-url http://127.0.0.1:8473`
-- `/status`, `/bootstrap`, `/events/stream`, `/predictions/active`
+- `/status`, `/bootstrap`, `/events/stream`, `/prepared-work`, `/work-products`,
+  and `/predictions/active` for diagnostic compatibility
 - `vaner.resolve`, `vaner.feedback`, and at least one dashboard/open-app interaction if the client supports MCP Apps.
 
 ### Track D: Performance and Scaling
