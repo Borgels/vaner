@@ -34,6 +34,44 @@ export interface UISkill {
   weight: number
 }
 
+export type PreparedWorkSourceType = 'work_product' | 'prediction'
+export type PreparedWorkKind = 'review' | 'bug' | 'docs' | 'diff' | 'brief' | 'draft' | 'prediction'
+export type PreparedWorkActionKind = 'inspect' | 'export' | 'adopt' | 'dismiss' | 'feedback'
+
+export interface PreparedWorkAction {
+  kind: PreparedWorkActionKind
+  label: string
+  tool: string | null
+  endpoint: string | null
+  arguments: Record<string, unknown>
+}
+
+export interface PreparedWorkDiagnosticRef {
+  kind: 'file' | 'symbol' | 'doc' | 'record' | 'prediction' | 'work_product' | 'other'
+  id: string
+  path: string
+  reason: string
+}
+
+export interface PreparedWorkCard {
+  id: string
+  source_id: string
+  source_type: PreparedWorkSourceType
+  kind: PreparedWorkKind
+  title: string
+  summary: string
+  badge: string
+  confidence_label: string
+  freshness_label: string
+  target_label: string
+  evidence_count: number
+  created_at: number
+  updated_at: number
+  primary_action: PreparedWorkAction | null
+  secondary_actions: PreparedWorkAction[]
+  diagnostic_refs: PreparedWorkDiagnosticRef[]
+}
+
 export interface UIPinnedFact {
   id: string
   text: string

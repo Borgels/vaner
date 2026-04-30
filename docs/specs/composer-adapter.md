@@ -98,7 +98,7 @@ A snapshot looks like (L0 example):
     "host_app": "claude-code",
     "host_kind": "ai_chat_client"
   },
-  "workspace_id": "/home/me/repos/example",
+  "workspace_id": "<workspace-id>",
   "field_role": "agent_prompt"
 }
 ```

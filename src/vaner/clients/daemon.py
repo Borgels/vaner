@@ -14,6 +14,8 @@ Public contract (keep stable across 0.8.x):
     get_predictions_active() -> dict                          # {"predictions": [...]}
     get_prediction(id, *, include=["draft", "briefing", ...])  # may include content
     adopt_prediction(id) -> Resolution                         # parsed pydantic model
+    list_work_products() -> dict                              # {"work_products": [...]}
+    inspect/export/dismiss/feedback work products              # non-mutating
     resolve(query, *, context=..., include_briefing=...,
             include_predicted_response=...) -> Resolution      # 0.8.1: MCP/HTTP forward
 
@@ -24,6 +26,7 @@ from "daemon rejected the request". Fire-and-forget style callers
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -34,6 +37,16 @@ from vaner.mcp.contracts import Resolution
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8473"
 DEFAULT_TIMEOUT = 5.0
+DAEMON_STATUS_PATH = "/status"
+DAEMON_PROBE_TIMEOUT = 1.0
+RESOLVE_INCLUDE_BRIEFING_DEFAULT = True
+RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT = True
+
+
+def daemon_base_url_from_env(default: str = DEFAULT_BASE_URL) -> str:
+    """Return the configured daemon HTTP base URL for CLI-style callers."""
+
+    return os.environ.get("VANER_DAEMON_URL", "").strip() or default
 
 
 class VanerDaemonError(Exception):
@@ -93,7 +106,7 @@ class VanerDaemonClient:
         """GET /status — returns the daemon's health + config snapshot."""
         async with self._session() as client:
             try:
-                response = await client.get(f"{self._base}/status")
+                response = await client.get(f"{self._base}{DAEMON_STATUS_PATH}")
             except (httpx.TransportError, httpx.TimeoutException) as exc:
                 raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
             if response.status_code >= 500:
@@ -187,13 +200,133 @@ class VanerDaemonClient:
             response.raise_for_status()
             return Resolution.model_validate(response.json())
 
+    async def list_work_products(
+        self,
+        *,
+        include_hidden: bool = False,
+        include_terminal: bool = False,
+        type: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "include_hidden": include_hidden,
+            "include_terminal": include_terminal,
+            "limit": limit,
+        }
+        if type:
+            params["type"] = type
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/work-products", params=params)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonUnavailable(f"daemon at {self._base} does not expose /work-products")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def inspect_work_product(self, product_id: str) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/work-products/{product_id}")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonNotFound(f"no such work product: {product_id}")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def get_prepared_work(
+        self,
+        *,
+        limit: int = 20,
+        include_advisory: bool = False,
+        include_diagnostics: bool = False,
+        context_id: str | None = None,
+        surface: str = "api",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "limit": limit,
+            "include_advisory": include_advisory,
+            "include_diagnostics": include_diagnostics,
+            "surface": surface,
+        }
+        if context_id:
+            params["context_id"] = context_id
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/prepared-work", params=params)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonUnavailable(f"daemon at {self._base} does not expose /prepared-work")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def dismiss_work_product(self, product_id: str) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/work-products/{product_id}/dismiss")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonNotFound(f"no such work product: {product_id}")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def feedback_work_product(self, product_id: str, feedback_state: str) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/work-products/{product_id}/feedback", json={"feedback_state": feedback_state})
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonNotFound(f"no such work product: {product_id}")
+            if response.status_code == 400:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = {}
+                raise ValueError(body.get("message", "invalid work product feedback"))
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def export_work_product(self, product_id: str) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/work-products/{product_id}/export")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonNotFound(f"no such work product: {product_id}")
+            if response.status_code == 409:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = {}
+                raise PermissionError(body.get("message", "work product is not exportable"))
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
     async def resolve(
         self,
         query: str,
         *,
         context: dict[str, Any] | None = None,
-        include_briefing: bool = False,
-        include_predicted_response: bool = False,
+        include_briefing: bool = RESOLVE_INCLUDE_BRIEFING_DEFAULT,
+        include_predicted_response: bool = RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT,
     ) -> Resolution:
         """POST /resolve — forward a query to the daemon's engine.resolve_query.
 
@@ -236,3 +369,36 @@ class VanerDaemonClient:
                 raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
             response.raise_for_status()
             return Resolution.model_validate(response.json())
+
+
+def probe_daemon_status(
+    base_url: str = DEFAULT_BASE_URL,
+    *,
+    timeout: float = DAEMON_PROBE_TIMEOUT,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """Best-effort synchronous daemon reachability probe for CLI commands."""
+
+    base = base_url.rstrip("/")
+
+    def _probe(active_client: httpx.Client) -> dict[str, Any]:
+        try:
+            response = active_client.get(f"{base}{DAEMON_STATUS_PATH}")
+        except (httpx.HTTPError, OSError) as exc:
+            return {"reachable": False, "url": base, "error": str(exc)}
+        if response.status_code == 200:
+            payload: dict[str, Any] | None
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            result: dict[str, Any] = {"reachable": True, "url": base, "status": "ok"}
+            if payload is not None:
+                result["payload"] = payload
+            return result
+        return {"reachable": False, "url": base, "status_code": response.status_code}
+
+    if client is not None:
+        return _probe(client)
+    with httpx.Client(timeout=timeout) as active_client:
+        return _probe(active_client)

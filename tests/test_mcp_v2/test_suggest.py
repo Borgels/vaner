@@ -13,6 +13,8 @@ def test_suggest_returns_candidates(temp_repo, mcp_server) -> None:
     result = call_tool(mcp_server, "vaner.suggest", {"query": "where auth is enforced"})
     payload = parse_content(result)
     assert "suggestions" in payload
+    assert payload["guidance"]["recommended_action"]["tool"] in {"vaner.resolve", "vaner.predictions.adopt"}
+    assert "adopt at most one prediction per turn" in payload["guidance"]["guardrails"]
 
 
 def test_suggest_downranks_vaner_managed_files(temp_repo, mcp_server) -> None:
@@ -66,3 +68,38 @@ def test_suggest_downranks_vaner_managed_files(temp_repo, mcp_server) -> None:
     payload = parse_content(result)
 
     assert payload["suggestions"][0]["scenario_id"] == "scn_install"
+
+
+def test_suggest_keeps_managed_docs_when_domain_is_not_code(temp_repo, mcp_server) -> None:
+    async def _seed() -> None:
+        store = ScenarioStore(temp_repo / ".vaner" / "scenarios.db")
+        await store.initialize()
+        await store.upsert(
+            Scenario(
+                id="scn_feedback_skill",
+                kind="research",
+                score=0.95,
+                confidence=0.9,
+                entities=[".cursor/skills/vaner/vaner-feedback/SKILL.md", "feedback"],
+                evidence=[
+                    EvidenceRef(
+                        key="file_summary:.cursor/skills/vaner/vaner-feedback/SKILL.md",
+                        source_path=".cursor/skills/vaner/vaner-feedback/SKILL.md",
+                        excerpt="managed feedback skill",
+                        weight=1.0,
+                    )
+                ],
+                prepared_context="Managed Vaner feedback skill.",
+            )
+        )
+
+    asyncio.run(_seed())
+
+    result = call_tool(
+        mcp_server,
+        "vaner.suggest",
+        {"query": "How should feedback be recorded?", "limit": 1, "context": {"domain": "docs"}},
+    )
+    payload = parse_content(result)
+
+    assert payload["suggestions"][0]["scenario_id"] == "scn_feedback_skill"

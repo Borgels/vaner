@@ -117,6 +117,51 @@ async def test_normal_scenario_caps_follow_on_at_three(temp_repo: Path) -> None:
     assert len(follow_on) == 3
 
 
+@pytest.mark.asyncio
+async def test_llm_follow_on_candidates_prioritize_recent_intent(temp_repo: Path) -> None:
+    """The LLM prompt should see query-matching source files before generic docs."""
+
+    captured: dict[str, str] = {}
+
+    async def _capturing_llm(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return '{"ranked_files": [], "semantic_intent": "", "confidence": 0.4, "follow_on": []}'
+
+    adapter = CodeRepoAdapter(temp_repo)
+    engine = VanerEngine(adapter=adapter, llm=_capturing_llm)
+    engine.config.compute.idle_only = False
+    engine.config.exploration.llm_gate = "all"
+    engine._last_heuristic_paths = {"src/vaner/intent/frontier.py"}  # noqa: SLF001
+
+    scenario = ExplorationScenario(
+        id=file_set_fingerprint(["docs/architecture.md"]),
+        file_paths=["docs/architecture.md"],
+        anchor="test",
+        source="arc",
+        priority=0.4,
+        depth=0,
+        reason="unit",
+    )
+
+    await engine._explore_scenario_with_llm(
+        scenario=scenario,
+        available_paths=[
+            ".github/workflows/ci.yml",
+            "docs/architecture.md",
+            "scripts/dev.sh",
+            "src/vaner/intent/frontier.py",
+            "src/vaner/engine.py",
+        ],
+        recent_queries=["Where is ExplorationFrontier implemented?"],
+        covered_paths=set(),
+        artefacts_by_key={},
+        high_priority=False,
+    )
+
+    prompt = captured["prompt"]
+    assert prompt.index("src/vaner/intent/frontier.py") < prompt.index(".github/workflows/ci.yml")
+
+
 def test_default_config_has_deep_drill_fields() -> None:
     """Regression guard: the new config fields must be present + sane defaults."""
     from vaner.models.config import ExplorationConfig
@@ -126,3 +171,28 @@ def test_default_config_has_deep_drill_fields() -> None:
     assert cfg.deep_drill_depth_bonus >= 0
     assert cfg.deep_drill_max_followons >= 3
     assert 0.0 < cfg.deep_drill_branch_decay <= 1.0
+
+
+def test_core_source_ranking_prefers_architecture_files(temp_repo: Path) -> None:
+    adapter = CodeRepoAdapter(temp_repo)
+    engine = VanerEngine(adapter=adapter, llm=None)
+
+    ranked = engine._rank_core_source_paths(  # noqa: SLF001
+        [
+            "docs/cache.md",
+            "tests/test_cache.py",
+            "src/vaner/intent/cache.py",
+            "src/vaner/intent/frontier.py",
+            "src/vaner/broker/assembler.py",
+            "src/vaner/ui/random_widget.py",
+        ],
+        artefacts_by_key={},
+    )
+
+    assert ranked[:3] == [
+        "src/vaner/intent/frontier.py",
+        "src/vaner/intent/cache.py",
+        "src/vaner/broker/assembler.py",
+    ]
+    assert "tests/test_cache.py" not in ranked
+    assert "docs/cache.md" not in ranked

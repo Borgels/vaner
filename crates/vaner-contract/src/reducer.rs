@@ -154,6 +154,12 @@ mod tests {
             ui_summary: None,
             suppression_reason: None,
             source_label: None,
+            trust_status: None,
+            freshness: None,
+            invalidated_by: vec![],
+            watched_sources: vec![],
+            changed_sources: vec![],
+            diagnostic_status: None,
             composer_engagement: None,
         }
     }

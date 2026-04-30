@@ -78,7 +78,7 @@ interface DeepRunPillProps {
   onStop: () => void | Promise<void>
 }
 
-export function DeepRunPill({ session, onStop }: DeepRunPillProps): JSX.Element {
+export function DeepRunPill({ session, onStop }: DeepRunPillProps): React.ReactElement {
   const totalAttempts =
     session.matured_kept +
     session.matured_discarded +
@@ -132,7 +132,7 @@ interface DeepRunStartCardProps {
   onStarted: (session: DeepRunSession) => void
 }
 
-export function DeepRunStartCard({ onStarted }: DeepRunStartCardProps): JSX.Element {
+export function DeepRunStartCard({ onStarted }: DeepRunStartCardProps): React.ReactElement {
   const [form, setForm] = useState<DeepRunFormState>(DEFAULT_FORM)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -255,7 +255,7 @@ export function DeepRunStartCard({ onStarted }: DeepRunStartCardProps): JSX.Elem
   )
 }
 
-export function DeepRunPanel(): JSX.Element {
+export function DeepRunPanel(): React.ReactElement {
   const [session, setSession] = useState<DeepRunSession | null>(null)
   const [history, setHistory] = useState<DeepRunSession[]>([])
   const [loading, setLoading] = useState(true)

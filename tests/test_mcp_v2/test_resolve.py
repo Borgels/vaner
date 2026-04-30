@@ -17,7 +17,7 @@ What survives:
 - ``Abstain(reason="low_confidence")`` — MCP-surface concern, still
   applied against the engine's Resolution.confidence output.
 - ``include_briefing`` / ``include_predicted_response`` / ``include_metrics``
-  opt-in flags.
+    include flags.
 - ``resolution_id``, ``provenance.mode``, token accounting, evidence list.
 """
 
@@ -36,7 +36,7 @@ from vaner.mcp.contracts import (
     Resolution,
 )
 
-from .conftest import call_tool, parse_content
+from .conftest import call_tool, parse_content, seed_scenario
 
 
 @dataclass
@@ -163,6 +163,16 @@ def test_resolve_forwards_opt_in_flags_to_engine(temp_repo) -> None:
     assert engine.calls[0]["include_predicted_response"] is True
 
 
+def test_resolve_defaults_include_briefing_and_predicted_response(temp_repo) -> None:
+    engine = _StubEngine(resolution=_build_resolution())
+    server = _make_server(temp_repo, engine=engine)
+
+    call_tool(server, "vaner.resolve", {"query": "default include flags"})
+
+    assert engine.calls[0]["include_briefing"] is True
+    assert engine.calls[0]["include_predicted_response"] is True
+
+
 def test_resolve_abstains_on_low_confidence(temp_repo) -> None:
     """The engine doesn't produce Abstain — the MCP shim applies the
     0.35 threshold as a surface-level policy."""
@@ -234,9 +244,16 @@ def test_resolve_include_metrics_returns_runtime_economics(temp_repo) -> None:
 class _StubDaemonClient:
     """Records calls + returns the injected Resolution (or raises)."""
 
-    def __init__(self, *, resolution: Resolution | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        resolution: Resolution | None = None,
+        error: Exception | None = None,
+        active_predictions: list[dict] | None = None,
+    ) -> None:
         self._resolution = resolution
         self._error = error
+        self._active_predictions = active_predictions or []
         self.calls: list[dict] = []
 
     async def resolve(
@@ -244,8 +261,8 @@ class _StubDaemonClient:
         query: str,
         *,
         context: dict | None = None,
-        include_briefing: bool = False,
-        include_predicted_response: bool = False,
+        include_briefing: bool = True,
+        include_predicted_response: bool = True,
     ) -> Resolution:
         self.calls.append(
             {
@@ -259,6 +276,11 @@ class _StubDaemonClient:
             raise self._error
         assert self._resolution is not None
         return self._resolution
+
+    async def get_predictions_active(self) -> dict:
+        if self._error is not None:
+            raise self._error
+        return {"predictions": list(self._active_predictions)}
 
 
 def test_resolve_forwards_to_injected_daemon_client_when_no_engine(temp_repo) -> None:
@@ -286,7 +308,7 @@ def test_resolve_forwards_to_injected_daemon_client_when_no_engine(temp_repo) ->
             "query": "delegated question",
             "context": {},
             "include_briefing": True,
-            "include_predicted_response": False,
+            "include_predicted_response": True,
         }
     ]
 
@@ -305,3 +327,51 @@ def test_resolve_returns_invalid_input_when_daemon_rejects(temp_repo) -> None:
     payload = parse_content(call_tool(server, "vaner.resolve", {"query": "q"}))
     assert payload["code"] == "invalid_input"
     assert "query is required" in payload["message"]
+
+
+def test_resolve_can_return_intent_packet_when_engine_unavailable(temp_repo) -> None:
+    seed_scenario(temp_repo, scenario_id="scn_packet")
+    daemon = _StubDaemonClient(error=VanerDaemonUnavailable("daemon connection refused"))
+    server = _make_server(temp_repo, daemon_client=daemon)
+
+    payload = parse_content(
+        call_tool(
+            server,
+            "vaner.resolve",
+            {"query": "where is auth enforced", "intent_packet": True, "context": {"domain": "support"}},
+        )
+    )
+
+    assert payload["intent_packet"] is True
+    assert payload["domain"] == "support"
+    assert payload["adoption_not_used"] == "engine_unavailable"
+    assert payload["suggested_next_action"]["tool"] == "vaner.search"
+    assert payload["candidate_scenarios"][0]["id"] == "scn_packet"
+
+
+def test_intent_packet_does_not_recommend_unrelated_adoption(temp_repo) -> None:
+    daemon = _StubDaemonClient(
+        active_predictions=[
+            {
+                "id": "pred-unrelated",
+                "label": "Rewrite the release notes",
+                "readiness": "ready",
+                "adoptable": True,
+                "trust_status": "ready",
+                "freshness": "fresh",
+            }
+        ]
+    )
+    server = _make_server(temp_repo, daemon_client=daemon)
+
+    payload = parse_content(
+        call_tool(
+            server,
+            "vaner.resolve",
+            {"query": "where is auth enforced", "intent_packet": True, "context": {"domain": "code"}},
+        )
+    )
+
+    assert payload["active_predictions_considered"][0]["matches_intent"] is False
+    assert payload["adoption_not_used"] == "stale_or_unrelated_predictions"
+    assert payload["suggested_next_action"]["tool"] != "vaner.predictions.adopt"

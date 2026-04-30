@@ -1,4 +1,4 @@
-name: Moat Guard
+name: Internal Boundary Guard
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  no-moat-paths:
+  no-internal-paths:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -26,7 +26,7 @@ jobs:
               exit 1
             fi
           done
-      - name: Block moat-sensitive filenames
+      - name: Block internal-sensitive filenames
         run: |
           set -euo pipefail
           bad="$(rg -n --hidden --glob '!.git/**' '(eval-at-scale|bundle-workflow|vaner_report|production-roadmap|release-audit)' . || true)"
@@ -34,7 +34,7 @@ jobs:
             echo "$bad"
             exit 1
           fi
-      - name: Block vaner-train imports
+      - name: Block private training imports
         run: |
           if rg -n 'import\s+vaner_train|from\s+vaner_train' src/; then
             exit 1

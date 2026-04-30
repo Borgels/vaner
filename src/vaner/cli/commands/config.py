@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+from pydantic import BaseModel, ValidationError
 
 from vaner.models.config import (
     BackendConfig,
@@ -14,12 +17,20 @@ from vaner.models.config import (
     ExplorationConfig,
     GatewayConfig,
     GenerationConfig,
+    IntegrationsConfig,
     IntentConfig,
     MCPConfig,
+    PolicyConfig,
     PrivacyConfig,
     ProxyConfig,
+    RefinementConfig,
+    SetupConfig,
+    SourcesConfig,
     VanerConfig,
 )
+
+logger = logging.getLogger(__name__)
+ConfigModelT = TypeVar("ConfigModelT", bound=BaseModel)
 
 
 def global_config_path() -> Path:
@@ -34,8 +45,42 @@ def _load_toml_if_exists(path: Path) -> dict[str, object]:
         return {}
     try:
         return tomllib.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except tomllib.TOMLDecodeError as exc:
+        logger.warning("Ignoring invalid Vaner config TOML at %s: %s", path, exc)
         return {}
+    except OSError as exc:
+        logger.warning("Unable to read Vaner config at %s: %s", path, exc)
+        return {}
+
+
+def _section_dict(parsed: dict[str, object], section_name: str) -> dict[str, object]:
+    section = parsed.get(section_name, {})
+    return section if isinstance(section, dict) else {}
+
+
+def _build_section(
+    model: type[ConfigModelT],
+    section_name: str,
+    section: object,
+) -> ConfigModelT:
+    if not isinstance(section, dict):
+        return model()
+    try:
+        return model(**section)
+    except ValidationError as exc:
+        logger.warning("Ignoring invalid Vaner config section [%s]: %s", section_name, exc)
+        return model()
+
+
+def _coerce_limit(limits_section: object, key: str, default: int) -> int:
+    if not isinstance(limits_section, dict):
+        return default
+    raw = limits_section.get(key, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid Vaner config value [limits].%s=%r; using %s", key, raw, default)
+        return default
 
 
 def load_config(repo_root: Path) -> VanerConfig:
@@ -51,21 +96,26 @@ def load_config(repo_root: Path) -> VanerConfig:
         else:
             parsed[key] = value
 
-    backend_section = parsed.get("backend", {})
-    generation_section = parsed.get("generation", {})
-    privacy_section = parsed.get("privacy", {})
-    proxy_section = parsed.get("proxy", {})
-    gateway_section = parsed.get("gateway", {})
-    mcp_section = parsed.get("mcp", {})
-    intent_section = parsed.get("intent", {})
-    compute_section = parsed.get("compute", {})
-    exploration_section = parsed.get("exploration", {})
-    limits_section = parsed.get("limits", {})
+    backend_section = _section_dict(parsed, "backend")
+    generation_section = _section_dict(parsed, "generation")
+    privacy_section = _section_dict(parsed, "privacy")
+    proxy_section = _section_dict(parsed, "proxy")
+    gateway_section = _section_dict(parsed, "gateway")
+    mcp_section = _section_dict(parsed, "mcp")
+    intent_section = _section_dict(parsed, "intent")
+    compute_section = _section_dict(parsed, "compute")
+    exploration_section = _section_dict(parsed, "exploration")
+    sources_section = _section_dict(parsed, "sources")
+    refinement_section = _section_dict(parsed, "refinement")
+    integrations_section = _section_dict(parsed, "integrations")
+    setup_section = _section_dict(parsed, "setup")
+    policy_section = _section_dict(parsed, "policy")
+    limits_section = _section_dict(parsed, "limits")
 
-    backend = BackendConfig(**backend_section) if isinstance(backend_section, dict) else BackendConfig()
-    privacy = PrivacyConfig(**privacy_section) if isinstance(privacy_section, dict) else PrivacyConfig()
-    generation = GenerationConfig(**generation_section) if isinstance(generation_section, dict) else GenerationConfig()
-    proxy = ProxyConfig(**proxy_section) if isinstance(proxy_section, dict) else ProxyConfig()
+    backend = _build_section(BackendConfig, "backend", backend_section)
+    privacy = _build_section(PrivacyConfig, "privacy", privacy_section)
+    generation = _build_section(GenerationConfig, "generation", generation_section)
+    proxy = _build_section(ProxyConfig, "proxy", proxy_section)
     if isinstance(gateway_section, dict):
         passthrough_section = gateway_section.get("passthrough", {})
         annotate_section = gateway_section.get("annotate", {})
@@ -85,7 +135,7 @@ def load_config(repo_root: Path) -> VanerConfig:
         )
     else:
         gateway = GatewayConfig()
-    mcp = MCPConfig(**mcp_section) if isinstance(mcp_section, dict) else MCPConfig()
+    mcp = _build_section(MCPConfig, "mcp", mcp_section)
     if isinstance(intent_section, dict):
         skills_loop_section = intent_section.get("skills_loop", {})
         skill_roots = intent_section.get("skill_roots", [".cursor/skills", ".claude/skills", "skills"])
@@ -108,7 +158,7 @@ def load_config(repo_root: Path) -> VanerConfig:
         )
     else:
         intent = IntentConfig()
-    compute = ComputeConfig(**compute_section) if isinstance(compute_section, dict) else ComputeConfig()
+    compute = _build_section(ComputeConfig, "compute", compute_section)
     if isinstance(exploration_section, dict):
         mapped_exploration = {
             "exploration_endpoint": exploration_section.get("endpoint", ""),
@@ -120,9 +170,14 @@ def load_config(repo_root: Path) -> VanerConfig:
         exploration = ExplorationConfig(**mapped_exploration)
     else:
         exploration = ExplorationConfig()
+    sources = _build_section(SourcesConfig, "sources", sources_section)
+    refinement = _build_section(RefinementConfig, "refinement", refinement_section)
+    integrations = _build_section(IntegrationsConfig, "integrations", integrations_section)
+    setup = _build_section(SetupConfig, "setup", setup_section)
+    policy = _build_section(PolicyConfig, "policy", policy_section)
 
-    max_age_seconds = int(limits_section.get("max_age_seconds", 3600)) if isinstance(limits_section, dict) else 3600
-    max_context_tokens = int(limits_section.get("max_context_tokens", 4096)) if isinstance(limits_section, dict) else 4096
+    max_age_seconds = _coerce_limit(limits_section, "max_age_seconds", 3600)
+    max_context_tokens = _coerce_limit(limits_section, "max_context_tokens", 4096)
 
     store_path = repo_root / ".vaner" / "store.db"
     telemetry_path = repo_root / ".vaner" / "telemetry.db"
@@ -141,6 +196,11 @@ def load_config(repo_root: Path) -> VanerConfig:
         intent=intent,
         compute=compute,
         exploration=exploration,
+        sources=sources,
+        refinement=refinement,
+        integrations=integrations,
+        setup=setup,
+        policy=policy,
     )
 
 

@@ -30,6 +30,8 @@ from typing import Any
 
 import aiosqlite
 
+from vaner.models.cost import CostLedgerEntry, PredictionCostSummary, PricingSnapshot, TurnCostSummary
+
 _LEAD_TIME_BUCKETS: tuple[tuple[str, float], ...] = (
     ("lt_1s", 1.0),
     ("lt_3s", 3.0),
@@ -82,6 +84,18 @@ class RequestMetrics:
     context_tokens: int = 0  # tokens of context injected
     prompt_tokens: int = 0  # tokens in user prompt
     is_stream: bool = False
+    injected_context_tokens: int = 0
+    expected_incremental_primary_cost_usd: float = 0.0
+    primary_llm_input_tokens: int = 0
+    primary_llm_output_tokens: int = 0
+    primary_llm_thinking_tokens: int = 0
+    primary_llm_cost_usd: float = 0.0
+    primary_llm_usage_known: bool = False
+    total_known_cloud_cost_usd: float = 0.0
+    total_estimated_cloud_cost_usd: float = 0.0
+    pricing_snapshot_id: str = "unknown-zero"
+    usage_source_summary: str = "unknown"
+    primary_usage_record_error: str = ""
 
     # Derived metrics (populated by finalize())
     context_retrieval_ms: float = 0.0
@@ -109,6 +123,17 @@ class RequestMetrics:
             "context_tokens": self.context_tokens,
             "prompt_tokens": self.prompt_tokens,
             "is_stream": self.is_stream,
+            "injected_context_tokens": self.injected_context_tokens,
+            "expected_incremental_primary_cost_usd": self.expected_incremental_primary_cost_usd,
+            "primary_llm_input_tokens": self.primary_llm_input_tokens,
+            "primary_llm_output_tokens": self.primary_llm_output_tokens,
+            "primary_llm_thinking_tokens": self.primary_llm_thinking_tokens,
+            "primary_llm_cost_usd": self.primary_llm_cost_usd,
+            "primary_llm_usage_known": self.primary_llm_usage_known,
+            "total_known_cloud_cost_usd": self.total_known_cloud_cost_usd,
+            "total_estimated_cloud_cost_usd": self.total_estimated_cloud_cost_usd,
+            "pricing_snapshot_id": self.pricing_snapshot_id,
+            "usage_source_summary": self.usage_source_summary,
             "context_retrieval_ms": self.context_retrieval_ms,
             "llm_first_token_ms": self.llm_first_token_ms,
             "llm_total_ms": self.llm_total_ms,
@@ -289,6 +314,113 @@ class MetricsStore:
                     )
                     """
                 )
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pricing_snapshots (
+                        pricing_snapshot_id TEXT PRIMARY KEY,
+                        source TEXT NOT NULL,
+                        created_at REAL NOT NULL,
+                        effective_at REAL NOT NULL,
+                        content_hash TEXT NOT NULL DEFAULT '',
+                        raw_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                        notes TEXT NOT NULL DEFAULT ''
+                    )
+                    """
+                )
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS llm_usage_events (
+                        id TEXT PRIMARY KEY,
+                        request_id TEXT NOT NULL DEFAULT '',
+                        turn_id TEXT NOT NULL DEFAULT '',
+                        prediction_id TEXT NOT NULL DEFAULT '',
+                        cycle_id TEXT NOT NULL DEFAULT '',
+                        client_id TEXT NOT NULL DEFAULT '',
+                        app TEXT NOT NULL DEFAULT '',
+                        project TEXT NOT NULL DEFAULT '',
+                        workspace TEXT NOT NULL DEFAULT '',
+                        provider TEXT NOT NULL DEFAULT '',
+                        model TEXT NOT NULL DEFAULT '',
+                        endpoint TEXT NOT NULL DEFAULT '',
+                        call_role TEXT NOT NULL,
+                        local_or_cloud TEXT NOT NULL DEFAULT 'unknown',
+                        usage_source TEXT NOT NULL DEFAULT 'unknown',
+                        usage_estimated INTEGER NOT NULL DEFAULT 1,
+                        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                        completion_tokens INTEGER NOT NULL DEFAULT 0,
+                        thinking_tokens INTEGER NOT NULL DEFAULT 0,
+                        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        total_tokens INTEGER NOT NULL DEFAULT 0,
+                        provider_usage_raw TEXT NOT NULL DEFAULT '{}',
+                        pricing_source TEXT NOT NULL DEFAULT 'unknown_zero',
+                        pricing_snapshot_id TEXT NOT NULL DEFAULT 'unknown-zero',
+                        pricing_effective_at REAL NOT NULL DEFAULT 0.0,
+                        input_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        output_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        thinking_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        cached_input_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        total_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        cost_estimated INTEGER NOT NULL DEFAULT 1,
+                        latency_ms REAL NOT NULL DEFAULT 0.0,
+                        created_at REAL NOT NULL
+                    )
+                    """
+                )
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS prediction_costs (
+                        prediction_id TEXT PRIMARY KEY,
+                        cycle_id TEXT NOT NULL DEFAULT '',
+                        turn_id TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL DEFAULT '',
+                        final_outcome TEXT NOT NULL DEFAULT '',
+                        model_calls INTEGER NOT NULL DEFAULT 0,
+                        local_tokens INTEGER NOT NULL DEFAULT 0,
+                        cloud_tokens INTEGER NOT NULL DEFAULT 0,
+                        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                        completion_tokens INTEGER NOT NULL DEFAULT 0,
+                        thinking_tokens INTEGER NOT NULL DEFAULT 0,
+                        total_tokens INTEGER NOT NULL DEFAULT 0,
+                        estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        adopted INTEGER NOT NULL DEFAULT 0,
+                        ignored INTEGER NOT NULL DEFAULT 0,
+                        dropped INTEGER NOT NULL DEFAULT 0,
+                        invalidated INTEGER NOT NULL DEFAULT 0,
+                        false_ready INTEGER NOT NULL DEFAULT 0,
+                        created_at REAL NOT NULL,
+                        finalized_at REAL NOT NULL DEFAULT 0.0
+                    )
+                    """
+                )
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS turn_costs (
+                        turn_id TEXT PRIMARY KEY,
+                        request_id TEXT NOT NULL DEFAULT '',
+                        client_id TEXT NOT NULL DEFAULT '',
+                        app TEXT NOT NULL DEFAULT '',
+                        project TEXT NOT NULL DEFAULT '',
+                        workspace TEXT NOT NULL DEFAULT '',
+                        vaner_speculative_tokens INTEGER NOT NULL DEFAULT 0,
+                        vaner_speculative_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        local_prep_tokens INTEGER NOT NULL DEFAULT 0,
+                        cloud_prep_tokens INTEGER NOT NULL DEFAULT 0,
+                        injected_context_tokens INTEGER NOT NULL DEFAULT 0,
+                        expected_incremental_primary_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        primary_llm_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        primary_llm_output_tokens INTEGER NOT NULL DEFAULT 0,
+                        primary_llm_thinking_tokens INTEGER NOT NULL DEFAULT 0,
+                        primary_llm_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        primary_llm_usage_known INTEGER NOT NULL DEFAULT 0,
+                        judge_llm_tokens INTEGER NOT NULL DEFAULT 0,
+                        judge_llm_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        total_known_cloud_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        total_estimated_cloud_cost_usd REAL NOT NULL DEFAULT 0.0,
+                        net_estimated_cloud_delta_usd REAL NOT NULL DEFAULT 0.0,
+                        created_at REAL NOT NULL
+                    )
+                    """
+                )
                 await db.commit()
             self._initialized = True
 
@@ -315,10 +447,255 @@ class MetricsStore:
                     m.llm_first_token_ms,
                     m.llm_total_ms,
                     m.total_e2e_ms,
-                    json.dumps({}),
+                    json.dumps(
+                        {
+                            "injected_context_tokens": m.injected_context_tokens,
+                            "expected_incremental_primary_cost_usd": m.expected_incremental_primary_cost_usd,
+                            "primary_llm_input_tokens": m.primary_llm_input_tokens,
+                            "primary_llm_output_tokens": m.primary_llm_output_tokens,
+                            "primary_llm_thinking_tokens": m.primary_llm_thinking_tokens,
+                            "primary_llm_cost_usd": m.primary_llm_cost_usd,
+                            "primary_llm_usage_known": m.primary_llm_usage_known,
+                            "total_known_cloud_cost_usd": m.total_known_cloud_cost_usd,
+                            "total_estimated_cloud_cost_usd": m.total_estimated_cloud_cost_usd,
+                            "pricing_snapshot_id": m.pricing_snapshot_id,
+                            "usage_source_summary": m.usage_source_summary,
+                        }
+                    ),
                 ),
             )
             await db.commit()
+
+    async def record_pricing_snapshot(self, snapshot: PricingSnapshot) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO pricing_snapshots
+                    (pricing_snapshot_id, source, created_at, effective_at,
+                     content_hash, raw_snapshot_json, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot.pricing_snapshot_id,
+                    snapshot.source,
+                    snapshot.created_at,
+                    snapshot.effective_at,
+                    snapshot.content_hash,
+                    json.dumps(snapshot.raw_snapshot_json, sort_keys=True),
+                    snapshot.notes,
+                ),
+            )
+            await db.commit()
+
+    async def record_llm_usage(self, entry: CostLedgerEntry) -> None:
+        usage = entry.usage
+        cost = entry.cost
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO llm_usage_events
+                    (id, request_id, turn_id, prediction_id, cycle_id,
+                     client_id, app, project, workspace, provider, model,
+                     endpoint, call_role, local_or_cloud, usage_source,
+                     usage_estimated, prompt_tokens, completion_tokens,
+                     thinking_tokens, cached_input_tokens, total_tokens,
+                     provider_usage_raw, pricing_source, pricing_snapshot_id,
+                     pricing_effective_at, input_cost_usd, output_cost_usd,
+                     thinking_cost_usd, cached_input_cost_usd, total_cost_usd,
+                     cost_estimated, latency_ms, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry.id,
+                    entry.request_id,
+                    entry.turn_id,
+                    entry.prediction_id,
+                    entry.cycle_id,
+                    entry.client_id,
+                    entry.app,
+                    entry.project,
+                    entry.workspace,
+                    entry.provider,
+                    entry.model,
+                    entry.endpoint,
+                    entry.call_role,
+                    entry.local_or_cloud,
+                    usage.usage_source,
+                    int(usage.usage_estimated),
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    usage.thinking_tokens,
+                    usage.cached_input_tokens,
+                    usage.total_tokens,
+                    json.dumps(usage.provider_usage_raw, sort_keys=True),
+                    cost.pricing_source,
+                    cost.pricing_snapshot_id,
+                    cost.pricing_effective_at,
+                    cost.input_cost_usd,
+                    cost.output_cost_usd,
+                    cost.thinking_cost_usd,
+                    cost.cached_input_cost_usd,
+                    cost.total_cost_usd,
+                    int(cost.estimated),
+                    entry.latency_ms,
+                    entry.created_at,
+                ),
+            )
+            await db.commit()
+
+    async def rollup_prediction_cost(
+        self,
+        prediction_id: str,
+        *,
+        cycle_id: str = "",
+        turn_id: str = "",
+        status: str = "",
+        final_outcome: str = "",
+    ) -> PredictionCostSummary:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM llm_usage_events
+                WHERE prediction_id = ?
+                ORDER BY created_at ASC
+                """,
+                (prediction_id,),
+            )
+            rows = [dict(row) for row in await cursor.fetchall()]
+            summary = PredictionCostSummary(
+                prediction_id=prediction_id,
+                cycle_id=cycle_id,
+                turn_id=turn_id,
+                status=status,
+                final_outcome=final_outcome,
+                model_calls=len(rows),
+                local_tokens=sum(int(r["total_tokens"]) for r in rows if r["local_or_cloud"] == "local"),
+                cloud_tokens=sum(int(r["total_tokens"]) for r in rows if r["local_or_cloud"] == "cloud"),
+                prompt_tokens=sum(int(r["prompt_tokens"]) for r in rows),
+                completion_tokens=sum(int(r["completion_tokens"]) for r in rows),
+                thinking_tokens=sum(int(r["thinking_tokens"]) for r in rows),
+                total_tokens=sum(int(r["total_tokens"]) for r in rows),
+                estimated_cost_usd=sum(float(r["total_cost_usd"]) for r in rows),
+                adopted=final_outcome == "adopted",
+                ignored=final_outcome == "ignored",
+                dropped=final_outcome == "dropped",
+                invalidated=final_outcome == "invalidated",
+                false_ready=final_outcome == "false_ready",
+                created_at=float(rows[0]["created_at"]) if rows else time.time(),
+                finalized_at=time.time() if final_outcome else 0.0,
+            )
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO prediction_costs
+                    (prediction_id, cycle_id, turn_id, status, final_outcome,
+                     model_calls, local_tokens, cloud_tokens, prompt_tokens,
+                     completion_tokens, thinking_tokens, total_tokens,
+                     estimated_cost_usd, adopted, ignored, dropped,
+                     invalidated, false_ready, created_at, finalized_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    summary.prediction_id,
+                    summary.cycle_id,
+                    summary.turn_id,
+                    summary.status,
+                    summary.final_outcome,
+                    summary.model_calls,
+                    summary.local_tokens,
+                    summary.cloud_tokens,
+                    summary.prompt_tokens,
+                    summary.completion_tokens,
+                    summary.thinking_tokens,
+                    summary.total_tokens,
+                    summary.estimated_cost_usd,
+                    int(summary.adopted),
+                    int(summary.ignored),
+                    int(summary.dropped),
+                    int(summary.invalidated),
+                    int(summary.false_ready),
+                    summary.created_at,
+                    summary.finalized_at,
+                ),
+            )
+            await db.commit()
+        return summary
+
+    async def record_turn_cost(self, summary: TurnCostSummary) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO turn_costs
+                    (turn_id, request_id, client_id, app, project, workspace,
+                     vaner_speculative_tokens, vaner_speculative_cost_usd,
+                     local_prep_tokens, cloud_prep_tokens, injected_context_tokens,
+                     expected_incremental_primary_cost_usd, primary_llm_input_tokens,
+                     primary_llm_output_tokens, primary_llm_thinking_tokens,
+                     primary_llm_cost_usd, primary_llm_usage_known,
+                     judge_llm_tokens, judge_llm_cost_usd,
+                     total_known_cloud_cost_usd, total_estimated_cloud_cost_usd,
+                     net_estimated_cloud_delta_usd, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    summary.turn_id,
+                    summary.request_id,
+                    summary.client_id,
+                    summary.app,
+                    summary.project,
+                    summary.workspace,
+                    summary.vaner_speculative_tokens,
+                    summary.vaner_speculative_cost_usd,
+                    summary.local_prep_tokens,
+                    summary.cloud_prep_tokens,
+                    summary.injected_context_tokens,
+                    summary.expected_incremental_primary_cost_usd,
+                    summary.primary_llm_input_tokens,
+                    summary.primary_llm_output_tokens,
+                    summary.primary_llm_thinking_tokens,
+                    summary.primary_llm_cost_usd,
+                    int(summary.primary_llm_usage_known),
+                    summary.judge_llm_tokens,
+                    summary.judge_llm_cost_usd,
+                    summary.total_known_cloud_cost_usd,
+                    summary.total_estimated_cloud_cost_usd,
+                    summary.net_estimated_cloud_delta_usd,
+                    summary.created_at,
+                ),
+            )
+            await db.commit()
+
+    async def cost_summary(self, last_n: int = 1000) -> dict[str, Any]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM llm_usage_events ORDER BY created_at DESC LIMIT ?",
+                (last_n,),
+            )
+            events = [dict(row) for row in await cursor.fetchall()]
+            cursor = await db.execute(
+                "SELECT * FROM turn_costs ORDER BY created_at DESC LIMIT ?",
+                (last_n,),
+            )
+            turns = [dict(row) for row in await cursor.fetchall()]
+        cost_by_model: dict[str, float] = {}
+        cost_by_provider: dict[str, float] = {}
+        for event in events:
+            cost = float(event.get("total_cost_usd") or 0.0)
+            model = str(event.get("model") or "unknown")
+            provider = str(event.get("provider") or "unknown")
+            cost_by_model[model] = cost_by_model.get(model, 0.0) + cost
+            cost_by_provider[provider] = cost_by_provider.get(provider, 0.0) + cost
+        return {
+            "event_count": len(events),
+            "turn_count": len(turns),
+            "total_estimated_cloud_cost_usd": sum(float(e.get("total_cost_usd") or 0.0) for e in events),
+            "local_tokens": sum(int(e.get("total_tokens") or 0) for e in events if e.get("local_or_cloud") == "local"),
+            "cloud_tokens": sum(int(e.get("total_tokens") or 0) for e in events if e.get("local_or_cloud") == "cloud"),
+            "injected_context_tokens": sum(int(t.get("injected_context_tokens") or 0) for t in turns),
+            "cost_by_model": cost_by_model,
+            "cost_by_provider": cost_by_provider,
+        }
 
     async def recent(self, limit: int = 100) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:

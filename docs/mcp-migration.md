@@ -1,6 +1,10 @@
 # MCP v1.0 Migration
 
-Vaner MCP v1.0 is a breaking rewrite from the legacy 5-tool scenario API to a 10-tool predictive context surface with explicit confidence, provenance, gaps, and memory metadata.
+Vaner MCP v1.0 started as a breaking rewrite from the legacy 5-tool scenario API
+to a 10-tool predictive context surface with explicit confidence, provenance,
+gaps, and memory metadata. The live tool surface has grown since then; use
+`tools/list` from `src/vaner/mcp/server.py` as the source of truth for current
+names.
 
 - `list_scenarios` -> `vaner.status` plus `vaner.resolve`
 - `get_scenario` -> `vaner.resolve` (query) or `vaner.inspect` (by id)
@@ -33,11 +37,11 @@ The resolve tool returns `evidence` pointers and a 400-char `summary` by default
 That's shape-compatible with naive RAG responses. To receive the richer output
 Vaner actually assembles internally, pass one or both of these flags:
 
-- `include_briefing: bool` (default `false`) — adds `prepared_briefing` to the
+- `include_briefing: bool` (default `true`) — adds `prepared_briefing` to the
   response: the full formatted markdown of pre-compiled artefact summaries.
   Accompanied by `briefing_token_used` + `briefing_token_budget` for sizing the
   downstream prompt.
-- `include_predicted_response: bool` (default `false`) — adds `predicted_response`
+- `include_predicted_response: bool` (default `true`) — adds `predicted_response`
   when a draft answer was speculatively cached during precompute (null when
   none is available).
 - `include_metrics: bool` (default `false`) — adds a `metrics` object to the
@@ -47,4 +51,6 @@ Vaner actually assembles internally, pass one or both of these flags:
   Pair with the optional `estimated_cost_per_1k_tokens` request field (e.g.
   `2.50` for gpt-4o input pricing) to get a dollar estimate per resolve call.
 
-All three flags are additive; default callers see the legacy shape unchanged.
+`include_metrics` is additive. Briefing and predicted-response fields are now
+included by default for parity with the daemon HTTP `/resolve` surface; callers
+that need the lean legacy shape can pass either include flag as `false`.

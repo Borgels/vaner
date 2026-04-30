@@ -11,6 +11,8 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
+from vaner.intent.evidence_hygiene import is_evidence_path_allowed
+
 logger = logging.getLogger(__name__)
 
 _SKIPPED_PARTS = {
@@ -31,7 +33,7 @@ _SKIPPED_PARTS = {
 
 def scan_repo_files(
     repo_root: Path,
-    max_files: int = 500,
+    max_files: int = 5000,
     include_paths: list[str] | None = None,
 ) -> list[Path]:
     """Scan repo for files, optionally focusing on specific sub-paths.
@@ -39,7 +41,7 @@ def scan_repo_files(
     When ``include_paths`` is provided (e.g. ``["sympy", "tests"]``), only
     those subdirectories are traversed. This avoids wasting the ``max_files``
     budget on unrelated directories (node_modules, docs, etc.) in large repos.
-    When ``include_paths`` is provided and ``max_files`` is at its default (500),
+    When ``include_paths`` is provided and ``max_files`` is at its default (5000),
     the limit is automatically raised to 4 000 so that large single-language
     repos (sympy, django, …) are fully indexed in one pass.
     """
@@ -47,7 +49,7 @@ def scan_repo_files(
         scan_roots = [repo_root / p for p in include_paths if (repo_root / p).is_dir()]
         if not scan_roots:
             scan_roots = [repo_root]
-        effective_max = max_files if max_files != 500 else 4000
+        effective_max = max_files if max_files != 5000 else 5000
     else:
         scan_roots = [repo_root]
         effective_max = max_files
@@ -59,6 +61,8 @@ def scan_repo_files(
                 break
             rel_parts = path.relative_to(repo_root).parts
             if any(part in _SKIPPED_PARTS for part in rel_parts):
+                continue
+            if not is_evidence_path_allowed(str(path.relative_to(repo_root)).replace("\\", "/")):
                 continue
             if path.is_file():
                 files.append(path)

@@ -1,0 +1,121 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type { PreparedWorkCard } from '../types'
+import { PreparedWorkPanel } from './PreparedWorkPanel'
+
+function makeCard(overrides: Partial<PreparedWorkCard> = {}): PreparedWorkCard {
+  return {
+    id: overrides.id ?? 'work_product:wp-1',
+    source_id: overrides.source_id ?? 'wp-1',
+    source_type: overrides.source_type ?? 'work_product',
+    kind: overrides.kind ?? 'diff',
+    title: overrides.title ?? 'Prepared parser fix',
+    summary: overrides.summary ?? 'A one-file patch is ready.',
+    badge: overrides.badge ?? 'Diff',
+    confidence_label: overrides.confidence_label ?? 'High',
+    freshness_label: overrides.freshness_label ?? 'Fresh',
+    target_label: overrides.target_label ?? 'src/parser.py',
+    evidence_count: overrides.evidence_count ?? 2,
+    created_at: overrides.created_at ?? 100,
+    updated_at: overrides.updated_at ?? 100,
+    primary_action: overrides.primary_action ?? {
+      kind: 'export',
+      label: 'Export',
+      tool: 'vaner.work_products.export',
+      endpoint: '/work-products/wp-1/export',
+      arguments: { work_product_id: 'wp-1' },
+    },
+    secondary_actions: overrides.secondary_actions ?? [
+      {
+        kind: 'inspect',
+        label: 'Inspect',
+        tool: 'vaner.work_products.inspect',
+        endpoint: '/work-products/wp-1',
+        arguments: { work_product_id: 'wp-1' },
+      },
+      {
+        kind: 'dismiss',
+        label: 'Dismiss',
+        tool: 'vaner.work_products.dismiss',
+        endpoint: '/work-products/wp-1/dismiss',
+        arguments: { work_product_id: 'wp-1' },
+      },
+    ],
+    diagnostic_refs: overrides.diagnostic_refs ?? [],
+  }
+}
+
+describe('PreparedWorkPanel', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('renders prepared work cards from the unified endpoint', async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(JSON.stringify({ prepared_work: [makeCard()] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    render(<PreparedWorkPanel fetcher={fetcher as unknown as typeof fetch} />)
+
+    expect(await screen.findByText('Prepared parser fix')).toBeInTheDocument()
+    expect(screen.getByText('Diff')).toBeInTheDocument()
+    expect(screen.getByText('src/parser.py')).toBeInTheDocument()
+    expect(fetcher).toHaveBeenCalledWith('/prepared-work?surface=cockpit&limit=6')
+  })
+
+  it('does not render lifecycle/adoptability internals as user-facing text', async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(JSON.stringify({ prepared_work: [makeCard()] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    render(<PreparedWorkPanel fetcher={fetcher as unknown as typeof fetch} />)
+
+    await screen.findByText('Prepared parser fix')
+    expect(screen.queryByText(/adoptability/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/self_eval/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/lifecycle/i)).not.toBeInTheDocument()
+  })
+
+  it('uses server-provided actions and shows returned export detail', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/prepared-work')) {
+        return new Response(JSON.stringify({ prepared_work: [makeCard()] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ body: '```diff\\n+fixed\\n```' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    render(<PreparedWorkPanel fetcher={fetcher as unknown as typeof fetch} />)
+
+    const button = await screen.findByRole('button', { name: 'Export' })
+    fireEvent.click(button)
+
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith('/work-products/wp-1/export', expect.objectContaining({ method: 'POST' })))
+    expect(await screen.findByLabelText('Prepared work detail')).toHaveTextContent('+fixed')
+  })
+
+  it('renders an empty state when nothing is ready', async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(JSON.stringify({ prepared_work: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    render(<PreparedWorkPanel fetcher={fetcher as unknown as typeof fetch} />)
+
+    expect(await screen.findByText(/No prepared work is ready/i)).toBeInTheDocument()
+  })
+})

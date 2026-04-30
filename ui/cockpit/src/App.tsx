@@ -29,6 +29,7 @@ import { CommandPalette, LeftRail, MismatchBanner, SettingsDrawer, TopBar, type 
 import { EventStreamPanel } from './components/EventStreamPanel'
 import { Inspector } from './components/Inspector'
 import { PipelineCanvas } from './components/PipelineCanvas'
+import { PreparedWorkPanel } from './components/PreparedWorkPanel'
 import { SystemVitals } from './components/SystemVitals'
 import { ACCENT_MAP, DEFAULT_COCKPIT_SETTINGS, KIND_COLOR } from './lib/constants'
 import type {
@@ -87,6 +88,7 @@ function App() {
   const bootstrap = useBootstrap()
   const pipeline = usePipelineEvents({ path: '/events/stream' })
   const [cockpit, setCockpit] = useState<CockpitSettings>(DEFAULT_COCKPIT_SETTINGS)
+  const [query, setQuery] = useState('why is the ponder loop dropping scenarios after reweight?')
   const { scenarios, setScenarios, scenarioMap, setScenarioMap } = useScenarios(cockpit.topK, pipeline.events)
   const [backend, setBackend] = useState<BackendSettings | null>(null)
   const [compute, setCompute] = useState<ComputeSettings | null>(null)
@@ -522,6 +524,8 @@ function App() {
     <div className="cockpit-root">
       <TopBar
         mode={mode}
+        query={query}
+        onQuery={setQuery}
         running={streamLive}
         onToggleRun={() => void refreshAll()}
         packageState={packageState}
@@ -662,12 +666,13 @@ function App() {
         style={{
           gridArea: 'stream',
           display: 'grid',
-          gridTemplateRows: '1fr 1fr',
+          gridTemplateRows: 'minmax(150px, 0.75fr) 1fr 1fr',
           gridTemplateColumns: '1fr',
           overflow: 'hidden',
           minHeight: 0,
         }}
       >
+        <PreparedWorkPanel onAction={(message) => showToast(message, message.startsWith('HTTP') || message.startsWith('Failed') ? 'var(--err)' : 'var(--accent)')} />
         <div style={{ minHeight: 0, overflow: 'hidden', borderBottom: '1px solid var(--line-1)', background: 'var(--bg-1)' }}>
           {showScenarioPane ? (
             <Inspector

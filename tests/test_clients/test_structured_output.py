@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from vaner.clients.ollama import ollama_llm_structured
-from vaner.clients.openai import openai_llm_structured
+from vaner.clients.openai import openai_llm, openai_llm_structured
 
 _real_async_client = httpx.AsyncClient
 
@@ -101,6 +101,22 @@ async def test_openai_reasoning_off_injects_enable_thinking_false(monkeypatch):
     assert chat_tpl.get("enable_thinking") is False
 
 
+@pytest.mark.asyncio
+async def test_openai_legacy_client_disables_reasoning(monkeypatch):
+    captured: dict[str, dict] = {}
+
+    def _handler(req: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(req.content or b"{}")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    monkeypatch.setattr(httpx, "AsyncClient", _stub_async_client(_handler))
+
+    call = openai_llm(model="Qwen/Qwen3.5-35B-A3B-FP8", api_key="EMPTY", base_url="http://localhost")
+    assert await call("hi") == "{}"
+    chat_tpl = captured["body"].get("chat_template_kwargs", {})
+    assert chat_tpl.get("enable_thinking") is False
+
+
 # ---------------------------------------------------------------------------
 # Ollama adapter — translation to Ollama's idiom
 # ---------------------------------------------------------------------------
@@ -145,12 +161,15 @@ async def test_ollama_response_format_translates_to_format_json(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ollama_reasoning_off_appends_no_think(monkeypatch):
+async def test_ollama_reasoning_off_uses_chat_with_think_false(monkeypatch):
     captured: dict[str, dict] = {}
+    captured_path = ""
 
     def _handler(req: httpx.Request) -> httpx.Response:
+        nonlocal captured_path
+        captured_path = req.url.path
         captured["body"] = json.loads(req.content or b"{}")
-        return httpx.Response(200, json={"response": "{}"})
+        return httpx.Response(200, json={"message": {"content": "{}"}})
 
     monkeypatch.setattr(httpx, "AsyncClient", _stub_async_client(_handler))
 
@@ -160,7 +179,26 @@ async def test_ollama_reasoning_off_appends_no_think(monkeypatch):
         reasoning_mode="off",
     )
     await call("hello")
-    assert "/no_think" in captured["body"]["prompt"]
+    assert captured_path == "/api/chat"
+    assert captured["body"]["think"] is False
+    assert captured["body"]["messages"] == [{"role": "user", "content": "hello"}]
+
+
+@pytest.mark.asyncio
+async def test_ollama_generate_response_captures_provider_thinking_field(monkeypatch):
+    def _handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"thinking": "provider trace", "response": '{"ok": true}'})
+
+    monkeypatch.setattr(httpx, "AsyncClient", _stub_async_client(_handler))
+
+    call = ollama_llm_structured(
+        model="qwen3.5:35b",
+        base_url="http://localhost:11434",
+        reasoning_mode="allowed",
+    )
+    result = await call("hello")
+    assert result.thinking == "provider trace"
+    assert result.content == '{"ok": true}'
 
 
 # ---------------------------------------------------------------------------

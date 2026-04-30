@@ -34,5 +34,11 @@
   "rank": 1,
   "ui_summary": "Next: write the webhook signing regression test.",
   "suppression_reason": null,
-  "source_label": "Conversation arc"
+  "source_label": "Conversation arc",
+  "trust_status": "ready",
+  "freshness": "fresh",
+  "invalidated_by": [],
+  "watched_sources": ["payments-svc/webhook.js"],
+  "changed_sources": [],
+  "diagnostic_status": "verified"
 }

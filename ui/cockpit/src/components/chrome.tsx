@@ -34,6 +34,8 @@ interface TopBarProps {
   onOpenSettings: () => void
   onOpenPalette: () => void
   mode: UIMode
+  query: string
+  onQuery: (value: string) => void
 }
 
 const MODE_LABEL: Record<UIMode, string> = {
@@ -42,7 +44,7 @@ const MODE_LABEL: Record<UIMode, string> = {
   mcp: 'MCP',
 }
 
-export function TopBar({ running, onToggleRun, packageState, onOpenSettings, onOpenPalette, mode }: TopBarProps) {
+export function TopBar({ running, onToggleRun, packageState, onOpenSettings, onOpenPalette, mode, query, onQuery }: TopBarProps) {
   return (
     <div
       style={{
@@ -70,7 +72,43 @@ export function TopBar({ running, onToggleRun, packageState, onOpenSettings, onO
         </span>
       </div>
 
-      <div style={{ flex: 1 }} />
+      <div
+        style={{
+          flex: 1,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          background: 'var(--bg-2)',
+          border: '1px solid var(--line-1)',
+          borderRadius: 'var(--r-2)',
+          padding: '7px 12px',
+          maxWidth: 720,
+          marginLeft: 12,
+        }}
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--fg-4)" strokeWidth="1.4">
+          <circle cx="5" cy="5" r="3.5" />
+          <path d="M8 8 L11 11" />
+        </svg>
+        <input
+          value={query}
+          onChange={(event) => onQuery(event.target.value)}
+          placeholder="ask the cockpit..."
+          style={{
+            flex: 1,
+            background: 'transparent',
+            border: 'none',
+            outline: 'none',
+            color: 'var(--fg-1)',
+            fontFamily: 'var(--font-display)',
+            fontSize: 13,
+            minWidth: 0,
+          }}
+        />
+        <span className="mono" style={{ fontSize: 10, color: 'var(--fg-4)' }}>
+          enter
+        </span>
+      </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -182,7 +220,6 @@ export function LeftRail({
         overflow: 'hidden auto',
       }}
     >
-      {header}
       <div style={{ padding: '16px 16px 10px' }}>
         <div className="mono" style={{ fontSize: 9.5, letterSpacing: 1.2, color: 'var(--fg-4)', marginBottom: 10 }}>
           {mode === 'proxy' ? 'PROXY' : 'FRONTIER'}
@@ -201,6 +238,19 @@ export function LeftRail({
           {mode === 'proxy' ? 'recent proxy decisions' : 'open scenarios'}
         </div>
       </div>
+
+      {header ? (
+        <div
+          style={{
+            borderTop: '1px solid var(--line-hair)',
+            borderBottom: '1px solid var(--line-hair)',
+            maxHeight: 210,
+            overflow: 'auto',
+          }}
+        >
+          {header}
+        </div>
+      ) : null}
 
       <div style={{ padding: '4px 16px 14px', borderBottom: '1px solid var(--line-hair)' }}>
         <div className="mono" style={{ fontSize: 9.5, letterSpacing: 1.2, color: 'var(--fg-4)', marginBottom: 10 }}>

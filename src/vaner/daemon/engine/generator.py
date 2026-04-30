@@ -183,8 +183,61 @@ def _extract_message_text(payload: dict) -> str:
     return ""
 
 
+async def _post_ollama_chat_summary(
+    *,
+    model: str,
+    prompt: str,
+    config: VanerConfig,
+    source_label: str,
+    timeout_seconds: float,
+) -> str | None:
+    """Summarize through Ollama's native chat API.
+
+    Ollama's OpenAI-compatible endpoint can leave reasoning-model final
+    content empty for current Qwen/Gemma thinking models. The native chat API
+    exposes the supported ``think`` switch, so use it when the configured
+    backend is Ollama.
+    """
+
+    base_url = config.backend.base_url.rstrip("/")
+    if base_url.endswith("/v1"):
+        base_url = base_url[:-3]
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "think": False,
+        "options": {"num_predict": config.generation.summary_max_tokens},
+    }
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        response = await client.post(f"{base_url}/api/chat", json=payload)
+        response.raise_for_status()
+    data = response.json()
+    message = data.get("message")
+    if isinstance(message, dict):
+        content = message.get("content", "")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    logger.warning("LLM summary failed for %s: Ollama returned empty message content", source_label)
+    return None
+
+
 async def _llm_summarize(text: str, prompt_template: str, config: VanerConfig, source_label: str) -> str | None:
     model = config.generation.generation_model or config.backend.model
+    timeout_seconds = max(1.0, float(getattr(config.generation, "llm_timeout_seconds", 30.0)))
+    if config.backend.name == "ollama":
+        try:
+            return await _post_ollama_chat_summary(
+                model=model,
+                prompt=prompt_template,
+                config=config,
+                source_label=source_label,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:  # pragma: no cover - network errors
+            logger.warning("LLM summary failed for %s: %s", source_label, exc)
+            return None
+
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt_template}],
@@ -201,7 +254,6 @@ async def _llm_summarize(text: str, prompt_template: str, config: VanerConfig, s
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        timeout_seconds = max(1.0, float(getattr(config.generation, "llm_timeout_seconds", 30.0)))
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.post(f"{config.backend.base_url.rstrip('/')}/chat/completions", json=payload, headers=headers)
             response.raise_for_status()

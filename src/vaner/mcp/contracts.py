@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-Domain = Literal["code", "docs", "support", "operations", "research", "general"]
+from vaner.models.answerable import AnswerabilityMetadata, AnswerableBriefing, EvidenceChannel
+
+Domain = Literal["code", "docs", "support", "operations", "research", "planning", "learning", "writing", "general"]
+EvidenceOverlay = Literal["indexed", "working_tree", "staged", "live", "predicted", "memory", "external"]
 ProvenanceMode = Literal["predictive_hit", "cached_result", "fresh_resolution", "retrieval_fallback"]
 Budget = Literal["low", "medium", "high"]
 AbstainReason = Literal["low_confidence", "ambiguous_intent", "insufficient_evidence", "memory_conflict"]
@@ -29,9 +32,16 @@ class EvidenceItem(BaseModel):
     id: str
     source: str
     kind: Literal["file", "symbol", "doc", "record", "other"] = "file"
-    locator: dict = Field(default_factory=dict)
+    locator: dict[str, Any] = Field(default_factory=dict)
     reason: str = ""
     fingerprint: str | None = None
+    channel: EvidenceChannel = "vaner_resolve"
+    overlay: EvidenceOverlay | None = None
+    freshness: Literal["fresh", "recent", "stale"] | None = None
+    captured_at: float | None = None
+    validated_at: float | None = None
+    confidence: float | None = None
+    dependencies: list[dict] = Field(default_factory=list)
 
 
 class Alternative(BaseModel):
@@ -82,6 +92,27 @@ class ResolutionMetrics(BaseModel):
     # override with their actual pricing. Defaults to 0 (unknown model pricing).
     estimated_cost_per_1k_tokens: float = 0.0
     estimated_cost_usd: float = 0.0
+    vaner_speculative_tokens: int = 0
+    vaner_speculative_cost_usd: float = 0.0
+    local_prep_tokens: int = 0
+    cloud_prep_tokens: int = 0
+    injected_context_tokens: int = 0
+    expected_incremental_primary_cost_usd: float = 0.0
+    primary_llm_usage_known: bool = False
+    primary_llm_input_tokens: int = 0
+    primary_llm_output_tokens: int = 0
+    primary_llm_thinking_tokens: int = 0
+    primary_llm_cost_usd: float = 0.0
+    total_known_cloud_cost_usd: float = 0.0
+    total_estimated_cloud_cost_usd: float = 0.0
+    pricing_snapshot_id: str = "unknown-zero"
+    usage_source_summary: str = "mcp_context_only"
+    assembly_mode: str = "off"
+    answerable_context_tokens: int = 0
+    assembly_token_delta: int = 0
+    assembly_items_protected: int = 0
+    assembly_items_deduped: int = 0
+    assembly_technical_limit_hit: str | None = None
 
 
 class Resolution(BaseModel):
@@ -100,6 +131,11 @@ class Resolution(BaseModel):
     # context briefing (pre-compiled artefact summaries) — the output that
     # differentiates Vaner from a plain top-K RAG response. Default None.
     prepared_briefing: str | None = None
+    # Additive structured evidence-usability layer. Existing clients can ignore
+    # these fields and continue reading prepared_briefing/evidence.
+    answerable_briefing: AnswerableBriefing | None = None
+    answerability: str | None = None
+    answerability_metadata: AnswerabilityMetadata | None = None
     # When ``include_predicted_response=True`` and a draft answer was cached
     # speculatively during precompute, it is returned verbatim. Consumers use
     # this to skip a round-trip when Vaner's prediction is high-confidence.

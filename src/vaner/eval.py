@@ -63,35 +63,6 @@ class EvalReport(BaseModel):
     cases: list[EvalCaseResult]
 
 
-DEFAULT_CASES_DATA = [
-    {
-        "case_id": "daemon_flow",
-        "question": "Explain how the daemon prepares artefacts from repository changes.",
-        "expected_paths": ["src/vaner/daemon/runner.py", "src/vaner/daemon/engine/planner.py"],
-        "expected_points": ["run_once", "plan_targets", "score_paths", "upsert_working_set"],
-        "question_type": "mechanism",
-    },
-    {
-        "case_id": "broker_selection",
-        "question": "How does Vaner select and compress context artefacts at query time?",
-        "expected_paths": [
-            "src/vaner/broker/selector.py",
-            "src/vaner/broker/compressor.py",
-            "src/vaner/broker/assembler.py",
-        ],
-        "expected_points": ["select_artefacts", "compress_context", "token_budget", "keyword_overlap"],
-        "question_type": "understanding",
-    },
-    {
-        "case_id": "proxy_enrichment",
-        "question": "How does the OpenAI-compatible proxy enrich chat completions with repository context?",
-        "expected_paths": ["src/vaner/router/proxy.py", "src/vaner/api.py", "src/vaner/router/backends.py"],
-        "expected_points": ["chat/completions", "injected_context", "forward_chat_completion", "stream_chat_completion"],
-        "question_type": "wiring",
-    },
-]
-
-
 def _resolve_repo_root(path: Path | str) -> Path:
     return path.resolve() if isinstance(path, Path) else Path(path).resolve()
 
@@ -107,11 +78,50 @@ def _default_output_dir(repo_root: Path) -> Path:
 def load_cases(repo_root: Path, cases_path: Path | None = None) -> list[BenchmarkCase]:
     resolved_cases_path = (cases_path or _default_cases_path(repo_root)).resolve()
     if not resolved_cases_path.exists():
-        return [BenchmarkCase(**item) for item in DEFAULT_CASES_DATA]
+        return _generated_default_cases(repo_root)
     raw = json.loads(resolved_cases_path.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
         raise ValueError(f"Cases file must contain a JSON array: {resolved_cases_path}")
     return [BenchmarkCase(**item) for item in raw]
+
+
+def _generated_default_cases(repo_root: Path) -> list[BenchmarkCase]:
+    """Build a small smoke eval from the repository's file inventory."""
+    files = sorted(path.relative_to(repo_root).as_posix() for path in repo_root.rglob("*") if path.is_file())
+    source_paths = [path for path in files if path.endswith((".py", ".ts", ".tsx", ".js", ".rs", ".go"))]
+    doc_paths = [path for path in files if path.lower().endswith((".md", ".rst", ".txt"))]
+    cases: list[BenchmarkCase] = []
+    if source_paths:
+        cases.append(
+            BenchmarkCase(
+                case_id="source_overview",
+                question="Explain the main source code path in this repository.",
+                expected_paths=source_paths[:3],
+                expected_points=[],
+                question_type="understanding",
+            )
+        )
+    if doc_paths:
+        cases.append(
+            BenchmarkCase(
+                case_id="documentation_overview",
+                question="Summarize the repository documentation.",
+                expected_paths=doc_paths[:3],
+                expected_points=[],
+                question_type="summary",
+            )
+        )
+    if not cases:
+        cases.append(
+            BenchmarkCase(
+                case_id="repository_overview",
+                question="Explain what is present in this repository.",
+                expected_paths=files[:3],
+                expected_points=[],
+                question_type="understanding",
+            )
+        )
+    return cases
 
 
 def _score_case(case: BenchmarkCase, selected_paths: list[str], injected_context: str) -> tuple[list[str], bool, bool, float, float]:

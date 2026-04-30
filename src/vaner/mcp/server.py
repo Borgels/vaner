@@ -121,79 +121,13 @@ def _ensure_backend(config: Any) -> bool:
 def _setup_question_schema() -> list[dict[str, Any]]:
     """Static ordered schema for the five Simple-Mode questions.
 
-    Mirrors the choice tables in :mod:`vaner.cli.commands.setup`. Static
-    data — no engine state — so cockpit / desktop UIs can render the
-    same prompts without hardcoding strings.
+    Static data — no engine state — so cockpit / desktop UIs can render
+    the same prompts without hardcoding strings.
     """
 
-    return [
-        {
-            "id": "work_styles",
-            "prompt": "What kind of work do you want help with?",
-            "kind": "multi",
-            "default": ["mixed"],
-            "options": [
-                {"value": "writing", "label": "Writing — drafting, editing, narrative"},
-                {"value": "research", "label": "Research — surveys, deep reading, citations"},
-                {"value": "planning", "label": "Planning — design docs, roadmaps, project layout"},
-                {"value": "support", "label": "Support — answering questions, troubleshooting"},
-                {"value": "learning", "label": "Learning — studying, exploring a new domain"},
-                {"value": "coding", "label": "Coding — software development"},
-                {"value": "general", "label": "General — knowledge work, mixed light tasks"},
-                {"value": "mixed", "label": "Mixed — a bit of everything (safe default)"},
-                {"value": "unsure", "label": "Unsure — I'd rather Vaner picks for me"},
-            ],
-        },
-        {
-            "id": "priority",
-            "prompt": "What matters most?",
-            "kind": "single",
-            "default": "balanced",
-            "options": [
-                {"value": "balanced", "label": "Balanced — a sensible middle"},
-                {"value": "speed", "label": "Speed — snappy responses"},
-                {"value": "quality", "label": "Quality — best answer, even if slow"},
-                {"value": "privacy", "label": "Privacy — keep data on this machine"},
-                {"value": "cost", "label": "Cost — minimise spend"},
-                {"value": "low_resource", "label": "Low-resource — go easy on this machine"},
-            ],
-        },
-        {
-            "id": "compute_posture",
-            "prompt": "How hard should this machine work for you?",
-            "kind": "single",
-            "default": "balanced",
-            "options": [
-                {"value": "light", "label": "Light — barely use the CPU/GPU"},
-                {"value": "balanced", "label": "Balanced — work with what's idle"},
-                {"value": "available_power", "label": "Available-power — use what this box has"},
-            ],
-        },
-        {
-            "id": "cloud_posture",
-            "prompt": "How do you feel about cloud LLMs?",
-            "kind": "single",
-            "default": "ask_first",
-            "options": [
-                {"value": "local_only", "label": "Local only — never reach for cloud LLMs"},
-                {"value": "ask_first", "label": "Ask first — confirm before any cloud call"},
-                {"value": "hybrid_when_worth_it", "label": "Hybrid — cloud when it's clearly worth it"},
-                {"value": "best_available", "label": "Best available — use the best model for the job"},
-            ],
-        },
-        {
-            "id": "background_posture",
-            "prompt": "How aggressive should background pondering be?",
-            "kind": "single",
-            "default": "normal",
-            "options": [
-                {"value": "minimal", "label": "Minimal — barely ponder when idle"},
-                {"value": "normal", "label": "Normal — moderate background pondering"},
-                {"value": "idle_more", "label": "Idle-more — ponder broadly when the box is idle"},
-                {"value": "deep_run_aggressive", "label": "Deep-Run-aggressive — happy to run overnight"},
-            ],
-        },
-    ]
+    from vaner.setup.questions import setup_questions_for_mcp
+
+    return setup_questions_for_mcp()
 
 
 def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResult:
@@ -209,16 +143,16 @@ def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResul
     from datetime import UTC, datetime
 
     from vaner.cli.commands.config import load_config as _load_config
-    from vaner.cli.commands.setup import (
-        _persist_setup_and_policy,
-        _read_policy_section,
-        _read_setup_section,
-    )
     from vaner.setup.apply import (
         WIDENS_CLOUD_POSTURE_SENTINEL,
         apply_policy_bundle,
     )
     from vaner.setup.catalog import bundle_by_id
+    from vaner.setup.config_io import (
+        persist_setup_and_policy,
+        read_policy_section,
+        read_setup_section,
+    )
     from vaner.setup.hardware import detect as _hw_detect
     from vaner.setup.select import select_policy_bundle as _select_bundle
     from vaner.setup.serializers import (
@@ -245,7 +179,7 @@ def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResul
                 is_error=True,
             )
         chosen_bundle_id = bundle.id
-        existing_setup = _read_setup_section(repo_root)
+        existing_setup = read_setup_section(repo_root)
         if existing_setup:
             try:
                 answers = answers_from_payload(existing_setup)
@@ -300,7 +234,7 @@ def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResul
     # 2. Compute overrides + cloud-widening flag.
     # ------------------------------------------------------------------
     config = _load_config(repo_root)
-    prior_policy_section = _read_policy_section(repo_root)
+    prior_policy_section = read_policy_section(repo_root)
     prior_bundle_id = prior_policy_section.get("selected_bundle_id")
     if isinstance(prior_bundle_id, str) and prior_bundle_id:
         config = config.model_copy(update={"policy": config.policy.model_copy(update={"selected_bundle_id": prior_bundle_id})})
@@ -319,7 +253,7 @@ def _setup_apply_handler(repo_root: Path, args: dict[str, Any]) -> CallToolResul
         block_reason = "WIDENS_CLOUD_POSTURE: refusing to widen cloud posture without confirm_cloud_widening=True"
     else:
         try:
-            _persist_setup_and_policy(
+            persist_setup_and_policy(
                 repo_root,
                 answers,
                 chosen_bundle_id,
@@ -351,17 +285,14 @@ def _setup_status_handler(repo_root: Path) -> CallToolResult:
     """
 
     from vaner.cli.commands.config import load_config as _load_config
-    from vaner.cli.commands.setup import (
-        _read_policy_section,
-        _read_setup_section,
-    )
     from vaner.setup.apply import apply_policy_bundle
     from vaner.setup.catalog import bundle_by_id
+    from vaner.setup.config_io import read_policy_section, read_setup_section
     from vaner.setup.hardware import detect as _hw_detect
     from vaner.setup.serializers import hardware_to_dict
 
-    setup_section = _read_setup_section(repo_root)
-    policy_section = _read_policy_section(repo_root)
+    setup_section = read_setup_section(repo_root)
+    policy_section = read_policy_section(repo_root)
     hardware = _hw_detect()
 
     mode = setup_section.get("mode") if isinstance(setup_section, dict) else None
@@ -409,12 +340,12 @@ def _policy_show_handler(repo_root: Path) -> CallToolResult:
     """
 
     from vaner.cli.commands.config import load_config as _load_config
-    from vaner.cli.commands.setup import _read_policy_section
     from vaner.setup.apply import apply_policy_bundle
     from vaner.setup.catalog import bundle_by_id
+    from vaner.setup.config_io import read_policy_section
     from vaner.setup.serializers import bundle_to_dict
 
-    policy_section = _read_policy_section(repo_root)
+    policy_section = read_policy_section(repo_root)
     selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
     try:
         bundle = bundle_by_id(str(selected_bundle_id))
@@ -480,7 +411,42 @@ def _is_managed_path(path: str) -> bool:
     return any(normalized.endswith(marker) for marker in _MANAGED_PATH_MARKERS)
 
 
-def _scenario_penalty(scenario: Scenario, query_tokens: set[str]) -> float:
+def _context_domain(context: Any) -> str:
+    if not isinstance(context, dict):
+        return "code"
+    domain = context.get("domain")
+    if isinstance(domain, str) and domain in {
+        "code",
+        "docs",
+        "support",
+        "operations",
+        "research",
+        "planning",
+        "learning",
+        "writing",
+        "general",
+    }:
+        return domain
+    return "code"
+
+
+def _prediction_row_label(row: dict[str, Any]) -> str:
+    label = row.get("label") or (row.get("spec") or {}).get("label")
+    return str(label or "")
+
+
+def _prediction_matches_query(row: dict[str, Any], query_tokens: set[str]) -> bool:
+    label_tokens = _tokenize(_prediction_row_label(row))
+    if not label_tokens or not query_tokens:
+        return False
+    overlap = len(query_tokens & label_tokens)
+    # Require a real relationship, not just any unrelated ready prediction.
+    return overlap >= 2 or overlap / max(1, len(query_tokens | label_tokens)) >= 0.35
+
+
+def _scenario_penalty(scenario: Scenario, query_tokens: set[str], *, domain: str = "code") -> float:
+    if domain != "code":
+        return 0.0
     if _query_targets_managed_files(query_tokens):
         return 0.0
     if any(_is_managed_path(path) for path in _scenario_paths(scenario)):
@@ -507,50 +473,9 @@ def _serialize_prediction_for_mcp(prompt: Any, *, rank: int | None = None) -> di
     fields are always present (optional in the Rust contract mirror) so
     MCP Apps clients and text-fallback renderers share one shape.
     """
-    from vaner.intent.prediction_card import derive_card_fields
+    from vaner.intent.prediction_serialization import serialize_prediction_flat
 
-    spec = prompt.spec
-    run = prompt.run
-    artifacts = prompt.artifacts
-    card = derive_card_fields(prompt)
-    payload: dict[str, Any] = {
-        "id": spec.id,
-        "label": spec.label,
-        "description": spec.description,
-        "source": spec.source,
-        "confidence": spec.confidence,
-        "hypothesis_type": spec.hypothesis_type,
-        "specificity": spec.specificity,
-        "readiness": run.readiness,
-        "weight": run.weight,
-        "token_budget": run.token_budget,
-        "tokens_used": run.tokens_used,
-        "scenarios_complete": run.scenarios_complete,
-        "scenarios_spawned": run.scenarios_spawned,
-        "evidence_score": artifacts.evidence_score,
-        "has_draft": artifacts.draft_answer is not None,
-        "has_briefing": artifacts.prepared_briefing is not None,
-        # 0.8.5 WS5 — UI card derivations.
-        "readiness_label": card.readiness_label,
-        "eta_bucket": card.eta_bucket,
-        "eta_bucket_label": card.eta_bucket_label,
-        "adoptable": card.adoptable,
-        "suppression_reason": card.suppression_reason,
-        "source_label": card.source_label,
-        "ui_summary": card.ui_summary,
-    }
-    if rank is not None:
-        payload["rank"] = rank
-    # 0.8.7 WS8: surface composer-engagement metadata only for
-    # composer_intent-sourced predictions. The data backbone is
-    # populated by WS7's daemon path; field is omitted entirely
-    # for non-composer predictions so existing card payloads stay
-    # byte-identical.
-    if spec.source == "composer_intent":
-        composer_engagement = _composer_engagement_payload(prompt)
-        if composer_engagement is not None:
-            payload["composer_engagement"] = composer_engagement
-    return payload
+    return serialize_prediction_flat(prompt, rank=rank)
 
 
 def _composer_engagement_payload(prompt: Any) -> dict[str, Any] | None:
@@ -593,40 +518,15 @@ def _composer_engagement_payload(prompt: Any) -> dict[str, Any] | None:
     }
 
 
-_RESOURCE_METRIC_TASKS: set[Any] = set()
-"""Keep strong refs to background metric tasks until they settle.
-
-Without this, `asyncio.run()` can tear the loop down before the task
-completes, producing `Event loop is closed` warnings. Tracked via
-`add_done_callback(discard)` so entries clear themselves when the task
-finishes.
-"""
-
-
-def _increment_resource_metric(name: str, repo_root: Path) -> None:
-    """Fire-and-forget metric increment for resource-read events.
-
-    0.8.5 WS8: `read_resource` is a sync entry point in the SDK API, so we
-    can't `await` on `MetricsStore`. Spawn an asyncio task when a loop is
-    running; otherwise silently drop — metrics are best-effort.
-    """
-    import asyncio as _asyncio
-
-    async def _do() -> None:
-        try:
-            store = MetricsStore(repo_root / ".vaner" / "metrics.db")
-            await store.initialize()
-            await store.increment_counter(name)
-        except Exception:  # pragma: no cover - defensive metrics
-            pass
+async def _increment_resource_metric(name: str, repo_root: Path) -> None:
+    """Best-effort metric increment for resource-read events."""
 
     try:
-        loop = _asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    task = loop.create_task(_do())
-    _RESOURCE_METRIC_TASKS.add(task)
-    task.add_done_callback(_RESOURCE_METRIC_TASKS.discard)
+        store = MetricsStore(repo_root / ".vaner" / "metrics.db")
+        await store.initialize()
+        await store.increment_counter(name)
+    except Exception:  # pragma: no cover - defensive metrics
+        pass
 
 
 def _dashboard_fallback_text(cards: list[dict[str, Any]]) -> str:
@@ -747,6 +647,8 @@ def build_server(
     # Lazy import keeps MCP server import-free of pydantic/httpx when the
     # tools surface is unused (e.g. CLI --help).
     from vaner.clients.daemon import (
+        RESOLVE_INCLUDE_BRIEFING_DEFAULT,
+        RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT,
         VanerDaemonClient,
         VanerDaemonNotFound,
         VanerDaemonUnavailable,
@@ -786,6 +688,171 @@ def build_server(
             record_tier(session, detection)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("capability detection skipped: %s", exc)
+
+    async def _build_intent_packet(
+        query: str,
+        *,
+        scenario_store_arg: ScenarioStore,
+        context_arg: Any,
+        engine_unavailable: bool = False,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        context_domain = _context_domain(context_arg)
+        context_envelope = context_arg if isinstance(context_arg, dict) else {"domain": context_domain}
+        query_tokens = _tokenize(query)
+        scenarios = await scenario_store_arg.list_top(limit=max(limit * 2, 10))
+        candidates: list[dict[str, Any]] = []
+        for scenario in scenarios:
+            overlap = len(query_tokens & set(tok.lower() for tok in scenario.entities))
+            score = round(
+                max(
+                    0.0,
+                    min(
+                        1.0,
+                        0.2 + overlap * 0.18 + scenario.score * 0.5 - _scenario_penalty(scenario, query_tokens, domain=context_domain),
+                    ),
+                ),
+                4,
+            )
+            candidates.append(
+                {
+                    "id": scenario.id,
+                    "kind": scenario.kind,
+                    "score": score,
+                    "memory_state": scenario.memory_state,
+                    "freshness": scenario.freshness,
+                    "entities": scenario.entities[:6],
+                    "reason": "domain-aware scenario overlap",
+                }
+            )
+        candidates.sort(key=lambda item: float(item["score"]), reverse=True)
+
+        predictions: list[dict[str, Any]] = []
+        adoption_not_used = "no_active_predictions"
+        try:
+            if engine is not None:
+                predictions = [_serialize_prediction_for_mcp(p) for p in engine.get_active_predictions()]
+            else:
+                body = await _daemon().get_predictions_active()
+                predictions = list(body.get("predictions", []))
+        except VanerDaemonUnavailable:
+            engine_unavailable = True
+            adoption_not_used = "engine_unavailable"
+
+        if predictions:
+            adoptable = [
+                p
+                for p in predictions
+                if p.get("adoptable") and p.get("trust_status") != "invalidated" and _prediction_matches_query(p, query_tokens)
+            ]
+            adoption_not_used = "stale_or_unrelated_predictions"
+            if adoptable:
+                adoption_not_used = "caller_requested_packet_instead_of_adoption"
+
+        suggested_tool = (
+            "vaner.predictions.adopt" if adoption_not_used == "caller_requested_packet_instead_of_adoption" else "vaner.resolve"
+        )
+        if engine_unavailable:
+            suggested_tool = "vaner.search" if candidates else "wait_for_precompute"
+        elif not predictions and not candidates:
+            suggested_tool = "wait_for_precompute"
+
+        gaps = []
+        if engine_unavailable:
+            gaps.append("no live prediction registry available")
+        if adoption_not_used != "caller_requested_packet_instead_of_adoption":
+            gaps.append("no adoptable prediction matched the current intent")
+
+        return {
+            "intent_packet": True,
+            "interpreted_intent": query,
+            "context_envelope": context_envelope,
+            "domain": context_domain,
+            "active_predictions_considered": [
+                {
+                    "id": p.get("id"),
+                    "label": _prediction_row_label(p),
+                    "readiness": p.get("readiness") or (p.get("run") or {}).get("readiness"),
+                    "adoptable": p.get("adoptable"),
+                    "matches_intent": _prediction_matches_query(p, query_tokens),
+                    "trust_status": p.get("trust_status"),
+                    "freshness": p.get("freshness"),
+                }
+                for p in predictions[:limit]
+            ],
+            "adoption_not_used": adoption_not_used,
+            "candidate_scenarios": candidates[:limit],
+            "gaps": gaps,
+            "suggested_next_action": {
+                "tool": suggested_tool,
+                "reason": adoption_not_used,
+                "arguments": {"query": query, "context": context_envelope} if suggested_tool == "vaner.resolve" else {},
+            },
+        }
+
+    async def _prediction_health_snapshot() -> dict[str, Any]:
+        readiness_counts = {state: 0 for state in ["queued", "grounding", "evidence_gathering", "drafting", "ready", "stale"]}
+        active_count = 0
+        total_count = 0
+        pending_adoptions = 0
+        stale_reasons: list[str] = []
+        engine_available = engine is not None
+        source = "engine" if engine is not None else "daemon"
+        try:
+            if engine is not None and getattr(engine, "prediction_registry", None) is not None:
+                registry = engine.prediction_registry
+                prompts = registry.all()
+                total_count = len(prompts)
+                active_count = len(registry.active())
+                for prompt in prompts:
+                    readiness_counts[prompt.run.readiness] = readiness_counts.get(prompt.run.readiness, 0) + 1
+                    if prompt.run.invalidation_reason:
+                        stale_reasons.append(prompt.run.invalidation_reason)
+                pending_lock = getattr(registry, "_pending_adoption_lock", None)
+                pending_queue = getattr(registry, "_pending_adoption_descriptors", [])
+                if pending_lock is not None:
+                    with pending_lock:
+                        pending_adoptions = len(pending_queue)
+                else:
+                    pending_adoptions = len(pending_queue)
+            elif engine is not None:
+                engine_available = True
+                source = "engine_no_registry"
+            else:
+                daemon = _daemon()
+                try:
+                    status_body = await daemon.get_status()
+                except (AttributeError, VanerDaemonUnavailable):
+                    status_body = {}
+                status_health = status_body.get("prediction_health") if isinstance(status_body, dict) else None
+                if isinstance(status_health, dict):
+                    return status_health
+                body = await daemon.get_predictions_active()
+                rows = list(body.get("predictions", []))
+                engine_available = True
+                total_count = len(rows)
+                active_count = len(rows)
+                for row in rows:
+                    readiness = row.get("readiness") or (row.get("run") or {}).get("readiness")
+                    if isinstance(readiness, str):
+                        readiness_counts[readiness] = readiness_counts.get(readiness, 0) + 1
+                    for reason in row.get("invalidated_by", []) or []:
+                        if isinstance(reason, str):
+                            stale_reasons.append(reason)
+        except VanerDaemonUnavailable:
+            engine_available = False
+        diagnostic_status = "healthy" if engine_available and active_count > 0 else ("cold" if engine_available else "engine_unavailable")
+        return {
+            "engine_available": engine_available,
+            "source": source,
+            "daemon_with_engine": engine_available if engine is None else None,
+            "active_prediction_count": active_count,
+            "total_prediction_count": total_count,
+            "readiness_counts": readiness_counts,
+            "pending_adoption_outcomes": pending_adoptions,
+            "stale_or_invalidated_reasons": stale_reasons[-8:],
+            "diagnostic_status": diagnostic_status,
+        }
 
     @server.list_tools()
     async def list_tools() -> ListToolsResult:
@@ -828,11 +895,28 @@ def build_server(
                             "query": {"type": "string"},
                             "suggestion_id": {"type": "string"},
                             "context": {"type": "object"},
-                            "budget": {"type": "string", "enum": ["low", "medium", "high"], "default": "medium"},
-                            "max_evidence_items": {"type": "integer", "default": 8},
-                            "include_briefing": {"type": "boolean", "default": False},
-                            "include_predicted_response": {"type": "boolean", "default": False},
+                            "budget": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high"],
+                                "default": "medium",
+                                "description": "Reserved for future engine budget shaping; currently accepted but not applied.",
+                            },
+                            "max_evidence_items": {
+                                "type": "integer",
+                                "default": 8,
+                                "description": "Reserved for future evidence limiting; currently accepted but not applied.",
+                            },
+                            "include_briefing": {"type": "boolean", "default": RESOLVE_INCLUDE_BRIEFING_DEFAULT},
+                            "include_predicted_response": {
+                                "type": "boolean",
+                                "default": RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT,
+                            },
                             "include_metrics": {"type": "boolean", "default": False},
+                            "intent_packet": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": "Return a compact pre-resolution packet instead of a final Resolution.",
+                            },
                             "estimated_cost_per_1k_tokens": {"type": "number", "default": 0.0},
                         },
                         "required": ["query"],
@@ -868,6 +952,7 @@ def build_server(
                                 "default": "hybrid",
                             },
                             "limit": {"type": "integer", "default": 10},
+                            "context": {"type": "object"},
                         },
                         "required": ["query"],
                     },
@@ -979,6 +1064,92 @@ def build_server(
                             },
                             "include_details": {"type": "boolean", "default": False},
                         },
+                    },
+                ),
+                Tool(
+                    name="vaner.prepared_work.dashboard",
+                    description=(
+                        "Return the unified Prepared Work dashboard: UI-safe cards combining concrete prepared artifacts "
+                        "and ready/drafting predictions. Normal payloads hide internal WorkProduct lifecycle and raw scoring fields."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                            "include_advisory": {"type": "boolean", "default": False},
+                            "include_diagnostics": {"type": "boolean", "default": False},
+                            "context_id": {"type": "string"},
+                            "surface": {
+                                "type": "string",
+                                "enum": ["desktop", "cockpit", "mcp_app", "api"],
+                                "default": "mcp_app",
+                            },
+                        },
+                    },
+                ),
+                Tool(
+                    name="vaner.work_products.list",
+                    description=(
+                        "List Vaner-owned prepared work products from idle/background preparation. "
+                        "Normal results omit hidden, dismissed, expired, and superseded artifacts. "
+                        "These artifacts never apply changes to user files."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "include_hidden": {"type": "boolean", "default": False},
+                            "include_terminal": {"type": "boolean", "default": False},
+                            "type": {
+                                "type": "string",
+                                "enum": ["review_note", "bug_hypothesis", "docs_drift", "virtual_diff", "research_brief"],
+                            },
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                        },
+                    },
+                ),
+                Tool(
+                    name="vaner.work_products.inspect",
+                    description="Inspect one prepared work product. Inspection is non-mutating and may include full body text.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"work_product_id": {"type": "string"}},
+                        "required": ["work_product_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.work_products.export",
+                    description=(
+                        "Export one prepared work product only if its adoptability is exportable. "
+                        "Export returns Vaner-owned content and never applies a patch or edits files."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"work_product_id": {"type": "string"}},
+                        "required": ["work_product_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.work_products.dismiss",
+                    description="Dismiss one prepared work product so it no longer appears in normal list results.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"work_product_id": {"type": "string"}},
+                        "required": ["work_product_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.work_products.feedback",
+                    description="Record feedback on one prepared work product.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "work_product_id": {"type": "string"},
+                            "feedback_state": {
+                                "type": "string",
+                                "enum": ["none", "useful", "partial", "irrelevant"],
+                            },
+                        },
+                        "required": ["work_product_id", "feedback_state"],
                     },
                 ),
                 Tool(
@@ -1262,14 +1433,43 @@ def build_server(
                             "work_styles": {
                                 "anyOf": [
                                     {"type": "string"},
-                                    {"type": "array", "items": {"type": "string"}},
+                                    {"type": "array"},
                                 ],
-                                "description": "WorkStyle id(s); single string or list.",
+                                "description": ("WorkStyle id(s). Handler validates list items for structured errors."),
                             },
-                            "priority": {"type": "string"},
-                            "compute_posture": {"type": "string"},
-                            "cloud_posture": {"type": "string"},
-                            "background_posture": {"type": "string"},
+                            "priority": {
+                                "type": "string",
+                                "enum": [
+                                    "balanced",
+                                    "speed",
+                                    "quality",
+                                    "privacy",
+                                    "cost",
+                                    "low_resource",
+                                ],
+                            },
+                            "compute_posture": {
+                                "type": "string",
+                                "enum": ["light", "balanced", "available_power"],
+                            },
+                            "cloud_posture": {
+                                "type": "string",
+                                "enum": [
+                                    "local_only",
+                                    "ask_first",
+                                    "hybrid_when_worth_it",
+                                    "best_available",
+                                ],
+                            },
+                            "background_posture": {
+                                "type": "string",
+                                "enum": [
+                                    "minimal",
+                                    "normal",
+                                    "idle_more",
+                                    "deep_run_aggressive",
+                                ],
+                            },
                         },
                     },
                 ),
@@ -1336,7 +1536,7 @@ def build_server(
             from mcp.types import Resource as _Resource
         except ModuleNotFoundError:  # pragma: no cover - optional dependency path
             return []
-        from vaner.integrations.guidance import current_version
+        from vaner.integrations.guidance import available_variants, current_version
 
         resources: list[Any] = [
             _Resource(
@@ -1351,6 +1551,21 @@ def build_server(
                 mimeType="text/markdown",
             )
         ]
+        for variant in available_variants():
+            if variant == "canonical":
+                continue
+            resources.append(
+                _Resource(
+                    uri=f"vaner://guidance/current?variant={variant}",  # type: ignore[arg-type]
+                    name=f"Vaner Guidance ({variant})",
+                    title=f"Vaner operational guidance ({variant})",
+                    description=(
+                        "Alternate operational guidance variant for agents using Vaner. "
+                        "Canonical remains available at vaner://guidance/current."
+                    ),
+                    mimeType="text/markdown",
+                )
+            )
         try:
             cfg = load_config(repo_root)
             if getattr(cfg.mcp, "apps_ui_enabled", True):
@@ -1360,6 +1575,11 @@ def build_server(
                     ACTIVE_PREDICTIONS_NAME,
                     ACTIVE_PREDICTIONS_TITLE,
                     ACTIVE_PREDICTIONS_URI,
+                    PREPARED_WORK_DESCRIPTION,
+                    PREPARED_WORK_MIME,
+                    PREPARED_WORK_NAME,
+                    PREPARED_WORK_TITLE,
+                    PREPARED_WORK_URI,
                     resource_meta,
                 )
 
@@ -1370,6 +1590,16 @@ def build_server(
                         title=ACTIVE_PREDICTIONS_TITLE,
                         description=ACTIVE_PREDICTIONS_DESCRIPTION,
                         mimeType=ACTIVE_PREDICTIONS_MIME,
+                        meta=resource_meta(),
+                    )
+                )
+                resources.append(
+                    _Resource(
+                        uri=PREPARED_WORK_URI,  # type: ignore[arg-type]
+                        name=PREPARED_WORK_NAME,
+                        title=PREPARED_WORK_TITLE,
+                        description=PREPARED_WORK_DESCRIPTION,
+                        mimeType=PREPARED_WORK_MIME,
                         meta=resource_meta(),
                     )
                 )
@@ -1387,6 +1617,9 @@ def build_server(
             ACTIVE_PREDICTIONS_HTML,
             ACTIVE_PREDICTIONS_MIME,
             ACTIVE_PREDICTIONS_URI,
+            PREPARED_WORK_HTML,
+            PREPARED_WORK_MIME,
+            PREPARED_WORK_URI,
             resource_meta,
         )
 
@@ -1394,11 +1627,20 @@ def build_server(
 
         # MCP Apps UI bundle.
         if uri_str == ACTIVE_PREDICTIONS_URI:
-            _increment_resource_metric("mcp_apps_bundle_read", repo_root)
+            await _increment_resource_metric("mcp_apps_bundle_read", repo_root)
             return [
                 ReadResourceContents(
                     content=ACTIVE_PREDICTIONS_HTML,
                     mime_type=ACTIVE_PREDICTIONS_MIME,
+                    meta=resource_meta(),
+                )
+            ]
+        if uri_str == PREPARED_WORK_URI:
+            await _increment_resource_metric("mcp_apps_prepared_work_bundle_read", repo_root)
+            return [
+                ReadResourceContents(
+                    content=PREPARED_WORK_HTML,
+                    mime_type=PREPARED_WORK_MIME,
                     meta=resource_meta(),
                 )
             ]
@@ -1423,7 +1665,7 @@ def build_server(
         if variant is None:
             raise ValueError(f"unknown vaner resource: {uri_str!r}")
         body = load_guidance(variant).as_text()  # type: ignore[arg-type]
-        _increment_resource_metric(f"guidance_resource_read_{variant}", repo_root)
+        await _increment_resource_metric(f"guidance_resource_read_{variant}", repo_root)
         return [ReadResourceContents(content=body, mime_type="text/markdown")]
 
     @server.call_tool()
@@ -1500,6 +1742,7 @@ def build_server(
                     "coverage_gaps": lint_report.coverage_gaps,
                 },
                 "memory": {"counts": memory_counts, "quality": quality, "calibration": calibration},
+                "prediction_health": await _prediction_health_snapshot(),
             }
             # 0.8.3 WS4: surface active Deep-Run session state under
             # ``deep_run`` so cockpit / desktop / agents can render the
@@ -1522,6 +1765,7 @@ def build_server(
         if name == "vaner.suggest":
             query = str(args.get("query", "")).strip()
             limit = max(1, int(args.get("limit", 5)))
+            context_domain = _context_domain(args.get("context"))
             if not query:
                 await _record("error")
                 return _json_result({"code": "invalid_input", "message": "query is required"}, is_error=True)
@@ -1532,7 +1776,13 @@ def build_server(
                 overlap = len(query_tokens & set(tok.lower() for tok in scenario.entities))
                 confidence = min(
                     0.98,
-                    max(0.0, 0.25 + (overlap * 0.15) + (scenario.score * 0.45) - _scenario_penalty(scenario, query_tokens)),
+                    max(
+                        0.0,
+                        0.25
+                        + (overlap * 0.15)
+                        + (scenario.score * 0.45)
+                        - _scenario_penalty(scenario, query_tokens, domain=context_domain),
+                    ),
                 )
                 label = f"{scenario.kind} / {' '.join(scenario.entities[:4]) or scenario.id}"
                 suggestion_id = f"sug_{hashlib.sha1((query + scenario.id).encode('utf-8')).hexdigest()[:8]}"
@@ -1549,7 +1799,83 @@ def build_server(
             for item in picked:
                 _put_suggestion(str(item["id"]), item)
             top_confidence = float(picked[0]["confidence"]) if picked else 0.0
-            payload = {"suggestions": picked, "needs_clarification": top_confidence < 0.4}
+            prediction_rows: list[dict[str, Any]] = []
+            engine_unavailable = False
+            try:
+                if engine is not None:
+                    prediction_rows = [_serialize_prediction_for_mcp(p) for p in engine.get_active_predictions()]
+                else:
+                    prediction_rows = list((await _daemon().get_predictions_active()).get("predictions", []))
+            except VanerDaemonUnavailable:
+                engine_unavailable = True
+            adoptable_predictions = [
+                row
+                for row in prediction_rows
+                if row.get("adoptable") is True
+                and row.get("trust_status") != "invalidated"
+                and _prediction_matches_query(row, query_tokens)
+            ]
+            actions: list[dict[str, Any]] = [
+                {
+                    "tool": "vaner.predictions.active",
+                    "reason": "inspect prepared predictions before spending resolve budget",
+                    "arguments": {},
+                    "priority": "first",
+                }
+            ]
+            if adoptable_predictions:
+                first = adoptable_predictions[0]
+                actions.append(
+                    {
+                        "tool": "vaner.predictions.adopt",
+                        "reason": "a fresh prepared prediction is adoptable",
+                        "arguments": {"prediction_id": first.get("id")},
+                        "priority": "preferred",
+                    }
+                )
+            elif engine_unavailable or top_confidence < 0.4:
+                actions.append(
+                    {
+                        "tool": "vaner.resolve",
+                        "reason": "build an intent packet before final resolution",
+                        "arguments": {"query": query, "context": args.get("context") or {}, "intent_packet": True},
+                        "priority": "preferred",
+                    }
+                )
+            else:
+                actions.append(
+                    {
+                        "tool": "vaner.resolve",
+                        "reason": "no matching prepared prediction; resolve from stored evidence",
+                        "arguments": {"query": query, "context": args.get("context") or {}},
+                        "priority": "preferred",
+                    }
+                )
+            if picked:
+                actions.append(
+                    {
+                        "tool": "vaner.expand",
+                        "reason": "expand the highest-ranked stored scenario if more detail is needed",
+                        "arguments": {"target_id": picked[0]["scenario_id"]},
+                        "priority": "optional",
+                    }
+                )
+            payload = {
+                "suggestions": picked,
+                "needs_clarification": top_confidence < 0.4,
+                "guidance": {
+                    "recommended_action": actions[1] if len(actions) > 1 else actions[0],
+                    "actions": actions,
+                    "guardrails": [
+                        "adopt at most one prediction per turn",
+                        "do not call vaner.resolve when a fresh adopted package is already available",
+                        "prefer intent_packet=true when predictions are stale, unrelated, or the engine is unavailable",
+                        "record vaner.feedback after using a returned Resolution",
+                    ],
+                    "engine_unavailable": engine_unavailable,
+                    "domain": context_domain,
+                },
+            }
             append_log(repo_root, tool=name, label=query[:60], decision_id=None, provenance_mode=None, memory_state=None)
             await _record("ok")
             return _json_result(payload)
@@ -1560,11 +1886,20 @@ def build_server(
             # the engine directly. Otherwise forward to the daemon's /resolve
             # endpoint via the shared VanerDaemonClient (mirrors the WS3
             # predictions.* forward pattern).
+            query = str(args.get("query", "")).strip()
+            context_arg = args.get("context") or {}
+            if bool(args.get("intent_packet", False)):
+                if not query:
+                    await _record("error")
+                    return _json_result({"code": "invalid_input", "message": "query is required"}, is_error=True)
+                payload = await _build_intent_packet(query, scenario_store_arg=scenario_store, context_arg=context_arg)
+                append_log(repo_root, tool=name, label=query[:60], decision_id=None, provenance_mode="intent_packet", memory_state=None)
+                await _record("ok")
+                return _json_result(payload)
             if not _ensure_backend(config):
                 await _record("error")
                 return _backend_error(degradable=False)
             resolve_started_monotonic = time.monotonic()
-            query = str(args.get("query", "")).strip()
             if not query:
                 await _record("error")
                 return _json_result({"code": "invalid_input", "message": "query is required"}, is_error=True)
@@ -1609,14 +1944,13 @@ def build_server(
                 payload["suppressed_reason"] = "fresh_adopted_package_handoff"
                 return _json_result(payload)
             suggestion_id = str(args.get("suggestion_id", "")).strip()
-            context_arg = args.get("context") or {}
             if suggestion_id and suggestion_id in suggestion_cache:
                 # Carry the suggestion's label through to the engine so the
                 # resolve picks up the canonical form even when the caller's
                 # query text is terse.
                 query = str(suggestion_cache[suggestion_id].get("label") or query)
-            include_briefing = bool(args.get("include_briefing", False))
-            include_predicted_response = bool(args.get("include_predicted_response", False))
+            include_briefing = bool(args.get("include_briefing", RESOLVE_INCLUDE_BRIEFING_DEFAULT))
+            include_predicted_response = bool(args.get("include_predicted_response", RESOLVE_INCLUDE_PREDICTED_RESPONSE_DEFAULT))
             include_metrics = bool(args.get("include_metrics", False))
 
             try:
@@ -1691,6 +2025,8 @@ def build_server(
                 estimated_cost_per_1k = float(args.get("estimated_cost_per_1k_tokens", 0.0) or 0.0)
                 estimated_cost_usd = (total_context_tokens / 1000.0) * estimated_cost_per_1k
                 cache_tier = str(resolution.provenance.cache) if resolution.provenance.cache in {"cold", "warm", "hot"} else "cold"
+                assembly_metadata = resolution.answerability_metadata.evidence_assembly if resolution.answerability_metadata else None
+                answerable_context_tokens = assembly_metadata.result_context_tokens if assembly_metadata else 0
                 resolution = resolution.model_copy(
                     update={
                         "metrics": ResolutionMetrics(
@@ -1702,6 +2038,19 @@ def build_server(
                             elapsed_ms=(time.monotonic() - resolve_started_monotonic) * 1000.0,
                             estimated_cost_per_1k_tokens=estimated_cost_per_1k,
                             estimated_cost_usd=estimated_cost_usd,
+                            injected_context_tokens=total_context_tokens,
+                            expected_incremental_primary_cost_usd=estimated_cost_usd,
+                            primary_llm_usage_known=False,
+                            total_known_cloud_cost_usd=0.0,
+                            total_estimated_cloud_cost_usd=estimated_cost_usd,
+                            pricing_snapshot_id="mcp-call-configured-rate" if estimated_cost_per_1k > 0 else "unknown-zero",
+                            usage_source_summary="mcp_context_only",
+                            assembly_mode=assembly_metadata.assembly_mode if assembly_metadata else "off",
+                            answerable_context_tokens=answerable_context_tokens,
+                            assembly_token_delta=assembly_metadata.token_delta if assembly_metadata else 0,
+                            assembly_items_protected=assembly_metadata.items_protected if assembly_metadata else 0,
+                            assembly_items_deduped=assembly_metadata.items_deduped if assembly_metadata else 0,
+                            assembly_technical_limit_hit=assembly_metadata.technical_limit_hit if assembly_metadata else None,
                         ),
                     }
                 )
@@ -1786,6 +2135,7 @@ def build_server(
             query = str(args.get("query", "")).strip()
             mode = str(args.get("mode", "hybrid")).strip()
             limit = max(1, int(args.get("limit", 10)))
+            context_domain = _context_domain(args.get("context"))
             if not query:
                 await _record("error")
                 return _json_result({"code": "invalid_input", "message": "query is required"}, is_error=True)
@@ -1800,7 +2150,13 @@ def build_server(
                 if score <= 0 and mode == "lexical":
                     continue
                 final_score = round(
-                    max(0.0, min(1.0, 0.2 + score * 0.2 + scenario.score * 0.5 - _scenario_penalty(scenario, query_tokens))),
+                    max(
+                        0.0,
+                        min(
+                            1.0,
+                            0.2 + score * 0.2 + scenario.score * 0.5 - _scenario_penalty(scenario, query_tokens, domain=context_domain),
+                        ),
+                    ),
                     4,
                 )
                 results.append(
@@ -1893,7 +2249,7 @@ def build_server(
                         contradiction_signal=float(scenario.contradiction_signal),
                         prior_successes=int(scenario.prior_successes),
                         has_explicit_pin=bool(preferred_items),
-                        correction_confirmed=False,
+                        correction_confirmed=rating == "useful" and scenario.last_outcome == "wrong",
                     ),
                     scenario.memory_state,
                 )
@@ -1948,6 +2304,7 @@ def build_server(
             )
             legacy_outcome = "wrong" if rating == "wrong" else rating
             await scenario_store.record_outcome(scenario_id, legacy_outcome)
+            updated = await scenario_store.get(scenario_id)
             try:
                 await metrics_store.record_scenario_outcome(scenario_id=scenario_id, result=legacy_outcome, note=correction[:200])
             except Exception:
@@ -1962,16 +2319,16 @@ def build_server(
                     await metrics_store.record_draft_event(status="unused", directional_correct=False, metadata={"source": "feedback"})
             except Exception:
                 pass
-            if rating == "useful" and scenario.memory_state == "trusted":
+            post_memory_state = updated.memory_state if updated else scenario.memory_state
+            if rating == "useful" and post_memory_state == "trusted":
                 await metrics_store.increment_counter("promotions_still_trusted_total")
-            if rating == "useful" and scenario.last_outcome == "wrong":
+            if rating == "useful" and scenario.last_outcome == "wrong" and post_memory_state == "trusted":
                 await metrics_store.increment_counter("corrections_survived_total")
-            if rating in {"useful", "partial"} and scenario.memory_state == "demoted":
+            if rating in {"useful", "partial"} and scenario.memory_state == "demoted" and post_memory_state != "demoted":
                 await metrics_store.increment_counter("demotion_recovery_total")
             promotion_ring.append(transition)
             if len(promotion_ring) > 5:
                 del promotion_ring[0]
-            updated = await scenario_store.get(scenario_id)
             append_log(
                 repo_root,
                 tool=name,
@@ -2180,6 +2537,7 @@ def build_server(
                     )
                     return CallToolResult(
                         content=[link, *_make_text(json.dumps(dashboard_payload))],
+                        structuredContent=dashboard_payload,
                     )
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.debug("ResourceLink attach failed, falling back: %s", exc)
@@ -2247,6 +2605,194 @@ def build_server(
                 )
             await _record("ok")
             return _json_result(resolution.model_dump(mode="json"))
+
+        if name == "vaner.prepared_work.dashboard":
+            limit = max(1, min(100, int(args.get("limit", 20))))
+            include_advisory = bool(args.get("include_advisory") or False)
+            include_diagnostics = bool(args.get("include_diagnostics") or False)
+            context_id = str(args.get("context_id", "")).strip() or None
+            surface = str(args.get("surface", "mcp_app")).strip() or "mcp_app"
+            if surface not in {"desktop", "cockpit", "mcp_app", "api"}:
+                surface = "mcp_app"
+
+            def _prepared_work_result(prepared_payload: dict[str, Any]) -> CallToolResult:
+                try:
+                    from mcp.types import ResourceLink  # type: ignore[import-not-found]
+
+                    from vaner.integrations.capability import ClientCapabilityTier, current_tier
+                    from vaner.mcp.apps import (
+                        PREPARED_WORK_DESCRIPTION,
+                        PREPARED_WORK_MIME,
+                        PREPARED_WORK_NAME,
+                        PREPARED_WORK_TITLE,
+                        PREPARED_WORK_URI,
+                        prepared_work_tool_meta,
+                    )
+
+                    session = getattr(getattr(server, "request_context", None), "session", None)
+                    tier = current_tier(session) if session is not None else ClientCapabilityTier.UNKNOWN
+                    if tier is ClientCapabilityTier.TIER_4 and getattr(config.mcp, "apps_ui_enabled", True):
+                        link = ResourceLink(
+                            type="resource_link",
+                            uri=PREPARED_WORK_URI,  # type: ignore[arg-type]
+                            name=PREPARED_WORK_NAME,
+                            title=PREPARED_WORK_TITLE,
+                            description=PREPARED_WORK_DESCRIPTION,
+                            mimeType=PREPARED_WORK_MIME,
+                            meta=prepared_work_tool_meta(),
+                        )
+                        return CallToolResult(
+                            content=[link, *_make_text(json.dumps(prepared_payload))],
+                            structuredContent=prepared_payload,
+                        )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("Prepared Work ResourceLink attach failed, falling back: %s", exc)
+                return _json_result(prepared_payload)
+
+            if engine is None:
+                try:
+                    body = await _daemon().get_prepared_work(
+                        limit=limit,
+                        include_advisory=include_advisory,
+                        include_diagnostics=include_diagnostics,
+                        context_id=context_id,
+                        surface=surface,
+                    )
+                    await _record("ok")
+                    return _prepared_work_result(body)
+                except VanerDaemonUnavailable:
+                    pass
+            from vaner.intent.prepared_work import build_prepared_work_cards
+            from vaner.store.artefacts import ArtefactStore
+
+            artefact_db_path = active_repo_root / ".vaner" / "artefacts.db"
+            prepared_store = (
+                engine.store if engine is not None and getattr(engine, "store", None) is not None else ArtefactStore(artefact_db_path)
+            )
+            await prepared_store.initialize()
+            products = await prepared_store.list_work_products(include_hidden=True, include_terminal=True, limit=200)
+            predictions = list(engine.get_active_predictions()) if engine is not None else []
+            prepared_cards = build_prepared_work_cards(
+                work_products=products,
+                predictions=predictions,
+                include_advisory=include_advisory,
+                include_diagnostics=include_diagnostics,
+                context_id=context_id,
+                surface=surface,
+                limit=limit,
+            )
+            await _record("ok")
+            prepared_payload = {"prepared_work": [card.model_dump(mode="json") for card in prepared_cards]}
+            return _prepared_work_result(prepared_payload)
+
+        if name in {
+            "vaner.work_products.list",
+            "vaner.work_products.inspect",
+            "vaner.work_products.export",
+            "vaner.work_products.dismiss",
+            "vaner.work_products.feedback",
+        }:
+            from vaner.models.work_product import WorkProductFeedbackState, WorkProductType
+            from vaner.store.artefacts import ArtefactStore
+
+            artefact_db_path = active_repo_root / ".vaner" / "artefacts.db"
+            work_product_store = (
+                engine.store if engine is not None and getattr(engine, "store", None) is not None else ArtefactStore(artefact_db_path)
+            )
+            await work_product_store.initialize()
+
+            if name == "vaner.work_products.list":
+                raw_type = args.get("type")
+                product_type: WorkProductType | None = None
+                if isinstance(raw_type, str) and raw_type.strip():
+                    try:
+                        product_type = WorkProductType(raw_type.strip())
+                    except ValueError:
+                        await _record("error")
+                        return _json_result(
+                            {"code": "invalid_type", "message": f"unknown work product type: {raw_type}"},
+                            is_error=True,
+                        )
+                limit = int(args.get("limit", 50))
+                products = await work_product_store.list_work_products(
+                    include_hidden=bool(args.get("include_hidden") or False),
+                    include_terminal=bool(args.get("include_terminal") or False),
+                    type=product_type,
+                    limit=max(1, min(200, limit)),
+                )
+                await _record("ok")
+                return _json_result({"work_products": [product.model_dump(mode="json") for product in products]})
+
+            product_id = str(args.get("work_product_id", "")).strip()
+            if not product_id:
+                await _record("error")
+                return _json_result(
+                    {"code": "invalid_input", "message": "work_product_id is required"},
+                    is_error=True,
+                )
+
+            if name == "vaner.work_products.inspect":
+                product = await work_product_store.get_work_product(product_id)
+                if product is None:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such work product: {product_id}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result(product.model_dump(mode="json"))
+
+            if name == "vaner.work_products.export":
+                try:
+                    exported = await work_product_store.export_work_product(product_id)
+                except KeyError:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such work product: {product_id}"},
+                        is_error=True,
+                    )
+                except PermissionError as exc:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_exportable", "message": str(exc)},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result(exported.model_dump(mode="json"))
+
+            if name == "vaner.work_products.dismiss":
+                ok = await work_product_store.dismiss_work_product(product_id)
+                if not ok:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such work product: {product_id}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result({"ok": True})
+
+            if name == "vaner.work_products.feedback":
+                raw_feedback = str(args.get("feedback_state", "")).strip()
+                try:
+                    feedback = WorkProductFeedbackState(raw_feedback)
+                except ValueError:
+                    await _record("error")
+                    return _json_result(
+                        {
+                            "code": "invalid_feedback",
+                            "message": "feedback_state must be one of none|useful|partial|irrelevant",
+                        },
+                        is_error=True,
+                    )
+                ok = await work_product_store.feedback_work_product(product_id, feedback)
+                if not ok:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such work product: {product_id}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result({"ok": True})
 
         if name in {
             "vaner.goals.list",
@@ -2665,7 +3211,7 @@ def build_server(
                 )
             await _record("error")
             return _json_result(
-                {"code": "invalid_input", "message": f"unknown goals tool: {name}"},
+                {"code": "invalid_input", "message": f"unknown artefacts/sources tool: {name}"},
                 is_error=True,
             )
 
@@ -2761,19 +3307,16 @@ def build_server(
 
             if name == "vaner.deep_run.defaults":
                 # WS9: bundle-derived seeds for the Deep-Run start dialog.
-                from vaner.cli.commands.setup import (
-                    _answers_from_payload,
-                    _default_answers,
-                    _read_policy_section,
-                    _read_setup_section,
-                )
+                from vaner.cli.commands.setup import _default_answers
                 from vaner.intent.deep_run_defaults import (
                     deep_run_defaults_for,
                     defaults_to_dict,
                 )
                 from vaner.setup.catalog import bundle_by_id
+                from vaner.setup.config_io import read_policy_section, read_setup_section
+                from vaner.setup.serializers import answers_from_payload
 
-                policy_section = _read_policy_section(active_repo_root)
+                policy_section = read_policy_section(active_repo_root)
                 selected_bundle_id = policy_section.get("selected_bundle_id") or "hybrid_balanced"
                 try:
                     bundle = bundle_by_id(str(selected_bundle_id))
@@ -2786,10 +3329,10 @@ def build_server(
                         },
                         is_error=True,
                     )
-                setup_section = _read_setup_section(active_repo_root)
+                setup_section = read_setup_section(active_repo_root)
                 if setup_section:
                     try:
-                        answers = _answers_from_payload(setup_section)
+                        answers = answers_from_payload(setup_section)
                     except Exception:
                         answers = _default_answers()
                 else:
@@ -2856,6 +3399,7 @@ def build_server(
                 "decision": decision.model_dump(mode="json") if decision else None,
                 "memory_quality": await metrics_store.memory_quality_snapshot(),
                 "recent_promotions": promotion_ring[-5:],
+                "prediction_health": await _prediction_health_snapshot(),
             }
             append_log(
                 repo_root,

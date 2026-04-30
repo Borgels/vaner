@@ -15,6 +15,12 @@ from rich.console import Console
 from rich.table import Table
 
 from vaner.cli.commands.config import load_config
+from vaner.clients.daemon import (
+    DAEMON_PROBE_TIMEOUT,
+    DEFAULT_BASE_URL,
+    daemon_base_url_from_env,
+    probe_daemon_status,
+)
 from vaner.integrations.guidance import current_version, load_guidance
 
 integrations_app = typer.Typer(
@@ -22,7 +28,7 @@ integrations_app = typer.Typer(
     no_args_is_help=True,
 )
 
-_DAEMON_URL = "http://127.0.0.1:8473"
+_DAEMON_URL = daemon_base_url_from_env(DEFAULT_BASE_URL)
 
 
 @integrations_app.command("doctor", help="Run the integration-layer health check.")
@@ -138,20 +144,22 @@ def _check_primer_parity(agents_md: Path) -> dict[str, Any]:
 
 
 def _probe_daemon(url: str) -> dict[str, Any]:
-    try:
-        with httpx.Client(timeout=1.5) as client:
-            resp = client.get(f"{url}/health")
-            resp.raise_for_status()
-            guidance_resp = client.get(f"{url}/integrations/guidance")
+    with httpx.Client(timeout=DAEMON_PROBE_TIMEOUT) as client:
+        status = probe_daemon_status(url, client=client)
+        if not status.get("reachable"):
+            return status
+        try:
+            guidance_resp = client.get(f"{url.rstrip('/')}/integrations/guidance")
             guidance_ok = guidance_resp.status_code == 200
-            return {
-                "reachable": True,
-                "url": url,
-                "health": resp.json() if resp.headers.get("content-type", "").startswith("application/json") else "ok",
-                "guidance_endpoint_ok": guidance_ok,
-            }
-    except httpx.HTTPError as exc:
-        return {"reachable": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
+        except httpx.HTTPError as exc:
+            return {"reachable": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
+    return {
+        "reachable": True,
+        "url": status["url"],
+        "status": status.get("payload", status.get("status", "ok")),
+        "prediction_health": (status.get("payload") or {}).get("prediction_health", {}) if isinstance(status.get("payload"), dict) else {},
+        "guidance_endpoint_ok": guidance_ok,
+    }
 
 
 def _probe_handoff(repo_root: Path) -> dict[str, Any]:
@@ -238,6 +246,13 @@ def _render_pretty(report: dict[str, Any]) -> None:
     daemon = report["daemon"]
     if daemon["reachable"]:
         console.print(f"Daemon: [green]reachable[/green]  guidance endpoint: {'ok' if daemon['guidance_endpoint_ok'] else 'FAIL'}")
+        prediction_health = daemon.get("prediction_health") or {}
+        if prediction_health:
+            console.print(
+                "Prediction health: "
+                f"{prediction_health.get('diagnostic_status', 'unknown')} "
+                f"(active={prediction_health.get('active_prediction_count', 0)})"
+            )
     else:
         console.print(f"Daemon: [red]unreachable[/red]  ({daemon.get('error', 'unknown')})")
     handoff = report["handoff"]

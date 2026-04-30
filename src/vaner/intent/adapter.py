@@ -110,7 +110,7 @@ class ContextSource(Protocol):
 
     source_type: str
 
-    async def list_items(self, limit: int = 500) -> list[CorpusItem]:
+    async def list_items(self, limit: int = 5000) -> list[CorpusItem]:
         """Enumerate available context items."""
         ...
 
@@ -175,7 +175,7 @@ class CodeRepoAdapter:
         self._last_collect_time = now
         return [self.to_signal(m) for m in mutations]
 
-    async def list_items(self, limit: int = 500) -> list[CorpusItem]:
+    async def list_items(self, limit: int = 5000) -> list[CorpusItem]:
         items: list[CorpusItem] = []
         for path in scan_repo_files(self.repo_root, max_files=limit):
             rel = str(path.relative_to(self.repo_root))
@@ -214,7 +214,7 @@ class CodeRepoAdapter:
 
     async def detect_mutations(self, since: float) -> list[MutationEvent]:
         events: list[MutationEvent] = []
-        for path in scan_repo_files(self.repo_root, max_files=500):
+        for path in scan_repo_files(self.repo_root, max_files=5000):
             stat = path.stat()
             if stat.st_mtime < since:
                 continue

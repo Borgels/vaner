@@ -31,6 +31,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from vaner import __version__, api
+from vaner.broker.prompting import build_evidence_bound_context_prompt
 from vaner.cli.commands import mcp_clients
 from vaner.cli.commands.clients import clients_app
 from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
@@ -281,6 +282,14 @@ def _canon_key(key: str) -> str:
     normalized = key.strip()
     if normalized in {"max_age_seconds", "max_context_tokens"}:
         return f"limits.{normalized}"
+    exploration_aliases = {
+        "exploration.endpoint": "exploration.exploration_endpoint",
+        "exploration.model": "exploration.exploration_model",
+        "exploration.backend": "exploration.exploration_backend",
+        "exploration.api_key": "exploration.exploration_api_key",
+    }
+    if normalized in exploration_aliases:
+        return exploration_aliases[normalized]
     return normalized
 
 
@@ -297,6 +306,14 @@ def _config_attr_path_for_key(key: str) -> str:
 def _config_write_target_for_key(key: str) -> tuple[str, str]:
     if key.startswith("limits."):
         return "limits", key.removeprefix("limits.")
+    exploration_targets = {
+        "exploration.exploration_endpoint": ("exploration", "endpoint"),
+        "exploration.exploration_model": ("exploration", "model"),
+        "exploration.exploration_backend": ("exploration", "backend"),
+        "exploration.exploration_api_key": ("exploration", "api_key"),
+    }
+    if key in exploration_targets:
+        return exploration_targets[key]
     parts = key.split(".")
     if len(parts) < 2:
         raise ValueError("Key must include a section prefix.")
@@ -371,7 +388,10 @@ def _iter_config_keys(config: VanerConfig) -> list[dict[str, Any]]:
         for field_name, field in section_fields.items():
             if section == "intent" and field_name in {"skills_loop_enabled", "max_feedback_events_per_cycle"}:
                 continue
-            key = f"{section}.{field_name}"
+            key_name = field_name
+            if section == "exploration" and field_name.startswith("exploration_"):
+                key_name = field_name.removeprefix("exploration_")
+            key = f"{section}.{key_name}"
             value = getattr(section_model, field_name)
             rows.append({"key": key, "value": value, "annotation": field.annotation, "description": field.description or ""})
             if section == "gateway" and field_name == "routes" and isinstance(value, dict):
@@ -1357,7 +1377,7 @@ def compare(
         package = await api.aquery(prompt, repo_root, config=config, top_n=6)
         enriched_payload = {
             "messages": [
-                {"role": "system", "content": "Use provided context when relevant.\n\n" + package.injected_context},
+                {"role": "system", "content": build_evidence_bound_context_prompt(package.injected_context)},
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
@@ -1974,6 +1994,41 @@ def doctor(
             "fix": "Run `vaner up --path .` (or `vaner daemon start --path . --no-once`).",
         }
     )
+    try:
+        status_response = httpx.get(f"{cockpit_url.rstrip('/')}/status", timeout=1.5)
+        status_response.raise_for_status()
+        status_payload = status_response.json()
+        prediction_health = status_payload.get("prediction_health", {}) if isinstance(status_payload, dict) else {}
+        active_predictions = int(prediction_health.get("active_prediction_count", 0) or 0)
+        engine_available = bool(prediction_health.get("engine_available", False))
+        checks.append(
+            {
+                "name": "prediction_engine_available",
+                "ok": engine_available,
+                "level": "warn" if not engine_available else "pass",
+                "detail": prediction_health.get("diagnostic_status", "unknown"),
+                "fix": "Start the daemon with `vaner daemon serve-http --with-engine` so predictions can mature.",
+            }
+        )
+        checks.append(
+            {
+                "name": "active_predictions_present",
+                "ok": active_predictions > 0,
+                "level": "warn" if active_predictions == 0 else "pass",
+                "detail": f"active={active_predictions} readiness={prediction_health.get('readiness_counts', {})}",
+                "fix": "Let a precompute cycle run, submit a composer signal, or check stale evidence/invalidation diagnostics.",
+            }
+        )
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "prediction_health_status",
+                "ok": False,
+                "level": "warn",
+                "detail": str(exc),
+                "fix": "Start the HTTP daemon and retry `vaner doctor`.",
+            }
+        )
 
     cursor_mcp_path = repo_root / ".cursor" / "mcp.json"
     claude_mcp_path = Path.home() / ".claude" / "claude_desktop_config.json"

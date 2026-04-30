@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vaner 0.8.8 Benchmark Canvas</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #111113;
+        --panel: #18191d;
+        --panel-2: #202126;
+        --ink: #f2f0e8;
+        --muted: #aaa7a0;
+        --line: #34363d;
+        --green: #7fd08a;
+        --blue: #86b7ff;
+        --amber: #f0c36a;
+        --red: #ff8d8d;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main { width: min(1180px, calc(100vw - 40px)); margin: 0 auto; padding: 44px 0; }
+      header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 28px;
+        align-items: end;
+        padding-bottom: 28px;
+        border-bottom: 1px solid var(--line);
+      }
+      h1, h2, h3, p { margin: 0; }
+      .eyebrow { color: var(--amber); font-size: 12px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
+      h1 { max-width: 850px; margin-top: 10px; font-size: clamp(42px, 6vw, 78px); line-height: 0.95; letter-spacing: 0; }
+      .subtitle { max-width: 790px; margin-top: 18px; color: var(--muted); font-size: 18px; line-height: 1.45; }
+      .stamp { min-width: 250px; padding: 18px; border: 1px solid var(--line); background: var(--panel); }
+      .stamp .label { color: var(--muted); font-size: 12px; }
+      .stamp .value { margin-top: 7px; font-size: 23px; font-weight: 850; }
+      .grid { display: grid; gap: 18px; }
+      .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 28px; }
+      .card { border: 1px solid var(--line); background: var(--panel); padding: 18px; }
+      .warn { border-color: color-mix(in srgb, var(--amber), var(--line) 55%); }
+      .bad { border-color: color-mix(in srgb, var(--red), var(--line) 55%); }
+      .good { border-color: color-mix(in srgb, var(--green), var(--line) 55%); }
+      .metric .number { font-size: 40px; font-weight: 850; line-height: 1; }
+      .metric .caption { margin-top: 9px; color: var(--muted); font-size: 13px; line-height: 1.35; }
+      .metric .caption strong { color: var(--ink); }
+      .sections { grid-template-columns: 1.1fr 0.9fr; margin-top: 18px; }
+      .triptych { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; }
+      h2 { font-size: 20px; margin-bottom: 16px; }
+      h3 { font-size: 15px; margin: 16px 0 8px; }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      th, td { padding: 13px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+      td strong, .green { color: var(--green); }
+      .amber { color: var(--amber); }
+      .red { color: var(--red); }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        padding: 4px 9px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .list { display: grid; gap: 12px; }
+      .item { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 11px; align-items: start; }
+      .dot {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--blue);
+        font-size: 13px;
+        font-weight: 800;
+      }
+      .item strong { display: block; margin-bottom: 3px; font-size: 14px; }
+      .item span, .note { color: var(--muted); font-size: 13px; line-height: 1.38; }
+      .footer { margin-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+      code { color: var(--blue); }
+      @media (max-width: 860px) {
+        header, .metrics, .sections, .triptych { grid-template-columns: 1fr; }
+        main { width: min(100vw - 28px, 1180px); padding: 28px 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <div class="eyebrow">0.8.8 release validation · public canvas</div>
+          <h1>Vaner is useful when it has the right context. Coverage is still the bottleneck.</h1>
+          <p class="subtitle">
+            This run combines the 0.8.8 scenario benchmark, a broad public naked/RAG/Vaner comparison,
+            and the deep-run maturation suite. It uses public corpora or public-layout fixtures and reports
+            aggregate benchmark evidence without exposing local workspace details.
+          </p>
+        </div>
+        <div class="stamp">
+          <div class="label">Run date</div>
+          <div class="value">2026-04-29</div>
+          <div class="label" style="margin-top:14px">Models</div>
+          <div class="note">Vaner: <code>ollama:qwen3.5:35b</code><br>Answer: <code>claude:sonnet</code><br>Judge: <code>claude:opus</code></div>
+        </div>
+      </header>
+
+      <section class="grid metrics">
+
+      <div class="card metric good">
+        <div class="number">20/20</div>
+        <div class="caption"><strong>Scenario related coverage</strong><br>100% related, 85% exact; promotion gate passed.</div>
+      </div>
+
+      <div class="card metric good">
+        <div class="number">5/8</div>
+        <div class="caption"><strong>Quality A/B</strong><br>Vaner-context answers won 62% of judged pairs.</div>
+      </div>
+
+      <div class="card metric good">
+        <div class="number">7.41</div>
+        <div class="caption"><strong>Broad public quality</strong><br>+2.61 vs naked, +0.40 vs RAG across 48 cases.</div>
+      </div>
+
+      <div class="card metric warn">
+        <div class="number">+0.844</div>
+        <div class="caption"><strong>Deep-run delta</strong><br>3/5 gates passed; judge agreement and persistence band failed.</div>
+      </div>
+      </section>
+
+      <section class="grid sections">
+        <div class="card">
+          <h2>Layer Results</h2>
+          <table>
+            <thead><tr><th>Layer</th><th>Benchmark</th><th>Result</th><th>Read</th></tr></thead>
+            <tbody>
+              <tr><td>Prediction / exact targeting</td><td>20 Vaner repo mechanism queries</td><td>17 exact, 3 partial, 0 no-scenario cycles</td><td>Exact targeting is now strong on named components; remaining partials are mostly broad process questions.</td></tr>
+              <tr><td>Answer quality</td><td>8 Claude-judged pairs</td><td>5 Vaner wins, 3 cold wins, 0 ties</td><td>When useful context is present, the answer improves; weak/empty context can lose.</td></tr>
+              <tr><td>Naked vs RAG vs Vaner</td><td>48 public cases</td><td>Vaner quality 7.41 vs RAG 7.01 vs naked 4.80</td><td>Vaner beats naked and edges RAG in this deterministic public harness, with similar hit/recall and lower estimated cost than RAG.</td></tr>
+              <tr><td>Deep-run maturation</td><td>40 sessions / 40 outcomes</td><td>Mean improvement +0.844; stale rate 0%</td><td>Strong synthetic maturation signal, but the current fixture judge has no external agreement signal and persistence is too high.</td></tr>
+              <tr><td>Agent-with-tools layer</td><td>Harness restored and CLI import validated</td><td>Not included as a scored release claim</td><td>Needs a configured OpenAI-compatible tool-calling answer endpoint and running Vaner daemon; not faked in this pass.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h2>Answer The Question</h2>
+          <div class="list">
+            <div class="item"><div class="dot">1</div><div><strong>When Vaner is better</strong><span>Best on codebase tasks where the needed object/path is present in prepared context. The quality judge favored Vaner in 5 of 8 paired scenario answers, and the broad public harness shows +2.61 quality over naked and +0.40 over RAG.</span></div></div>
+            <div class="item"><div class="dot">2</div><div><strong>Why it works</strong><span>It front-loads context selection before the final answer: exact component hints, symbol/path signals, and cached packages reduce answer-time search and can correct cold-answer misunderstandings.</span></div></div>
+            <div class="item"><div class="dot">3</div><div><strong>Where it is weaker</strong><span>Weakness is precision under broad lifecycle prompts: 3 of 20 turns were only partial, with cold-start still under-specified. No turns lacked relevant context.</span></div></div>
+            <div class="item"><div class="dot">4</div><div><strong>Cost and performance</strong><span>Scenario precompute averaged 10.2s; cache lookup averaged 2.1s. Warm answer latency was 119.1s vs 168.4s cold in the judged sample. Broad public estimated cost was $0.452 for Vaner vs $0.481 for RAG and $0.346 naked.</span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid triptych">
+        <div class="card">
+          <h2>Scenario Gate</h2>
+          <table>
+            <tbody>
+              <tr><td>Engine LLM</td><td>wired via local Ollama</td></tr>
+              <tr><td>Mean relevance</td><td>0.81</td></tr>
+              <tr><td>No-scenario cycles</td><td>0/20 (0%)</td></tr>
+              <tr><td>Gate status</td><td>5/5 passed; PASS</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h2>Broad Public Arms</h2>
+          <table>
+            <thead><tr><th>Arm</th><th>Hit@3</th><th>Recall@5</th><th>Quality</th><th>Cost</th></tr></thead>
+            <tbody>
+              <tr><td>Naked</td><td>0%</td><td>0%</td><td>4.80</td><td>$0.346</td></tr>
+              <tr><td>RAG</td><td>46%</td><td>50%</td><td>7.01</td><td>$0.481</td></tr>
+              <tr><td>Vaner</td><td>46%</td><td>50%</td><td>7.41</td><td>$0.452</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h2>Eval/Fix Loop</h2>
+          <div class="list">
+            <div class="item"><div class="dot">A</div><div><strong>Promote only with gates</strong><span>Separate coverage, quality, latency, cost, and leak gates. Failed gates become tracked fixes, not rewritten conclusions.</span></div></div>
+            <div class="item"><div class="dot">B</div><div><strong>Debug by failure slice</strong><span>First slice for 0.8.9: named-component queries that produced zero scenarios or weak primary evidence.</span></div></div>
+            <div class="item"><div class="dot">C</div><div><strong>Publish clean evidence</strong><span>Public reports should include methodology, aggregate results, limitations, and leak scans without naming local paths or internal workspaces.</span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid sections">
+        <div class="card">
+          <h2>Broad Public Archetypes</h2>
+          <table>
+            <thead><tr><th>Archetype</th><th>Cases</th><th>Vaner hit@3</th><th>Vaner quality</th><th>Lift</th></tr></thead>
+            <tbody>
+              <tr><td>codebase navigation</td><td>25</td><td>32%</td><td>7.03</td><td>0.40 vs RAG</td></tr><tr><td>developer swe</td><td>20</td><td>55%</td><td>7.61</td><td>0.40 vs RAG</td></tr><tr><td>learner</td><td>1</td><td>100%</td><td>9.20</td><td>0.40 vs RAG</td></tr><tr><td>researcher</td><td>1</td><td>100%</td><td>9.20</td><td>0.40 vs RAG</td></tr><tr><td>writer</td><td>1</td><td>100%</td><td>9.20</td><td>0.40 vs RAG</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Deep-Run Archetypes</h2>
+          <table>
+            <thead><tr><th>Archetype</th><th>Mean improvement delta</th></tr></thead>
+            <tbody>
+              <tr><td>developer</td><td>0.853</td></tr><tr><td>planner</td><td>0.837</td></tr><tr><td>researcher</td><td>0.861</td></tr><tr><td>writer</td><td>0.826</td></tr>
+            </tbody>
+          </table>
+          <p class="footer">Deep-run gates: persistence 100%, rollback 0%, stale-by-morning 0%, judge agreement kappa 0.000.</p>
+        </div>
+      </section>
+
+      <p class="footer">
+        Public artifact generated from sanitized aggregate JSON.
+        No absolute local filesystem paths are intentionally included in this canvas.
+      </p>
+    </main>
+  </body>
+</html>

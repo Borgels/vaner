@@ -8,12 +8,14 @@ import asyncio
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 if importlib.util.find_spec("mcp") is None:  # pragma: no cover - CI matrix dependent
     pytest.skip("mcp package is unavailable in this test environment", allow_module_level=True)
 
+from vaner.integrations.capability import detect_tier, record_tier, reset_cache
 from vaner.intent.prediction import (
     PredictedPrompt,
     PredictionArtifacts,
@@ -21,6 +23,13 @@ from vaner.intent.prediction import (
     PredictionSpec,
     prediction_id,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_capability_cache() -> None:
+    reset_cache()
+    yield
+    reset_cache()
 
 
 def _prompt(
@@ -66,8 +75,16 @@ class _StubEngine:
         return list(self._prompts)
 
 
-def _call(server, name: str, arguments: dict | None = None) -> dict:
-    async def _do() -> dict:
+def _json_payload_from_result(result) -> dict:
+    for item in result.root.content:
+        text = getattr(item, "text", None)
+        if text is not None:
+            return json.loads(text)
+    raise AssertionError("tool result did not include a JSON text payload")
+
+
+def _call_result(server, name: str, arguments: dict | None = None):
+    async def _do():
         from mcp.types import CallToolRequest, CallToolRequestParams
 
         handler = server.request_handlers[CallToolRequest]
@@ -75,10 +92,13 @@ def _call(server, name: str, arguments: dict | None = None) -> dict:
             method="tools/call",
             params=CallToolRequestParams(name=name, arguments=arguments or {}),
         )
-        result = await handler(req)
-        return json.loads(result.root.content[0].text)
+        return await handler(req)
 
     return asyncio.run(_do())
+
+
+def _call(server, name: str, arguments: dict | None = None) -> dict:
+    return _json_payload_from_result(_call_result(server, name, arguments))
 
 
 def _build(tmp_path: Path, prompts: list[PredictedPrompt]):
@@ -108,6 +128,42 @@ def test_dashboard_returns_cards_with_ui_available_false_by_default(tmp_path: Pa
     # Adoptable ordering: ready alpha first.
     assert payload["predictions"][0]["label"] == "Ready alpha"
     assert payload["predictions"][0]["rank"] == 1
+
+
+def test_dashboard_fallback_path_sets_structured_content(tmp_path: Path) -> None:
+    server = _build(tmp_path, [_prompt(label="one")])
+    result = _call_result(server, "vaner.predictions.dashboard")
+    payload = _json_payload_from_result(result)
+    assert result.root.structuredContent == payload
+
+
+def test_dashboard_resource_link_path_sets_structured_content(tmp_path: Path) -> None:
+    from mcp.server.lowlevel.server import RequestContext, request_ctx
+
+    class _Session:
+        pass
+
+    session = _Session()
+    session.client_params = SimpleNamespace(
+        clientInfo=SimpleNamespace(name="tier4-client", version="1.0"),
+        capabilities=SimpleNamespace(
+            experimental={"io.modelcontextprotocol/ui": {}},
+            roots=SimpleNamespace(),
+            sampling=None,
+        ),
+    )
+    record_tier(session, detect_tier(session.client_params))
+    token = request_ctx.set(RequestContext(request_id="test", meta=None, session=session, lifespan_context=None))
+    try:
+        server = _build(tmp_path, [_prompt(label="one")])
+        result = _call_result(server, "vaner.predictions.dashboard")
+    finally:
+        request_ctx.reset(token)
+
+    payload = _json_payload_from_result(result)
+    assert payload["ui_available"] is True
+    assert result.root.structuredContent == payload
+    assert any(getattr(item, "type", None) == "resource_link" for item in result.root.content)
 
 
 def test_dashboard_respects_limit(tmp_path: Path) -> None:

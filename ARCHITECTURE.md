@@ -12,7 +12,7 @@ Vaner is a local-first predictive context engine for coding assistants.
 
 ## Core packages
 
-- `src/vaner/engine/`: orchestration and runtime loop
+- `src/vaner/engine.py`: orchestration and runtime loop
 - `src/vaner/intent/`: prediction, scoring, and frontier state
 - `src/vaner/store/`: persistence and retrieval for artefacts/signals
 - `src/vaner/broker/`: context selection and package assembly
@@ -23,7 +23,7 @@ Vaner is a local-first predictive context engine for coding assistants.
 
 - Default mode is local-first with explicit repository scope.
 - Safety and privacy policy modules gate what leaves local storage.
-- Training and moat-sensitive workflows are intentionally isolated to private repos.
+- Training and sensitive evaluation workflows are intentionally isolated from the public runtime repository.
 
 ## Agent skills loop
 

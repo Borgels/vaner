@@ -148,3 +148,13 @@ async def test_legacy_bare_string_llm_path_still_works(temp_repo: Path):
     # No structured client means no thinking traces.
     for p in active:
         assert p.artifacts.thinking_traces == []
+
+
+def test_string_model_wires_structured_client_for_token_clamp(temp_repo: Path, monkeypatch: pytest.MonkeyPatch):
+    _seed_repo(temp_repo)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    engine = VanerEngine(adapter=CodeRepoAdapter(temp_repo), llm="openai:test-model")
+
+    assert engine.llm is not None
+    assert engine.structured_llm is not None

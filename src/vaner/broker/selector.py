@@ -25,25 +25,117 @@ _COMMON_WORDS = frozenset(
     " all any get has had its may not new one out per set via was yet you"
     # short common programming words that dilute scoring
     " work works working longer seems look looks correct correctly already just"
-    " which would could should need needs using between only still over under".split()
+    " which would could should need needs using between only still over under"
+    " how does explain describe walk through".split()
 )
+
+
+def _prompt_terms(prompt: str) -> list[str]:
+    """Extract searchable prompt terms, splitting code-style identifiers."""
+
+    terms: list[str] = []
+    for raw in _identifier_chunks(prompt):
+        lowered = raw.lower()
+        terms.append(lowered)
+        terms.extend(_term_variants(lowered))
+        terms.extend(part.lower() for part in raw.split("_") if len(part) > 2)
+        if lowered not in {"fastapi", "openapi"}:
+            terms.extend(part.lower() for part in _camel_parts(raw) if len(part) > 2)
+    return list(dict.fromkeys(term for term in terms if len(term) > 2 and term not in _COMMON_WORDS))
+
+
+def _term_variants(term: str) -> list[str]:
+    variants: list[str] = []
+    if len(term) > 4 and term.endswith("ies"):
+        variants.append(f"{term[:-3]}y")
+    if len(term) > 4 and term.endswith("es"):
+        variants.append(term[:-2])
+    if len(term) > 3 and term.endswith("s"):
+        variants.append(term[:-1])
+    return variants
+
+
+def _singularize(term: str) -> str:
+    variants = _term_variants(term)
+    return variants[-1] if variants else term
+
+
+def _identifier_chunks(text: str, *, max_len: int = 128) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    for char in text:
+        if char.isascii() and (char.isalnum() or char == "_"):
+            if not current and not char.isalpha():
+                continue
+            if len(current) < max_len:
+                current.append(char)
+            continue
+        if len(current) > 2:
+            chunks.append("".join(current))
+        current = []
+    if len(current) > 2:
+        chunks.append("".join(current))
+    return chunks
+
+
+def _camel_parts(identifier: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    for index in range(1, len(identifier)):
+        previous = identifier[index - 1]
+        current = identifier[index]
+        next_char = identifier[index + 1] if index + 1 < len(identifier) else ""
+        boundary = (
+            (previous.islower() and current.isupper())
+            or (previous.isalpha() and current.isdigit())
+            or (previous.isdigit() and current.isalpha())
+            or (previous.isupper() and current.isupper() and next_char.islower())
+        )
+        if boundary:
+            parts.append(identifier[start:index])
+            start = index
+    parts.append(identifier[start:])
+    return parts
 
 
 def score_artefact(prompt: str, artefact: Artefact, *, factor_sink: list[ScoreFactor] | None = None) -> float:
     # Extract identifiers: split on non-alphanumeric boundaries so
     # "col_insert()" → "col_insert", "Matrix.foo" → ["matrix", "foo"]
-    raw_terms = re.findall(r"[a-z][a-z0-9_]{2,}", prompt.lower())
-    text = f"{artefact.source_path} {artefact.content}".lower()
+    raw_terms = _prompt_terms(prompt)
+    path_text = artefact.source_path.lower()
+    basename = path_text.rsplit("/", 1)[-1]
+    stem = basename.rsplit(".", 1)[0]
+    content_text = artefact.content.lower()
 
     keyword_overlap = 0.0
     for term in raw_terms:
         if term in _COMMON_WORDS:
             continue
-        if term not in text:
+        path_hit = term in path_text
+        content_hit = term in content_text
+        if not path_hit and not content_hit:
             continue
         # Code identifiers (containing underscore) are stronger signals
         weight = 3.0 if "_" in term else 1.0
-        keyword_overlap += weight
+        if path_hit:
+            keyword_overlap += weight * (5.0 if term in basename else 3.0)
+            if term == stem or term == _singularize(stem):
+                keyword_overlap += weight * 8.0
+        if content_hit:
+            keyword_overlap += weight
+
+    doc_language_bonus = _doc_language_bonus(prompt, path_text)
+    keyword_overlap += doc_language_bonus
+    doc_domain_bonus = _doc_domain_bonus(path_text, content_text, raw_terms)
+    keyword_overlap += doc_domain_bonus
+    direct_lookup_bonus = _direct_lookup_bonus(prompt, path_text, content_text, raw_terms)
+    keyword_overlap += direct_lookup_bonus
+
+    prompt_mentions_tests = any(term in {"test", "tests", "testing", "spec", "specs"} for term in raw_terms)
+    if path_text.startswith(("src/", "lib/", "app/", "packages/")):
+        keyword_overlap += 0.7
+    elif path_text.startswith(("tests/", "test/")) and not prompt_mentions_tests:
+        keyword_overlap -= 6.0
 
     recency_bonus = _recency_bonus(artefact)
     if factor_sink is not None:
@@ -53,6 +145,30 @@ def score_artefact(prompt: str, artefact: Artefact, *, factor_sink: list[ScoreFa
                     name="keyword_overlap",
                     contribution=keyword_overlap,
                     detail="prompt terms matched source path/content",
+                )
+            )
+        if direct_lookup_bonus:
+            factor_sink.append(
+                ScoreFactor(
+                    name="direct_lookup_floor",
+                    contribution=direct_lookup_bonus,
+                    detail="direct documentation/origin lookup matched path/content",
+                )
+            )
+        if doc_language_bonus:
+            factor_sink.append(
+                ScoreFactor(
+                    name="doc_language_preference",
+                    contribution=doc_language_bonus,
+                    detail="English prompt prefers English documentation sources",
+                )
+            )
+        if doc_domain_bonus:
+            factor_sink.append(
+                ScoreFactor(
+                    name="doc_domain_match",
+                    contribution=doc_domain_bonus,
+                    detail="documentation path/content matched the prompt domain",
                 )
             )
         factor_sink.append(
@@ -65,6 +181,242 @@ def score_artefact(prompt: str, artefact: Artefact, *, factor_sink: list[ScoreFa
     return keyword_overlap + recency_bonus
 
 
+def _is_direct_lookup_prompt(prompt: str) -> bool:
+    q = prompt.lower()
+    return any(
+        phrase in q
+        for phrase in (
+            "where ",
+            "official documentation",
+            "documentation",
+            "docs",
+            "introduce",
+            "introduced",
+            "defined",
+            "implemented",
+            "explain where",
+        )
+    )
+
+
+def _needs_lexical_floor(prompt: str) -> bool:
+    terms = set(_prompt_terms(prompt))
+    return _is_direct_lookup_prompt(prompt) or bool(
+        terms
+        & {
+            "auth",
+            "authentication",
+            "security",
+            "oauth",
+            "token",
+            "scheme",
+            "dependency",
+            "dependencies",
+            "documentation",
+            "tutorial",
+            "first",
+            "steps",
+        }
+    )
+
+
+def _doc_language_bonus(prompt: str, path_text: str) -> float:
+    if not _english_prompt_likely(prompt):
+        return 0.0
+    if not ("/docs/" in path_text or path_text.startswith(("docs/", "doc/"))):
+        return 0.0
+    english_doc_path = path_text.startswith("docs/en/") or "/en/docs/" in path_text
+    non_english_doc_path = bool(re.search(r"(^|/)docs/[a-z]{2}(-[a-z]{2})?/", path_text)) and not english_doc_path
+    if english_doc_path:
+        return 6.0
+    if non_english_doc_path:
+        return -8.0
+    return 0.0
+
+
+def _doc_domain_bonus(path_text: str, content_text: str, terms: list[str]) -> float:
+    term_set = set(terms)
+    bonus = 0.0
+    security_terms = {"auth", "authentication", "security", "oauth", "token", "scheme"}
+    dependency_terms = {"dependency", "dependencies", "depends"}
+    if term_set & security_terms:
+        if "/security/" in path_text:
+            bonus += 8.0
+        if any(term in content_text for term in ("security", "oauth", "authentication", "token", "bearer")):
+            bonus += 3.0
+    if {"first", "steps"} <= term_set and "first-steps" in path_text:
+        bonus += 8.0
+    if term_set & dependency_terms:
+        if "/dependencies/" in path_text:
+            bonus += 8.0
+        if "dependency injection" in content_text:
+            bonus += 3.0
+    cold_start_terms = {
+        "cold",
+        "start",
+        "cached",
+        "cache",
+        "data",
+        "empty",
+        "repository",
+        "repo",
+        "bootstrap",
+        "prepare",
+        "preparation",
+    }
+    cold_start_intent_terms = {"cold", "empty", "repository", "repo", "bootstrap", "prepare", "preparation"}
+    if len(term_set & cold_start_terms) >= 2 and bool(term_set & cold_start_intent_terms):
+        if path_text in {
+            "src/vaner/engine.py",
+            "src/vaner/daemon/runner.py",
+            "src/vaner/daemon/signals/fs_watcher.py",
+            "src/vaner/intent/adapter.py",
+            "src/vaner/intent/cache.py",
+            "src/vaner/store/artefacts.py",
+        }:
+            bonus += 16.0
+        if any(
+            term in content_text
+            for term in (
+                "prepare_corpus",
+                "run_once",
+                "scan_repo_files",
+                "scan_repository",
+                "summarize",
+                "cold_miss",
+                "cold",
+                "bootstrap",
+            )
+        ):
+            bonus += 8.0
+        if path_text in {"src/vaner/router/proxy.py", "src/vaner/server.py", "src/vaner/mcp/server.py"}:
+            bonus -= 6.0
+        if any(term in content_text for term in ("warm_start", "warm package", "warm cache", "warm-start")):
+            bonus -= 8.0
+    hybrid_feature_terms = {
+        "train",
+        "training",
+        "feature",
+        "features",
+        "hybrid",
+        "artefact",
+        "artefacts",
+        "artifact",
+        "artifacts",
+        "data",
+        "pipeline",
+    }
+    if len(term_set & hybrid_feature_terms) >= 3:
+        if path_text in {
+            "src/vaner/intent/features.py",
+            "src/vaner/intent/trainer.py",
+            "src/vaner/models/artefact.py",
+            "src/vaner/store/artefacts.py",
+            "tests/test_intent/test_features_follow_up.py",
+            "tests/test_intent/test_trainer_v4_rollover.py",
+        }:
+            bonus += 14.0
+        if any(
+            term in content_text
+            for term in (
+                "extract_hybrid_features",
+                "feature_vector_for_artefact",
+                "feature_vector_for_artifact",
+                "artefact_age_seconds",
+                "training example",
+                "train_model",
+            )
+        ):
+            bonus += 8.0
+        if path_text in {"src/vaner/broker/selector.py", "src/vaner/router/proxy.py", "src/vaner/server.py"}:
+            bonus -= 5.0
+    cache_tier_terms = {"tier", "tiered", "full", "partial", "warm", "hit", "hits", "start", "cache", "cached"}
+    if len(term_set & cache_tier_terms) >= 3:
+        if path_text in {
+            "src/vaner/intent/cache.py",
+            "src/vaner/intent/scoring_policy.py",
+            "src/vaner/engine.py",
+            "tests/test_intent/test_cache.py",
+            "tests/test_store/test_prediction_cache_decay.py",
+        }:
+            bonus += 12.0
+        if path_text == "src/vaner/intent/scoring_policy.py":
+            bonus += 6.0
+        elif path_text == "src/vaner/intent/cache.py":
+            bonus += 4.0
+        elif path_text in {"tests/test_intent/test_cache.py", "tests/test_store/test_prediction_cache_decay.py"}:
+            bonus += 2.0
+        if any(term in content_text for term in ("full_hit", "partial_hit", "warm_start", "cache_full_hit", "cache_partial_hit")):
+            bonus += 8.0
+    llm_exploration_terms = {
+        "llm",
+        "external",
+        "exploration",
+        "rank",
+        "ranking",
+        "ranked",
+        "file",
+        "files",
+        "follow",
+        "scenario",
+        "scenarios",
+        "proposal",
+        "propose",
+        "proposes",
+    }
+    if len(term_set & llm_exploration_terms) >= 4:
+        if path_text in {
+            "src/vaner/engine.py",
+            "src/vaner/clients/openai.py",
+            "src/vaner/clients/ollama.py",
+            "src/vaner/clients/llm_response.py",
+            "tests/test_engine/test_deep_drill.py",
+            "tests/test_engine/test_exploration_parallelism.py",
+        }:
+            bonus += 14.0
+        if path_text == "src/vaner/engine.py" and "_explore_scenario_with_llm" in content_text:
+            bonus += 8.0
+        if any(term in content_text for term in ("ranked_files", "follow_on", "follow-on", "semantic_intent")):
+            bonus += 6.0
+    return bonus
+
+
+def _direct_lookup_bonus(prompt: str, path_text: str, content_text: str, terms: list[str]) -> float:
+    if not _is_direct_lookup_prompt(prompt):
+        return 0.0
+
+    bonus = 0.0
+    doc_path = "/docs/" in path_text or path_text.startswith(("docs/", "doc/"))
+    tutorial_path = "/tutorial/" in path_text or path_text.endswith("/tutorial/index.md")
+
+    if doc_path:
+        bonus += 2.0
+    if tutorial_path:
+        bonus += 2.0
+    if ("dependency" in path_text or "dependencies" in path_text or "dependency" in content_text) and "injection" in content_text:
+        bonus += 8.0
+
+    term_hits = 0
+    for term in terms:
+        if len(term) < 4 or term in _COMMON_WORDS:
+            continue
+        if term in path_text:
+            term_hits += 2
+        elif term in content_text:
+            term_hits += 1
+    if term_hits >= 3:
+        bonus += min(4.0, float(term_hits) * 0.45)
+    return bonus
+
+
+def _english_prompt_likely(prompt: str) -> bool:
+    ascii_chars = sum(1 for char in prompt if ord(char) < 128)
+    ratio = ascii_chars / max(1, len(prompt))
+    lowered = prompt.lower()
+    asks_translation = any(term in lowered for term in ("translate", "translation", "non-english", "localized"))
+    return ratio > 0.95 and not asks_translation
+
+
 def _is_origin_question(prompt: str) -> bool:
     q = prompt.lower().strip()
     return (
@@ -73,7 +425,7 @@ def _is_origin_question(prompt: str) -> bool:
 
 
 def _origin_bonus(prompt: str, content: str) -> float:
-    prompt_tokens = {token for token in re.findall(r"[a-z0-9_]+", prompt.lower()) if len(token) > 2}
+    prompt_tokens = set(_prompt_terms(prompt))
     def_terms = set(re.findall(r"`([a-zA-Z_][a-zA-Z0-9_]*)`", content))
     def_terms |= set(re.findall(r"\*\*([a-zA-Z_][a-zA-Z0-9_]*)\*\*", content))
     def_terms |= set(re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\(", content))
@@ -89,8 +441,7 @@ def _origin_bonus(prompt: str, content: str) -> float:
 
 def _build_fts_query(prompt: str) -> str:
     """Build a safe FTS5 query string from a natural-language prompt."""
-    tokens = re.findall(r"[a-z][a-z0-9_]{2,}", prompt.lower())
-    filtered = [t for t in tokens if t not in _COMMON_WORDS][:15]
+    filtered = _prompt_terms(prompt)[:15]
     return " ".join(filtered)
 
 
@@ -197,6 +548,20 @@ def select_artefacts(
                     detail="intent scorer baseline for prompt and artefact",
                 )
             )
+            if _needs_lexical_floor(prompt):
+                lexical_factors: list[ScoreFactor] = []
+                lexical_score = score_artefact(prompt, artefact, factor_sink=lexical_factors)
+                lexical_floor = max(0.0, lexical_score - _recency_bonus(artefact))
+                if lexical_floor:
+                    score += lexical_floor
+                    factors.extend(lexical_factors)
+                    factors.append(
+                        ScoreFactor(
+                            name="lexical_retrieval_floor",
+                            contribution=lexical_floor,
+                            detail="bounded lexical floor for direct lookup prompts",
+                        )
+                    )
         else:
             score = score_artefact(prompt, artefact, factor_sink=factors)
         if apply_origin_rerank:

@@ -1,11 +1,4 @@
-@import "@fontsource/space-grotesk/400.css";
-@import "@fontsource/space-grotesk/500.css";
-@import "@fontsource/space-grotesk/600.css";
-@import "@fontsource/space-grotesk/700.css";
-@import "@fontsource/instrument-serif/400.css";
-@import "@fontsource/jetbrains-mono/400.css";
-@import "@fontsource/jetbrains-mono/500.css";
-@import "@fontsource/jetbrains-mono/600.css";
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap");
 
 :root {
   --bg-0: oklch(0.18 0.006 280);
@@ -76,6 +69,7 @@ body {
   font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  overflow: hidden;
 }
 
 button,
@@ -210,4 +204,39 @@ textarea {
 
 .scroll::-webkit-scrollbar-thumb:hover {
   background: var(--fg-4);
+}
+
+.cockpit-root {
+  display: grid;
+  grid-template-areas:
+    "top top top"
+    "rail graph stream";
+  grid-template-rows: 54px minmax(0, 1fr);
+  grid-template-columns: 260px minmax(0, 1fr) 340px;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-0);
+  color: var(--fg-1);
+}
+
+@media (max-width: 1120px) {
+  .cockpit-root {
+    grid-template-columns: 240px minmax(0, 1fr) 320px;
+  }
+}
+
+@media (max-width: 880px) {
+  .cockpit-root {
+    grid-template-areas:
+      "top"
+      "graph"
+      "stream";
+    grid-template-rows: 54px minmax(0, 1fr) 320px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cockpit-root > [style*="grid-area: rail"],
+  .cockpit-root > [style*="gridArea: rail"] {
+    display: none;
+  }
 }

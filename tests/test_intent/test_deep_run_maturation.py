@@ -34,6 +34,7 @@ from vaner.intent.prediction import (
     PredictionSpec,
     prediction_id,
 )
+from vaner.intent.prediction_v2 import structured_from_prediction_fields
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,6 +73,8 @@ def _prediction(
     failed_revisits: int = 0,
     probationary_until_cycle: int | None = None,
     maturation_eligible: bool = True,
+    confidence: float = 0.7,
+    specificity: str = "anchor",
     label: str | None = None,
 ) -> PredictedPrompt:
     # Default label is uuid-suffixed so two predictions built in the
@@ -83,9 +86,9 @@ def _prediction(
         description="",
         source="history",
         anchor="anchor",
-        confidence=0.7,
+        confidence=confidence,
         hypothesis_type="likely_next",
-        specificity="anchor",
+        specificity=specificity,  # type: ignore[arg-type]
     )
     run = PredictionRun(
         weight=1.0,
@@ -110,6 +113,12 @@ def test_contract_low_evidence_demands_two_new_refs() -> None:
     contract = build_contract(pred, pass_id="p1")
     assert contract.target_weakness == "low_evidence"
     assert contract.required_new_evidence_refs == 2
+
+
+def test_contract_records_concrete_intent_terms_for_drift_guard() -> None:
+    pred = _prediction(label="Explain ArtefactStore", specificity="concrete")
+    contract = build_contract(pred, pass_id="p1")
+    assert "artifactstore" in contract.intent_terms
 
 
 def test_contract_shallow_draft_demands_paragraph_and_ref() -> None:
@@ -194,6 +203,44 @@ async def test_judge_rejects_low_evidence_when_too_few_new_refs() -> None:
     )
     assert verdict.kept is False
     assert verdict.failed_clause == "new_evidence_refs_min_2"
+
+
+async def test_judge_rejects_concrete_anchor_drift() -> None:
+    structured = structured_from_prediction_fields(
+        label="Explain ArtefactStore",
+        anchor="ArtefactStore",
+        readiness_mode="draft_ready",
+        evidence_targets=("src/vaner/store/artefacts.py",),
+        confidence=0.9,
+    )
+    pred = _prediction(
+        label="Explain ArtefactStore",
+        draft="ArtefactStore stores and loads intent artefacts.",
+        evidence_score=0.10,
+        specificity="concrete",
+    )
+    pred.spec = PredictionSpec(
+        id=pred.spec.id,
+        label=pred.spec.label,
+        description=pred.spec.description,
+        source=pred.spec.source,
+        anchor=pred.spec.anchor,
+        confidence=pred.spec.confidence,
+        hypothesis_type=pred.spec.hypothesis_type,
+        specificity=pred.spec.specificity,
+        created_at=pred.spec.created_at,
+        structured=structured,
+    )
+    contract = build_contract(pred, pass_id="p1")
+    verdict = await default_rubric_judge(
+        prediction=pred,
+        contract=contract,
+        old_draft=pred.artifacts.draft_answer,
+        new_draft="ExplorationFrontier prioritizes frontier entries for the next background cycle.",
+        new_evidence_refs=["src/vaner/intent/frontier.py", "tests/test_intent/test_frontier.py"],
+    )
+    assert verdict.kept is False
+    assert verdict.failed_clause == "anchor_preserved"
 
 
 async def test_judge_accepts_shallow_draft_with_substantive_paragraph_and_ref() -> None:
@@ -311,6 +358,14 @@ def test_selection_orders_by_score_descending() -> None:
     candidates = select_maturation_candidates([strong, weak], context=_ctx(cycle_index=10), max_candidates=10)
     eligible = [c for c in candidates if c.eligible]
     assert [c.prediction.spec.label for c in eligible] == ["weak", "strong"]
+
+
+def test_selection_prefers_high_confidence_likely_predictions() -> None:
+    high_conf = _prediction(evidence_score=0.30, confidence=0.95, label="high")
+    low_conf = _prediction(evidence_score=0.10, confidence=0.30, label="low")
+    candidates = select_maturation_candidates([low_conf, high_conf], context=_ctx(cycle_index=10), max_candidates=10)
+    eligible = [c for c in candidates if c.eligible]
+    assert [c.prediction.spec.label for c in eligible][:2] == ["high", "low"]
 
 
 def test_selection_caps_at_max_candidates() -> None:

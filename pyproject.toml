@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vaner"
-version = "0.8.7"
+version = "0.8.8"
 description = "Predictive context middleware layer for AI workflows."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,6 +21,7 @@ dependencies = [
   "pydantic>=2.7",
   "numpy>=1.26",
   "lightgbm>=4.5",
+  "xgboost>=2.1",
   "tiktoken>=0.7",
   "uvicorn>=0.30",
   "fastapi>=0.115",
@@ -46,7 +47,6 @@ embeddings = [
 ]
 training = [
   "torch>=2.3",
-  "xgboost>=2.1",
   "catboost>=1.2",
 ]
 mcp = [

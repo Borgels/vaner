@@ -19,12 +19,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from vaner.intent.evidence_hygiene import filter_evidence_paths
+from vaner.intent.evidence_resolver import EvidenceTarget
 from vaner.intent.scoring_policy import ScoringPolicy
 from vaner.intent.skills_discovery import SkillRef, match_skill_paths
 
 if TYPE_CHECKING:
     from vaner.intent.arcs import ConversationArcModel
     from vaner.intent.graph import RelationshipGraph
+    from vaner.intent.prediction_v2 import StructuredPrediction
 
 # ---------------------------------------------------------------------------
 # Category keywords — mirrored from engine.py to avoid a circular import
@@ -101,7 +104,7 @@ class ExplorationScenario:
     id: str  # SHA1 of sorted file_paths
     file_paths: list[str]  # the context neighbourhood
     anchor: str  # what seeded this scenario
-    source: str  # "graph" | "arc" | "pattern" | "llm_branch"
+    source: str  # "graph" | "core_architecture" | "arc" | "pattern" | "llm_branch" | "structured_direct" | "structured_graph_expand"
     priority: float  # composite score (higher = explore sooner)
     depth: int = 0  # LLM hops from original seed
     parent_id: str | None = None  # which scenario spawned this one
@@ -152,6 +155,7 @@ class ExplorationFrontier:
         "pattern": 1.2,  # validated patterns get a slight head start
         "llm_branch": 0.9,
         "skill": 1.1,
+        "core_architecture": 1.0,
         # 0.8.7 WS5 — composer-anchored predictions enter at the
         # baseline multiplier; the existing per-source learning loop
         # below auto-adapts based on adoption telemetry.
@@ -319,6 +323,92 @@ class ExplorationFrontier:
             )
             if self.push(scenario):
                 admitted += 1
+        return admitted
+
+    def seed_from_structured_prediction(
+        self,
+        *,
+        prediction_id: str,
+        structured: StructuredPrediction,
+        targets: list[EvidenceTarget],
+        available_paths: list[str],
+        graph: RelationshipGraph | None = None,
+    ) -> int:
+        """Seed direct and graph-expanded scenarios from v2 structured targets."""
+        self._total_available = max(self._total_available, len(available_paths))
+        ordered_targets = sorted(targets, key=lambda target: (target.role != "primary", -target.score))
+        direct_paths = filter_evidence_paths([target.path for target in ordered_targets[:4]])
+        if not direct_paths:
+            return 0
+
+        fallback_top_score = max((target.score for target in ordered_targets), default=0.0)
+        top_score = max(
+            (target.score for target in ordered_targets if target.role == "primary"),
+            default=fallback_top_score,
+        )
+        direct_priority = min(
+            0.98,
+            self._score(
+                source="structured_direct",
+                graph_proximity=0.65,
+                arc_probability=max(0.25, structured.confidence),
+                coverage_gap=0.75,
+                pattern_strength=top_score,
+                freshness_decay=1.0,
+                depth=0,
+                layer="tactical",
+            )
+            + 0.18,
+        )
+        target_reason = "; ".join(f"{target.path} ({target.role}, {target.score:.2f}, {target.reason})" for target in ordered_targets[:3])
+        reason = (
+            f"structured {structured.readiness_mode}: {structured.action_type} "
+            f"{structured.object} as {structured.answer_shape}; evidence {target_reason}"
+        )
+        admitted = 0
+        direct = ExplorationScenario(
+            id=file_set_fingerprint([prediction_id, *direct_paths]),
+            file_paths=direct_paths,
+            anchor=structured.object or prediction_id,
+            source="structured_direct",
+            priority=direct_priority,
+            depth=0,
+            reason=reason,
+            layer="tactical",
+            prediction_id=prediction_id,
+        )
+        if self.push(direct):
+            admitted += 1
+
+        if graph is None:
+            return admitted
+
+        available_set = set(available_paths)
+        primary_paths = [target.path for target in ordered_targets if target.role == "primary"]
+        expanded_paths = list(primary_paths[:4] or direct_paths)
+        for path in expanded_paths[:3]:
+            expanded_paths.extend(
+                key.split(":", 1)[1]
+                for key in graph.propagate(f"file:{path}", depth=1)
+                if key.startswith("file:") and key.split(":", 1)[1] in available_set
+            )
+        expanded_paths = filter_evidence_paths(expanded_paths)[:10]
+        if len(expanded_paths) <= len(direct_paths):
+            return admitted
+
+        expanded = ExplorationScenario(
+            id=file_set_fingerprint([prediction_id, "expand", *expanded_paths]),
+            file_paths=expanded_paths,
+            anchor=structured.object or prediction_id,
+            source="structured_graph_expand",
+            priority=max(0.1, direct_priority * 0.82),
+            depth=0,
+            reason=(f"structured graph expansion: {structured.action_type} {structured.object}; direct evidence plus one-hop neighbors"),
+            layer="operational",
+            prediction_id=prediction_id,
+        )
+        if self.push(expanded):
+            admitted += 1
         return admitted
 
     def seed_from_arc(
@@ -784,6 +874,7 @@ class ExplorationFrontier:
         valid_paths = [p for p in miss_paths if p in available_set]
         if not valid_paths:
             return 0
+        scenario_paths = valid_paths[:8]
         priority = self._score(
             source="graph",
             graph_proximity=1.0,
@@ -794,13 +885,61 @@ class ExplorationFrontier:
             depth=0,
         )
         scenario = ExplorationScenario(
-            id=file_set_fingerprint(valid_paths),
-            file_paths=valid_paths,
+            id=file_set_fingerprint(scenario_paths),
+            file_paths=scenario_paths,
             anchor="miss_recovery",
             source="graph",
             priority=priority,
             depth=0,
             reason="recovery from cold-miss query",
+            layer="tactical",
+        )
+        return 1 if self.push(scenario) else 0
+
+    def seed_from_focus_paths(
+        self,
+        paths: list[str],
+        available_paths: list[str],
+        *,
+        reason: str = "recent intent focus",
+        priority_floor: float = 0.95,
+        source: str = "graph",
+    ) -> int:
+        """Seed a high-priority scenario from paths selected by intent signals.
+
+        Unlike ``seed_from_miss``, this is not recovery from a failed query. It
+        represents paths that the current cycle's query/workspace heuristics
+        already consider relevant, so the frontier should explore them before
+        broad category buckets such as docs, CI, or generic configuration.
+        """
+        if not paths:
+            return 0
+        available_set = set(available_paths)
+        valid_paths = list(dict.fromkeys(p for p in paths if p in available_set))
+        if not valid_paths:
+            return 0
+        scenario_paths = valid_paths[:8]
+        priority = max(
+            float(priority_floor),
+            self._score(
+                source="graph",
+                graph_proximity=1.0,
+                arc_probability=0.15,
+                coverage_gap=1.0,
+                pattern_strength=0.1,
+                freshness_decay=1.0,
+                depth=0,
+                layer="tactical",
+            ),
+        )
+        scenario = ExplorationScenario(
+            id=file_set_fingerprint(scenario_paths),
+            file_paths=scenario_paths,
+            anchor="intent_focus",
+            source=source,
+            priority=priority,
+            depth=0,
+            reason=reason,
             layer="tactical",
         )
         return 1 if self.push(scenario) else 0

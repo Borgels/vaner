@@ -33,9 +33,10 @@ checks). An LLM-backed judge can be plugged in later via the
 :class:`JudgeCallable` Protocol; the programmatic default is the
 floor, not the ceiling.
 
-Engine integration is opt-in: the engine only calls
-:func:`mature_one` from a Deep-Run cycle hook. Outside Deep-Run,
-none of this code runs.
+Engine integration supports both explicit Deep-Run windows and ordinary
+background refinement cycles. Background passes use the same contract and
+judge path, but carry ``session_id=None`` so they do not write Deep-Run
+audit rows.
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ from vaner.intent.deep_run import (
 )
 from vaner.intent.deep_run_policy import PRESETS, preset_for
 from vaner.intent.prediction import PredictedPrompt
+from vaner.intent.target_normalization import component_terms, normalize_component
 
 TargetWeakness = Literal[
     "low_evidence",
@@ -187,6 +189,8 @@ class MaturationContract:
     must_clauses: tuple[ContractClause, ...]
     forbidden_clauses: tuple[ContractClause, ...]
     grading_rubric_version: str = "v1"
+    intent_anchor: str = ""
+    intent_terms: tuple[str, ...] = ()
 
     @property
     def required_new_evidence_refs(self) -> int:
@@ -416,13 +420,59 @@ def build_contract(
                 kind="must",
             ),
         )
+    intent_anchor = _intent_anchor(prediction)
     return MaturationContract(
         pass_id=pass_id,
         target_weakness=weakness,
         must_clauses=must,
         forbidden_clauses=_UNIVERSAL_FORBIDDEN,
         grading_rubric_version=grading_rubric_version,
+        intent_anchor=intent_anchor,
+        intent_terms=_intent_terms_for_prediction(prediction),
     )
+
+
+_GENERIC_INTENT_TERMS = {
+    "anchor",
+    "draft",
+    "evidence",
+    "history",
+    "prompt",
+    "query",
+    "response",
+    "summary",
+    "test",
+}
+
+
+def _intent_anchor(prediction: PredictedPrompt) -> str:
+    structured = prediction.spec.structured
+    if structured is not None and structured.semantic_hint:
+        return structured.semantic_hint.strip()
+    return " ".join(
+        part.strip() for part in (prediction.spec.label, prediction.spec.description, prediction.spec.anchor) if part and part.strip()
+    )
+
+
+def _intent_terms_for_prediction(prediction: PredictedPrompt) -> tuple[str, ...]:
+    """Return concrete terms the maturation pass must not drift away from.
+
+    Generic history/anchor predictions often have no stable object name; forcing
+    those drafts to repeat a synthetic label would create false rejections. For
+    concrete or structured predictions, though, the named object is the guardrail
+    that keeps long-idle maturation from improving the wrong answer.
+    """
+
+    structured = prediction.spec.structured
+    raw_terms: tuple[str, ...] = ()
+    if structured is not None and structured.object.strip():
+        raw_terms = component_terms(structured.object)
+        if not raw_terms:
+            normalized = normalize_component(structured.object)
+            raw_terms = (normalized,) if normalized else ()
+    elif prediction.spec.specificity == "concrete":
+        raw_terms = component_terms(_intent_anchor(prediction))
+    return tuple(dict.fromkeys(term for term in raw_terms if term and len(term) >= 5 and term not in _GENERIC_INTENT_TERMS))
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +558,19 @@ async def default_rubric_judge(
                 reason="judge: new draft drops prior evidence_refs without retraction",
             )
 
+    anchor_ok, anchor_reason = _anchor_preserved(
+        contract=contract,
+        new_draft=new_draft,
+        new_evidence_refs=new_evidence_refs,
+    )
+    if not anchor_ok:
+        return MaturationVerdict(
+            kept=False,
+            satisfied_clauses=(),
+            failed_clause="anchor_preserved",
+            reason=f"judge: anchor drift blocked — {anchor_reason}",
+        )
+
     # Must clauses — evaluate one at a time.
     satisfied: list[str] = []
     for clause in contract.must_clauses:
@@ -544,6 +607,22 @@ def _extract_evidence_ref_ids(text: str) -> set[str]:
     inline without listing them in ``new_evidence_refs``."""
 
     return set(_EVIDENCE_REF_PATTERN.findall(text))
+
+
+def _anchor_preserved(
+    *,
+    contract: MaturationContract,
+    new_draft: str,
+    new_evidence_refs: list[str],
+) -> tuple[bool, str]:
+    terms = tuple(term for term in contract.intent_terms if term)
+    if not terms:
+        return True, "no concrete intent terms"
+    evidence_blob = " ".join(new_evidence_refs)
+    normalized_blob = normalize_component(f"{new_draft} {evidence_blob}")
+    if any(term in normalized_blob for term in terms):
+        return True, "concrete intent term preserved"
+    return False, f"none of the concrete intent terms appear in the new draft or evidence refs: {', '.join(terms)}"
 
 
 def _evaluate_must_clause(
@@ -716,7 +795,7 @@ def select_maturation_candidates(
                 )
             )
             continue
-        gc = goal_confidence_lookup(prediction) if goal_confidence_lookup else 0.5
+        gc = goal_confidence_lookup(prediction) if goal_confidence_lookup else max(0.0, min(1.0, prediction.spec.confidence))
         aa = artefact_alignment_lookup(prediction) if artefact_alignment_lookup else 1.0
         st = item_state_lookup(prediction) if item_state_lookup else "pending"
         score = score_maturation_value(

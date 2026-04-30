@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import re
 import signal
@@ -18,11 +19,13 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from vaner.api import aquery
+from vaner.broker.prompting import build_evidence_bound_context_prompt
 from vaner.cli.commands.config import load_config, set_compute_value
 from vaner.daemon.cockpit_html import build_cockpit_html
 from vaner.events.bus import build_stage_payloads
 from vaner.intent.arcs import derive_prompt_macro
 from vaner.models.config import VanerConfig
+from vaner.models.cost import CostLedgerEntry, ModelPricing, TurnCostSummary, estimate_cost, usage_from_openai_payload
 from vaner.models.decision import DecisionRecord
 from vaner.models.signal import SignalEvent
 from vaner.router.backends import (
@@ -33,10 +36,12 @@ from vaner.router.backends import (
 from vaner.store.artefacts import ArtefactStore
 from vaner.telemetry.metrics import MetricsStore, RequestMetrics
 
+logger = logging.getLogger(__name__)
+
 
 def _inject_context(payload: dict[str, Any], context: str) -> dict[str, Any]:
     messages = payload.get("messages", [])
-    system_content = "Use provided context when relevant.\n\n" + context
+    system_content = build_evidence_bound_context_prompt(context)
     system_message = {"role": "system", "content": system_content}
     return {**payload, "messages": [system_message, *messages]}
 
@@ -515,6 +520,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
             metrics.cache_tier = context_package.cache_tier
             metrics.partial_similarity = context_package.partial_similarity
             metrics.context_tokens = context_package.token_used
+            metrics.injected_context_tokens = context_package.token_used
             enriched = _inject_context(payload, context_package.injected_context)
         else:
             context_package = type("Package", (), {"cache_tier": "disabled", "partial_similarity": 0.0, "token_used": 0})()
@@ -522,6 +528,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
             metrics.cache_tier = "disabled"
             metrics.partial_similarity = 0.0
             metrics.context_tokens = 0
+            metrics.injected_context_tokens = 0
             enriched = payload
         metrics.t2_forwarded = time.monotonic()
         decision_record = DecisionRecord.read_latest(repo_root)
@@ -535,13 +542,84 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                 await metrics_store.record(metrics)
                 await metrics_store.increment_mode_usage("proxy")
             except Exception:
-                pass
+                metrics.primary_usage_record_error = "record_failed"
+                logger.debug("Failed to record best-effort primary usage metrics", exc_info=True)
 
         response_headers = {
             "X-Vaner-Decision": decision_id,
             "X-Vaner-Context-Tokens": str(context_package.token_used),
             "X-Vaner-Hit-Tier": context_package.cache_tier,
         }
+
+        def _backend_pricing() -> ModelPricing | None:
+            model_name = str(enriched.get("model") or config.backend.model or "")
+            pricing = config.cost.model_pricing.get(model_name) or config.cost.model_pricing.get(config.backend.model)
+            if pricing is not None:
+                return pricing
+            base_url = config.backend.base_url or ""
+            if "127.0.0.1" in base_url or "localhost" in base_url:
+                return ModelPricing(local_or_cloud="local", source="unknown_zero")
+            return None
+
+        async def _record_primary_usage(result: dict[str, Any]) -> None:
+            choices = result.get("choices") if isinstance(result, dict) else None
+            completion = ""
+            if isinstance(choices, list) and choices:
+                first = choices[0]
+                message = first.get("message") if isinstance(first, dict) else None
+                if isinstance(message, dict):
+                    completion = _normalize_message_content(message.get("content"))
+            prompt_text = "\n".join(
+                _normalize_message_content(msg.get("content")) for msg in enriched.get("messages", []) if isinstance(msg, dict)
+            )
+            usage = usage_from_openai_payload(result, prompt=prompt_text, completion=completion)
+            pricing = _backend_pricing()
+            cost = estimate_cost(usage, pricing)
+            base_url = config.backend.base_url or ""
+            local_or_cloud = "local" if ("127.0.0.1" in base_url or "localhost" in base_url) else "cloud"
+            metrics.primary_llm_input_tokens = usage.prompt_tokens
+            metrics.primary_llm_output_tokens = usage.completion_tokens
+            metrics.primary_llm_thinking_tokens = usage.thinking_tokens
+            metrics.primary_llm_cost_usd = cost.total_cost_usd
+            if pricing is not None:
+                metrics.expected_incremental_primary_cost_usd = (metrics.injected_context_tokens / 1000.0) * pricing.input_cost_per_1k
+            metrics.primary_llm_usage_known = not usage.usage_estimated
+            metrics.total_known_cloud_cost_usd = cost.total_cost_usd if local_or_cloud == "cloud" and not cost.estimated else 0.0
+            metrics.total_estimated_cloud_cost_usd = cost.total_cost_usd if local_or_cloud == "cloud" else 0.0
+            metrics.pricing_snapshot_id = cost.pricing_snapshot_id
+            metrics.usage_source_summary = usage.usage_source
+            try:
+                await metrics_store.record_llm_usage(
+                    CostLedgerEntry(
+                        request_id=metrics.request_id,
+                        turn_id=metrics.request_id,
+                        provider=config.backend.name or "openai_compatible",
+                        model=str(enriched.get("model") or config.backend.model or "unknown"),
+                        endpoint=config.backend.base_url,
+                        call_role="primary_forward",
+                        local_or_cloud=local_or_cloud,
+                        usage=usage,
+                        cost=cost,
+                        latency_ms=metrics.llm_total_ms,
+                    )
+                )
+                await metrics_store.record_turn_cost(
+                    TurnCostSummary(
+                        turn_id=metrics.request_id,
+                        request_id=metrics.request_id,
+                        injected_context_tokens=metrics.injected_context_tokens,
+                        expected_incremental_primary_cost_usd=metrics.expected_incremental_primary_cost_usd,
+                        primary_llm_input_tokens=usage.prompt_tokens,
+                        primary_llm_output_tokens=usage.completion_tokens,
+                        primary_llm_thinking_tokens=usage.thinking_tokens,
+                        primary_llm_cost_usd=cost.total_cost_usd,
+                        primary_llm_usage_known=not usage.usage_estimated,
+                        total_known_cloud_cost_usd=metrics.total_known_cloud_cost_usd,
+                        total_estimated_cloud_cost_usd=metrics.total_estimated_cloud_cost_usd,
+                    )
+                )
+            except Exception:
+                pass
 
         if decision_record is not None:
             await _publish_decision_event(_serialize_decision(decision_record))
@@ -602,6 +680,8 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                     authorization_header=request_authorization,
                 )
                 metrics.t4_complete = time.monotonic()
+                metrics.finalize()
+                await _record_primary_usage(result)
                 await _finalize_metrics()
                 await _run_shadow_sample(metrics.total_e2e_ms)
                 response_headers["X-Vaner-Latency-Ms"] = f"{metrics.total_e2e_ms:.2f}"

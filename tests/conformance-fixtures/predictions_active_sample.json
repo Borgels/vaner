@@ -36,7 +36,13 @@
       "rank": 1,
       "ui_summary": "Ready test draft for webhook signing",
       "suppression_reason": null,
-      "source_label": "Arc"
+      "source_label": "Arc",
+      "trust_status": "ready",
+      "freshness": "fresh",
+      "invalidated_by": [],
+      "watched_sources": ["payments-svc/webhook.js"],
+      "changed_sources": [],
+      "diagnostic_status": "verified"
     },
     {
       "id": "pred-goal-0002",
@@ -74,7 +80,13 @@
       "rank": 2,
       "ui_summary": "JWT migration rollout is almost draft-ready",
       "suppression_reason": null,
-      "source_label": "Goal"
+      "source_label": "Goal",
+      "trust_status": "ready",
+      "freshness": "recent",
+      "invalidated_by": [],
+      "watched_sources": [],
+      "changed_sources": [],
+      "diagnostic_status": "unverified"
     },
     {
       "id": "pred-queued-0003",
@@ -112,7 +124,13 @@
       "rank": 3,
       "ui_summary": "OAuth refresh-token branch is still maturing",
       "suppression_reason": "low_confidence",
-      "source_label": "Macro"
+      "source_label": "Macro",
+      "trust_status": "preparing",
+      "freshness": "recent",
+      "invalidated_by": [],
+      "watched_sources": [],
+      "changed_sources": [],
+      "diagnostic_status": "not_checked"
     }
   ]
 }
