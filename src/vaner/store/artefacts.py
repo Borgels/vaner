@@ -859,6 +859,7 @@ class ArtefactStore:
             await db.commit()
 
     async def get_work_product(self, product_id: str) -> WorkProduct | None:
+        await self.expire_due_work_products()
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 """
@@ -882,6 +883,7 @@ class ArtefactStore:
         type: WorkProductType | str | None = None,
         limit: int = 50,
     ) -> list[WorkProduct]:
+        await self.expire_due_work_products()
         query = (
             "SELECT id, type, title, summary, body, evidence_refs_json, "
             "source_snapshot_json, confidence, freshness, expires_at, "
@@ -911,6 +913,30 @@ class ArtefactStore:
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
         return [self._work_product_from_row(row) for row in rows]
+
+    async def expire_due_work_products(self, *, now: float | None = None) -> int:
+        ts = time.time() if now is None else float(now)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE work_products
+                SET status = ?, adoptability = ?, updated_at = ?
+                WHERE expires_at IS NOT NULL
+                  AND expires_at <= ?
+                  AND status NOT IN (?, ?, ?)
+                """,
+                (
+                    WorkProductStatus.EXPIRED.value,
+                    WorkProductAdoptability.HIDDEN.value,
+                    ts,
+                    ts,
+                    WorkProductStatus.DISMISSED.value,
+                    WorkProductStatus.EXPIRED.value,
+                    WorkProductStatus.SUPERSEDED.value,
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount
 
     async def dismiss_work_product(self, product_id: str) -> bool:
         now = time.time()

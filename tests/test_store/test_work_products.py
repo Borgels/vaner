@@ -104,6 +104,23 @@ async def test_supersession_keeps_newer_stronger_product(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_expired_work_products_are_hidden_and_not_exportable(tmp_path: Path) -> None:
+    store = ArtefactStore(tmp_path / "artefacts.db")
+    await store.initialize()
+    product = _product(product_id="expired")
+    product.expires_at = time.time() - 1
+    await store.upsert_work_product(product)
+
+    assert await store.list_work_products() == []
+    expired = await store.get_work_product("expired")
+    assert expired is not None
+    assert expired.status == WorkProductStatus.EXPIRED
+    assert expired.adoptability == WorkProductAdoptability.HIDDEN
+    with pytest.raises(PermissionError):
+        await store.export_work_product("expired")
+
+
+@pytest.mark.asyncio
 async def test_virtual_diff_stales_when_target_hash_changes(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
