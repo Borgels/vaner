@@ -26,8 +26,6 @@ _STOPWORDS = {
 }
 
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:[.\-][A-Za-z_][A-Za-z0-9_]*)*")
-_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
-_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 
 
 def normalize_component(value: str) -> str:
@@ -44,8 +42,7 @@ def normalize_component(value: str) -> str:
     if text.startswith("/") or re.match(r"^[A-Za-z]:/", text):
         text = PurePosixPath(text[2:] if re.match(r"^[A-Za-z]:/", text) else text).name
     text = text.replace("artefact", "artifact").replace("Artefact", "Artifact")
-    text = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", text)
-    text = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", text)
+    text = _split_case_boundaries(text)
     parts = [part for part in re.split(r"[^A-Za-z0-9]+", text.lower()) if part]
     if len(parts) == 1:
         parts = [_singularize(parts[0])]
@@ -77,6 +74,24 @@ def component_terms(text: str) -> tuple[str, ...]:
                 seen.add(normalized)
                 terms.append(normalized)
     return tuple(terms)
+
+
+def _split_case_boundaries(text: str) -> str:
+    out: list[str] = []
+    for idx, char in enumerate(text):
+        if idx > 0 and _needs_case_boundary(text, idx):
+            out.append(" ")
+        out.append(char)
+    return "".join(out)
+
+
+def _needs_case_boundary(text: str, idx: int) -> bool:
+    prev = text[idx - 1]
+    current = text[idx]
+    next_char = text[idx + 1] if idx + 1 < len(text) else ""
+    return (current.isupper() and (prev.islower() or prev.isdigit())) or (
+        prev.isupper() and current.isupper() and bool(next_char) and next_char.islower()
+    )
 
 
 def path_component_terms(path: str) -> tuple[str, ...]:

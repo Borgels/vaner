@@ -1060,8 +1060,11 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             exported = await store.export_work_product(product_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="work product not found") from None
-        except PermissionError as exc:
-            return JSONResponse({"code": "not_exportable", "message": str(exc)}, status_code=409)
+        except PermissionError:
+            return JSONResponse(
+                {"code": "not_exportable", "message": "work product is not exportable"},
+                status_code=409,
+            )
         return JSONResponse(exported.model_dump(mode="json"))
 
     @app.get("/integrations/guidance")
