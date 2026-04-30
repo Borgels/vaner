@@ -188,7 +188,11 @@ jobs:
           for artifact in dist-assets/dist/*; do
             gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
             bundle="${artifact}.sigstore.json"
-            cosign verify-blob --bundle "$bundle" "$artifact"
+            cosign verify-blob \
+              --bundle "$bundle" \
+              --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/v.*" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$artifact"
             if [ -n "$provenance_file" ]; then
               slsa-verifier verify-artifact "$artifact" \
                 --provenance-path "$provenance_file" \
