@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -20,6 +21,8 @@ from vaner.models.config import VanerConfig
 from vaner.models.work_product import WorkProductFeedbackState, WorkProductType
 from vaner.store.scenarios import ScenarioStore
 from vaner.telemetry.metrics import MetricsStore
+
+logger = logging.getLogger(__name__)
 
 
 def _metrics_path(repo_root: Path) -> Path:
@@ -1178,7 +1181,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             async with engine.prediction_registry.lock:
                 engine.prediction_registry.record_adoption(pid)
         except Exception:
-            pass
+            logger.debug("Failed to record best-effort prediction adoption for %s", pid, exc_info=True)
         return JSONResponse(resolution.model_dump(mode="json"))
 
     @app.post("/signals/composer")

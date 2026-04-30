@@ -57,8 +57,6 @@ def prediction_trust_payload(prompt: PredictedPrompt) -> dict[str, Any]:
     changed_sources: list[str] = []
     diagnostic_status = "not_checked"
 
-    diagnostic_status = "not_checked"
-
     if run.readiness == "stale":
         trust_status = "invalidated"
         freshness = "stale"

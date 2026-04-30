@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import re
 import signal
@@ -34,6 +35,8 @@ from vaner.router.backends import (
 )
 from vaner.store.artefacts import ArtefactStore
 from vaner.telemetry.metrics import MetricsStore, RequestMetrics
+
+logger = logging.getLogger(__name__)
 
 
 def _inject_context(payload: dict[str, Any], context: str) -> dict[str, Any]:
@@ -539,7 +542,8 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
                 await metrics_store.record(metrics)
                 await metrics_store.increment_mode_usage("proxy")
             except Exception:
-                pass
+                metrics.primary_usage_record_error = "record_failed"
+                logger.debug("Failed to record best-effort primary usage metrics", exc_info=True)
 
         response_headers = {
             "X-Vaner-Decision": decision_id,

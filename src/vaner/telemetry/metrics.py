@@ -95,6 +95,7 @@ class RequestMetrics:
     total_estimated_cloud_cost_usd: float = 0.0
     pricing_snapshot_id: str = "unknown-zero"
     usage_source_summary: str = "unknown"
+    primary_usage_record_error: str = ""
 
     # Derived metrics (populated by finalize())
     context_retrieval_ms: float = 0.0

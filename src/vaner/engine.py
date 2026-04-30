@@ -848,7 +848,13 @@ class VanerEngine:
             try:
                 registry.transition(pid, "grounding", reason="composer lifecycle observed")
             except Exception:
-                pass
+                logger.debug(
+                    "Composer registry transition skipped for prediction %s session %s state %s",
+                    pid,
+                    snapshot.session_id,
+                    snapshot.lifecycle_state,
+                    exc_info=True,
+                )
 
     @staticmethod
     def _composer_length_bucket(length_chars: int) -> str:
@@ -3957,7 +3963,7 @@ class VanerEngine:
                         status="ready",
                     )
             except Exception:
-                pass
+                logger.debug("Failed to record best-effort LLM usage metrics", exc_info=True)
 
         # Record the thinking trace against the parent prediction (best-effort).
         if captured_thinking and parent_pid is not None and self._prediction_registry is not None:
