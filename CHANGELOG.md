@@ -45,7 +45,7 @@ The first slice of a new product direction: Vaner consumes explicit composer/pro
 - **vaner-docs issue #26**: tracking removal of the five temporary lychee exclusions for the new 0.8.6 doc routes (blocked on docs.vaner.ai redeploy).
 
 ### Test counts
-83 new tests across the 8 workstreams + hardening pass. 1655 total tests passing on the full pytest suite (-m "not slow and not integration"). All CI-equivalent local checks green: pre-commit, mypy (3 CI scopes), pip-audit, actionlint, AGENTS.md primer + plugin parity scripts, replay regression, cargo fmt/clippy/test (default + ts-rs + no-default-features), `claude plugin validate`, moat-guard.
+83 new tests across the 8 workstreams + hardening pass. 1655 total tests passing on the full pytest suite (-m "not slow and not integration"). All CI-equivalent local checks green: pre-commit, mypy (3 CI scopes), pip-audit, actionlint, AGENTS.md primer + plugin parity scripts, replay regression, cargo fmt/clippy/test (default + ts-rs + no-default-features), `claude plugin validate`, sensitivity guard.
 
 ### Deferred to v0.8.8
 - Inline composer UI (Phase 3 — `Prepared` / `Preparing` pills near the composer)
@@ -60,7 +60,7 @@ The first slice of a new product direction: Vaner consumes explicit composer/pro
 
 #### Simple Mode + Advanced Mode + policy bundles + Deep-Run UX
 
-The headline change: ordinary users now configure Vaner by **outcome** (work style, priority, cloud posture, compute posture, background preparation), not by mechanism (runtime, model, quantization, endpoint, model band). Power users keep full control via Advanced Mode. The 0.8.6 stack ships across five repos: Vaner (engine + CLI + cockpit), Vaner-train (bench corpus + LLM judge), vaner-desktop-macos, vaner-desktop-linux, vaner-docs.
+The headline change: ordinary users now configure Vaner by **outcome** (work style, priority, cloud posture, compute posture, background preparation), not by mechanism (runtime, model, quantization, endpoint, model band). Power users keep full control via Advanced Mode. The 0.8.6 stack ships across five repos: Vaner (engine + CLI + cockpit), the eval workspace (bench corpus + LLM judge), vaner-desktop-macos, vaner-desktop-linux, vaner-docs.
 
 ##### Setup primitives, hardware detection, selection algorithm (WS1+WS2+WS3)
 - **`src/vaner/setup/`** — `Literal` enums (`WorkStyle`, `Priority`, `ComputePosture`, `CloudPosture`, `BackgroundPosture`, `HardwareTier`); `SetupAnswers` frozen dataclass with empty-`work_styles` rejection; `VanerPolicyBundle` frozen dataclass with `MappingProxyType`-frozen mappings; `PROFILE_CATALOG` of seven bundles (`local_lightweight`, `local_balanced`, `local_heavy`, `hybrid_balanced`, `hybrid_quality`, `cost_saver`, `deep_research`); `bundle_by_id()` raises `KeyError` on unknowns.
@@ -98,8 +98,8 @@ The headline change: ordinary users now configure Vaner by **outcome** (work sty
 - Full axe-core / pa11y accessibility pass on the cockpit + the MCP Apps UI bundle (deferred from 0.8.5). `cockpit-a11y.yml` GitHub Action workflow fails on regressions.
 
 ##### 0.8.5 carry-overs (WS11)
-- **Labelled Deep-Run corpus expansion** (Vaner-train) — 40 synthetic `LabelledSession` fixtures (10 per archetype × writer / researcher / developer / planner). Each carries `synthetic: true` so future κ reports can split synthetic vs real corpora.
-- **`llm_external_judge`** (Vaner-train) — `ExternalJudgeCallable` against a higher-capacity LLM. Two adapters: `anthropic_llm_callable` (Claude API) and `openai_llm_callable_for_judge` (OpenAI-compatible / vLLM / LM Studio / ollama-OAI). Temperature=0; deterministic cache keyed on `(model_id, sha256(canonical_json(inputs)))`. Wired via `--external-judge llm --judge-model <id>`.
+- **Labelled Deep-Run corpus expansion** (the eval workspace) — 40 synthetic `LabelledSession` fixtures (10 per archetype × writer / researcher / developer / planner). Each carries `synthetic: true` so future κ reports can split synthetic vs real corpora.
+- **`llm_external_judge`** (the eval workspace) — `ExternalJudgeCallable` against a higher-capacity LLM. Two adapters: `anthropic_llm_callable` (Claude API) and `openai_llm_callable_for_judge` (OpenAI-compatible / vLLM / LM Studio / ollama-OAI). Temperature=0; deterministic cache keyed on `(model_id, sha256(canonical_json(inputs)))`. Wired via `--external-judge llm --judge-model <id>`.
 - **ts-rs `cargo run --example export_bindings`** — single-command bindings export for vaner-desktop-linux. README documents the predev/prebuild rsync pattern.
 
 ##### Setup-types Rust mirrors (follow-up shipped in 0.8.6)
@@ -147,9 +147,9 @@ The headline change: ordinary users now configure Vaner by **outcome** (work sty
 - **Stable identity across cycles**: `prediction_label_hash(label, anchor)` — sha1 of the label+anchor tuple — keys aggregation so "the same question asked across sessions" aggregates in one bucket.
 
 #### Labelled fixture corpus + external judge scaffolding (WS1+WS2)
-- **`LabelledSession` schema** (`Vaner-train/tests/fixtures/deep_run/schema.py`) — dataclass + JSON round-trip for the labelled morning-briefing corpus required by the §14.1 cross-archetype ship gate (≥10 sessions per archetype × 4 archetypes = ≥40 labelled). Schema + harness ship in 0.8.4; labelled content lands through 0.8.4.x as labellers produce it.
-- **`ExternalJudgeCallable` Protocol** (`Vaner-train/eval/deep_run_external_judge.py`) + baseline `reference_match_external_judge` (programmatic, LLM-free). Scaffolding ensures the bench pipeline is exercisable before labelled content lands; stronger-model external judge plugs in at the same Protocol boundary in 0.8.4.x.
-- **Bench runner entrypoint** (`Vaner-train/eval/run_deep_run_bench.py`) — `--corpus <path> --external-judge reference_match --out <report>.md`. Feeds into the existing `compute_maturation_metrics()` + `evaluate_ship_gates()` (shipped in 0.8.3 WS5). Returns exit code 0 on pass, 1 on fail, 2 on empty corpus, 3 on unknown judge.
+- **`LabelledSession` schema** (`the eval workspace/tests/fixtures/deep_run/schema.py`) — dataclass + JSON round-trip for the labelled morning-briefing corpus required by the §14.1 cross-archetype ship gate (≥10 sessions per archetype × 4 archetypes = ≥40 labelled). Schema + harness ship in 0.8.4; labelled content lands through 0.8.4.x as labellers produce it.
+- **`ExternalJudgeCallable` Protocol** (`the eval workspace/eval/deep_run_external_judge.py`) + baseline `reference_match_external_judge` (programmatic, LLM-free). Scaffolding ensures the bench pipeline is exercisable before labelled content lands; stronger-model external judge plugs in at the same Protocol boundary in 0.8.4.x.
+- **Bench runner entrypoint** (`the eval workspace/eval/run_deep_run_bench.py`) — `--corpus <path> --external-judge reference_match --out <report>.md`. Feeds into the existing `compute_maturation_metrics()` + `evaluate_ship_gates()` (shipped in 0.8.3 WS5). Returns exit code 0 on pass, 1 on fail, 2 on empty corpus, 3 on unknown judge.
 
 #### Contract crate (WS5, via merge of `feat/vaner-contract-crate`)
 - **`vaner-contract` Rust crate** (`crates/vaner-contract/`) — cross-language contract definitions for Vaner API / MCP / SSE / handoff payloads. L1 (Linux desktop baseline) + L2 (cross-language fixtures). Source: `lib.rs`, `models.rs`, `reducer.rs`, `sse.rs`, `ts.rs`, `http.rs`, `enums.rs`, `errors.rs`, `handoff.rs`.
@@ -164,7 +164,7 @@ The headline change: ordinary users now configure Vaner by **outcome** (work sty
 
 ### Internal
 - **Cleanup**: removed hardcoded `<home>/` paths from `.cursor/mcp.json` (now uses `vaner` on `$PATH`) and purged three outdated testing docs (`docs/cockpit-dogfood-report.md`, `docs/testing/2026-04-v0.6.0-install-findings.md`, `docs/testing/2026-04-v0.6.1-install-findings.md`) from git — all referenced v0.6.x install flows superseded by the 0.8 release line.
-- Tests: +51 new Vaner tests (12 WS3 engine + 21 WS4 store + 10 WS4 engine + 11 WS1 schema round-trip + a few MCP smoke updates for the 0.8.3 tool-list carried forward). Vaner-train: +4 external-judge scaffolding tests. Full Vaner suite: 1071 passing, 14 skipped (zero new skips).
+- Tests: +51 new Vaner tests (12 WS3 engine + 21 WS4 store + 10 WS4 engine + 11 WS1 schema round-trip + a few MCP smoke updates for the 0.8.3 tool-list carried forward). the eval workspace: +4 external-judge scaffolding tests. Full Vaner suite: 1071 passing, 14 skipped (zero new skips).
 
 ### Safety gate behaviour in 0.8.4
 - Background refinement **stays off by default**. Adoption-outcome log **writes unconditionally** — data accumulates from day one so 0.8.5 activation has real numbers to consume.
@@ -201,7 +201,7 @@ The headline change: ordinary users now configure Vaner by **outcome** (work sty
 - **Single canonical record across surfaces.** `DeepRunSession` row is the one source of truth; CLI / MCP / HTTP / cockpit all read it. Stable-schema serializers (`_session_to_dict` / `_summary_to_dict`) shared between CLI and MCP and HTTP.
 
 #### Bench primitives + ship gates (WS5)
-- `Vaner-train/eval/deep_run_bench.py` — `MaturationBenchOutcome`, `MaturationBenchMetrics`, `compute_maturation_metrics()`, `evaluate_ship_gates()`. Five binding ship gates encoded in `SHIP_GATES`:
+- `the eval workspace/eval/deep_run_bench.py` — `MaturationBenchOutcome`, `MaturationBenchMetrics`, `compute_maturation_metrics()`, `evaluate_ship_gates()`. Five binding ship gates encoded in `SHIP_GATES`:
   - `maturation_effectiveness` — external-judged mean improvement Δ ≥ +0.30 per kept pass.
   - `judge_external_agreement` — Cohen's κ ≥ 0.70 between in-engine and external judges. The anti-self-judging gate.
   - `persistence_rate_in_band` — kept fraction in [0.25, 0.55].
@@ -277,7 +277,7 @@ The framing is **not** "Vaner beats frontier models." It is: Vaner improves fron
 
 #### Track A — answer-quality uplift (MCP-assisted flow)
 
-Harness: `Vaner-train/eval/session_replay_bench.py` with `--judge-answer-quality --include-rag`. Naked (no context) vs RAG (naive top-K embedding retrieval) vs Vaner (prepared briefing). Blind shuffled judge, 1–10 absolute scores + preference.
+Harness: `the eval workspace/eval/session_replay_bench.py` with `--judge-answer-quality --include-rag`. Naked (no context) vs RAG (naive top-K embedding retrieval) vs Vaner (prepared briefing). Blind shuffled judge, 1–10 absolute scores + preference.
 
 Config: `qwen3.5:35b` ponder on local RTX 5090 via Ollama; `gpt-5.3-chat-latest` answer via OpenAI; `gpt-5` judge via OpenAI. 4 archetype sessions (developer / researcher / writer / learner), realistic trace idle (15-min cap, ranges 90s–780s per turn, total precompute ~3h wall-clock).
 
@@ -297,7 +297,7 @@ Vaner beats naked on every archetype (so context value is real) and roughly matc
 
 #### Track B — instant-adopt UX/perf (predictive cache)
 
-Harness: same bench run, `--test-adopt` fields aggregated by `Vaner-train/eval/aggregate_track_b.py`. Measures adoption hit-rate (fraction of turns with a matching ready/drafting prediction), adopted-answer quality vs naked + vs Vaner-heuristic, and latency ratio (adopt path vs live heuristic path, both under the bench's judge-a-fresh-answer constraint).
+Harness: same bench run, `--test-adopt` fields aggregated by `the eval workspace/eval/aggregate_track_b.py`. Measures adoption hit-rate (fraction of turns with a matching ready/drafting prediction), adopted-answer quality vs naked + vs Vaner-heuristic, and latency ratio (adopt path vs live heuristic path, both under the bench's judge-a-fresh-answer constraint).
 
 **Results:**
 

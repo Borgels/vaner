@@ -240,6 +240,35 @@ class VanerDaemonClient:
             response.raise_for_status()
             return response.json()
 
+    async def get_prepared_work(
+        self,
+        *,
+        limit: int = 20,
+        include_advisory: bool = False,
+        include_diagnostics: bool = False,
+        context_id: str | None = None,
+        surface: str = "api",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "limit": limit,
+            "include_advisory": include_advisory,
+            "include_diagnostics": include_diagnostics,
+            "surface": surface,
+        }
+        if context_id:
+            params["context_id"] = context_id
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/prepared-work", params=params)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonUnavailable(f"daemon at {self._base} does not expose /prepared-work")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
     async def dismiss_work_product(self, product_id: str) -> dict[str, Any]:
         async with self._session() as client:
             try:

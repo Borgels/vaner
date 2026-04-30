@@ -7,6 +7,7 @@ import type {
   ImpactSummary,
   LimitSettings,
   MCPSettings,
+  PreparedWorkCard,
   ScenarioApiPayload,
   StatusPayload,
   UIPinnedFact,
@@ -54,6 +55,22 @@ export function listSkills(): Promise<{ skills: UISkill[] }> {
 
 export function listPinnedFacts(): Promise<{ facts: UIPinnedFact[] }> {
   return optional('/pinned-facts', { facts: [] })
+}
+
+export function listPreparedWork(params: {
+  limit?: number
+  includeAdvisory?: boolean
+  includeDiagnostics?: boolean
+  contextId?: string | null
+  surface?: 'cockpit' | 'desktop' | 'mcp_app' | 'api'
+} = {}): Promise<{ prepared_work: PreparedWorkCard[] }> {
+  const query = new URLSearchParams()
+  query.set('surface', params.surface ?? 'cockpit')
+  if (params.limit) query.set('limit', String(params.limit))
+  if (params.includeAdvisory) query.set('include_advisory', 'true')
+  if (params.includeDiagnostics) query.set('include_diagnostics', 'true')
+  if (params.contextId) query.set('context_id', params.contextId)
+  return optional(`/prepared-work?${query.toString()}`, { prepared_work: [] })
 }
 
 export function getImpactSummary(): Promise<ImpactSummary> {
@@ -110,4 +127,14 @@ export function updateContext(max_context_tokens: number): Promise<{ limits: Lim
 
 export function toggleGateway(enabled: boolean): Promise<{ enabled: boolean }> {
   return request('/gateway/toggle', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ enabled }) })
+}
+
+export function runPreparedWorkAction(endpoint: string, kind: string): Promise<unknown> {
+  const method = kind === 'inspect' ? 'GET' : 'POST'
+  const body = kind === 'feedback' ? JSON.stringify({ feedback_state: 'useful' }) : undefined
+  return request(endpoint, {
+    method,
+    headers: body ? JSON_HEADERS : undefined,
+    body,
+  })
 }

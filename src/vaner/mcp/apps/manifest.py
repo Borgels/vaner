@@ -24,6 +24,14 @@ ACTIVE_PREDICTIONS_DESCRIPTION: Final[str] = (
     "Ranks adoptable-first, shows readiness + ETA, click Adopt to "
     "convert a prediction into the next Resolution."
 )
+PREPARED_WORK_URI: Final[str] = "ui://vaner/prepared-work"
+PREPARED_WORK_MIME: Final[str] = "text/html;profile=mcp-app"
+PREPARED_WORK_NAME: Final[str] = "Vaner Prepared Work"
+PREPARED_WORK_TITLE: Final[str] = "Vaner — Prepared Work"
+PREPARED_WORK_DESCRIPTION: Final[str] = (
+    "Unified dashboard for Vaner's prepared work. Shows concrete prepared "
+    "findings, briefs, virtual diffs, and ready predictions with safe actions."
+)
 
 # Which domains the sandboxed iframe may reach. With the ext-apps SDK
 # inlined into active_predictions.html (0.8.5 WS13), the iframe needs
@@ -51,4 +59,11 @@ def tool_meta() -> dict[str, Any]:
     return {
         "ui": {"resourceUri": ACTIVE_PREDICTIONS_URI},
         "ui/resourceUri": ACTIVE_PREDICTIONS_URI,
+    }
+
+
+def prepared_work_tool_meta() -> dict[str, Any]:
+    return {
+        "ui": {"resourceUri": PREPARED_WORK_URI},
+        "ui/resourceUri": PREPARED_WORK_URI,
     }

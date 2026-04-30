@@ -1000,6 +1000,36 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             raise HTTPException(status_code=404, detail="work product not found")
         return JSONResponse(product.model_dump(mode="json"))
 
+    @app.get("/prepared-work")
+    async def prepared_work(
+        limit: int = 20,
+        include_advisory: bool = False,
+        include_diagnostics: bool = False,
+        context_id: str | None = None,
+        surface: str = "api",
+    ) -> JSONResponse:
+        from vaner.intent.prepared_work import build_prepared_work_cards
+
+        store = await _work_product_store()
+        products = await store.list_work_products(
+            include_hidden=True,
+            include_terminal=True,
+            limit=200,
+        )
+        predictions = []
+        if engine is not None and getattr(engine, "prediction_registry", None) is not None:
+            predictions = list(engine.get_active_predictions())
+        cards = build_prepared_work_cards(
+            work_products=products,
+            predictions=predictions,
+            include_advisory=include_advisory,
+            include_diagnostics=include_diagnostics,
+            context_id=context_id,
+            surface=surface,
+            limit=max(1, min(100, int(limit))),
+        )
+        return JSONResponse({"prepared_work": [card.model_dump(mode="json") for card in cards]})
+
     @app.post("/work-products/{product_id}/dismiss")
     async def work_products_dismiss(product_id: str) -> JSONResponse:
         store = await _work_product_store()

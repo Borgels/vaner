@@ -1067,6 +1067,27 @@ def build_server(
                     },
                 ),
                 Tool(
+                    name="vaner.prepared_work.dashboard",
+                    description=(
+                        "Return the unified Prepared Work dashboard: UI-safe cards combining concrete prepared artifacts "
+                        "and ready/drafting predictions. Normal payloads hide internal WorkProduct lifecycle and raw scoring fields."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                            "include_advisory": {"type": "boolean", "default": False},
+                            "include_diagnostics": {"type": "boolean", "default": False},
+                            "context_id": {"type": "string"},
+                            "surface": {
+                                "type": "string",
+                                "enum": ["desktop", "cockpit", "mcp_app", "api"],
+                                "default": "mcp_app",
+                            },
+                        },
+                    },
+                ),
+                Tool(
                     name="vaner.work_products.list",
                     description=(
                         "List Vaner-owned prepared work products from idle/background preparation. "
@@ -1554,6 +1575,11 @@ def build_server(
                     ACTIVE_PREDICTIONS_NAME,
                     ACTIVE_PREDICTIONS_TITLE,
                     ACTIVE_PREDICTIONS_URI,
+                    PREPARED_WORK_DESCRIPTION,
+                    PREPARED_WORK_MIME,
+                    PREPARED_WORK_NAME,
+                    PREPARED_WORK_TITLE,
+                    PREPARED_WORK_URI,
                     resource_meta,
                 )
 
@@ -1564,6 +1590,16 @@ def build_server(
                         title=ACTIVE_PREDICTIONS_TITLE,
                         description=ACTIVE_PREDICTIONS_DESCRIPTION,
                         mimeType=ACTIVE_PREDICTIONS_MIME,
+                        meta=resource_meta(),
+                    )
+                )
+                resources.append(
+                    _Resource(
+                        uri=PREPARED_WORK_URI,  # type: ignore[arg-type]
+                        name=PREPARED_WORK_NAME,
+                        title=PREPARED_WORK_TITLE,
+                        description=PREPARED_WORK_DESCRIPTION,
+                        mimeType=PREPARED_WORK_MIME,
                         meta=resource_meta(),
                     )
                 )
@@ -1581,6 +1617,9 @@ def build_server(
             ACTIVE_PREDICTIONS_HTML,
             ACTIVE_PREDICTIONS_MIME,
             ACTIVE_PREDICTIONS_URI,
+            PREPARED_WORK_HTML,
+            PREPARED_WORK_MIME,
+            PREPARED_WORK_URI,
             resource_meta,
         )
 
@@ -1593,6 +1632,15 @@ def build_server(
                 ReadResourceContents(
                     content=ACTIVE_PREDICTIONS_HTML,
                     mime_type=ACTIVE_PREDICTIONS_MIME,
+                    meta=resource_meta(),
+                )
+            ]
+        if uri_str == PREPARED_WORK_URI:
+            await _increment_resource_metric("mcp_apps_prepared_work_bundle_read", repo_root)
+            return [
+                ReadResourceContents(
+                    content=PREPARED_WORK_HTML,
+                    mime_type=PREPARED_WORK_MIME,
                     meta=resource_meta(),
                 )
             ]
@@ -2557,6 +2605,83 @@ def build_server(
                 )
             await _record("ok")
             return _json_result(resolution.model_dump(mode="json"))
+
+        if name == "vaner.prepared_work.dashboard":
+            limit = max(1, min(100, int(args.get("limit", 20))))
+            include_advisory = bool(args.get("include_advisory") or False)
+            include_diagnostics = bool(args.get("include_diagnostics") or False)
+            context_id = str(args.get("context_id", "")).strip() or None
+            surface = str(args.get("surface", "mcp_app")).strip() or "mcp_app"
+            if surface not in {"desktop", "cockpit", "mcp_app", "api"}:
+                surface = "mcp_app"
+
+            def _prepared_work_result(prepared_payload: dict[str, Any]) -> CallToolResult:
+                try:
+                    from mcp.types import ResourceLink  # type: ignore[import-not-found]
+
+                    from vaner.integrations.capability import ClientCapabilityTier, current_tier
+                    from vaner.mcp.apps import (
+                        PREPARED_WORK_DESCRIPTION,
+                        PREPARED_WORK_MIME,
+                        PREPARED_WORK_NAME,
+                        PREPARED_WORK_TITLE,
+                        PREPARED_WORK_URI,
+                        prepared_work_tool_meta,
+                    )
+
+                    session = getattr(getattr(server, "request_context", None), "session", None)
+                    tier = current_tier(session) if session is not None else ClientCapabilityTier.UNKNOWN
+                    if tier is ClientCapabilityTier.TIER_4 and getattr(config.mcp, "apps_ui_enabled", True):
+                        link = ResourceLink(
+                            type="resource_link",
+                            uri=PREPARED_WORK_URI,  # type: ignore[arg-type]
+                            name=PREPARED_WORK_NAME,
+                            title=PREPARED_WORK_TITLE,
+                            description=PREPARED_WORK_DESCRIPTION,
+                            mimeType=PREPARED_WORK_MIME,
+                            meta=prepared_work_tool_meta(),
+                        )
+                        return CallToolResult(
+                            content=[link, *_make_text(json.dumps(prepared_payload))],
+                            structuredContent=prepared_payload,
+                        )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("Prepared Work ResourceLink attach failed, falling back: %s", exc)
+                return _json_result(prepared_payload)
+
+            if engine is None:
+                try:
+                    body = await _daemon().get_prepared_work(
+                        limit=limit,
+                        include_advisory=include_advisory,
+                        include_diagnostics=include_diagnostics,
+                        context_id=context_id,
+                        surface=surface,
+                    )
+                    await _record("ok")
+                    return _prepared_work_result(body)
+                except VanerDaemonUnavailable:
+                    pass
+            from vaner.intent.prepared_work import build_prepared_work_cards
+            from vaner.store.artefacts import ArtefactStore
+
+            artefact_db_path = active_repo_root / ".vaner" / "artefacts.db"
+            prepared_store = engine.store if engine is not None and getattr(engine, "store", None) is not None else ArtefactStore(artefact_db_path)
+            await prepared_store.initialize()
+            products = await prepared_store.list_work_products(include_hidden=True, include_terminal=True, limit=200)
+            predictions = list(engine.get_active_predictions()) if engine is not None else []
+            cards = build_prepared_work_cards(
+                work_products=products,
+                predictions=predictions,
+                include_advisory=include_advisory,
+                include_diagnostics=include_diagnostics,
+                context_id=context_id,
+                surface=surface,
+                limit=limit,
+            )
+            await _record("ok")
+            prepared_payload = {"prepared_work": [card.model_dump(mode="json") for card in cards]}
+            return _prepared_work_result(prepared_payload)
 
         if name in {
             "vaner.work_products.list",

@@ -29,6 +29,7 @@ import { CommandPalette, LeftRail, MismatchBanner, SettingsDrawer, TopBar, type 
 import { EventStreamPanel } from './components/EventStreamPanel'
 import { Inspector } from './components/Inspector'
 import { PipelineCanvas } from './components/PipelineCanvas'
+import { PreparedWorkPanel } from './components/PreparedWorkPanel'
 import { SystemVitals } from './components/SystemVitals'
 import { ACCENT_MAP, DEFAULT_COCKPIT_SETTINGS, KIND_COLOR } from './lib/constants'
 import type {
@@ -665,12 +666,13 @@ function App() {
         style={{
           gridArea: 'stream',
           display: 'grid',
-          gridTemplateRows: '1fr 1fr',
+          gridTemplateRows: 'minmax(150px, 0.75fr) 1fr 1fr',
           gridTemplateColumns: '1fr',
           overflow: 'hidden',
           minHeight: 0,
         }}
       >
+        <PreparedWorkPanel onAction={(message) => showToast(message, message.startsWith('HTTP') || message.startsWith('Failed') ? 'var(--err)' : 'var(--accent)')} />
         <div style={{ minHeight: 0, overflow: 'hidden', borderBottom: '1px solid var(--line-1)', background: 'var(--bg-1)' }}>
           {showScenarioPane ? (
             <Inspector
