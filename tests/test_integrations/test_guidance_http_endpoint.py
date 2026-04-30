@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from vaner.daemon.http import create_daemon_http_app
+from vaner.integrations.guidance import load_guidance
 from vaner.models.config import VanerConfig
 
 if platform.system().lower().startswith("win"):
@@ -29,7 +30,7 @@ def test_guidance_endpoint_returns_canonical_body(temp_repo) -> None:
         assert resp.status_code == 200
         data = resp.json()
         assert data["variant"] == "canonical"
-        assert data["version"] == 1
+        assert data["version"] == load_guidance("canonical").version
         assert "Do not call Vaner mechanically" in data["body"]
 
 
@@ -39,7 +40,7 @@ def test_guidance_endpoint_supports_markdown_format(temp_repo) -> None:
         assert resp.status_code == 200
         data = resp.json()
         assert data["markdown"].startswith("---")
-        assert "guidance_version: 1" in data["markdown"]
+        assert f"guidance_version: {load_guidance('canonical').version}" in data["markdown"]
 
 
 def test_guidance_endpoint_supports_json_format(temp_repo) -> None:
