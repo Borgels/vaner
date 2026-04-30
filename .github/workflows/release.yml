@@ -61,12 +61,8 @@ jobs:
         id: slsa_subjects
         run: |
           set -euo pipefail
-          {
-            sha256sum dist/*
-            sha256sum sbom.json
-            sha256sum dist/*.sigstore.json
-            sha256sum sbom.json.sigstore.json
-          } | base64 --wrap=0 > /tmp/slsa-subjects.b64
+          mapfile -t subjects < <(printf '%s\n' dist/* sbom.json sbom.json.sigstore.json | sort -u)
+          sha256sum "${subjects[@]}" | base64 --wrap=0 > /tmp/slsa-subjects.b64
           echo "value=$(cat /tmp/slsa-subjects.b64)" >> "$GITHUB_OUTPUT"
       - name: Attest build provenance
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
@@ -132,18 +128,10 @@ jobs:
       upload-assets: true
 
   verify:
-    # 0.8.7 WS1 — verify only depends on `publish`. The slsa-github-generator
-    # reusable workflow's `final` aggregation step has a known cosmetic-failure
-    # mode where it reports failure even when `generator` and `upload-assets`
-    # both succeed and the *.intoto.jsonl is uploaded to the release. v0.8.6
-    # hit exactly this on run #24939687147: artifacts were signed and live,
-    # but `verify` was skipped because it depended on slsa-provenance.
-    # `verify` independently downloads the provenance from the release below
-    # (see "Download provenance assets from release"), so the dependency was
-    # redundant. `if: always() && publish succeeded` lets verify run end-to-end
-    # even when the upstream aggregation reports a soft failure.
-    needs: publish
-    if: ${{ always() && needs.publish.result == 'success' }}
+    # Verify after both artifact publication and SLSA upload so the release
+    # page contains the provenance file this job validates.
+    needs: [publish, slsa-provenance]
+    if: ${{ always() && needs.publish.result == 'success' && needs.slsa-provenance.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -186,6 +174,9 @@ jobs:
             provenance_file="$(printf '%s\n' provenance/*.intoto.jsonl | head -n 1)"
           fi
           for artifact in dist-assets/dist/*; do
+            case "$artifact" in
+              *.sigstore.json) continue ;;
+            esac
             gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
             bundle="${artifact}.sigstore.json"
             cosign verify-blob \
