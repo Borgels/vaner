@@ -244,6 +244,7 @@ Work:
 - `vaner.resolve`, `vaner.suggest`, `vaner.search`, `vaner.expand`,
   `vaner.inspect`, `vaner.explain`, `vaner.feedback`, `vaner.warm` — query
   resolution and scenario navigation.
+- `vaner.debug.trace` — diagnostic trace output for debugging integrations.
 - `vaner.predictions.*`, `vaner.goals.*`, `vaner.artefacts.*`,
   `vaner.sources.status`, `vaner.setup.*`, `vaner.policy.show`, and
   `vaner.deep_run.*` — advanced/diagnostic surfaces for predictions, goals,
