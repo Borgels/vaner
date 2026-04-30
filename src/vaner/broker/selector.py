@@ -55,6 +55,11 @@ def _term_variants(term: str) -> list[str]:
     return variants
 
 
+def _singularize(term: str) -> str:
+    variants = _term_variants(term)
+    return variants[-1] if variants else term
+
+
 def _identifier_chunks(text: str, *, max_len: int = 128) -> list[str]:
     chunks: list[str] = []
     current: list[str] = []
@@ -99,6 +104,7 @@ def score_artefact(prompt: str, artefact: Artefact, *, factor_sink: list[ScoreFa
     raw_terms = _prompt_terms(prompt)
     path_text = artefact.source_path.lower()
     basename = path_text.rsplit("/", 1)[-1]
+    stem = basename.rsplit(".", 1)[0]
     content_text = artefact.content.lower()
 
     keyword_overlap = 0.0
@@ -113,6 +119,8 @@ def score_artefact(prompt: str, artefact: Artefact, *, factor_sink: list[ScoreFa
         weight = 3.0 if "_" in term else 1.0
         if path_hit:
             keyword_overlap += weight * (5.0 if term in basename else 3.0)
+            if term == stem or term == _singularize(stem):
+                keyword_overlap += weight * 8.0
         if content_hit:
             keyword_overlap += weight
 
@@ -243,6 +251,133 @@ def _doc_domain_bonus(path_text: str, content_text: str, terms: list[str]) -> fl
             bonus += 8.0
         if "dependency injection" in content_text:
             bonus += 3.0
+    cold_start_terms = {
+        "cold",
+        "start",
+        "cached",
+        "cache",
+        "data",
+        "empty",
+        "repository",
+        "repo",
+        "bootstrap",
+        "prepare",
+        "preparation",
+    }
+    cold_start_intent_terms = {"cold", "empty", "repository", "repo", "bootstrap", "prepare", "preparation"}
+    if len(term_set & cold_start_terms) >= 2 and bool(term_set & cold_start_intent_terms):
+        if path_text in {
+            "src/vaner/engine.py",
+            "src/vaner/daemon/runner.py",
+            "src/vaner/daemon/signals/fs_watcher.py",
+            "src/vaner/intent/adapter.py",
+            "src/vaner/intent/cache.py",
+            "src/vaner/store/artefacts.py",
+        }:
+            bonus += 16.0
+        if any(
+            term in content_text
+            for term in (
+                "prepare_corpus",
+                "run_once",
+                "scan_repo_files",
+                "scan_repository",
+                "summarize",
+                "cold_miss",
+                "cold",
+                "bootstrap",
+            )
+        ):
+            bonus += 8.0
+        if path_text in {"src/vaner/router/proxy.py", "src/vaner/server.py", "src/vaner/mcp/server.py"}:
+            bonus -= 6.0
+        if any(term in content_text for term in ("warm_start", "warm package", "warm cache", "warm-start")):
+            bonus -= 8.0
+    hybrid_feature_terms = {
+        "train",
+        "training",
+        "feature",
+        "features",
+        "hybrid",
+        "artefact",
+        "artefacts",
+        "artifact",
+        "artifacts",
+        "data",
+        "pipeline",
+    }
+    if len(term_set & hybrid_feature_terms) >= 3:
+        if path_text in {
+            "src/vaner/intent/features.py",
+            "src/vaner/intent/trainer.py",
+            "src/vaner/models/artefact.py",
+            "src/vaner/store/artefacts.py",
+            "tests/test_intent/test_features_follow_up.py",
+            "tests/test_intent/test_trainer_v4_rollover.py",
+        }:
+            bonus += 14.0
+        if any(
+            term in content_text
+            for term in (
+                "extract_hybrid_features",
+                "feature_vector_for_artefact",
+                "feature_vector_for_artifact",
+                "artefact_age_seconds",
+                "training example",
+                "train_model",
+            )
+        ):
+            bonus += 8.0
+        if path_text in {"src/vaner/broker/selector.py", "src/vaner/router/proxy.py", "src/vaner/server.py"}:
+            bonus -= 5.0
+    cache_tier_terms = {"tier", "tiered", "full", "partial", "warm", "hit", "hits", "start", "cache", "cached"}
+    if len(term_set & cache_tier_terms) >= 3:
+        if path_text in {
+            "src/vaner/intent/cache.py",
+            "src/vaner/intent/scoring_policy.py",
+            "src/vaner/engine.py",
+            "tests/test_intent/test_cache.py",
+            "tests/test_store/test_prediction_cache_decay.py",
+        }:
+            bonus += 12.0
+        if path_text == "src/vaner/intent/scoring_policy.py":
+            bonus += 6.0
+        elif path_text == "src/vaner/intent/cache.py":
+            bonus += 4.0
+        elif path_text in {"tests/test_intent/test_cache.py", "tests/test_store/test_prediction_cache_decay.py"}:
+            bonus += 2.0
+        if any(term in content_text for term in ("full_hit", "partial_hit", "warm_start", "cache_full_hit", "cache_partial_hit")):
+            bonus += 8.0
+    llm_exploration_terms = {
+        "llm",
+        "external",
+        "exploration",
+        "rank",
+        "ranking",
+        "ranked",
+        "file",
+        "files",
+        "follow",
+        "scenario",
+        "scenarios",
+        "proposal",
+        "propose",
+        "proposes",
+    }
+    if len(term_set & llm_exploration_terms) >= 4:
+        if path_text in {
+            "src/vaner/engine.py",
+            "src/vaner/clients/openai.py",
+            "src/vaner/clients/ollama.py",
+            "src/vaner/clients/llm_response.py",
+            "tests/test_engine/test_deep_drill.py",
+            "tests/test_engine/test_exploration_parallelism.py",
+        }:
+            bonus += 14.0
+        if path_text == "src/vaner/engine.py" and "_explore_scenario_with_llm" in content_text:
+            bonus += 8.0
+        if any(term in content_text for term in ("ranked_files", "follow_on", "follow-on", "semantic_intent")):
+            bonus += 6.0
     return bonus
 
 

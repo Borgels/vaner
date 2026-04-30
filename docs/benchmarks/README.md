@@ -41,7 +41,7 @@ diagnostic but is not the ship gate.
 
 ## Methodology
 
-See `eval/session_replay_bench.py` in the Vaner-train repo for the harness.
+See the private evaluation harness for the session replay runner.
 The key properties:
 
 | Aspect | Choice | Why |
@@ -61,10 +61,10 @@ The key properties:
 ## Reproducing a run
 
 Prerequisites: ollama or vLLM serving the answer/judge models; corpora fetched
-via `bash scripts/fetch_session_corpora.sh` (Vaner-train repo).
+via the private evaluation harness corpus-fetch workflow.
 
 ```bash
-cd /path/to/Vaner-train
+cd /path/to/evaluation-harness
 PYTHONPATH=/path/to/Vaner/src python eval/session_replay_bench.py \
     --sessions-index eval/cases/session_bench_index.json \
     --idle-multipliers 0.5 --max-idle-per-turn 60 \
@@ -91,11 +91,11 @@ raw JSON (for full transparency) and the rendered markdown.
 | Date | Answer + judge model | Hardware | Sessions | Idle cap/mult | Aggregate uplift | Link |
 |---|---|---|---:|---|---:|---|
 | **2026-04-28** | **Vaner: qwen3.5:35b, answer: Claude Sonnet 4.6, judge: Claude Opus 4.7** | **RTX 5090 local prep + Anthropic primary/judge** | **8** | **60s cap, mult={0,0.25,1.0}, assembly={shadow,safe}** | **+1.65 vs best(naked,RAG)** | [publishable report](./2026-04-28-public-session-replay-benchmark.html) |
-| 2026-04-23 | qwen2.5-coder:7b | RTX 5090 (ollama) | 8 | 60s cap, mult=0.5 | **+0.66** | [run](https://github.com/abolsen/Vaner-train/blob/main/eval/runs/session/quality-local-20260423T072226Z/primary.md) |
-| 2026-04-23 | Qwen/Qwen3.5-35B-A3B-FP8 | spark01 DGX (vLLM) | 8 | 60s cap, mult=0.5 | **+0.66** | [run](https://github.com/abolsen/Vaner-train/tree/main/eval/runs/session/ship-spark01-a3b-) |
-| 2026-04-23 | qwen3.5:35b Q4_K_M | RTX 5090 (ollama) | 8 | 60s cap, mult=0.5 | **−0.23** | [run](https://github.com/abolsen/Vaner-train/tree/main/eval/runs/session/ship-qwen35b-) |
-| **2026-04-23** | **Qwen/Qwen3.5-35B-A3B-FP8** | **spark01 DGX (vLLM)** | **4** | **1800s cap, mult={0.5,1.0,2.0}** | **+1.73 (best @ mult=2.0)** | [run](https://github.com/abolsen/Vaner-train/tree/main/eval/runs/session/idle-curve-spark01-) |
-| **2026-04-23** | **qwen3.5:35b Q4_K_M** | **RTX 5090 (ollama)** | **4** | **1800s cap, mult={0.5,1.0,2.0}** | **+1.22 (best @ mult=0.5)** | [run](https://github.com/abolsen/Vaner-train/tree/main/eval/runs/session/idle-curve-local-) |
+| 2026-04-23 | qwen2.5-coder:7b | RTX 5090 (ollama) | 8 | 60s cap, mult=0.5 | **+0.66** | archived internal run |
+| 2026-04-23 | Qwen/Qwen3.5-35B-A3B-FP8 | spark01 DGX (vLLM) | 8 | 60s cap, mult=0.5 | **+0.66** | archived internal run |
+| 2026-04-23 | qwen3.5:35b Q4_K_M | RTX 5090 (ollama) | 8 | 60s cap, mult=0.5 | **−0.23** | archived internal run |
+| **2026-04-23** | **Qwen/Qwen3.5-35B-A3B-FP8** | **spark01 DGX (vLLM)** | **4** | **1800s cap, mult={0.5,1.0,2.0}** | **+1.73 (best @ mult=2.0)** | archived internal run |
+| **2026-04-23** | **qwen3.5:35b Q4_K_M** | **RTX 5090 (ollama)** | **4** | **1800s cap, mult={0.5,1.0,2.0}** | **+1.22 (best @ mult=0.5)** | archived internal run |
 
 ## Deep-Run maturation bench
 

@@ -179,6 +179,9 @@ async def test_enabled_with_drafter_runs_mature_one_on_candidates(tmp_path) -> N
     # Each kept prediction should have revision >= 1 post-pass.
     kept = [p for p in preds if p.run.revision > 0]
     assert kept, "at least one prediction should have been matured by the counting drafter"
+    outcomes = engine.get_last_refinement_outcomes()
+    assert len(outcomes) == attempted
+    assert any(item["action"] == "matured_kept" for item in outcomes)
 
 
 async def test_max_candidates_per_cycle_cap_respected(tmp_path) -> None:
@@ -208,6 +211,10 @@ async def test_discarded_drafts_do_not_modify_prediction(tmp_path) -> None:
     assert pred.artifacts.draft_answer == original_draft
     assert pred.run.revision == 0
     assert pred.run.failed_revisits >= 1
+    outcomes = engine.get_last_refinement_outcomes()
+    assert outcomes
+    assert outcomes[0]["action"] == "matured_discarded"
+    assert outcomes[0]["failed_clause"] == "no_length_only_growth"
 
 
 # ---------------------------------------------------------------------------

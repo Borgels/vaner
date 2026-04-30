@@ -104,7 +104,7 @@ class ExplorationScenario:
     id: str  # SHA1 of sorted file_paths
     file_paths: list[str]  # the context neighbourhood
     anchor: str  # what seeded this scenario
-    source: str  # "graph" | "arc" | "pattern" | "llm_branch" | "structured_direct" | "structured_graph_expand"
+    source: str  # "graph" | "core_architecture" | "arc" | "pattern" | "llm_branch" | "structured_direct" | "structured_graph_expand"
     priority: float  # composite score (higher = explore sooner)
     depth: int = 0  # LLM hops from original seed
     parent_id: str | None = None  # which scenario spawned this one
@@ -155,6 +155,7 @@ class ExplorationFrontier:
         "pattern": 1.2,  # validated patterns get a slight head start
         "llm_branch": 0.9,
         "skill": 1.1,
+        "core_architecture": 1.0,
         # 0.8.7 WS5 — composer-anchored predictions enter at the
         # baseline multiplier; the existing per-source learning loop
         # below auto-adapts based on adoption telemetry.
@@ -902,6 +903,7 @@ class ExplorationFrontier:
         *,
         reason: str = "recent intent focus",
         priority_floor: float = 0.95,
+        source: str = "graph",
     ) -> int:
         """Seed a high-priority scenario from paths selected by intent signals.
 
@@ -934,7 +936,7 @@ class ExplorationFrontier:
             id=file_set_fingerprint(scenario_paths),
             file_paths=scenario_paths,
             anchor="intent_focus",
-            source="graph",
+            source=source,
             priority=priority,
             depth=0,
             reason=reason,

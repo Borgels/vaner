@@ -54,3 +54,43 @@ def test_available_paths_limit_output_to_relative_paths(tmp_path: Path) -> None:
 
     assert paths == ["src/store.py"]
     assert not paths[0].startswith(str(tmp_path))
+
+
+def test_available_paths_ignore_non_source_artifacts(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "__pycache__").mkdir()
+    (tmp_path / "src" / "__pycache__" / "engine.cpython-311.pyc").write_bytes(b"cache")
+    (tmp_path / "src" / "engine.py").write_text("class QueryEngine:\n    pass\n", encoding="utf-8")
+
+    paths = rank_exact_paths(
+        tmp_path,
+        "QueryEngine",
+        available_paths=("src/__pycache__/engine.cpython-311.pyc", "src/engine.py"),
+        max_paths=5,
+    )
+
+    assert paths == ["src/engine.py"]
+
+
+def test_generic_lowercase_methods_do_not_outrank_component_paths(tmp_path: Path) -> None:
+    (tmp_path / "src" / "vaner" / "intent").mkdir(parents=True)
+    (tmp_path / "src" / "vaner" / "cli").mkdir(parents=True)
+    (tmp_path / "src" / "vaner" / "intent" / "cache.py").write_text(
+        "class TieredPredictionCache:\n"
+        "    def match(self):\n"
+        "        return 'full_hit partial_hit warm_start'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "vaner" / "cli" / "commands.py").write_text(
+        "def start():\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+
+    paths = rank_exact_paths(
+        tmp_path,
+        "Explain the tiered prediction cache full hit partial hit warm start",
+        max_paths=3,
+    )
+
+    assert paths[0] == "src/vaner/intent/cache.py"

@@ -18,6 +18,7 @@ from vaner.cli.commands.config import load_config, set_compute_value
 from vaner.daemon.cockpit_html import build_cockpit_html
 from vaner.events.bus import build_stage_payloads
 from vaner.models.config import VanerConfig
+from vaner.models.work_product import WorkProductFeedbackState, WorkProductType
 from vaner.store.scenarios import ScenarioStore
 from vaner.telemetry.metrics import MetricsStore
 
@@ -922,6 +923,16 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
 
         return serialize_prediction_nested(prompt)
 
+    async def _work_product_store() -> Any:
+        if engine is not None and getattr(engine, "store", None) is not None:
+            await engine.store.initialize()
+            return engine.store
+        from vaner.store.artefacts import ArtefactStore
+
+        store = ArtefactStore(config.repo_root / ".vaner" / "artefacts.db")
+        await store.initialize()
+        return store
+
     @app.get("/predictions/active")
     async def predictions_active() -> JSONResponse:
         if engine is None:
@@ -958,6 +969,71 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             if extra:
                 body = {**body, "artifacts_content": extra}
         return JSONResponse(body)
+
+    @app.get("/work-products")
+    async def work_products_list(
+        include_hidden: bool = False,
+        include_terminal: bool = False,
+        type: str | None = None,
+        limit: int = 50,
+    ) -> JSONResponse:
+        store = await _work_product_store()
+        product_type: WorkProductType | str | None = None
+        if type:
+            try:
+                product_type = WorkProductType(type)
+            except ValueError:
+                return JSONResponse({"code": "invalid_type", "message": f"unknown work product type: {type}"}, status_code=400)
+        products = await store.list_work_products(
+            include_hidden=include_hidden,
+            include_terminal=include_terminal,
+            type=product_type,
+            limit=max(1, min(200, int(limit))),
+        )
+        return JSONResponse({"work_products": [product.model_dump(mode="json") for product in products]})
+
+    @app.get("/work-products/{product_id}")
+    async def work_products_one(product_id: str) -> JSONResponse:
+        store = await _work_product_store()
+        product = await store.get_work_product(product_id)
+        if product is None:
+            raise HTTPException(status_code=404, detail="work product not found")
+        return JSONResponse(product.model_dump(mode="json"))
+
+    @app.post("/work-products/{product_id}/dismiss")
+    async def work_products_dismiss(product_id: str) -> JSONResponse:
+        store = await _work_product_store()
+        ok = await store.dismiss_work_product(product_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="work product not found")
+        return JSONResponse({"ok": True})
+
+    @app.post("/work-products/{product_id}/feedback")
+    async def work_products_feedback(product_id: str, payload: dict[str, Any]) -> JSONResponse:
+        raw = str(payload.get("feedback_state", payload.get("feedback", ""))).strip()
+        try:
+            feedback = WorkProductFeedbackState(raw)
+        except ValueError:
+            return JSONResponse(
+                {"code": "invalid_feedback", "message": "feedback_state must be one of none|useful|partial|irrelevant"},
+                status_code=400,
+            )
+        store = await _work_product_store()
+        ok = await store.feedback_work_product(product_id, feedback)
+        if not ok:
+            raise HTTPException(status_code=404, detail="work product not found")
+        return JSONResponse({"ok": True})
+
+    @app.post("/work-products/{product_id}/export")
+    async def work_products_export(product_id: str) -> JSONResponse:
+        store = await _work_product_store()
+        try:
+            exported = await store.export_work_product(product_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="work product not found") from None
+        except PermissionError as exc:
+            return JSONResponse({"code": "not_exportable", "message": str(exc)}, status_code=409)
+        return JSONResponse(exported.model_dump(mode="json"))
 
     @app.get("/integrations/guidance")
     async def integrations_guidance(variant: str = "canonical", format: str = "body") -> JSONResponse:

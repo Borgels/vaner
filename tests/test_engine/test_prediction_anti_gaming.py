@@ -28,7 +28,7 @@ def test_prediction_engine_does_not_embed_benchmark_prompts_or_harness_imports()
 
 def test_prediction_engine_source_does_not_embed_absolute_local_paths() -> None:
     root = Path("src/vaner")
-    forbidden = ["/home/", "/Users/", "/mnt/", "/media/"]
+    forbidden = ["/" + part + "/" for part in ("home", "Users", "mnt", "media")]
     offenders: list[str] = []
     for path in root.rglob("*.py"):
         text = path.read_text(encoding="utf-8", errors="ignore")

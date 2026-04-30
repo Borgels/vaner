@@ -17,7 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from vaner.engine import VanerEngine
+from vaner.engine import (
+    VanerEngine,
+    _core_group_matches_recent_query,
+    _is_cold_start_intent_text,
+    _merge_llm_ranked_with_seed_paths,
+)
 from vaner.intent.adapter import CodeRepoAdapter
 from vaner.models.config import ComputeConfig, ExplorationConfig
 
@@ -94,6 +99,44 @@ def test_effective_concurrency_configured_at_zero_floors_at_one(monkeypatch):
     compute = _make_compute(exploration_concurrency=0)
     # Degenerate config: should still run serial (concurrency 1), never 0.
     assert VanerEngine._compute_effective_concurrency(ecfg, compute) == 1
+
+
+def test_llm_rerank_preserves_deterministic_seed_paths() -> None:
+    merged = _merge_llm_ranked_with_seed_paths(
+        ["src/vaner/learning/reward.py"],
+        ["src/vaner/engine.py", "src/vaner/clients/llm_response.py"],
+    )
+
+    assert merged[:3] == [
+        "src/vaner/learning/reward.py",
+        "src/vaner/engine.py",
+        "src/vaner/clients/llm_response.py",
+    ]
+
+
+def test_core_group_matching_boosts_specific_mechanism_query() -> None:
+    assert _core_group_matches_recent_query(
+        "external LLM exploration flow ranked_files file ranking follow_on follow-on scenario proposal",
+        ["Explain the LLM exploration flow and follow-on scenario proposal."],
+    )
+    assert _core_group_matches_recent_query(
+        "tiered prediction cache full_hit partial_hit warm_start cold_miss decision thresholds and semantic matching",
+        ["Explain the tiered prediction cache full hit partial hit warm start policy."],
+    )
+    assert not _core_group_matches_recent_query(
+        "external LLM exploration flow ranked_files file ranking follow_on follow-on scenario proposal",
+        ["Explain the tiered prediction cache."],
+    )
+    assert not _core_group_matches_recent_query(
+        "external LLM exploration flow ranked_files file ranking follow_on follow-on scenario proposal",
+        ["How does the exploration frontier decide which scenario to explore?"],
+    )
+
+
+def test_cold_start_intent_detection_distinguishes_warm_cache_queries() -> None:
+    assert _is_cold_start_intent_text("Walk me through a cold start when Vaner has no cached data.")
+    assert _is_cold_start_intent_text("What happens with an empty cache on the first query?")
+    assert not _is_cold_start_intent_text("Explain warm_start cache packages and semantic matching.")
 
 
 # ---------------------------------------------------------------------------

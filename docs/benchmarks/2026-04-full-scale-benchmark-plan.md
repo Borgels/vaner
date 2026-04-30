@@ -14,7 +14,7 @@ The old reference points are:
 
 - `docs/benchmarks/README.md`: 0.8.0 session-replay results. Best local qwen3.5:35b Q4 result was aggregate `+1.22` at idle multiplier `0.5`; best Spark Qwen3.5-35B-A3B-FP8 result was `+1.73` at idle multiplier `2.0`.
 - `docs/benchmarks/0.8.3-deep-run-validation.md`: Deep-Run gates were defined but real labelled-run numbers were deferred.
-- `<vaner-train-repo>/eval/benchmark/runs/spark_comparison.md`: earlier Spark run saturated recall but had `mean_prediction_lift=0.0`; Qwen3.6-35B-A3B failed on an older vLLM stack due unsupported `qwen3_5_moe`.
+- An earlier private Spark run saturated recall but had `mean_prediction_lift=0.0`; Qwen3.6-35B-A3B failed on an older vLLM stack due unsupported `qwen3_5_moe`.
 
 ## Current Environment Baseline
 
@@ -62,7 +62,7 @@ Spark benchmark cells should use 120B-class models wherever possible. The 35B mo
 
 ### Track A: Answer Quality
 
-Harness: Vaner-train session replay benchmark, or a repaired equivalent if the branch currently lacks `session_replay_bench.py`.
+Harness: private session replay benchmark, or a repaired equivalent if the branch currently lacks the session replay runner.
 
 Arms:
 
@@ -74,7 +74,7 @@ Arms:
 
 Datasets:
 
-- Existing session corpus in Vaner-train.
+- Existing private session corpus.
 - 8 sessions minimum across developer, researcher, writer, learner.
 - Add planner/support if the corpus is ready.
 
@@ -95,11 +95,11 @@ Ship gates:
 
 ### Track B: Deep-Run Maturation
 
-Harness: `<vaner-train-repo>/eval/run_deep_run_bench.py`.
+Harness: private Deep-Run benchmark runner.
 
 Corpus:
 
-- `<vaner-train-repo>/tests/fixtures/deep_run/`
+- private Deep-Run fixture corpus
 - 10 synthetic labelled sessions each for developer, planner, researcher, writer.
 - If possible, add a small human-labelled slice before the final run.
 
@@ -172,7 +172,7 @@ Gate:
 ## Execution Order
 
 1. Freeze versions and environment:
-   - record `git rev-parse HEAD` for Vaner and Vaner-train
+   - record `git rev-parse HEAD` for Vaner and the evaluation harness
    - record `vaner --version`, `ollama list`, vLLM `/v1/models`, Docker image tags
    - export `.vaner/config.toml` snapshots for each mode
 2. Smoke test Vaner locally:
@@ -181,7 +181,7 @@ Gate:
    - one MCP resolve/feedback loop
    - one short Deep-Run start/stop
 3. Repair benchmark harness drift:
-   - ensure Vaner-train imports current Vaner APIs
+   - ensure the evaluation harness imports current Vaner APIs
    - restore or replace missing session-replay renderer/compare scripts
    - add structured run metadata if missing
 4. Run 5-minute smoke cells:
@@ -218,7 +218,7 @@ Use a new run root:
 eval/runs/full-scale-20260426/
   metadata/
     vaner-git.txt
-    vaner-train-git.txt
+    evaluation-harness-git.txt
     local-ollama-models.txt
     spark01-vllm-models.json
     spark02-vllm-models.json
@@ -280,5 +280,5 @@ cd ui/cockpit && npm run build
 cd ui/cockpit && npm run test -- src/components/EventStreamPanel.test.tsx src/components/HardwareProfilePanel.test.tsx src/components/BundleSummaryCard.test.tsx
 # 25 passed
 ```
-4. Repair Vaner-train session replay harness drift if `session_replay_bench.py` is intentionally absent on the current branch.
+4. Repair private session replay harness drift if the runner is intentionally absent on the current branch.
 5. Start with short smoke runs before launching overnight-scale sweeps.

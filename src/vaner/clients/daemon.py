@@ -14,6 +14,8 @@ Public contract (keep stable across 0.8.x):
     get_predictions_active() -> dict                          # {"predictions": [...]}
     get_prediction(id, *, include=["draft", "briefing", ...])  # may include content
     adopt_prediction(id) -> Resolution                         # parsed pydantic model
+    list_work_products() -> dict                              # {"work_products": [...]}
+    inspect/export/dismiss/feedback work products              # non-mutating
     resolve(query, *, context=..., include_briefing=...,
             include_predicted_response=...) -> Resolution      # 0.8.1: MCP/HTTP forward
 
@@ -197,6 +199,97 @@ class VanerDaemonClient:
                 raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
             response.raise_for_status()
             return Resolution.model_validate(response.json())
+
+    async def list_work_products(
+        self,
+        *,
+        include_hidden: bool = False,
+        include_terminal: bool = False,
+        type: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "include_hidden": include_hidden,
+            "include_terminal": include_terminal,
+            "limit": limit,
+        }
+        if type:
+            params["type"] = type
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/work-products", params=params)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonUnavailable(f"daemon at {self._base} does not expose /work-products")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def inspect_work_product(self, product_id: str) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/work-products/{product_id}")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonNotFound(f"no such work product: {product_id}")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def dismiss_work_product(self, product_id: str) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/work-products/{product_id}/dismiss")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonNotFound(f"no such work product: {product_id}")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def feedback_work_product(self, product_id: str, feedback_state: str) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/work-products/{product_id}/feedback", json={"feedback_state": feedback_state})
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonNotFound(f"no such work product: {product_id}")
+            if response.status_code == 400:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = {}
+                raise ValueError(body.get("message", "invalid work product feedback"))
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def export_work_product(self, product_id: str) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/work-products/{product_id}/export")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonNotFound(f"no such work product: {product_id}")
+            if response.status_code == 409:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = {}
+                raise PermissionError(body.get("message", "work product is not exportable"))
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
 
     async def resolve(
         self,

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Assert that src/vaner/ does not contain Vaner-train moat markers."""
+"""Assert that src/vaner/ does not contain private training markers."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ FORBIDDEN_FILENAMES = (
     "release-audit",
 )
 
-MOAT_MARKERS = re.compile(
+INTERNAL_MARKERS = re.compile(
     r"lmsys_[a-z0-9_-]+_patterns\.json|"
     r"allenai_[A-Za-z0-9_-]+_patterns\.json|"
     r"conversation_pattern_adapter|"
@@ -26,22 +26,22 @@ MOAT_MARKERS = re.compile(
     r"simulate_repo_sessions|"
     r"validate_bundle|"
     r"promote_bundle|"
-    r"Vaner-train",
+    r"vaner_train",
     re.IGNORECASE,
 )
 
 
-def test_no_moat_markers_under_src_vaner() -> None:
+def test_no_internal_training_markers_under_src_vaner() -> None:
     src = REPO_ROOT / "src" / "vaner"
     offenders: list[str] = []
     for entry in list(src.rglob("*.py")) + list(src.rglob("*.json")):
         text = entry.read_text(encoding="utf-8", errors="ignore")
-        if MOAT_MARKERS.search(text):
+        if INTERNAL_MARKERS.search(text):
             offenders.append(str(entry))
-    assert not offenders, f"Moat markers present in: {offenders}"
+    assert not offenders, f"Private training markers present in: {offenders}"
 
 
-def test_no_vaner_train_imports() -> None:
+def test_no_private_training_imports() -> None:
     offenders: list[str] = []
     src = REPO_ROOT / "src" / "vaner"
     for entry in src.rglob("*.py"):
@@ -55,7 +55,7 @@ def test_no_vaner_train_imports() -> None:
                 module = node.module or ""
                 if "vaner_train" in module:
                     offenders.append(f"{entry}:{node.lineno} from {module}")
-    assert not offenders, f"Vaner-train imports detected: {offenders}"
+    assert not offenders, f"Private training imports detected: {offenders}"
 
 
 def test_no_forbidden_root_directories() -> None:
@@ -63,7 +63,7 @@ def test_no_forbidden_root_directories() -> None:
     assert not offenders, f"Forbidden directories found: {offenders}"
 
 
-def test_no_moat_sensitive_filenames() -> None:
+def test_no_internal_sensitive_filenames() -> None:
     offenders: list[str] = []
     for entry in REPO_ROOT.rglob("*"):
         if not entry.is_file():
@@ -76,4 +76,4 @@ def test_no_moat_sensitive_filenames() -> None:
             size_bytes = entry.stat().st_size
             if size_bytes < 1_000_000:
                 offenders.append(str(entry.relative_to(REPO_ROOT)))
-    assert not offenders, f"Moat-sensitive filenames present: {offenders}"
+    assert not offenders, f"Internal-sensitive filenames present: {offenders}"

@@ -1067,6 +1067,71 @@ def build_server(
                     },
                 ),
                 Tool(
+                    name="vaner.work_products.list",
+                    description=(
+                        "List Vaner-owned prepared work products from idle/background preparation. "
+                        "Normal results omit hidden, dismissed, expired, and superseded artifacts. "
+                        "These artifacts never apply changes to user files."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "include_hidden": {"type": "boolean", "default": False},
+                            "include_terminal": {"type": "boolean", "default": False},
+                            "type": {
+                                "type": "string",
+                                "enum": ["review_note", "bug_hypothesis", "docs_drift", "virtual_diff", "research_brief"],
+                            },
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                        },
+                    },
+                ),
+                Tool(
+                    name="vaner.work_products.inspect",
+                    description="Inspect one prepared work product. Inspection is non-mutating and may include full body text.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"work_product_id": {"type": "string"}},
+                        "required": ["work_product_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.work_products.export",
+                    description=(
+                        "Export one prepared work product only if its adoptability is exportable. "
+                        "Export returns Vaner-owned content and never applies a patch or edits files."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"work_product_id": {"type": "string"}},
+                        "required": ["work_product_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.work_products.dismiss",
+                    description="Dismiss one prepared work product so it no longer appears in normal list results.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"work_product_id": {"type": "string"}},
+                        "required": ["work_product_id"],
+                    },
+                ),
+                Tool(
+                    name="vaner.work_products.feedback",
+                    description="Record feedback on one prepared work product.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "work_product_id": {"type": "string"},
+                            "feedback_state": {
+                                "type": "string",
+                                "enum": ["none", "useful", "partial", "irrelevant"],
+                            },
+                        },
+                        "required": ["work_product_id", "feedback_state"],
+                    },
+                ),
+                Tool(
                     name="vaner.goals.list",
                     description=(
                         "List workspace goals. Goals are long-horizon workspace "
@@ -2492,6 +2557,113 @@ def build_server(
                 )
             await _record("ok")
             return _json_result(resolution.model_dump(mode="json"))
+
+        if name in {
+            "vaner.work_products.list",
+            "vaner.work_products.inspect",
+            "vaner.work_products.export",
+            "vaner.work_products.dismiss",
+            "vaner.work_products.feedback",
+        }:
+            from vaner.models.work_product import WorkProductFeedbackState, WorkProductType
+            from vaner.store.artefacts import ArtefactStore
+
+            artefact_db_path = active_repo_root / ".vaner" / "artefacts.db"
+            work_product_store = engine.store if engine is not None and getattr(engine, "store", None) is not None else ArtefactStore(artefact_db_path)
+            await work_product_store.initialize()
+
+            if name == "vaner.work_products.list":
+                raw_type = args.get("type")
+                product_type: WorkProductType | None = None
+                if isinstance(raw_type, str) and raw_type.strip():
+                    try:
+                        product_type = WorkProductType(raw_type.strip())
+                    except ValueError:
+                        await _record("error")
+                        return _json_result(
+                            {"code": "invalid_type", "message": f"unknown work product type: {raw_type}"},
+                            is_error=True,
+                        )
+                limit = int(args.get("limit", 50))
+                products = await work_product_store.list_work_products(
+                    include_hidden=bool(args.get("include_hidden") or False),
+                    include_terminal=bool(args.get("include_terminal") or False),
+                    type=product_type,
+                    limit=max(1, min(200, limit)),
+                )
+                await _record("ok")
+                return _json_result({"work_products": [product.model_dump(mode="json") for product in products]})
+
+            product_id = str(args.get("work_product_id", "")).strip()
+            if not product_id:
+                await _record("error")
+                return _json_result(
+                    {"code": "invalid_input", "message": "work_product_id is required"},
+                    is_error=True,
+                )
+
+            if name == "vaner.work_products.inspect":
+                product = await work_product_store.get_work_product(product_id)
+                if product is None:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such work product: {product_id}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result(product.model_dump(mode="json"))
+
+            if name == "vaner.work_products.export":
+                try:
+                    exported = await work_product_store.export_work_product(product_id)
+                except KeyError:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such work product: {product_id}"},
+                        is_error=True,
+                    )
+                except PermissionError as exc:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_exportable", "message": str(exc)},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result(exported.model_dump(mode="json"))
+
+            if name == "vaner.work_products.dismiss":
+                ok = await work_product_store.dismiss_work_product(product_id)
+                if not ok:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such work product: {product_id}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result({"ok": True})
+
+            if name == "vaner.work_products.feedback":
+                raw_feedback = str(args.get("feedback_state", "")).strip()
+                try:
+                    feedback = WorkProductFeedbackState(raw_feedback)
+                except ValueError:
+                    await _record("error")
+                    return _json_result(
+                        {
+                            "code": "invalid_feedback",
+                            "message": "feedback_state must be one of none|useful|partial|irrelevant",
+                        },
+                        is_error=True,
+                    )
+                ok = await work_product_store.feedback_work_product(product_id, feedback)
+                if not ok:
+                    await _record("error")
+                    return _json_result(
+                        {"code": "not_found", "message": f"no such work product: {product_id}"},
+                        is_error=True,
+                    )
+                await _record("ok")
+                return _json_result({"ok": True})
 
         if name in {
             "vaner.goals.list",

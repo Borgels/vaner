@@ -81,11 +81,18 @@ def build_production_maturation_drafter(
 def _render_contract_clauses(contract: MaturationContract) -> str:
     """Stringify the contract's acceptance clauses for the prompt frame."""
     lines: list[str] = []
-    clauses = getattr(contract, "improvement_clauses", None) or []
-    for clause in clauses:
-        lines.append(f"- {clause}")
+    intent_anchor = getattr(contract, "intent_anchor", "") or ""
+    intent_terms = tuple(getattr(contract, "intent_terms", ()) or ())
+    if intent_anchor:
+        lines.append(f"- Original predicted user need: {intent_anchor}")
+    if intent_terms:
+        lines.append(f"- Preserve these concrete target terms: {', '.join(intent_terms)}")
+    for clause in getattr(contract, "must_clauses", ()) or ():
+        lines.append(f"- MUST {clause.key}: {clause.description}")
+    for clause in getattr(contract, "forbidden_clauses", ()) or ():
+        lines.append(f"- MUST NOT {clause.key}: {clause.description}")
     if not lines:
-        return "(no explicit improvement clauses — produce a materially better draft)"
+        return "(no explicit improvement clauses - produce a materially better draft)"
     return "\n".join(lines)
 
 
@@ -102,7 +109,9 @@ def _build_prompt(
     return (
         "You are producing an IMPROVED draft for a predicted user prompt.\n"
         "Your task: return a draft that is *materially better* than the existing one,\n"
-        "specifically addressing the acceptance clauses below. Keep the same intent.\n"
+        "specifically addressing the acceptance clauses below. Keep the exact same\n"
+        "user need and concrete target; do not broaden, replace, or reinterpret the\n"
+        "task while improving the answer.\n"
         "Cite evidence inline using [ref: <short-name>] markers; the judge will\n"
         "compare against the existing evidence set.\n\n"
         f"Intent: {intent}\n\n"

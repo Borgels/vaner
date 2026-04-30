@@ -57,7 +57,7 @@ Configured required status checks currently include:
 
 - `verify (ubuntu-latest, 3.12)`
 - `examples-smoke`
-- `no-moat-paths`
+- `no-internal-paths`
 - `actionlint`
 
 Configured review requirements currently include:

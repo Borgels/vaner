@@ -30,6 +30,7 @@ Future Vaner benchmark and optimization work should measure the user-facing prod
 - The user's primary AI is a separate model, usually a cloud model accessed through the user's client.
 - The judge should be separate from the primary model when possible.
 - Public claims must compare naked primary AI, naive RAG plus primary AI, raw Vaner briefing plus primary AI, answerable Vaner briefing plus primary AI, and adopted/prepared Vaner packages when available.
+- Final public release claims must come from a versioned release benchmark report schema. Do not treat one-off slices, smoke tests, or changing canvas formats as release-readiness evidence.
 
 Optimize for the golden trifecta from the user's perspective:
 - Higher answer quality than naked and naive RAG, judged against public datasets and reproducible artifacts.

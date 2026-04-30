@@ -46,6 +46,7 @@ def _is_intentional_prediction_source(source: str) -> bool:
     return source in {
         "structured_direct",
         "structured_graph_expand",
+        "core_architecture",
         "llm_branch",
         "arc",
         "pattern",

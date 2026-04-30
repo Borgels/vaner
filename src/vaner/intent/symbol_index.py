@@ -29,6 +29,40 @@ _SOURCE_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go"}
 _DOC_SUFFIXES = {".md", ".mdx", ".rst", ".txt"}
 _GENERATED_HINTS = ("generated", ".gen.", ".generated.", "_pb2.py", ".pb.go", "vendor/", "node_modules/")
 _TEST_HINTS = ("/test_", "/test/", "/tests/", ".test.", ".spec.", "_test.")
+_GENERIC_LOWER_SYMBOLS = {
+    "add",
+    "build",
+    "call",
+    "check",
+    "close",
+    "config",
+    "create",
+    "delete",
+    "get",
+    "handle",
+    "init",
+    "load",
+    "main",
+    "model",
+    "open",
+    "parse",
+    "process",
+    "query",
+    "read",
+    "request",
+    "resolve",
+    "response",
+    "route",
+    "run",
+    "save",
+    "send",
+    "set",
+    "start",
+    "stop",
+    "update",
+    "value",
+    "write",
+}
 
 _TS_JS_DEF_RE = re.compile(
     r"\b(?:export\s+)?(?:async\s+)?(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)"
@@ -91,7 +125,11 @@ def symbol_candidates_for_terms(
         elif suffix in _DOC_SUFFIXES:
             relation_hint = "doc_match"
         definitions = _extract_definitions(rel_path, content)
-        definition_norms = {normalize_component(symbol): symbol for symbol in definitions}
+        definition_norms = {
+            normalize_component(symbol): symbol
+            for symbol in definitions
+            if not _is_generic_lower_symbol(symbol)
+        }
         path_terms = set(path_component_terms(rel_path))
         for term in terms:
             if term in definition_norms:
@@ -159,7 +197,11 @@ def rank_exact_paths(
 
 def _candidate_paths(root: Path, available_paths: list[str] | tuple[str, ...] | None, *, max_files: int) -> list[str]:
     if available_paths is not None:
-        return [path for path in available_paths if (root / path).is_file()][:max_files]
+        return [
+            path
+            for path in available_paths
+            if (root / path).is_file() and (root / path).suffix.lower() in _SOURCE_SUFFIXES | _DOC_SUFFIXES
+        ][:max_files]
     paths: list[str] = []
     for path in root.rglob("*"):
         if len(paths) >= max_files:
@@ -255,3 +297,7 @@ def _is_test(path: str) -> bool:
 
 def _is_generated(path: str) -> bool:
     return any(hint in path for hint in _GENERATED_HINTS)
+
+
+def _is_generic_lower_symbol(symbol: str) -> bool:
+    return symbol == symbol.lower() and symbol in _GENERIC_LOWER_SYMBOLS

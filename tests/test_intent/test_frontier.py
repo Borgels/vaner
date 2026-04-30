@@ -162,6 +162,46 @@ def test_seed_from_focus_paths_has_distinct_reason() -> None:
     assert popped.priority >= 0.95
 
 
+def test_seed_from_focus_paths_can_use_core_architecture_source() -> None:
+    f = ExplorationFrontier(min_priority=0.01)
+    f.record_feedback("graph", hit=False)
+    admitted = f.seed_from_focus_paths(
+        ["src/vaner/intent/cache.py"],
+        ["src/vaner/intent/cache.py"],
+        reason="rotating core coverage: tiered prediction cache",
+        priority_floor=0.997,
+        source="core_architecture",
+    )
+
+    assert admitted == 1
+    popped = f.pop()
+    assert popped is not None
+    assert popped.source == "core_architecture"
+    assert popped.priority >= 0.997
+
+
+def test_core_architecture_focus_can_outrank_stale_structured_direct() -> None:
+    f = ExplorationFrontier(min_priority=0.01)
+    stale = _scenario(
+        ["src/vaner/intent/frontier.py"],
+        source="structured_direct",
+        priority=0.98,
+    )
+    assert f.push(stale)
+    admitted = f.seed_from_focus_paths(
+        ["src/vaner/intent/cache.py"],
+        ["src/vaner/intent/cache.py"],
+        reason="rotating core coverage: tiered prediction cache",
+        priority_floor=0.985,
+        source="core_architecture",
+    )
+
+    assert admitted == 1
+    popped = f.pop()
+    assert popped is not None
+    assert popped.source == "core_architecture"
+
+
 def test_upgrade_applies_multiplier_consistently() -> None:
     """Upgrade path must apply the source multiplier to the effective priority,
     matching the behaviour of a fresh admission."""

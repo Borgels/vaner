@@ -28,7 +28,7 @@ Project page: <https://www.bestpractices.dev/en/projects/12597>
 ## Confirmed GitHub settings snapshot
 
 - Branch protection on `main` with strict checks and review gates
-- Required checks: `verify (ubuntu-latest, 3.12)`, `examples-smoke`, `no-moat-paths`, `actionlint`
+- Required checks: `verify (ubuntu-latest, 3.12)`, `examples-smoke`, `no-internal-paths`, `actionlint`
 - Required PR review settings include code-owner reviews and non-author approvals
 - Actions default workflow token permissions: `read`
 - Security advisories: enabled

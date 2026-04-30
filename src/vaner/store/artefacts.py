@@ -14,6 +14,15 @@ import aiosqlite
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.models.session import WorkingSet
 from vaner.models.signal import SignalEvent
+from vaner.models.work_product import (
+    ExportedWorkProduct,
+    WorkProduct,
+    WorkProductAdoptability,
+    WorkProductFeedbackState,
+    WorkProductFreshness,
+    WorkProductStatus,
+    WorkProductType,
+)
 from vaner.policy.privacy import sanitize_no_absolute_paths
 
 
@@ -445,6 +454,38 @@ class ArtefactStore:
             # so the scoring consumer in 0.8.5 has real data from day
             # one. Declared here alongside the 0.8.3 deep-run tables.
             await create_prediction_adoption_outcomes_table(db)
+            # WorkProduct v1 — Vaner-owned prepared artifacts. These rows
+            # never mutate user files; export only returns adoptable payloads.
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS work_products (
+                    id TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    evidence_refs_json TEXT NOT NULL,
+                    source_snapshot_json TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    freshness TEXT NOT NULL,
+                    expires_at REAL,
+                    status TEXT NOT NULL,
+                    adoptability TEXT NOT NULL,
+                    provenance_json TEXT NOT NULL,
+                    self_eval_json TEXT NOT NULL,
+                    feedback_state TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    target_key TEXT NOT NULL DEFAULT '',
+                    supersedes TEXT
+                )
+                """
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_status ON work_products(status)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_adoptability ON work_products(adoptability)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_type ON work_products(type)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_target_key ON work_products(target_key)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_updated_at ON work_products(updated_at DESC)")
             async with db.execute("PRAGMA table_info(signal_events)") as cursor:
                 signal_columns = [row[1] for row in await cursor.fetchall()]
             if "corpus_id" not in signal_columns:
@@ -737,6 +778,248 @@ class ArtefactStore:
         if source_abs.exists() and source_abs.stat().st_mtime > artefact.source_mtime:
             return True
         return False
+
+    @staticmethod
+    def _work_product_from_row(row: tuple[object, ...]) -> WorkProduct:
+        return WorkProduct(
+            id=str(row[0]),
+            type=WorkProductType(str(row[1])),
+            title=str(row[2]),
+            summary=str(row[3]),
+            body=str(row[4]),
+            evidence_refs=json.loads(str(row[5] or "[]")),
+            source_snapshot=json.loads(str(row[6] or "{}")),
+            confidence=float(row[7] or 0.0),
+            freshness=WorkProductFreshness(str(row[8])),
+            expires_at=float(row[9]) if row[9] is not None else None,
+            status=WorkProductStatus(str(row[10])),
+            adoptability=WorkProductAdoptability(str(row[11])),
+            provenance=json.loads(str(row[12] or "{}")),
+            self_eval=json.loads(str(row[13] or "{}")),
+            feedback_state=WorkProductFeedbackState(str(row[14])),
+            created_at=float(row[15]),
+            updated_at=float(row[16]),
+            target_key=str(row[17] or ""),
+            supersedes=str(row[18]) if row[18] is not None else None,
+        )
+
+    async def upsert_work_product(self, product: WorkProduct) -> None:
+        payload = sanitize_no_absolute_paths(product.model_dump(mode="json"))
+        clean = WorkProduct.model_validate(payload)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO work_products(
+                    id, type, title, summary, body, evidence_refs_json,
+                    source_snapshot_json, confidence, freshness, expires_at,
+                    status, adoptability, provenance_json, self_eval_json,
+                    feedback_state, created_at, updated_at, target_key, supersedes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    type=excluded.type,
+                    title=excluded.title,
+                    summary=excluded.summary,
+                    body=excluded.body,
+                    evidence_refs_json=excluded.evidence_refs_json,
+                    source_snapshot_json=excluded.source_snapshot_json,
+                    confidence=excluded.confidence,
+                    freshness=excluded.freshness,
+                    expires_at=excluded.expires_at,
+                    status=excluded.status,
+                    adoptability=excluded.adoptability,
+                    provenance_json=excluded.provenance_json,
+                    self_eval_json=excluded.self_eval_json,
+                    feedback_state=excluded.feedback_state,
+                    updated_at=excluded.updated_at,
+                    target_key=excluded.target_key,
+                    supersedes=excluded.supersedes
+                """,
+                (
+                    clean.id,
+                    clean.type.value,
+                    clean.title,
+                    clean.summary,
+                    clean.body,
+                    json.dumps([ref.model_dump(mode="json") for ref in clean.evidence_refs]),
+                    json.dumps(clean.source_snapshot.model_dump(mode="json")),
+                    clean.confidence,
+                    clean.freshness.value,
+                    clean.expires_at,
+                    clean.status.value,
+                    clean.adoptability.value,
+                    json.dumps(clean.provenance),
+                    json.dumps(clean.self_eval.model_dump(mode="json")),
+                    clean.feedback_state.value,
+                    clean.created_at,
+                    clean.updated_at,
+                    clean.target_key,
+                    clean.supersedes,
+                ),
+            )
+            await db.commit()
+
+    async def get_work_product(self, product_id: str) -> WorkProduct | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT id, type, title, summary, body, evidence_refs_json,
+                       source_snapshot_json, confidence, freshness, expires_at,
+                       status, adoptability, provenance_json, self_eval_json,
+                       feedback_state, created_at, updated_at, target_key, supersedes
+                FROM work_products
+                WHERE id = ?
+                """,
+                (product_id,),
+            )
+            row = await cursor.fetchone()
+        return self._work_product_from_row(row) if row is not None else None
+
+    async def list_work_products(
+        self,
+        *,
+        include_hidden: bool = False,
+        include_terminal: bool = False,
+        type: WorkProductType | str | None = None,
+        limit: int = 50,
+    ) -> list[WorkProduct]:
+        query = (
+            "SELECT id, type, title, summary, body, evidence_refs_json, "
+            "source_snapshot_json, confidence, freshness, expires_at, "
+            "status, adoptability, provenance_json, self_eval_json, "
+            "feedback_state, created_at, updated_at, target_key, supersedes "
+            "FROM work_products WHERE 1=1"
+        )
+        params: list[object] = []
+        if not include_hidden:
+            query += " AND adoptability != ?"
+            params.append(WorkProductAdoptability.HIDDEN.value)
+        if not include_terminal:
+            query += " AND status NOT IN (?, ?, ?)"
+            params.extend(
+                [
+                    WorkProductStatus.DISMISSED.value,
+                    WorkProductStatus.EXPIRED.value,
+                    WorkProductStatus.SUPERSEDED.value,
+                ]
+            )
+        if type is not None:
+            query += " AND type = ?"
+            params.append(type.value if isinstance(type, WorkProductType) else str(type))
+        query += " ORDER BY confidence DESC, updated_at DESC LIMIT ?"
+        params.append(max(1, min(200, int(limit))))
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+        return [self._work_product_from_row(row) for row in rows]
+
+    async def dismiss_work_product(self, product_id: str) -> bool:
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE work_products
+                SET status = ?, adoptability = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    WorkProductStatus.DISMISSED.value,
+                    WorkProductAdoptability.HIDDEN.value,
+                    now,
+                    product_id,
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def feedback_work_product(self, product_id: str, feedback_state: WorkProductFeedbackState | str) -> bool:
+        feedback = feedback_state if isinstance(feedback_state, WorkProductFeedbackState) else WorkProductFeedbackState(str(feedback_state))
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE work_products
+                SET feedback_state = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (feedback.value, time.time(), product_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def export_work_product(self, product_id: str) -> ExportedWorkProduct:
+        product = await self.get_work_product(product_id)
+        if product is None:
+            raise KeyError(product_id)
+        if not product.can_export(now=time.time()):
+            raise PermissionError("work product is not exportable")
+        return ExportedWorkProduct(
+            id=product.id,
+            type=product.type,
+            title=product.title,
+            body=product.body,
+            source_snapshot=product.source_snapshot,
+            evidence_refs=product.evidence_refs,
+        )
+
+    async def supersede_work_products(self, *, target_key: str, replacement: WorkProduct) -> int:
+        if not target_key:
+            return 0
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE work_products
+                SET status = ?, adoptability = ?, updated_at = ?
+                WHERE target_key = ?
+                  AND id != ?
+                  AND status NOT IN (?, ?, ?)
+                  AND (confidence <= ? OR updated_at <= ?)
+                """,
+                (
+                    WorkProductStatus.SUPERSEDED.value,
+                    WorkProductAdoptability.HIDDEN.value,
+                    now,
+                    target_key,
+                    replacement.id,
+                    WorkProductStatus.DISMISSED.value,
+                    WorkProductStatus.EXPIRED.value,
+                    WorkProductStatus.SUPERSEDED.value,
+                    replacement.confidence,
+                    replacement.updated_at,
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount
+
+    async def refresh_work_product_staleness(self, repo_root: Path) -> int:
+        from vaner.daemon.signals.git_reader import read_content_hashes, read_head_sha
+
+        products = await self.list_work_products(
+            include_hidden=True,
+            include_terminal=False,
+            type=WorkProductType.VIRTUAL_DIFF,
+            limit=200,
+        )
+        if not products:
+            return 0
+        current_head = read_head_sha(repo_root)
+        changed = 0
+        for product in products:
+            snapshot = product.source_snapshot
+            expected = snapshot.file_hashes
+            if not expected:
+                continue
+            current_hashes = read_content_hashes(repo_root, list(expected.keys()))
+            hash_changed = any(current_hashes.get(path) != old_hash for path, old_hash in expected.items())
+            base_changed = bool(snapshot.base_commit and current_head and snapshot.base_commit != current_head)
+            if not hash_changed and not base_changed:
+                continue
+            product.freshness = WorkProductFreshness.STALE
+            if product.adoptability == WorkProductAdoptability.EXPORTABLE:
+                product.adoptability = WorkProductAdoptability.INSPECTABLE
+            product.updated_at = time.time()
+            await self.upsert_work_product(product)
+            changed += 1
+        return changed
 
     async def upsert_working_set(self, working_set: WorkingSet) -> None:
         async with aiosqlite.connect(self.db_path) as db:

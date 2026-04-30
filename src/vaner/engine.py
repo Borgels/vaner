@@ -101,6 +101,7 @@ from vaner.intent.work_style_priors import (
 from vaner.intent.work_style_priors import (
     default_adjustments as default_work_style_adjustments,
 )
+from vaner.intent.work_products import generate_work_products
 from vaner.learning.counterfactual import CounterfactualAnalyzer
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.models.artefact import Artefact, ArtefactKind
@@ -130,13 +131,17 @@ _PATH_INTENT_STOPWORDS = {
     "benchmark",
     "benchmarks",
     "does",
+    "exploration",
     "file",
     "files",
+    "flow",
     "from",
     "have",
     "here",
     "need",
     "query",
+    "scenario",
+    "scenarios",
     "show",
     "test",
     "tests",
@@ -148,6 +153,18 @@ _PATH_INTENT_STOPWORDS = {
     "with",
 }
 _SOURCE_EXTENSIONS = (".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".java", ".kt", ".cpp", ".c", ".h")
+
+
+def _is_cold_start_intent_text(text: str) -> bool:
+    terms = set(re.findall(r"[a-z0-9]+", text.lower()))
+    return (
+        {"cold", "start"} <= terms
+        or "bootstrap" in terms
+        or ({"no", "cached"} <= terms)
+        or ({"empty", "cache"} <= terms)
+    )
+
+
 _CORE_ARCHITECTURE_STEMS: dict[str, int] = {
     "frontier": 120,
     "cache": 115,
@@ -187,14 +204,16 @@ _CORE_ARCHITECTURE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
-        "prediction-cache tiering and semantic matching",
+        "tiered prediction cache full_hit partial_hit warm_start cold_miss decision thresholds and semantic matching",
         (
             "src/vaner/intent/cache.py",
+            "src/vaner/intent/scoring_policy.py",
+            "tests/test_intent/test_cache.py",
+            "tests/test_store/test_prediction_cache_decay.py",
             "src/vaner/clients/embeddings.py",
             "src/vaner/daemon/engine/scorer.py",
             "src/vaner/intent/features.py",
             "src/vaner/broker/selector.py",
-            "src/vaner/intent/scoring_policy.py",
         ),
     ),
     (
@@ -241,14 +260,38 @@ _CORE_ARCHITECTURE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
-        "LLM exploration branch proposal flow",
+        "external LLM exploration flow ranked_files file ranking follow_on follow-on scenario proposal",
         (
             "src/vaner/engine.py",
             "src/vaner/clients/openai.py",
             "src/vaner/clients/ollama.py",
             "src/vaner/clients/llm_response.py",
+            "tests/test_engine/test_deep_drill.py",
+            "tests/test_engine/test_exploration_parallelism.py",
             "src/vaner/daemon/engine/scenario_builder.py",
             "src/vaner/intent/frontier.py",
+        ),
+    ),
+    (
+        "arc-based scenario prediction and arc probability computation",
+        (
+            "src/vaner/intent/arcs.py",
+            "src/vaner/intent/frontier.py",
+            "src/vaner/intent/scoring_policy.py",
+            "src/vaner/defaults/arc_transitions.json",
+            "tests/test_intent/test_arcs.py",
+            "tests/test_intent/test_frontier.py",
+        ),
+    ),
+    (
+        "training hybrid feature extraction from artefact data",
+        (
+            "src/vaner/intent/features.py",
+            "src/vaner/intent/trainer.py",
+            "src/vaner/models/artefact.py",
+            "src/vaner/store/artefacts.py",
+            "tests/test_intent/test_features_follow_up.py",
+            "tests/test_intent/test_trainer_v4_rollover.py",
         ),
     ),
     (
@@ -272,6 +315,18 @@ _CORE_ARCHITECTURE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
+        "cold start first query corpus preparation initial repo scanning indexing no cached data empty cache bootstrap",
+        (
+            "src/vaner/engine.py",
+            "src/vaner/daemon/runner.py",
+            "src/vaner/daemon/signals/fs_watcher.py",
+            "src/vaner/intent/adapter.py",
+            "src/vaner/intent/cache.py",
+            "src/vaner/store/artefacts.py",
+            "tests/test_engine/test_adaptive_cycle_budget.py",
+        ),
+    ),
+    (
         "broker assembler context package construction",
         (
             "src/vaner/broker/assembler.py",
@@ -282,6 +337,43 @@ _CORE_ARCHITECTURE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+
+
+def _merge_llm_ranked_with_seed_paths(ranked_files: list[str], seed_paths: list[str]) -> list[str]:
+    """Keep deterministic seed evidence when an LLM rerank is incomplete.
+
+    The LLM is useful for reordering and adding adjacent files, but it should
+    not erase exact path/symbol evidence that deterministic targeters already
+    selected for the current query. Order still favors the LLM output; seed
+    paths are appended as a backstop and then filtered/deduped.
+    """
+
+    return list(dict.fromkeys(filter_evidence_paths([*ranked_files, *seed_paths])))[:8]
+
+
+def _core_group_matches_recent_query(reason: str, recent_queries: list[str]) -> bool:
+    """Return True when a core architecture group names the current query."""
+
+    query_text = " ".join(recent_queries[-3:]).lower()
+    if not query_text:
+        return False
+    reason_terms = {
+        token
+        for token in re.findall(r"[a-z0-9]+", reason.lower())
+        if len(token) >= 3 and token not in _PATH_INTENT_STOPWORDS
+    }
+    if not reason_terms:
+        return False
+    query_terms = {
+        token
+        for token in re.findall(r"[a-z0-9]+", query_text)
+        if len(token) >= 3 and token not in _PATH_INTENT_STOPWORDS
+    }
+    # Require at least two overlapping group terms so broad words like "flow"
+    # do not pull an architecture group into unrelated turns.
+    return len(reason_terms & query_terms) >= 2
+
+
 # Phase 4 / WS2: richer LLM callable that returns a structured
 # ``LLMResponse`` (thinking + content + raw). The engine prefers this when
 # available so reasoning-model preambles are captured rather than discarded.
@@ -399,6 +491,9 @@ class VanerEngine:
         self._applied_prefer_source_deltas: dict[str, float] = {}
         self._last_heuristic_paths: set[str] = set()
         self._last_explored_scenarios: list[ExploredScenario] = []
+        self._last_no_scenario_reason: str = ""
+        self._last_refinement_outcomes: list[dict[str, object]] = []
+        self._core_group_rotation_index = 0
         # Phase 4 / WS6: prediction registry persists across cycles. First
         # created on the first ``precompute_cycle``; thereafter reused and
         # updated in place via ``merge()`` + ``apply_invalidation_signals()``.
@@ -1155,15 +1250,17 @@ class VanerEngine:
                     )
                 preferred_keys: set[str] = set()
                 working_set = await self.store.get_latest_working_set()
-                if working_set is not None:
+                cold_start_prompt = _is_cold_start_intent_text(prompt)
+                if working_set is not None and not cold_start_prompt:
                     preferred_keys |= set(working_set.artefact_keys)
-                if cache_result.tier == "warm_start":
+                if cache_result.tier == "warm_start" and not cold_start_prompt:
                     preferred_keys |= set(str(key) for key in cache_result.enrichment.get("relevant_keys", []))
                 package, selected, decision_record = await self._build_package_for_prompt(
                     prompt,
                     max_tokens=max_tokens,
                     top_n=top_n,
                     preferred_keys=preferred_keys,
+                    include_working_set_preferences=not cold_start_prompt,
                 )
             for artefact in selected:
                 await self.store.mark_accessed(artefact.key)
@@ -1423,6 +1520,7 @@ class VanerEngine:
             gpu_load = _gpu_load_fraction()
             if cpu_load > compute.idle_cpu_threshold or gpu_load > compute.idle_gpu_threshold:
                 self._last_explored_scenarios = []
+                self._last_no_scenario_reason = "idle_load_gate"
                 return 0
         cycle_deadline: float | None = None
         if compute.max_cycle_seconds and compute.max_cycle_seconds > 0:
@@ -1446,6 +1544,7 @@ class VanerEngine:
         governor.reset()
         self._precompute_cycles += 1
         self._last_explored_scenarios = []
+        self._last_no_scenario_reason = ""
         full_packages = 0
         total_budget_ms = (
             max(0.0, (cycle_deadline - cycle_started) * 1000.0)
@@ -1454,7 +1553,8 @@ class VanerEngine:
         )
         recent_entropy = 0.0
         abstain_mode = False
-        if recent_query_text := [str(entry["query_text"]) for entry in await self.store.list_query_history(limit=10)]:
+        recent_rows_for_policy = await self.store.list_query_history(limit=10)
+        if recent_query_text := [str(entry["query_text"]) for entry in reversed(recent_rows_for_policy)]:
             phase_summary = self._arc_model.summarize_workflow_phase(recent_query_text)
             posterior = self._arc_model.rank_next(phase_summary.dominant_category, top_k=3, recent_queries=recent_query_text)
             if posterior:
@@ -1579,7 +1679,7 @@ class VanerEngine:
         frontier.seed_from_graph(anchor_working_set, graph, available_paths, covered_paths)
 
         recent_queries = await self.store.list_query_history(limit=10)
-        recent_query_text = [str(entry["query_text"]) for entry in recent_queries]
+        recent_query_text = [str(entry["query_text"]) for entry in reversed(recent_queries)]
         prompt_macros = await self.store.list_prompt_macros(limit=25)
         patterns = await self.store.list_validated_patterns(limit=50)
 
@@ -1745,21 +1845,63 @@ class VanerEngine:
                 reason="recent query heuristic focus",
             )
 
+        exact_focus_paths: list[str] = []
+        if recent_query_text:
+            # Keep this path-only in the precompute cycle. Full symbol scanning
+            # reads source files and can consume the whole idle budget on larger
+            # repos; resolver/readiness paths still use richer symbol evidence.
+            exact_focus_paths.extend(
+                self._rank_paths_for_recent_intent(
+                    available_paths,
+                    recent_query_text,
+                    focused_paths=heuristic_paths,
+                )[:16]
+            )
+        exact_focus_paths = list(dict.fromkeys(filter_evidence_paths(exact_focus_paths)))
+        if exact_focus_paths:
+            frontier.seed_from_focus_paths(
+                self._rank_paths_for_recent_intent(
+                    exact_focus_paths,
+                    recent_query_text,
+                    focused_paths=set(exact_focus_paths),
+                ),
+                available_paths,
+                reason="recent query exact target focus",
+                priority_floor=0.99,
+            )
+
         core_group_paths: set[str] = set()
         available_path_set = set(available_paths)
-        for reason, candidate_paths in _CORE_ARCHITECTURE_GROUPS:
-            group_paths = [path for path in candidate_paths if path in available_path_set]
+        rotation_index = self._core_group_rotation_index % max(1, len(_CORE_ARCHITECTURE_GROUPS))
+        ordered_core_groups = (
+            *_CORE_ARCHITECTURE_GROUPS[rotation_index:],
+            *_CORE_ARCHITECTURE_GROUPS[:rotation_index],
+        )
+        for group_index, (reason, candidate_paths) in enumerate(ordered_core_groups):
+            existing_group_paths = [path for path in candidate_paths if path in available_path_set]
+            if not existing_group_paths:
+                continue
+            core_group_paths.update(existing_group_paths)
+            query_matched = _core_group_matches_recent_query(reason, recent_query_text)
+            rotation_head = group_index == 0
+            group_paths = existing_group_paths if rotation_head else [path for path in existing_group_paths if path not in covered_paths]
             if not group_paths:
                 continue
-            core_group_paths.update(group_paths)
+            priority_floor = 1.05 if query_matched else (1.02 if rotation_head else 0.985)
+            reason_prefix = "recent query matched core group" if query_matched else ("rotating core coverage" if rotation_head else "")
             frontier.seed_from_focus_paths(
                 group_paths[:8],
                 available_paths,
-                reason=reason,
+                reason=f"{reason_prefix}: {reason}" if reason_prefix else reason,
+                priority_floor=priority_floor,
+                source="core_architecture",
             )
+        self._core_group_rotation_index = (self._core_group_rotation_index + 1) % max(1, len(_CORE_ARCHITECTURE_GROUPS))
 
         core_source_paths = [
-            path for path in self._rank_core_source_paths(available_paths, artefacts_by_key)[:24] if path not in core_group_paths
+            path
+            for path in self._rank_core_source_paths(available_paths, artefacts_by_key)
+            if path not in core_group_paths and path not in covered_paths
         ]
         for index in range(0, min(len(core_source_paths), 16), 8):
             chunk = core_source_paths[index : index + 8]
@@ -1815,6 +1957,19 @@ class VanerEngine:
                 frontier.seed_from_miss([changed], available_paths)
         except Exception:
             changed_paths = []
+
+        if frontier.pending_count == 0:
+            fallback_paths = list(dict.fromkeys([*exact_focus_paths, *sorted(heuristic_paths), *core_source_paths]))
+            fallback_paths = [path for path in fallback_paths if path not in covered_paths]
+            if fallback_paths:
+                frontier.seed_from_focus_paths(
+                    fallback_paths[:8],
+                    available_paths,
+                    reason="empty frontier exact/core fallback",
+                    priority_floor=0.97,
+                )
+            else:
+                self._last_no_scenario_reason = "frontier_empty_no_fallback_paths"
 
         # ── Adaptive depth budget (MCTS-lite two-phase strategy) ─────────────
         # Phase 1 — breadth-first: explore shallow scenarios first (depth <= 1)
@@ -1892,10 +2047,13 @@ class VanerEngine:
         async def _process_scenario(scenario: ExplorationScenario) -> None:
             """Explore one scenario; mutate shared state under state_lock."""
             async with cycle_sem:
-                if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
-                    return
-
                 use_llm = self._should_use_llm(scenario, ecfg)
+                if (
+                    cycle_deadline is not None
+                    and time.monotonic() >= cycle_deadline
+                    and (self._last_explored_scenarios or use_llm)
+                ):
+                    return
                 # High-priority scenarios (and anything already carrying a
                 # depth bonus from a high-priority ancestor) get wider LLM
                 # fan-out and softer per-hop decay so Vaner can invest more
@@ -1935,7 +2093,7 @@ class VanerEngine:
                         # Individual scenario failure must not kill the cycle.
                         ranked_files, follow_on, llm_semantic_intent, llm_confidence = [], [], "", 0.0
                     if ranked_files:
-                        effective_paths = filter_evidence_paths(ranked_files)
+                        effective_paths = _merge_llm_ranked_with_seed_paths(ranked_files, scenario.file_paths)
 
                     # Route LLM outcomes back to the parent prediction. Tokens
                     # approximated by content length (real counts land in WS2
@@ -2129,7 +2287,7 @@ class VanerEngine:
         # push new work back onto the queue.
         max_inflight = max(2, effective_concurrency * 2)
         while governor.should_continue() and not frontier.is_saturated():
-            if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
+            if cycle_deadline is not None and time.monotonic() >= cycle_deadline and self._last_explored_scenarios:
                 break
 
             async with state_lock:
@@ -2215,6 +2373,8 @@ class VanerEngine:
                 cycle_deadline=cycle_deadline,
             )
 
+        await self._run_work_product_pass(cycle_deadline=cycle_deadline)
+
         retention_seconds = max(3600, int(self.config.max_age_seconds))
         await self.store.purge_old_signal_events(max_age_seconds=retention_seconds)
         await self.store.purge_old_replay_entries(max_age_seconds=retention_seconds)
@@ -2260,11 +2420,22 @@ class VanerEngine:
             bucket="no_regret",
         )
         _record_idle_usage_seconds(self.config, cycle_elapsed_s)
+        if not self._last_explored_scenarios and not self._last_no_scenario_reason:
+            if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
+                self._last_no_scenario_reason = "cycle_deadline_before_exploration"
+            elif frontier.pending_count == 0:
+                self._last_no_scenario_reason = "frontier_empty_or_all_candidates_explored"
+            else:
+                self._last_no_scenario_reason = "governor_stopped_before_exploration"
         return full_packages
 
     def get_explored_scenarios(self) -> list[ExploredScenario]:
         """Return scenarios explored in the most recent precompute cycle."""
         return list(self._last_explored_scenarios)
+
+    def get_last_no_scenario_reason(self) -> str:
+        """Return the latest best-effort reason a cycle explored no scenarios."""
+        return self._last_no_scenario_reason
 
     def get_active_predictions(self) -> list[PredictedPrompt]:
         """Return non-terminal PredictedPrompts for the active cycle.
@@ -2443,6 +2614,45 @@ class VanerEngine:
         self._refinement_drafter = drafter  # type: ignore[assignment]
         _ = MaturationDrafterCallable  # keep the import alive for type-checkers
 
+    def get_last_refinement_outcomes(self) -> list[dict[str, object]]:
+        """Return a copy of the most recent background-refinement verdicts."""
+
+        return [dict(item) for item in self._last_refinement_outcomes]
+
+    async def _run_work_product_pass(self, *, cycle_deadline: float | None) -> int:
+        """Prepare a small set of Vaner-owned artifacts during idle cycles.
+
+        The pass is deterministic and non-mutating: it reads recent query
+        history, prepared artefacts, and working-tree file contents, then
+        persists WorkProduct rows in the artefact DB. Any export/apply choice
+        stays on an explicit user surface outside the engine.
+        """
+
+        if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
+            return 0
+        try:
+            recent_rows = await self.store.list_query_history(limit=10)
+            recent_queries = [str(row.get("query_text", "")) for row in reversed(recent_rows) if row.get("query_text")]
+            artefacts = await self.store.list(limit=40)
+            products = generate_work_products(
+                repo_root=self.config.repo_root,
+                recent_queries=recent_queries,
+                artefacts=artefacts,
+                max_products=4,
+            )
+            await self.store.refresh_work_product_staleness(self.config.repo_root)
+            written = 0
+            for product in products:
+                if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
+                    break
+                await self.store.supersede_work_products(target_key=product.target_key, replacement=product)
+                await self.store.upsert_work_product(product)
+                written += 1
+            return written
+        except Exception as exc:  # pragma: no cover - defensive idle path
+            logger.debug("work product pass skipped: %s", exc)
+            return 0
+
     async def _run_background_refinement_pass(
         self,
         *,
@@ -2462,11 +2672,14 @@ class VanerEngine:
         """
 
         if self._prediction_registry is None:
+            self._last_refinement_outcomes = []
             return 0
         if self._refinement_drafter is None:
+            self._last_refinement_outcomes = []
             return 0
         refinement_cfg = self.config.refinement
         if not refinement_cfg.enabled:
+            self._last_refinement_outcomes = []
             return 0
 
         # Deadline floor — don't start a pass if there's less than the
@@ -2475,10 +2688,12 @@ class VanerEngine:
         if cycle_deadline is not None:
             remaining = cycle_deadline - time.monotonic()
             if remaining < refinement_cfg.min_remaining_deadline_seconds:
+                self._last_refinement_outcomes = []
                 return 0
 
         active = self._prediction_registry.active()
         if not active:
+            self._last_refinement_outcomes = []
             return 0
 
         context = RefinementContext.background_default(cycle_index=self._precompute_cycles)
@@ -2489,6 +2704,7 @@ class VanerEngine:
         )
 
         attempted = 0
+        outcomes: list[dict[str, object]] = []
         for candidate in candidates:
             if not candidate.eligible:
                 # select_maturation_candidates puts ineligibles at the
@@ -2511,7 +2727,7 @@ class VanerEngine:
                 continue
             pass_id = f"bg-{self._precompute_cycles}-{candidate.prediction.spec.id}"
             try:
-                await mature_one(
+                outcome = await mature_one(
                     candidate.prediction,
                     context=context,
                     drafter=self._refinement_drafter,  # type: ignore[arg-type]
@@ -2519,7 +2735,19 @@ class VanerEngine:
                 )
             except Exception:  # pragma: no cover — defensive: never crash cycle
                 continue
+            outcomes.append(
+                {
+                    "prediction_id": outcome.prediction_id,
+                    "action": outcome.action,
+                    "kept": outcome.verdict.kept,
+                    "failed_clause": outcome.verdict.failed_clause,
+                    "reason": outcome.verdict.reason,
+                    "target_weakness": outcome.contract.target_weakness,
+                    "intent_terms": outcome.contract.intent_terms,
+                }
+            )
             attempted += 1
+        self._last_refinement_outcomes = outcomes
         return attempted
 
     def get_last_decision_record(self) -> DecisionRecord | None:
@@ -5235,6 +5463,7 @@ class VanerEngine:
         top_n: int = 8,
         source_key: str | None = None,
         preferred_keys: set[str] | None = None,
+        include_working_set_preferences: bool = True,
     ) -> tuple[ContextPackage, list, DecisionRecord]:
         artefacts = await self.store.list(limit=2000)
         if not artefacts:
@@ -5247,9 +5476,10 @@ class VanerEngine:
             line.strip() for line in (git_state.get("recent_diff", "") + "\n" + git_state.get("staged", "")).splitlines() if line.strip()
         }
         merged_preferred_keys = set(preferred_keys or set())
-        working_set = await self.store.get_latest_working_set()
-        if working_set is not None:
-            merged_preferred_keys |= set(working_set.artefact_keys)
+        if include_working_set_preferences:
+            working_set = await self.store.get_latest_working_set()
+            if working_set is not None:
+                merged_preferred_keys |= set(working_set.artefact_keys)
 
         features = await extract_hybrid_features(self.store, prompt=prompt, source_key=source_key)
 
