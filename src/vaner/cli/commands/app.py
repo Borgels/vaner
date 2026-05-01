@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from errno import EADDRINUSE
 from pathlib import Path
 from time import perf_counter
-from typing import Any, get_origin
+from typing import Annotated, Any, get_origin
 
 import aiosqlite
 import httpx
@@ -459,6 +459,140 @@ def app_callback(
         raise typer.Exit()
     global _VERBOSE
     _VERBOSE = verbose
+
+
+@app.command(
+    "launch",
+    help="Install Vaner into one AI client end-to-end (MCP + primer + skill + hooks).",
+    rich_help_panel="Get started",
+)
+def launch_cmd(
+    client: Annotated[
+        str,
+        typer.Argument(help="Client id (e.g. cursor, claude-code, cline, zed, windsurf, codex-cli)."),
+    ],
+    repo_root: Annotated[
+        Path | None,
+        typer.Option("--repo-root", "-C", help="Repo root (default: cwd)."),
+    ] = None,
+    server_key: Annotated[
+        str,
+        typer.Option(
+            "--server-key",
+            help="Override the JSON `mcpServers` key (Claude Desktop uses `vaner-<reponame>` by default).",
+        ),
+    ] = "vaner",
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would change; do not write any files."),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Re-write the MCP entry even when it already matches."),
+    ] = False,
+    format: Annotated[
+        str,
+        typer.Option("--format", help="Output format: pretty (default), json."),
+    ] = "pretty",
+) -> None:
+    """One-shot per-client install of Vaner's full leverage stack.
+
+    Runs in order: MCP server entry → primer → skill / workflow /
+    prompt → hook (where applicable). Each layer reports its own
+    status; failures at one layer don't stop the rest.
+
+    See ``docs.vaner.ai/integrations/client-capabilities`` for the
+    per-client surface matrix.
+    """
+
+    import json as _json
+
+    from vaner.cli.commands.launch import launch_client
+
+    root = _resolve_repo_root_for_clients(repo_root)
+    result = launch_client(
+        client,
+        root,
+        server_key=server_key,
+        dry_run=dry_run,
+        force=force,
+    )
+
+    if format == "json":
+        typer.echo(
+            _json.dumps(
+                {
+                    "client_id": result.client_id,
+                    "label": result.label,
+                    "detected": result.detected,
+                    "overall": result.overall,
+                    "layers": [
+                        {
+                            "layer": layer.layer,
+                            "applicable": layer.applicable,
+                            "action": layer.action,
+                            "path": str(layer.path) if layer.path else None,
+                            "error": layer.error,
+                        }
+                        for layer in result.layers
+                    ],
+                },
+                indent=2,
+            )
+        )
+        if result.overall == "missing" or any(layer.action == "failed" for layer in result.layers if layer.applicable):
+            raise typer.Exit(code=1)
+        return
+
+    if format != "pretty":
+        raise typer.BadParameter(f"unknown format {format!r}. Choose from: pretty, json")
+
+    overall_color = {
+        "ready": "green",
+        "partial": "yellow",
+        "failed": "red",
+        "missing": "red",
+    }.get(result.overall, "white")
+    detected_label = "detected" if result.detected else "not detected on this machine"
+    typer.secho(
+        f"Vaner launch · {result.label} ({result.client_id}) — {result.overall}",
+        fg=overall_color,
+        bold=True,
+    )
+    typer.echo(f"  {detected_label}")
+    for layer in result.layers:
+        if not layer.applicable:
+            typer.echo(f"  - {layer.layer:6s} —")
+            continue
+        status_color = {
+            "added": typer.colors.GREEN,
+            "updated": typer.colors.GREEN,
+            "skipped": typer.colors.WHITE,
+            "failed": typer.colors.RED,
+        }.get(layer.action, typer.colors.YELLOW)
+        path = f" → {layer.path}" if layer.path else ""
+        typer.secho(f"  - {layer.layer:6s} {layer.action}{path}", fg=status_color)
+        if layer.error:
+            typer.secho(f"    error: {layer.error}", fg=typer.colors.RED)
+
+    if result.overall == "missing" or any(layer.action == "failed" for layer in result.layers if layer.applicable):
+        raise typer.Exit(code=1)
+
+
+def _resolve_repo_root_for_clients(repo_root: Path | None) -> Path:
+    """Tiny duplicate of ``vaner.cli.commands.clients._resolve_repo_root``
+    so this module doesn't depend on the clients subapp's internals.
+
+    Returns the explicit ``--repo-root`` when given; falls back to
+    ``$VANER_PATH``; falls back to cwd.
+    """
+
+    import os as _os
+
+    if repo_root is not None:
+        return repo_root.resolve()
+    env_path = _os.environ.get("VANER_PATH", "").strip()
+    return Path(env_path).resolve() if env_path else Path.cwd()
 
 
 @app.command("init", help="Initialize Vaner config and MCP client wiring.", rich_help_panel="Get started")

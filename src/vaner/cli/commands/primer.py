@@ -210,9 +210,16 @@ def _path_codex(repo_root: Path, scope: PrimerScope) -> Path | None:
 
 
 def _path_cline(repo_root: Path, scope: PrimerScope) -> Path | None:
+    """Cline supports both ``.clinerules`` (single file) and
+    ``.clinerules/`` (directory of rule files). We write to the
+    directory form so Vaner's primer, workflow, and hook can all
+    coexist under one ``.clinerules/`` tree without the
+    file-vs-directory conflict that would happen otherwise.
+    """
+
     if scope != PrimerScope.REPO:
         return None
-    return repo_root / ".clinerules"
+    return repo_root / ".clinerules" / "vaner.md"
 
 
 def _path_continue(repo_root: Path, scope: PrimerScope) -> Path | None:

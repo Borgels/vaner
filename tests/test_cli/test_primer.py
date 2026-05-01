@@ -146,7 +146,7 @@ def test_write_primer_rewrites_existing_block_without_duplicating(temp_repo):
         version="bumped",
     )
     assert second.action == "updated"
-    content = (temp_repo / ".clinerules").read_text(encoding="utf-8")
+    content = (temp_repo / ".clinerules" / "vaner.md").read_text(encoding="utf-8")
     assert content.count("vaner-primer:start") == 1
     assert "v=bumped" in content
     assert "CUSTOM PRIMER" in content
