@@ -13,6 +13,6 @@ api_key_env = "OLLAMA_API_KEY"
 Run queries through Vaner after starting the daemon:
 
 ```bash
-vaner daemon start
+vaner up --path .
 vaner query "summarize auth flow"
 ```

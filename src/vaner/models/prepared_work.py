@@ -46,6 +46,14 @@ class PreparedWorkDiagnosticRef(BaseModel):
     reason: str = ""
 
 
+class PreparedWorkEvidenceRef(BaseModel):
+    kind: Literal["file", "symbol", "doc", "record", "other"] = "file"
+    path: str = ""
+    symbol: str = ""
+    reason: str = ""
+    confidence_label: str = ""
+
+
 class PreparedWorkCard(BaseModel):
     id: str
     source_id: str
@@ -56,10 +64,35 @@ class PreparedWorkCard(BaseModel):
     badge: str
     confidence_label: str
     freshness_label: str
+    freshness_state: str = "fresh"
     target_label: str
+    why_prepared: str = ""
+    action_note: str = ""
     evidence_count: int = 0
     created_at: float
     updated_at: float
     primary_action: PreparedWorkAction | None = None
     secondary_actions: list[PreparedWorkAction] = Field(default_factory=list)
     diagnostic_refs: list[PreparedWorkDiagnosticRef] = Field(default_factory=list)
+
+
+class PreparedWorkInspection(BaseModel):
+    id: str
+    source_id: str
+    source_type: PreparedWorkSourceType
+    kind: PreparedWorkKind
+    title: str
+    summary: str
+    body: str
+    why_prepared: str
+    confidence_label: str
+    freshness_label: str
+    freshness_state: str
+    target_label: str
+    evidence_count: int = 0
+    evidence_refs: list[PreparedWorkEvidenceRef] = Field(default_factory=list)
+    allowed_actions: list[PreparedWorkAction] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    export_preview: str = ""
+    created_at: float
+    updated_at: float

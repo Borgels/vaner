@@ -41,7 +41,7 @@ diagnostic but is not the ship gate.
 
 ## Methodology
 
-See the private evaluation harness for the session replay runner.
+See the evaluation harness for the session replay runner.
 The key properties:
 
 | Aspect | Choice | Why |
@@ -65,7 +65,7 @@ via the private evaluation harness corpus-fetch workflow.
 
 ```bash
 cd /path/to/evaluation-harness
-PYTHONPATH=/path/to/Vaner/src python eval/session_replay_bench.py \
+PYTHONPATH=/path/to/vaner/src python eval/session_replay_bench.py \
     --sessions-index eval/cases/session_bench_index.json \
     --idle-multipliers 0.5 --max-idle-per-turn 60 \
     --model qwen3.5:35b --ollama-url http://127.0.0.1:11434 \
@@ -103,6 +103,33 @@ The 0.8.3 / 0.8.4 Deep-Run work has its own bench family (maturation-loop effect
 
 - [0.8.3 — Deep-Run validation status (gate definitions, hard-safety-gate status)](./0.8.3-deep-run-validation.md) — numbers deferred until labelled corpus lands.
 - [0.8.4 — Deep-Run bench infrastructure validation (pipeline run on 16-session synthetic corpus)](./0.8.4-deep-run-infra.md) — pipeline wires cleanly, 4 of 5 ship gates pass in scaffolding mode, persistence-rate-in-band fails by construction until drafter integration in 0.8.5.x.
+
+## Prepared Work long-idle bench
+
+Prepared Work is a separate claim family from release readiness. It tests the
+product promise that Vaner can use realistic idle time to prepare useful,
+inspectable work before the user asks.
+
+Before stronger product claims, pair the automated benchmark with the scripted
+[Prepared Work human product-proof test](./human-product-proof.md). That test
+checks whether people understand, inspect, trust, export/adopt, dismiss, and
+give feedback on Prepared Work without being taught Vaner's internals.
+
+The benchmark arms should remain explicit:
+
+- **Naked**: answer model receives only the user request.
+- **RAG**: answer model receives naive retrieval context from the same public
+  corpus.
+- **Vaner short**: Vaner gets a small answer-time preparation window.
+- **Vaner long idle**: Vaner gets realistic idle windows from the replay trace.
+- **Vaner long idle + self-eval**: same as long idle, with surfaced artifacts
+  gated by self-evaluation.
+
+Primary metrics are artifact precision, adoption value, groundedness,
+stale/misleading rate, answer-quality lift, post-prep latency, and cost per
+useful artifact. `vaner.eval_prepared_work` provides the stable public scoring
+models for these reports; the release benchmark remains the medium profile
+unless a public claim specifically concerns idle-prepared work.
 
 ### What the numbers say
 

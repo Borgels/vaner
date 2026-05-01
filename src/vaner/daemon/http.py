@@ -980,6 +980,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         limit: int = 50,
     ) -> JSONResponse:
         store = await _work_product_store()
+        await store.refresh_work_product_staleness(config.repo_root)
         product_type: WorkProductType | str | None = None
         if type:
             try:
@@ -997,14 +998,28 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
     @app.get("/work-products/{product_id}")
     async def work_products_one(product_id: str) -> JSONResponse:
         store = await _work_product_store()
+        await store.refresh_work_product_staleness(config.repo_root)
         product = await store.get_work_product(product_id)
         if product is None:
             raise HTTPException(status_code=404, detail="work product not found")
         return JSONResponse(product.model_dump(mode="json"))
 
+    @app.get("/work-products/{product_id}/inspect")
+    async def work_products_inspect(product_id: str) -> JSONResponse:
+        from vaner.intent.prepared_work import build_work_product_inspection
+
+        store = await _work_product_store()
+        await store.refresh_work_product_staleness(config.repo_root)
+        product = await store.get_work_product(product_id)
+        if product is None:
+            raise HTTPException(status_code=404, detail="work product not found")
+        inspection = build_work_product_inspection(product)
+        await store.record_work_product_event(product_id, "inspect", metadata={"surface": "http"})
+        return JSONResponse(inspection.model_dump(mode="json"))
+
     @app.get("/prepared-work")
     async def prepared_work(
-        limit: int = 20,
+        limit: int = 3,
         include_advisory: bool = False,
         include_diagnostics: bool = False,
         context_id: str | None = None,
@@ -1013,6 +1028,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         from vaner.intent.prepared_work import build_prepared_work_cards
 
         store = await _work_product_store()
+        await store.refresh_work_product_staleness(config.repo_root)
         products = await store.list_work_products(
             include_hidden=True,
             include_terminal=True,
@@ -1038,27 +1054,40 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         ok = await store.dismiss_work_product(product_id)
         if not ok:
             raise HTTPException(status_code=404, detail="work product not found")
+        await store.record_work_product_event(product_id, "dismiss", metadata={"surface": "http"})
         return JSONResponse({"ok": True})
 
     @app.post("/work-products/{product_id}/feedback")
     async def work_products_feedback(product_id: str, payload: dict[str, Any]) -> JSONResponse:
         raw = str(payload.get("feedback_state", payload.get("feedback", ""))).strip()
+        if raw == "not-useful":
+            raw = "not_useful"
         try:
             feedback = WorkProductFeedbackState(raw)
         except ValueError:
             return JSONResponse(
-                {"code": "invalid_feedback", "message": "feedback_state must be one of none|useful|partial|irrelevant"},
+                {"code": "invalid_feedback", "message": "feedback_state must be one of none|useful|partial|irrelevant|not_useful"},
                 status_code=400,
             )
         store = await _work_product_store()
         ok = await store.feedback_work_product(product_id, feedback)
         if not ok:
             raise HTTPException(status_code=404, detail="work product not found")
+        await store.record_work_product_event(product_id, "feedback", metadata={"surface": "http", "feedback_state": feedback.value})
         return JSONResponse({"ok": True})
 
     @app.post("/work-products/{product_id}/export")
     async def work_products_export(product_id: str) -> JSONResponse:
         store = await _work_product_store()
+        await store.refresh_work_product_staleness(config.repo_root)
+        product = await store.get_work_product(product_id)
+        if product is None:
+            raise HTTPException(status_code=404, detail="work product not found")
+        if product.freshness.value == "stale":
+            return JSONResponse(
+                {"code": "stale_work_product", "message": "work product is stale; regenerate it before export"},
+                status_code=409,
+            )
         try:
             exported = await store.export_work_product(product_id)
         except KeyError:
@@ -1068,6 +1097,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 {"code": "not_exportable", "message": "work product is not exportable"},
                 status_code=409,
             )
+        await store.record_work_product_event(product_id, "export", metadata={"surface": "http"})
         return JSONResponse(exported.model_dump(mode="json"))
 
     @app.get("/integrations/guidance")

@@ -14,6 +14,8 @@ from vaner.models.prepared_work import (
     PreparedWorkActionKind,
     PreparedWorkCard,
     PreparedWorkDiagnosticRef,
+    PreparedWorkEvidenceRef,
+    PreparedWorkInspection,
     PreparedWorkKind,
     PreparedWorkSourceType,
 )
@@ -68,7 +70,7 @@ def build_prepared_work_cards(
     include_diagnostics: bool = False,
     context_id: str | None = None,
     surface: str = "api",
-    limit: int = 20,
+    limit: int = 3,
     now: float | None = None,
 ) -> list[PreparedWorkCard]:
     ts = time.time() if now is None else float(now)
@@ -127,6 +129,8 @@ def _card_from_work_product(
         return None
     if product.expires_at is not None and product.expires_at <= now:
         return None
+    if not _passes_visible_gate(product):
+        return None
 
     kind = _WORK_PRODUCT_KIND.get(product.type, PreparedWorkKind.REVIEW)
     action_level = _work_product_action_level(product)
@@ -157,7 +161,10 @@ def _card_from_work_product(
         badge=_badge_for_kind(kind),
         confidence_label=_confidence_label(product.confidence),
         freshness_label=_freshness_label(product.updated_at, now),
+        freshness_state=_freshness_state(product, now),
         target_label=target_label,
+        why_prepared=_why_prepared(product, target_label),
+        action_note=_action_note(product),
         evidence_count=len(product.evidence_refs),
         created_at=product.created_at,
         updated_at=product.updated_at,
@@ -231,7 +238,10 @@ def _card_from_prediction(
         badge=readiness,
         confidence_label=_confidence_label(confidence),
         freshness_label=_freshness_label(float(getattr(run, "updated_at", now) or now), now),
+        freshness_state=_prediction_freshness_state(float(getattr(run, "updated_at", now) or now), now),
         target_label=str(sanitize_no_absolute_paths(spec.anchor or "Current flow")),
+        why_prepared=_why_prepared_prediction(prompt),
+        action_note="",
         evidence_count=evidence_count,
         created_at=float(getattr(spec, "created_at", now) or now),
         updated_at=float(getattr(run, "updated_at", now) or now),
@@ -248,7 +258,7 @@ def _card_from_prediction(
 
 
 def _work_product_action_level(product: WorkProduct) -> str:
-    if product.adoptability == WorkProductAdoptability.EXPORTABLE:
+    if product.can_export(now=time.time()):
         return "export"
     if product.adoptability == WorkProductAdoptability.INSPECTABLE:
         return "inspect"
@@ -260,7 +270,7 @@ def _work_product_actions(product: WorkProduct) -> tuple[PreparedWorkAction | No
         kind=PreparedWorkActionKind.INSPECT,
         label="Inspect",
         tool="vaner.work_products.inspect",
-        endpoint=f"/work-products/{product.id}",
+        endpoint=f"/work-products/{product.id}/inspect",
         arguments={"work_product_id": product.id},
     )
     dismiss = PreparedWorkAction(
@@ -270,14 +280,21 @@ def _work_product_actions(product: WorkProduct) -> tuple[PreparedWorkAction | No
         endpoint=f"/work-products/{product.id}/dismiss",
         arguments={"work_product_id": product.id},
     )
-    feedback = PreparedWorkAction(
+    useful = PreparedWorkAction(
         kind=PreparedWorkActionKind.FEEDBACK,
-        label="Feedback",
+        label="Useful",
         tool="vaner.work_products.feedback",
         endpoint=f"/work-products/{product.id}/feedback",
-        arguments={"work_product_id": product.id},
+        arguments={"work_product_id": product.id, "feedback_state": "useful"},
     )
-    if product.adoptability == WorkProductAdoptability.EXPORTABLE:
+    not_useful = PreparedWorkAction(
+        kind=PreparedWorkActionKind.FEEDBACK,
+        label="Not useful",
+        tool="vaner.work_products.feedback",
+        endpoint=f"/work-products/{product.id}/feedback",
+        arguments={"work_product_id": product.id, "feedback_state": "not_useful"},
+    )
+    if product.can_export(now=time.time()):
         export = PreparedWorkAction(
             kind=PreparedWorkActionKind.EXPORT,
             label="Export",
@@ -285,10 +302,111 @@ def _work_product_actions(product: WorkProduct) -> tuple[PreparedWorkAction | No
             endpoint=f"/work-products/{product.id}/export",
             arguments={"work_product_id": product.id},
         )
-        return export, [inspect, dismiss, feedback]
+        return export, [inspect, useful, not_useful, dismiss]
     if product.adoptability == WorkProductAdoptability.INSPECTABLE:
-        return inspect, [dismiss, feedback]
-    return inspect, [dismiss, feedback]
+        return inspect, [useful, not_useful, dismiss]
+    return inspect, [useful, not_useful, dismiss]
+
+
+def build_work_product_inspection(product: WorkProduct, *, now: float | None = None) -> PreparedWorkInspection:
+    ts = time.time() if now is None else float(now)
+    kind = _WORK_PRODUCT_KIND.get(product.type, PreparedWorkKind.REVIEW)
+    target_label = _target_label(product.source_snapshot.relative_paths, product.target_key)
+    primary, secondary = _work_product_actions(product)
+    actions = [action for action in [primary, *secondary] if action is not None]
+    warnings = _inspection_warnings(product)
+    can_export = product.can_export(now=ts)
+    evidence_refs = [
+        PreparedWorkEvidenceRef(
+            kind=ref.kind,
+            path=str(sanitize_no_absolute_paths(ref.path)),
+            symbol=str(sanitize_no_absolute_paths(ref.symbol)),
+            reason=str(sanitize_no_absolute_paths(ref.reason)),
+            confidence_label=_confidence_label(ref.confidence or product.confidence),
+        )
+        for ref in product.evidence_refs[:12]
+    ]
+    body = str(sanitize_no_absolute_paths(product.body))
+    return PreparedWorkInspection(
+        id=f"work_product:{product.id}",
+        source_id=product.id,
+        source_type=PreparedWorkSourceType.WORK_PRODUCT,
+        kind=kind,
+        title=str(sanitize_no_absolute_paths(product.title)),
+        summary=str(sanitize_no_absolute_paths(product.summary)),
+        body=body,
+        why_prepared=_why_prepared(product, target_label),
+        confidence_label=_confidence_label(product.confidence),
+        freshness_label=_freshness_label(product.updated_at, ts),
+        freshness_state=_freshness_state(product, ts),
+        target_label=target_label,
+        evidence_count=len(product.evidence_refs),
+        evidence_refs=evidence_refs,
+        allowed_actions=[action for action in actions if can_export or action.kind != PreparedWorkActionKind.EXPORT],
+        warnings=warnings,
+        export_preview=body if can_export else "",
+        created_at=product.created_at,
+        updated_at=product.updated_at,
+    )
+
+
+def _passes_visible_gate(product: WorkProduct) -> bool:
+    if not product.title.strip() or not product.summary.strip():
+        return False
+    if not product.evidence_refs:
+        return False
+    if product.self_eval.contradiction_risk >= 0.65 or product.self_eval.stale_risk >= 0.72:
+        return False
+    evidence_floor = min(1.0, 0.35 + len(product.evidence_refs) * 0.2)
+    coverage = product.self_eval.evidence_coverage or evidence_floor
+    groundedness = product.self_eval.groundedness or evidence_floor
+    if product.adoptability == WorkProductAdoptability.EXPORTABLE:
+        return product.confidence >= 0.7 and coverage >= 0.5 and groundedness >= 0.5
+    if product.adoptability == WorkProductAdoptability.INSPECTABLE:
+        return product.confidence >= 0.58 and coverage >= 0.45 and groundedness >= 0.45
+    if product.adoptability == WorkProductAdoptability.ADVISORY:
+        return product.confidence >= 0.65 and coverage >= 0.45
+    return False
+
+
+def _why_prepared(product: WorkProduct, target_label: str) -> str:
+    reason = product.self_eval.reason.strip()
+    if reason:
+        return str(sanitize_no_absolute_paths(reason))
+    evidence_count = len(product.evidence_refs)
+    if evidence_count:
+        return f"Vaner prepared this from {evidence_count} source reference{'s' if evidence_count != 1 else ''} around {target_label}."
+    return f"Vaner prepared this around {target_label}."
+
+
+def _why_prepared_prediction(prompt: Any) -> str:
+    spec = prompt.spec
+    source = str(getattr(spec, "source", "") or "recent activity").replace("_", " ")
+    anchor = str(getattr(spec, "anchor", "") or "the current flow")
+    return str(sanitize_no_absolute_paths(f"Vaner prepared this because {source} suggests {anchor} may be needed next."))
+
+
+def _action_note(product: WorkProduct) -> str:
+    if product.type == WorkProductType.VIRTUAL_DIFF:
+        if product.can_export(now=time.time()):
+            return "Export returns the prepared diff only; Vaner will not apply it automatically."
+        return "Inspect only until the diff is regenerated against the current files."
+    if product.adoptability == WorkProductAdoptability.EXPORTABLE:
+        return "Export returns Vaner-owned content without changing your files."
+    return "Inspect this lead before using it."
+
+
+def _inspection_warnings(product: WorkProduct) -> list[str]:
+    warnings: list[str] = []
+    if product.freshness == WorkProductFreshness.STALE:
+        warnings.append("This prepared item is stale. Regenerate it before export or adoption.")
+    elif product.freshness == WorkProductFreshness.UNKNOWN:
+        warnings.append("Freshness is not verified. Inspect evidence before using it.")
+    if product.self_eval.contradiction_risk >= 0.35:
+        warnings.append("Vaner found some contradiction risk in the supporting evidence.")
+    if product.self_eval.stale_risk >= 0.35:
+        warnings.append("Vaner found elevated staleness risk in this prepared item.")
+    return warnings
 
 
 def _score(
@@ -344,6 +462,23 @@ def _freshness_label(updated_at: float, now: float) -> str:
     if age_seconds < 2 * 60 * 60:
         return "Recent"
     return "Older"
+
+
+def _freshness_state(product: WorkProduct, now: float) -> str:
+    if product.freshness == WorkProductFreshness.STALE:
+        return "stale"
+    if product.freshness == WorkProductFreshness.UNKNOWN or product.self_eval.stale_risk >= 0.35:
+        return "possibly_stale"
+    return _prediction_freshness_state(product.updated_at, now)
+
+
+def _prediction_freshness_state(updated_at: float, now: float) -> str:
+    age_seconds = max(0.0, now - updated_at)
+    if age_seconds < 2 * 60 * 60:
+        return "fresh"
+    if age_seconds < 24 * 60 * 60:
+        return "recent"
+    return "possibly_stale"
 
 
 def _badge_for_kind(kind: PreparedWorkKind) -> str:

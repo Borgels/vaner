@@ -11,6 +11,38 @@ from vaner.models.scenario import Scenario
 from vaner.store.scenarios import ScenarioStore
 
 
+class OfflineDaemonClient:
+    async def get_prepared_work(self, **_kwargs):
+        from vaner.clients.daemon import VanerDaemonUnavailable
+
+        raise VanerDaemonUnavailable("offline test daemon")
+
+    async def list_work_products(self, **_kwargs):
+        from vaner.clients.daemon import VanerDaemonUnavailable
+
+        raise VanerDaemonUnavailable("offline test daemon")
+
+    async def inspect_work_product(self, _product_id: str):
+        from vaner.clients.daemon import VanerDaemonUnavailable
+
+        raise VanerDaemonUnavailable("offline test daemon")
+
+    async def export_work_product(self, _product_id: str):
+        from vaner.clients.daemon import VanerDaemonUnavailable
+
+        raise VanerDaemonUnavailable("offline test daemon")
+
+    async def dismiss_work_product(self, _product_id: str):
+        from vaner.clients.daemon import VanerDaemonUnavailable
+
+        raise VanerDaemonUnavailable("offline test daemon")
+
+    async def feedback_work_product(self, _product_id: str, _feedback_state: str):
+        from vaner.clients.daemon import VanerDaemonUnavailable
+
+        raise VanerDaemonUnavailable("offline test daemon")
+
+
 @pytest.fixture
 def mcp_server(temp_repo: Path):
     if importlib.util.find_spec("mcp") is None:  # pragma: no cover - CI matrix dependent
@@ -22,7 +54,7 @@ def mcp_server(temp_repo: Path):
         '[backend]\nbase_url = "http://127.0.0.1:11434/v1"\nmodel = "llama3.2:3b"\n',
         encoding="utf-8",
     )
-    return build_server(temp_repo)
+    return build_server(temp_repo, daemon_client=OfflineDaemonClient())
 
 
 def seed_scenario(repo: Path, *, scenario_id: str = "scn_1", memory_state: str = "candidate", confidence: float = 0.8) -> None:

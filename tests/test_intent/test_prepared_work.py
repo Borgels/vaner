@@ -9,7 +9,7 @@ from vaner.intent.prediction import (
     PredictionSpec,
     prediction_id,
 )
-from vaner.intent.prepared_work import build_prepared_work_cards
+from vaner.intent.prepared_work import build_prepared_work_cards, build_work_product_inspection
 from vaner.models.work_product import (
     WorkProduct,
     WorkProductAdoptability,
@@ -52,7 +52,12 @@ def _product(
         freshness=WorkProductFreshness.FRESH,
         status=status,
         adoptability=adoptability,
-        self_eval=WorkProductSelfEval(stale_risk=stale_risk),
+        self_eval=WorkProductSelfEval(
+            evidence_coverage=0.8,
+            groundedness=0.8,
+            stale_risk=stale_risk,
+            reason="recent edits and direct source evidence match this target",
+        ),
         created_at=updated_at,
         updated_at=updated_at,
         target_key=path,
@@ -96,6 +101,7 @@ def test_prepared_work_hides_internal_lifecycle_fields() -> None:
     payload = cards[0].model_dump(mode="json")
     assert payload["source_type"] == "work_product"
     assert payload["primary_action"]["kind"] == "inspect"
+    assert [action["arguments"].get("feedback_state") for action in payload["secondary_actions"][:2]] == ["useful", "not_useful"]
     assert "status" not in payload
     assert "adoptability" not in payload
     assert "self_eval" not in payload
@@ -116,6 +122,22 @@ def test_diagnostics_are_opt_in() -> None:
 
     assert without[0].diagnostic_refs == []
     assert with_diagnostics[0].diagnostic_refs
+
+
+def test_inspection_is_user_facing_and_export_preview_is_gated() -> None:
+    stale = _product(adoptability=WorkProductAdoptability.EXPORTABLE)
+    stale.freshness = WorkProductFreshness.STALE
+    stale.adoptability = WorkProductAdoptability.INSPECTABLE
+
+    inspected = build_work_product_inspection(stale, now=100.0).model_dump(mode="json")
+
+    assert inspected["source_type"] == "work_product"
+    assert inspected["why_prepared"]
+    assert inspected["warnings"]
+    assert inspected["export_preview"] == ""
+    assert all(action["kind"] != "export" for action in inspected["allowed_actions"])
+    assert "adoptability" not in inspected
+    assert "self_eval" not in inspected
 
 
 def test_relevant_ready_prediction_can_rank_above_older_exportable_work_product() -> None:
@@ -163,6 +185,28 @@ def test_advisory_items_are_hidden_by_default_but_can_be_requested() -> None:
 
     assert [card.source_id for card in default_cards] == ["strong"]
     assert {card.source_id for card in requested_cards} == {"maybe", "strong"}
+
+
+def test_advisory_item_can_surface_when_no_stronger_item_exists() -> None:
+    advisory = _product(
+        product_id="only-advisory",
+        adoptability=WorkProductAdoptability.ADVISORY,
+        title="Possible follow-up",
+        path="src/other.py",
+    )
+
+    cards = build_prepared_work_cards(work_products=[advisory], predictions=[], now=100.0)
+
+    assert [card.source_id for card in cards] == ["only-advisory"]
+
+
+def test_weak_candidate_artifacts_do_not_surface() -> None:
+    weak = _product(product_id="weak", confidence=0.4)
+    weak.evidence_refs = []
+
+    cards = build_prepared_work_cards(work_products=[weak], predictions=[], include_advisory=True, now=100.0)
+
+    assert cards == []
 
 
 def test_terminal_and_hidden_items_do_not_surface() -> None:
