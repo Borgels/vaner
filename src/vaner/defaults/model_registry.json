@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-05-01",
+  "generator": "vaner.setup.catalog_refresh",
+  "online": true,
+  "sources": [
+    "https://registry.ollama.ai",
+    "https://huggingface.co/api/models"
+  ],
+  "models": [
+    {
+      "id": "qwen3.6:latest",
+      "display_name": "Qwen 3.6",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "coding",
+        "summarization"
+      ],
+      "quality_rank": 98,
+      "stability_rank": 85,
+      "recency_rank": 100,
+      "download_size_gb": 22.3,
+      "min_effective_memory_gb": 25.4,
+      "recommended_effective_memory_gb": 55.9,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 8192,
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05,
+        "num_ctx": 262144
+      },
+      "family_id": "qwen3.6",
+      "params_b": 40.5,
+      "quantization": "Q4_K_M"
+    },
+    {
+      "id": "qwen3.5:latest",
+      "display_name": "Qwen 3.5",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "coding",
+        "summarization"
+      ],
+      "quality_rank": 95,
+      "stability_rank": 90,
+      "recency_rank": 90,
+      "download_size_gb": 6.1,
+      "min_effective_memory_gb": 7.4,
+      "recommended_effective_memory_gb": 12.1,
+      "parameters": {
+        "context_window": 131072,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 8192,
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05,
+        "num_ctx": 131072
+      },
+      "family_id": "qwen3.5",
+      "params_b": 11.2,
+      "quantization": "Q4_K_M"
+    },
+    {
+      "id": "qwen3-coder-next:latest",
+      "display_name": "Qwen 3 Coder Next",
+      "runtime": "ollama",
+      "workload_tags": [
+        "coding",
+        "general"
+      ],
+      "quality_rank": 92,
+      "stability_rank": 85,
+      "recency_rank": 95,
+      "download_size_gb": 48.2,
+      "min_effective_memory_gb": 54.5,
+      "recommended_effective_memory_gb": 119.1,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 8192,
+        "temperature": 0.2,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05,
+        "num_ctx": 262144
+      },
+      "family_id": "qwen3-coder-next",
+      "params_b": 87.6,
+      "quantization": "Q4_K_M"
+    },
+    {
+      "id": "qwen3-next:latest",
+      "display_name": "Qwen 3 Next",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "coding"
+      ],
+      "quality_rank": 90,
+      "stability_rank": 85,
+      "recency_rank": 92,
+      "download_size_gb": 46.9,
+      "min_effective_memory_gb": 53.0,
+      "recommended_effective_memory_gb": 116.0,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 8192,
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05,
+        "num_ctx": 262144
+      },
+      "family_id": "qwen3-next",
+      "params_b": 85.3,
+      "quantization": "Q4_K_M"
+    },
+    {
+      "id": "llama4:latest",
+      "display_name": "Llama 4",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "summarization"
+      ],
+      "quality_rank": 94,
+      "stability_rank": 90,
+      "recency_rank": 95,
+      "download_size_gb": 62.8,
+      "min_effective_memory_gb": 70.8,
+      "recommended_effective_memory_gb": 426.1,
+      "parameters": {
+        "context_window": 1048576,
+        "reasoning_mode": "none",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 0,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "top_k": 50,
+        "repeat_penalty": 1.1,
+        "num_ctx": 1048576
+      },
+      "family_id": "llama4",
+      "params_b": 114.2,
+      "quantization": "Q4_K_M"
+    },
+    {
+      "id": "gemma4:latest",
+      "display_name": "Gemma 4",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "summarization",
+        "lightweight"
+      ],
+      "quality_rank": 78,
+      "stability_rank": 88,
+      "recency_rank": 92,
+      "download_size_gb": 8.9,
+      "min_effective_memory_gb": 10.5,
+      "recommended_effective_memory_gb": 16.9,
+      "parameters": {
+        "context_window": 131072,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 3072,
+        "reasoning_token_budget": 4096,
+        "temperature": 0.8,
+        "top_p": 0.95,
+        "top_k": 64,
+        "repeat_penalty": 1.0,
+        "num_ctx": 131072
+      },
+      "family_id": "gemma4",
+      "params_b": 16.3,
+      "quantization": "Q4_K_M"
+    },
+    {
+      "id": "qwen3:latest",
+      "display_name": "Qwen 3",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "lightweight"
+      ],
+      "quality_rank": 75,
+      "stability_rank": 95,
+      "recency_rank": 80,
+      "download_size_gb": 4.9,
+      "min_effective_memory_gb": 5.9,
+      "recommended_effective_memory_gb": 7.2,
+      "parameters": {
+        "context_window": 32768,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 2048,
+        "reasoning_token_budget": 2048,
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05,
+        "num_ctx": 32768
+      },
+      "family_id": "qwen3",
+      "params_b": 8.8,
+      "quantization": "Q4_K_M"
+    }
+  ],
+  "skipped": [
+    {
+      "family": "deepseek-r2",
+      "reason": "ollama_latest_not_found"
+    }
+  ]
+}

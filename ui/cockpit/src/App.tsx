@@ -25,9 +25,19 @@ import { useEvents } from './api/useEvents'
 import { usePipelineEvents } from './api/usePipelineEvents'
 import { useScenarios } from './api/useScenarios'
 import type { ScoreComponent } from './components/Inspector'
-import { CommandPalette, LeftRail, MismatchBanner, SettingsDrawer, TopBar, type CommandItem } from './components/chrome'
+import {
+  CommandPalette,
+  LeftRail,
+  MismatchBanner,
+  SettingsDrawer,
+  TopBar,
+  type CockpitView,
+  type CommandItem,
+} from './components/chrome'
 import { EventStreamPanel } from './components/EventStreamPanel'
+import { GoalsPanel } from './components/GoalsPanel'
 import { Inspector } from './components/Inspector'
+import { LearningPanel } from './components/LearningPanel'
 import { PipelineCanvas } from './components/PipelineCanvas'
 import { PreparedWorkPanel } from './components/PreparedWorkPanel'
 import { SystemVitals } from './components/SystemVitals'
@@ -40,6 +50,7 @@ import type {
   ComputeSettings,
   DecisionRecordPayload,
   ImpactSummary,
+  LatestInvalidationSignal,
   LimitSettings,
   MCPSettings,
   ScenarioApiPayload,
@@ -49,6 +60,7 @@ import type {
   UIPinnedFact,
   UISkill,
 } from './types'
+import { fetchScenarioDetail } from './api/client'
 
 const COCKPIT_BUILD_SHA = (import.meta as unknown as { env?: { VITE_COCKPIT_SHA?: string } }).env?.VITE_COCKPIT_SHA ?? ''
 
@@ -104,6 +116,13 @@ function App() {
   const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [view, setView] = useState<CockpitView>('pipeline')
+  // Cockpit refresh: lazy-loaded "stale because" reasons keyed by scenario
+  // id. We only fetch on selection (and only for non-fresh rows) to avoid
+  // a second round-trip for every list-time render.
+  const [invalidationById, setInvalidationById] = useState<
+    Record<string, LatestInvalidationSignal | null>
+  >({})
   const [toast, setToast] = useState<{ msg: string; color: string } | null>(null)
   const [impact, setImpact] = useState<ImpactSummary>({ count: 0 })
   const [decisions, setDecisions] = useState<DecisionRecordPayload[]>([])
@@ -429,6 +448,22 @@ function App() {
   }, [mode, scenarios, selectedId])
 
   const selectedScenario = scenarios.find((scenario) => scenario.id === selectedId) ?? null
+
+  useEffect(() => {
+    if (!selectedScenario || selectedScenario.freshness === 'fresh') return
+    if (invalidationById[selectedScenario.id] !== undefined) return
+    let cancelled = false
+    void fetchScenarioDetail(selectedScenario.id).then((detail) => {
+      if (cancelled) return
+      setInvalidationById((prev) => ({
+        ...prev,
+        [selectedScenario.id]: detail?.latest_invalidation_signal ?? null,
+      }))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedScenario, invalidationById])
   const selectedDecision = decisions.find((decision) => decision.id === selectedDecisionId) ?? null
 
   const evidenceById = useMemo(
@@ -531,6 +566,8 @@ function App() {
         packageState={packageState}
         onOpenSettings={() => setDrawerOpen(true)}
         onOpenPalette={() => setPaletteOpen(true)}
+        view={mode === 'proxy' ? undefined : view}
+        onChangeView={mode === 'proxy' ? undefined : setView}
       />
 
       <LeftRail
@@ -554,9 +591,23 @@ function App() {
             predictionCalibration={predictionCalibration}
           />
         }
+        footer={mode === 'proxy' ? null : <LearningPanel />}
       />
 
-      {showScenarioPane ? (
+      {showScenarioPane && view === 'goals' ? (
+        <div
+          style={{
+            gridArea: 'graph',
+            background: 'var(--bg-0)',
+            overflow: 'auto',
+            padding: 20,
+          }}
+        >
+          <GoalsPanel />
+        </div>
+      ) : null}
+
+      {showScenarioPane && view === 'pipeline' ? (
         <div style={{ gridArea: 'graph', position: 'relative', background: 'var(--bg-0)', overflow: 'hidden' }}>
           <div
             style={{
@@ -618,7 +669,9 @@ function App() {
             </div>
           ) : null}
         </div>
-      ) : (
+      ) : null}
+
+      {!showScenarioPane ? (
         <div style={{ gridArea: 'graph', display: 'flex', flexDirection: 'column', background: 'var(--bg-1)', borderRight: '1px solid var(--line-1)', minWidth: 0 }}>
           <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--line-hair)' }}>
             <div className="mono" style={{ fontSize: 10, letterSpacing: 1.2, color: 'var(--fg-4)' }}>
@@ -660,7 +713,7 @@ function App() {
             ) : null}
           </div>
         </div>
-      )}
+      ) : null}
 
       <div
         style={{
@@ -681,6 +734,7 @@ function App() {
               evidenceById={evidenceById}
               scoreComponentsById={scoreComponentsById}
               preparedById={preparedById}
+              invalidationById={invalidationById}
               onSelect={setSelectedId}
               onFeedback={(id, result) => void handleFeedback(id, result)}
               onPin={(id) => void handleTogglePin(id)}

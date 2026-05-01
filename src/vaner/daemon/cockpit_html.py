@@ -221,6 +221,43 @@ _COCKPIT_HTML = """<!DOCTYPE html>
         <div id="summaryChips" class="chips"></div>
       </section>
 
+      <section class="panel" id="enginePanel">
+        <h2>Engine state</h2>
+        <div class="subtle" id="engineHint">
+          Goals, prediction pipeline, prepared-work self-eval and recent
+          feedback. This degraded view is the fallback that ships with the
+          daemon when the React build is missing.
+        </div>
+        <div class="grid" style="margin-top:10px;">
+          <div>
+            <h3 style="font-size:0.95rem;margin:8px 0;">Goals</h3>
+            <div id="goalsList" class="scenario-list">
+              <div class="subtle">loading...</div>
+            </div>
+          </div>
+          <div>
+            <h3 style="font-size:0.95rem;margin:8px 0;">Prediction pipeline</h3>
+            <div id="predictionLanes" class="scenario-list">
+              <div class="subtle">loading...</div>
+            </div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:10px;">
+          <div>
+            <h3 style="font-size:0.95rem;margin:8px 0;">Prepared-work self-eval</h3>
+            <div id="preparedWorkList" class="scenario-list">
+              <div class="subtle">loading...</div>
+            </div>
+          </div>
+          <div>
+            <h3 style="font-size:0.95rem;margin:8px 0;">What Vaner learned</h3>
+            <div id="learningRecent" class="scenario-list">
+              <div class="subtle">loading...</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <div class="grid">
         <section class="panel" id="leftPanel">
           <h2 id="leftTitle">Top Scenarios</h2>
@@ -599,11 +636,230 @@ _COCKPIT_HTML = """<!DOCTYPE html>
         wireProxyStream();
       }
 
+      // ------- Cockpit refresh: degraded mirror of the React panels -------
+      const goalsList = document.getElementById("goalsList");
+      const predictionLanes = document.getElementById("predictionLanes");
+      const preparedWorkList = document.getElementById("preparedWorkList");
+      const learningRecent = document.getElementById("learningRecent");
+
+      function relTime(epoch) {
+        if (!epoch) return "";
+        const dt = Math.max(0, Date.now() / 1000 - Number(epoch));
+        if (dt < 60) return Math.round(dt) + "s ago";
+        if (dt < 3600) return Math.round(dt / 60) + "m ago";
+        if (dt < 86400) return Math.round(dt / 3600) + "h ago";
+        return Math.round(dt / 86400) + "d ago";
+      }
+
+      async function refreshGoals() {
+        try {
+          const response = await fetch("/goals?limit=20");
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          const payload = await response.json();
+          const goals = payload.goals || [];
+          if (!goals.length) {
+            goalsList.innerHTML =
+              '<div class="subtle">No workspace goals declared. Use vaner.goals.declare to create one.</div>';
+            return;
+          }
+          goalsList.innerHTML = goals
+            .map(function (goal) {
+              return (
+                '<article class="scenario-card">' +
+                '<div class="row"><strong>' +
+                escapeHtml(goal.title || goal.id) +
+                '</strong>' +
+                '<span class="pill">' +
+                escapeHtml(goal.status || "?") +
+                '</span></div>' +
+                (goal.description
+                  ? '<div class="subtle">' + escapeHtml(goal.description) + '</div>'
+                  : '') +
+                (goal.pc_reconciliation_state
+                  ? '<div class="subtle">reconciliation: ' +
+                    escapeHtml(goal.pc_reconciliation_state) +
+                    '</div>'
+                  : '') +
+                '<div class="subtle">updated ' +
+                escapeHtml(relTime(goal.updated_at || goal.created_at)) +
+                '</div>' +
+                '</article>'
+              );
+            })
+            .join("");
+        } catch (error) {
+          goalsList.innerHTML =
+            '<div class="subtle">Goals unavailable: ' + escapeHtml(error.message) + '</div>';
+        }
+      }
+
+      async function refreshPredictionLanes() {
+        try {
+          const response = await fetch("/predictions/active?include_all=true");
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          const payload = await response.json();
+          const byState = payload.by_state || {};
+          const lanes = ["queued", "grounding", "evidence_gathering", "drafting", "ready"];
+          const total = lanes.reduce(function (sum, state) {
+            return sum + (Array.isArray(byState[state]) ? byState[state].length : 0);
+          }, 0);
+          if (total === 0) {
+            predictionLanes.innerHTML =
+              '<div class="subtle">No predictions in flight.</div>';
+            return;
+          }
+          predictionLanes.innerHTML = lanes
+            .map(function (state) {
+              const items = Array.isArray(byState[state]) ? byState[state] : [];
+              const titles = items
+                .slice(0, 3)
+                .map(function (row) {
+                  const label = (row && row.spec && row.spec.label) || row.id || "(unnamed)";
+                  return '<li>' + escapeHtml(label) + '</li>';
+                })
+                .join("");
+              return (
+                '<details>' +
+                '<summary>' +
+                escapeHtml(state.replace(/_/g, ' ')) +
+                ' · ' + items.length +
+                '</summary>' +
+                (items.length
+                  ? '<ul style="margin:6px 0 0 18px;">' + titles +
+                    (items.length > 3
+                      ? '<li class="subtle">+' + (items.length - 3) + ' more</li>'
+                      : '') +
+                    '</ul>'
+                  : '<div class="subtle">empty</div>') +
+                '</details>'
+              );
+            })
+            .join("");
+        } catch (error) {
+          predictionLanes.innerHTML =
+            '<div class="subtle">Predictions unavailable: ' + escapeHtml(error.message) + '</div>';
+        }
+      }
+
+      async function refreshPreparedWork() {
+        try {
+          const listResp = await fetch("/work-products?limit=6");
+          if (!listResp.ok) throw new Error("HTTP " + listResp.status);
+          const listPayload = await listResp.json();
+          const products = listPayload.work_products || [];
+          if (!products.length) {
+            preparedWorkList.innerHTML =
+              '<div class="subtle">No work products surfaced.</div>';
+            return;
+          }
+          // Fetch self_eval + events for each product (small N).
+          const inspections = await Promise.all(
+            products.slice(0, 6).map(function (product) {
+              return fetch('/work-products/' + encodeURIComponent(product.id) + '/inspect')
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .catch(function () { return null; });
+            })
+          );
+          preparedWorkList.innerHTML = inspections
+            .map(function (inspection, idx) {
+              if (!inspection) return '';
+              const se = inspection.self_eval || {};
+              const events = (inspection.events || []).slice(0, 4);
+              const lifecycle = events
+                .map(function (evt) {
+                  return escapeHtml((evt.event_type || '').toUpperCase()) +
+                    ' ' + escapeHtml(relTime(evt.timestamp));
+                })
+                .join(' → ');
+              return (
+                '<article class="scenario-card">' +
+                '<strong>' + escapeHtml(inspection.title || products[idx].title || 'work product') + '</strong>' +
+                '<div class="subtle">' + escapeHtml(inspection.confidence_label || '') + ' · ' +
+                escapeHtml(inspection.freshness_label || '') + '</div>' +
+                '<div class="subtle">evidence: ' + Number(se.evidence_coverage || 0).toFixed(2) +
+                ' · grounded: ' + Number(se.groundedness || 0).toFixed(2) +
+                ' · contradict: ' + Number(se.contradiction_risk || 0).toFixed(2) +
+                '</div>' +
+                (lifecycle
+                  ? '<div class="subtle">' + lifecycle + '</div>'
+                  : '') +
+                '</article>'
+              );
+            })
+            .join("");
+        } catch (error) {
+          preparedWorkList.innerHTML =
+            '<div class="subtle">Prepared work unavailable: ' + escapeHtml(error.message) + '</div>';
+        }
+      }
+
+      async function refreshLearning() {
+        try {
+          const response = await fetch("/learning/recent?limit=5");
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          const payload = await response.json();
+          const events = payload.feedback_events || [];
+          const learning = payload.learning_state || {};
+          const eventHtml = events.length
+            ? events.map(function (evt) {
+                let kind = evt.feedback_kind;
+                if (!kind && evt.metadata_json) {
+                  try {
+                    const parsed = JSON.parse(evt.metadata_json);
+                    kind = parsed.feedback_kind || parsed.kind || parsed.outcome || 'feedback';
+                  } catch (_e) { kind = 'feedback'; }
+                }
+                const title = evt.scenario_id || evt.query_id || evt.id || 'event';
+                return '<li><span class="pill">' + escapeHtml(kind || 'feedback') + '</span> ' +
+                  escapeHtml(title) + ' · ' + escapeHtml(relTime(evt.timestamp)) + '</li>';
+              }).join('')
+            : '';
+          const learningKeys = Object.keys(learning);
+          const learningHtml = learningKeys.length
+            ? learningKeys.slice(0, 4).map(function (key) {
+                const value = learning[key];
+                let summary = '';
+                if (value && typeof value === 'object' && !Array.isArray(value)) {
+                  summary = Object.keys(value).length + ' entries';
+                } else if (Array.isArray(value)) {
+                  summary = value.length + ' entries';
+                } else {
+                  summary = String(value);
+                }
+                return '<li><code>' + escapeHtml(key) + '</code>: ' + escapeHtml(summary) + '</li>';
+              }).join('')
+            : '';
+          if (!events.length && !learningKeys.length) {
+            learningRecent.innerHTML =
+              '<div class="subtle">No feedback recorded yet — use vaner.feedback to teach.</div>';
+            return;
+          }
+          learningRecent.innerHTML =
+            (events.length ? '<ul style="margin:0 0 6px 18px;">' + eventHtml + '</ul>' : '') +
+            (learningKeys.length
+              ? '<ul class="subtle" style="margin:0 0 0 18px;">' + learningHtml + '</ul>'
+              : '');
+        } catch (error) {
+          learningRecent.innerHTML =
+            '<div class="subtle">Learning unavailable: ' + escapeHtml(error.message) + '</div>';
+        }
+      }
+
+      function refreshEnginePanels() {
+        refreshGoals().catch(() => {});
+        refreshPredictionLanes().catch(() => {});
+        refreshPreparedWork().catch(() => {});
+        refreshLearning().catch(() => {});
+      }
+
+      refreshEnginePanels();
+
       setInterval(() => {
         refreshStatus().catch(() => {});
         if (isProxy) {
           refreshProxySummary().catch(() => {});
         }
+        refreshEnginePanels();
       }, 15000);
     </script>
   </body>

@@ -975,6 +975,101 @@ def advanced_cmd(
         raise typer.Exit(code=completed.returncode)
 
 
+catalog_app = typer.Typer(
+    help="Local model catalog: refresh registry from Hugging Face + Ollama, or inspect the bundled seed.",
+    no_args_is_help=True,
+)
+setup_app.add_typer(catalog_app, name="catalog")
+
+
+@catalog_app.command(
+    "refresh",
+    help=(
+        "Rebuild model_registry.json from catalog_seed.json + live Hugging "
+        "Face/Ollama lookups. --offline skips network and uses seed-only "
+        "values; --dry-run prints the result without writing."
+    ),
+)
+def catalog_refresh_cmd(
+    offline: Annotated[
+        bool,
+        typer.Option("--offline", help="Skip Hugging Face / Ollama lookups; use seed values only."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print the refreshed registry to stdout without writing."),
+    ] = False,
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "--output",
+            help="Write to this path instead of the bundled defaults file.",
+        ),
+    ] = None,
+) -> None:
+    """Refresh ``model_registry.json`` from the curated seed."""
+
+    from vaner.setup.catalog_refresh import build_registry
+
+    payload = build_registry(online=not offline)
+    formatted = json.dumps(payload, indent=2, sort_keys=False)
+
+    if dry_run:
+        typer.echo(formatted)
+        return
+
+    if output:
+        target = Path(output)
+    else:
+        target = Path(__file__).resolve().parents[2] / "defaults" / "model_registry.json"
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(formatted + "\n", encoding="utf-8")
+    skipped = payload.get("skipped", []) or []
+    _console.print(
+        f"[green]Wrote[/green] {target} "
+        f"([dim]{len(payload['models'])} models, "
+        f"{'online' if not offline else 'offline'}, "
+        f"{len(skipped)} skipped[/dim])"
+    )
+    for entry in skipped:
+        _console.print(f"  [yellow]skipped[/yellow] {entry['id']} — {entry['reason']}")
+
+
+@catalog_app.command(
+    "show",
+    help="Print the current model registry (after any local refresh).",
+)
+def catalog_show_cmd() -> None:
+    """Display the loaded registry as JSON."""
+
+    from vaner.setup.model_recommendation import load_model_registry
+
+    registry = load_model_registry()
+    payload = {
+        "schema_version": registry.schema_version,
+        "verified_at": registry.verified_at,
+        "valid": registry.valid,
+        "warning": registry.warning,
+        "models": [
+            {
+                "id": model.id,
+                "display_name": model.display_name,
+                "runtime": model.runtime,
+                "quality_rank": model.quality_rank,
+                "stability_rank": model.stability_rank,
+                "recency_rank": model.recency_rank,
+                "download_size_gb": model.download_size_gb,
+                "min_effective_memory_gb": model.min_effective_memory_gb,
+                "recommended_effective_memory_gb": model.recommended_effective_memory_gb,
+                "workload_tags": list(model.workload_tags),
+                "parameters": model.parameters,
+            }
+            for model in registry.models
+        ],
+    }
+    typer.echo(json.dumps(payload, indent=2))
+
 
 @setup_app.command(
     "hardware",

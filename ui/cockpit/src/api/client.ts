@@ -1,17 +1,24 @@
 import type {
+  ArtefactDetail,
   BackendPreset,
   BackendSettings,
   ComputeDevice,
   ComputeSettings,
   DecisionRecordPayload,
+  Goal,
   ImpactSummary,
+  LearningRecent,
   LimitSettings,
   MCPSettings,
+  PredictionsByState,
   PreparedWorkCard,
   ScenarioApiPayload,
+  ScenarioInspectorPayload,
   StatusPayload,
   UIPinnedFact,
   UISkill,
+  WorkProductInspection,
+  Artefact,
 } from '../types'
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
@@ -137,4 +144,52 @@ export function runPreparedWorkAction(endpoint: string, kind: string): Promise<u
     headers: body ? JSON_HEADERS : undefined,
     body,
   })
+}
+
+// --- Cockpit refresh: goals, artefacts, predictions-by-state, learning ---
+
+export function listGoals(params: { status?: string; limit?: number } = {}): Promise<{ goals: Goal[] }> {
+  const query = new URLSearchParams()
+  if (params.status) query.set('status', params.status)
+  if (params.limit) query.set('limit', String(params.limit))
+  const qs = query.toString()
+  return optional(`/goals${qs ? `?${qs}` : ''}`, { goals: [] })
+}
+
+export function listArtefacts(
+  params: { status?: string; connector?: string; sourceTier?: string; limit?: number } = {},
+): Promise<{ artefacts: Artefact[] }> {
+  const query = new URLSearchParams()
+  if (params.status) query.set('status', params.status)
+  if (params.connector) query.set('connector', params.connector)
+  if (params.sourceTier) query.set('source_tier', params.sourceTier)
+  if (params.limit) query.set('limit', String(params.limit))
+  const qs = query.toString()
+  return optional(`/artefacts${qs ? `?${qs}` : ''}`, { artefacts: [] })
+}
+
+export function fetchArtefact(id: string): Promise<ArtefactDetail | null> {
+  return optional(`/artefacts/${encodeURIComponent(id)}`, null as ArtefactDetail | null)
+}
+
+export function listPredictionsByState(): Promise<PredictionsByState> {
+  return optional('/predictions/active?include_all=true', { predictions: [], by_state: {} })
+}
+
+export function inspectWorkProduct(id: string): Promise<WorkProductInspection | null> {
+  return optional(
+    `/work-products/${encodeURIComponent(id)}/inspect`,
+    null as WorkProductInspection | null,
+  )
+}
+
+export function fetchScenarioDetail(id: string): Promise<ScenarioInspectorPayload | null> {
+  return optional(
+    `/scenarios/${encodeURIComponent(id)}`,
+    null as ScenarioInspectorPayload | null,
+  )
+}
+
+export function getLearningRecent(limit = 5): Promise<LearningRecent> {
+  return optional(`/learning/recent?limit=${limit}`, { feedback_events: [], learning_state: {} })
 }

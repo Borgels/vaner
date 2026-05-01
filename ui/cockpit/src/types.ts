@@ -286,6 +286,176 @@ export interface ScenarioApiPayload {
   score_components?: Array<{ label: string; value: number; description?: string }>
 }
 
+// ---------------------------------------------------------------------------
+// Cockpit refresh: goals, artefacts, predictions-by-state, work-product
+// self-eval + lifecycle, learning summary. These mirror the JSON shapes the
+// daemon now returns from /goals, /artefacts, /artefacts/{id},
+// /predictions/active?include_all=true, /work-products/{id}/inspect, and
+// /learning/recent. Field types are intentionally permissive — the engine
+// stores some columns as TEXT/JSON-blob and the cockpit only renders the
+// subset it understands. See types/setup.ts re: ts-rs migration.
+// ---------------------------------------------------------------------------
+
+export type GoalStatus = 'active' | 'paused' | 'abandoned' | 'achieved' | string
+
+export interface Goal {
+  id: string
+  title: string
+  description?: string
+  status: GoalStatus
+  source?: string
+  confidence?: number
+  created_at?: number
+  updated_at?: number
+  related_files?: string[]
+  artefact_refs?: string[]
+  pc_freshness?: number
+  pc_reconciliation_state?: string
+  pc_unfinished_item_state?: string
+}
+
+export interface Artefact {
+  id: string
+  title?: string
+  status?: string
+  connector?: string
+  source_uri?: string
+  source_tier?: string
+  latest_snapshot?: string
+  updated_at?: number
+  linked_goals?: string[]
+  linked_files?: string[]
+  kind?: string
+}
+
+export interface ArtefactItem {
+  id: string
+  title?: string
+  body?: string
+  state?: string
+  related_files?: string[]
+  related_entities?: string[]
+  evidence_refs?: unknown[]
+}
+
+export interface ReconciliationOutcome {
+  id: string
+  artefact_id: string
+  pass_at: number
+  triggering_signal_id?: string | null
+  item_state_deltas_json?: string
+  goal_status_deltas_json?: string
+  supersedes_json?: string
+  evidence_refs_json?: string
+}
+
+export interface ArtefactDetail {
+  artefact: Artefact
+  items: ArtefactItem[]
+  snapshot_id: string
+  recent_outcomes: ReconciliationOutcome[]
+}
+
+export type PredictionReadiness =
+  | 'queued'
+  | 'grounding'
+  | 'evidence_gathering'
+  | 'drafting'
+  | 'ready'
+  | 'stale'
+  | string
+
+export interface PredictionSummary {
+  id: string
+  prediction_id?: string
+  title?: string
+  prompt?: string
+  readiness?: PredictionReadiness
+  confidence?: number
+  created_at?: number
+  updated_at?: number
+  invalidation_reason?: string | null
+}
+
+export interface PredictionsByState {
+  predictions: PredictionSummary[]
+  by_state?: Record<PredictionReadiness, PredictionSummary[]>
+}
+
+export interface WorkProductSelfEval {
+  evidence_coverage: number
+  groundedness: number
+  contradiction_risk: number
+  stale_risk?: number
+  reason?: string
+}
+
+export interface WorkProductLifecycleEvent {
+  event_type: string
+  timestamp: number
+}
+
+export interface WorkProductInspection {
+  id: string
+  source_id: string
+  source_type: string
+  kind: string
+  title: string
+  summary: string
+  body: string
+  why_prepared?: string
+  confidence_label: string
+  freshness_label: string
+  freshness_state?: string
+  target_label: string
+  evidence_count: number
+  evidence_refs: Array<{
+    kind: string
+    path: string
+    symbol?: string
+    reason?: string
+    confidence_label?: string
+  }>
+  warnings?: string[]
+  export_preview?: string
+  created_at: number
+  updated_at: number
+  // Cockpit refresh additions:
+  self_eval?: WorkProductSelfEval
+  events?: WorkProductLifecycleEvent[]
+  status?: string
+  adoptability?: string
+  feedback_state?: string
+}
+
+export interface FeedbackEvent {
+  id?: string
+  query_id?: string
+  timestamp?: number
+  cache_tier?: string
+  similarity?: number
+  quality_lift?: number
+  latency_ms?: number
+  metadata_json?: string
+  feedback_kind?: string
+  scenario_id?: string
+}
+
+export interface LearningRecent {
+  feedback_events: FeedbackEvent[]
+  learning_state: Record<string, unknown>
+}
+
+export interface LatestInvalidationSignal {
+  kind: string
+  source: string
+  timestamp: number
+}
+
+export interface ScenarioInspectorPayload extends ScenarioApiPayload {
+  latest_invalidation_signal?: LatestInvalidationSignal | null
+}
+
 declare global {
   interface Window {
     __VANER_MODE__?: string
