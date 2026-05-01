@@ -36,6 +36,7 @@ jobs:
           fi
       - name: Block private training imports
         run: |
-          if rg -n 'import\s+vaner_train|from\s+vaner_train' src/; then
+          private_module="$(printf 'vaner_%s' 'train')"
+          if rg -n "import\s+${private_module}|from\s+${private_module}" src/; then
             exit 1
           fi
