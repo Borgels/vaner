@@ -33,7 +33,7 @@ DEFAULT_CONFIG = """# Vaner configuration
 # Examples:
 #   OpenAI:       base_url = "https://api.openai.com/v1"   model = "gpt-4o"
 #   Anthropic:    base_url = "https://api.anthropic.com/v1" model = "claude-opus-4-5"
-#   Ollama:       base_url = "http://127.0.0.1:11434/v1"   model = "qwen2.5-coder:32b"
+#   Ollama:       base_url = "http://127.0.0.1:11434/v1"   model = "qwen3.5:8b"
 #   vLLM/local:   base_url = "http://127.0.0.1:8000/v1"    model = "Qwen/Qwen2.5-Coder-32B"
 
 [backend]
@@ -65,7 +65,7 @@ max_generations_per_cycle = 200
 # Leave endpoint empty to auto-detect a local Ollama or vLLM instance.
 enabled = true
 endpoint = ""      # e.g. "http://127.0.0.1:11434" or "http://127.0.0.1:8000/v1"
-model = ""         # e.g. "qwen2.5-coder:32b" -- leave empty to auto-select
+model = ""         # e.g. "qwen3.5:8b" -- leave empty to auto-select
 backend = "auto"   # "auto" | "ollama" | "openai"
 
 [proxy]
@@ -178,7 +178,7 @@ BACKEND_PRESETS: dict[str, BackendPreset] = {
     "ollama": BackendPreset(
         name="ollama",
         base_url="http://127.0.0.1:11434/v1",
-        default_model="qwen2.5-coder:7b",
+        default_model="qwen3.5:8b",
     ),
     "lmstudio": BackendPreset(
         name="lmstudio",

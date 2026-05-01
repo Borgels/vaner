@@ -78,6 +78,18 @@ class HardwareProfile:
     thermal_constrained: bool
     detected_runtimes: tuple[Runtime, ...]
     detected_models: tuple[tuple[str, str, str], ...]
+    # Total system memory in raw bytes — the model recommender's
+    # budget calc needs sub-GB precision (a 31.8 GB VRAM card rounds
+    # to 32 GB which fits a 30B model after Q4 quant). The legacy
+    # `ram_gb` int stays for surfaces that read the GiB summary.
+    memory_total_bytes: int = 0
+    # Decimal GB for consumer copy ("32 GB"), distinct from the
+    # binary GiB count in `ram_gb`. Zero when not yet computed.
+    memory_display_gb: int = 0
+    # True on Apple Silicon (and other unified-memory systems where
+    # the GPU shares the system RAM pool). Affects how the
+    # recommender treats VRAM headroom.
+    memory_is_unified: bool = False
     tier: HardwareTier = field(default="unknown")
     # Per-device GPU enumeration. Empty tuple when no probe could
     # identify discrete devices — consumers should fall back to the
@@ -742,6 +754,19 @@ def detect() -> HardwareProfile:
     if gpu_vram_gb is None and devices:
         gpu_vram_gb = devices[0].memory_display_gb
 
+    # Sub-GB-precision memory + unified-memory flag for the model
+    # recommender. `memory_total_bytes` derives from the GiB integer
+    # we already have (sub-GB system RAM is rare); decimal display GB
+    # comes off raw bytes. Apple Silicon and any device the per-GPU
+    # probe flagged as `memory_kind == "unified"` count as unified.
+    memory_total_bytes = max(0, int(ram_gb) * (1024**3))
+    memory_display_gb = (
+        max(1, round(memory_total_bytes / 1_000_000_000)) if memory_total_bytes > 0 else 0
+    )
+    memory_is_unified = gpu == "apple_silicon" or any(
+        getattr(d, "memory_kind", None) == "unified" for d in devices
+    )
+
     profile = HardwareProfile(
         os=effective_os,
         cpu_class=cpu_class,
@@ -752,6 +777,9 @@ def detect() -> HardwareProfile:
         thermal_constrained=thermal,
         detected_runtimes=runtimes,
         detected_models=models,
+        memory_total_bytes=memory_total_bytes,
+        memory_display_gb=memory_display_gb,
+        memory_is_unified=memory_is_unified,
         tier="unknown",
         gpu_devices=devices,
     )
@@ -766,6 +794,9 @@ def detect() -> HardwareProfile:
         thermal_constrained=thermal,
         detected_runtimes=runtimes,
         detected_models=models,
+        memory_total_bytes=memory_total_bytes,
+        memory_display_gb=memory_display_gb,
+        memory_is_unified=memory_is_unified,
         tier=final_tier,
         gpu_devices=devices,
     )

@@ -48,7 +48,7 @@ class BackendConfig(BaseModel):
 
         # Local Ollama
         base_url = "http://127.0.0.1:11434/v1"
-        model = "qwen2.5-coder:32b"
+        model = "qwen3.5:8b"
 
         # Local vLLM / LM Studio / any OpenAI-compatible server
         base_url = "http://127.0.0.1:8000/v1"
@@ -346,7 +346,7 @@ class ExplorationConfig(BaseModel):
 
     exploration_model: str = ""
     """Model name for the exploration LLM.
-    Ollama tag (e.g. ``"qwen2.5-coder:32b"``) or OpenAI-compatible model ID
+    Ollama tag (e.g. ``"qwen3.5:8b"``) or OpenAI-compatible model ID
     (e.g. ``"Qwen/Qwen3.5-35B-A3B-FP8"`` for vLLM).  Empty = pick first
     available model from the detected endpoint.
     """

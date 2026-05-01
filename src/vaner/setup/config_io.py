@@ -62,6 +62,67 @@ def persist_setup_and_policy(
     return config_path
 
 
+def persist_runtime_recommendation(repo_root: Path, recommendation: dict[str, Any]) -> Path:
+    """Persist the concrete runtime/model selected by setup recommendation."""
+
+    config_path = _init_repo_config(repo_root)
+    text = config_path.read_text(encoding="utf-8")
+    selected = recommendation.get("selected", {})
+    if not isinstance(selected, dict):
+        selected = {}
+    runtime = str(selected.get("runtime") or "ollama")
+    model_id = str(selected.get("model_id") or selected.get("id") or "")
+    base_url = str(selected.get("base_url") or "http://127.0.0.1:11434/v1")
+    params = selected.get("params") if isinstance(selected.get("params"), dict) else {}
+    reasoning_mode = str(params.get("reasoning_mode") or "allowed")
+    max_response_tokens = int(params.get("max_response_tokens") or 3072)
+    reasoning_token_budget = int(params.get("reasoning_token_budget") or 4096)
+    hardware = recommendation.get("hardware", {})
+    memory_source = hardware.get("memory_source") if isinstance(hardware, dict) else None
+    accelerator_type = hardware.get("accelerator_type") if isinstance(hardware, dict) else None
+    device = "auto"
+    if accelerator_type == "nvidia":
+        device = "cuda"
+    elif accelerator_type == "apple_silicon":
+        device = "mps"
+    elif memory_source in {"system", "cpu"}:
+        device = "cpu"
+
+    text = update_toml_section(
+        text,
+        "backend",
+        {
+            "name": runtime,
+            "base_url": base_url,
+            "model": model_id,
+            "api_key_env": "",
+            "prefer_local": True,
+            "reasoning_mode": reasoning_mode,
+            "max_response_tokens": max_response_tokens,
+            "reasoning_token_budget": reasoning_token_budget,
+        },
+    )
+    text = update_toml_section(
+        text,
+        "exploration",
+        {
+            "exploration_endpoint": base_url.removesuffix("/v1") if runtime == "ollama" else base_url,
+            "exploration_model": model_id,
+            "exploration_backend": "ollama" if runtime == "ollama" else "openai",
+        },
+    )
+    text = update_toml_section(
+        text,
+        "compute",
+        {
+            "device": device,
+            "embedding_device": device if device in {"cuda", "mps"} else "cpu",
+        },
+    )
+    _atomic_write_text(config_path, text)
+    return config_path
+
+
 def toml_literal(value: object) -> str:
     """Render a Python scalar/list as the TOML literal shape setup writes."""
 

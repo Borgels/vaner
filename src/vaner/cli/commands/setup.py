@@ -58,6 +58,7 @@ from vaner.setup.apply import (
 )
 from vaner.setup.catalog import bundle_by_id
 from vaner.setup.config_io import (
+    persist_runtime_recommendation,
     persist_setup_and_policy,
     read_policy_section,
     read_setup_section,
@@ -65,6 +66,7 @@ from vaner.setup.config_io import (
     update_toml_section,
 )
 from vaner.setup.hardware import HardwareProfile, detect
+from vaner.setup.model_recommendation import load_model_registry, recommend_local_model
 from vaner.setup.select import SelectionResult, select_policy_bundle
 from vaner.setup.serializers import (
     AnswersValidationError,
@@ -734,6 +736,64 @@ def recommend_cmd(
 
 
 @setup_app.command(
+    "models-recommended",
+    help="Emit Vaner's concrete runtime/model recommendation for this machine.",
+)
+def models_recommended_cmd(
+    answers_path: Annotated[
+        Path | None,
+        typer.Option("--answers", help="Optional JSON SetupAnswers file used for workload tags."),
+    ] = None,
+    work_styles: Annotated[
+        str | None,
+        typer.Option("--work-styles", help="Comma-separated work styles when no answers file is available."),
+    ] = None,
+    validate_registry_only: Annotated[
+        bool,
+        typer.Option("--validate-registry", help="Only validate the bundled model registry."),
+    ] = False,
+) -> None:
+    """Desktop-facing model recommendation surface. Always emits JSON."""
+
+    if validate_registry_only:
+        registry = load_model_registry()
+        payload = {
+            "schema_version": registry.schema_version,
+            "valid": registry.valid,
+            "verified_at": registry.verified_at,
+            "sources": list(registry.sources),
+            "model_count": len(registry.models),
+            "warning": registry.warning,
+        }
+        typer.echo(json.dumps(payload, indent=2))
+        raise typer.Exit(code=0 if registry.valid else 1)
+
+    answers: SetupAnswers | None = None
+    if answers_path is not None:
+        try:
+            answers = _load_answers_from_path(answers_path)
+        except FileNotFoundError as exc:
+            typer.secho(f"answers file not found: {answers_path}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1) from exc
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            typer.secho(f"failed to parse answers: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1) from exc
+    elif work_styles:
+        styles = [part.strip() for part in work_styles.split(",") if part.strip()]
+        answers = _default_answers()
+        answers = SetupAnswers(
+            work_styles=tuple(styles) if styles else answers.work_styles,
+            priority=answers.priority,
+            compute_posture=answers.compute_posture,
+            cloud_posture=answers.cloud_posture,
+            background_posture=answers.background_posture,
+        )
+
+    payload = recommend_local_model(answers=answers, hardware=detect())
+    typer.echo(json.dumps(payload, indent=2, default=str))
+
+
+@setup_app.command(
     "apply",
     help=(
         "Persist answers (or an explicit --bundle-id) without prompts. Best-effort "
@@ -859,6 +919,8 @@ def apply_cmd(
         chosen_bundle.id,
         completed_at=completed_at,
     )
+    model_recommendation = recommend_local_model(answers=answers, hardware=detect())
+    persist_runtime_recommendation(repo_root, model_recommendation)
 
     daemon_status = _ping_daemon_for_refresh()
 
@@ -866,6 +928,7 @@ def apply_cmd(
         "config_path": str(config_path),
         "selected_bundle_id": chosen_bundle.id,
         "reasons": reasons,
+        "model_recommendation": model_recommendation.get("user"),
         "widens_cloud_posture": bool(warnings),
         "daemon": daemon_status,
     }
@@ -910,6 +973,7 @@ def advanced_cmd(
     completed = subprocess.run(cmd, check=False)
     if completed.returncode != 0:
         raise typer.Exit(code=completed.returncode)
+
 
 
 @setup_app.command(

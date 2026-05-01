@@ -84,8 +84,22 @@ def hardware_to_dict(hw: HardwareProfile) -> dict[str, Any]:
         "os": hw.os,
         "cpu_class": hw.cpu_class,
         "ram_gb": hw.ram_gb,
+        "memory_total_bytes": hw.memory_total_bytes,
+        "memory_display_gb": hw.memory_display_gb,
+        "memory_is_unified": hw.memory_is_unified,
         "gpu": hw.gpu,
         "gpu_vram_gb": hw.gpu_vram_gb,
+        "gpu_devices": [
+            {
+                "name": device.name,
+                "vendor": device.vendor,
+                "kind": device.kind,
+                "memory_total_bytes": device.memory_total_bytes,
+                "memory_display_gb": device.memory_display_gb,
+                "memory_kind": device.memory_kind,
+            }
+            for device in hw.gpu_devices
+        ],
         "is_battery": hw.is_battery,
         "thermal_constrained": hw.thermal_constrained,
         "detected_runtimes": list(hw.detected_runtimes),
