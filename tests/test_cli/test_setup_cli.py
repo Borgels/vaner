@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 from vaner.cli.commands import setup as setup_commands
 from vaner.cli.commands.app import app
 from vaner.cli.commands.setup import setup_app
+from vaner.setup.config_io import read_policy_section
 from vaner.setup.hardware import HardwareProfile
 
 runner = CliRunner()
@@ -424,24 +425,20 @@ def test_ping_daemon_for_refresh_uses_env_base_url(monkeypatch: pytest.MonkeyPat
 # ---------------------------------------------------------------------------
 
 
-def test_init_chains_into_wizard_when_interactive(
+def test_init_auto_picks_bundle_interactive(
     tmp_path: Path,
     fake_hardware: HardwareProfile,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Drive `vaner init` interactively; confirm wizard runs and persists."""
+    """`vaner init` auto-applies a policy bundle. No five-question wizard."""
 
     repo = tmp_path / "repo"
     repo.mkdir()
-    # Avoid touching ~/.claude during MCP wiring; init's primer / MCP
-    # config code paths create files there. Pin HOME to a tmp dir.
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
 
-    # Track whether the wizard was invoked. We monkeypatch the wizard
-    # callable that init imports lazily.
     wizard_calls: list[str] = []
 
     def _fake_wizard(path: str | None = None, **_kwargs: object) -> None:
@@ -449,13 +446,9 @@ def test_init_chains_into_wizard_when_interactive(
 
     monkeypatch.setattr("vaner.cli.commands.setup.wizard_cmd", _fake_wizard)
 
-    # Scripted answers for init's existing prompts:
-    # - Step 1 backend: "7" → "skip" (but backend_preset stays None; downstream
-    #   compute prompt still fires because the check is `backend_preset != "skip"`)
-    # - Step 2 compute: "1" → background
-    # - Shell completion confirm: "n" (skip subprocess install)
-    # - Wizard chain confirm: "y" (we want to chain in)
-    scripted = "\n".join(["7", "1", "n", "y", ""]) + "\n"
+    # Init's existing two prompts: backend=skip (7), compute=background (1),
+    # then the shell-completion confirm answers "n".
+    scripted = "\n".join(["7", "1", "n", ""]) + "\n"
     result = runner.invoke(
         app,
         [
@@ -469,15 +462,18 @@ def test_init_chains_into_wizard_when_interactive(
         input=scripted,
     )
     assert result.exit_code == 0, result.output
-    assert wizard_calls, "vaner init did not chain into the setup wizard"
+    assert not wizard_calls, "vaner init must not invoke the five-question wizard"
+
+    policy_section = read_policy_section(repo)
+    assert policy_section.get("selected_bundle_id"), "init did not auto-apply a bundle"
 
 
-def test_init_does_not_chain_when_non_interactive(
+def test_init_auto_picks_bundle_non_interactive(
     tmp_path: Path,
     fake_hardware: HardwareProfile,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`vaner init --no-interactive` does not invoke the wizard."""
+    """`vaner init --no-interactive` also auto-applies a bundle."""
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -508,3 +504,6 @@ def test_init_does_not_chain_when_non_interactive(
     )
     assert result.exit_code == 0, result.output
     assert not wizard_calls
+
+    policy_section = read_policy_section(repo)
+    assert policy_section.get("selected_bundle_id"), "init did not auto-apply a bundle"

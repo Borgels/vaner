@@ -467,6 +467,24 @@ def _render_cloud_widening_warning(console: Console, warnings: list[str]) -> Non
 # ---------------------------------------------------------------------------
 
 
+def auto_apply_default_bundle(repo_root: Path) -> tuple[str, list[str]]:
+    """Pick a sensible policy bundle from a hardware probe + safe defaults.
+
+    Mirrors the simplified desktop-app onboarding: no questions asked,
+    just probe the box, score every bundle, persist the winner. Used
+    by ``vaner init`` so first-run users land on a working policy
+    without a five-question wizard. Returns ``(bundle_id, reasons)``.
+    """
+
+    init_repo(repo_root)
+    answers = _default_answers()
+    hardware = detect()
+    selection = select_policy_bundle(answers, hardware)
+    completed_at = datetime.now(UTC)
+    _persist_setup_and_policy(repo_root, answers, selection.bundle.id, completed_at=completed_at)
+    return selection.bundle.id, list(selection.reasons)
+
+
 @setup_app.command(
     "wizard",
     help="Interactive Simple-Mode wizard. Asks five questions, picks a bundle, persists it.",
