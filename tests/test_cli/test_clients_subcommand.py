@@ -368,13 +368,15 @@ def test_verify_marks_zed_primer_applicable(fake_home: Path, tmp_path: Path) -> 
     assert zed["layers"]["primer"]["path"].endswith("/.rules")
 
 
-def test_verify_marks_skill_layer_inapplicable_when_no_skill_surface(
+def test_verify_marks_skill_layer_inapplicable_for_zed_and_claude_desktop(
     fake_home: Path,
     tmp_path: Path,
 ) -> None:
-    """Skill is only applicable for the clients Vaner ships a skill into
-    today (claude-code, cursor). Everywhere else the layer is reported
-    as ``applicable=False`` so the wizard hides the chip.
+    """The skill layer is applicable wherever Vaner ships a vaner-feedback
+    surface today. After Phase C, that's claude-code, cursor, codex-cli,
+    continue, cline, windsurf, roo. The two genuine non-skill clients
+    are Zed (no skill abstraction) and Claude Desktop (cloud-only, no
+    local-disk integration). Those two stay ``applicable=False``.
     """
 
     repo = tmp_path / "repo"
@@ -385,10 +387,17 @@ def test_verify_marks_skill_layer_inapplicable_when_no_skill_surface(
     )
     payload = json.loads(result.output)
     by_id = {r["client_id"]: r for r in payload["results"]}
+    # Genuinely non-applicable per the capability matrix.
     assert by_id["zed"]["layers"]["skill"]["applicable"] is False
-    assert by_id["windsurf"]["layers"]["skill"]["applicable"] is False
+    assert by_id["claude-desktop"]["layers"]["skill"]["applicable"] is False
+    # Phase C: Vaner now ships skill/workflow/prompt surfaces for these.
     assert by_id["claude-code"]["layers"]["skill"]["applicable"] is True
     assert by_id["cursor"]["layers"]["skill"]["applicable"] is True
+    assert by_id["codex-cli"]["layers"]["skill"]["applicable"] is True
+    assert by_id["continue"]["layers"]["skill"]["applicable"] is True
+    assert by_id["cline"]["layers"]["skill"]["applicable"] is True
+    assert by_id["windsurf"]["layers"]["skill"]["applicable"] is True
+    assert by_id["roo"]["layers"]["skill"]["applicable"] is True
 
 
 def test_verify_pretty_format_emits_table(fake_home: Path, tmp_path: Path) -> None:

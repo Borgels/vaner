@@ -144,21 +144,15 @@ def init_repo(repo_root: Path) -> Path:
     return config_path
 
 
-def _default_vaner_feedback_skill() -> str:
-    packaged = Path(__file__).resolve().parents[2] / "defaults" / "skills" / "vaner-feedback" / "SKILL.md"
-    if packaged.exists():
-        return packaged.read_text(encoding="utf-8")
-    return "Report scenario outcomes back to Vaner after completing a task.\n"
-
-
-def _write_managed_skill(base_dir: Path, content: str) -> Path:
-    skill_path = base_dir / "skills" / "vaner" / "vaner-feedback" / "SKILL.md"
-    skill_path.parent.mkdir(parents=True, exist_ok=True)
-    skill_path.write_text(content, encoding="utf-8")
-    return skill_path
-
-
 def write_mcp_configs(repo_root: Path) -> tuple[list[Path], str]:
+    """Write Cursor's MCP config to ``.cursor/mcp.json``.
+
+    Skill writing was moved to :mod:`vaner.cli.commands.skills` in
+    Phase C of the IDE/agent visibility plan — that module ships the
+    ``vaner-feedback`` skill into the right surface for every client
+    Vaner supports (not just Cursor + Claude Code).
+    """
+
     launcher = shutil.which("vaner") or "vaner"
     args = ["mcp", "--path", str(repo_root)]
     payload = {"mcpServers": {"vaner": {"command": launcher, "args": args}}}
@@ -167,12 +161,7 @@ def write_mcp_configs(repo_root: Path) -> tuple[list[Path], str]:
     cursor_path.parent.mkdir(parents=True, exist_ok=True)
     cursor_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    skill_content = _default_vaner_feedback_skill()
-    repo_skill_path = _write_managed_skill(repo_root / ".cursor", skill_content)
-    claude_skill_path = _write_managed_skill(Path.home() / ".claude", skill_content)
-
-    written_paths = [cursor_path, repo_skill_path, claude_skill_path]
-    return written_paths, launcher
+    return [cursor_path], launcher
 
 
 @dataclass(slots=True)
