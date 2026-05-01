@@ -54,3 +54,20 @@ Vaner actually assembles internally, pass one or both of these flags:
 `include_metrics` is additive. Briefing and predicted-response fields are now
 included by default for parity with the daemon HTTP `/resolve` surface; callers
 that need the lean legacy shape can pass either include flag as `false`.
+
+## Full v1 tool surface
+
+The complete `vaner.*` MCP tool family at v1.0 (see [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp) for full schemas):
+
+- `vaner.status` — engine health, model, compute config, prediction metrics.
+- `vaner.suggest` — intent-priming suggestions for a draft prompt.
+- `vaner.resolve` — unified context resolution; returns evidence + briefing + predicted response.
+- `vaner.expand` — explore adjacent scenarios from an existing resolution.
+- `vaner.search` — retrieval-style fallback when `vaner.resolve` confidence is weak.
+- `vaner.explain` — rationale for a scenario's score and selection.
+- `vaner.feedback` — record `useful` / `partial` / `wrong` / `irrelevant` against a `resolution_id`.
+- `vaner.warm` — explicit precompute trigger for a scoped path or anchor.
+- `vaner.inspect` — full scenario detail (evidence, score components, prepared context).
+- `vaner.debug.trace` — diagnostic trace for integration debugging.
+
+The advanced families (`vaner.predictions.*`, `vaner.goals.*`, `vaner.artefacts.*`, `vaner.work_products.*`, `vaner.prepared_work.dashboard`, `vaner.deep_run.*`, `vaner.setup.*`, `vaner.policy.show`, `vaner.sources.status`) are documented per-page on docs.vaner.ai.

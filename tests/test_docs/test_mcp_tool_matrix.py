@@ -48,9 +48,18 @@ def test_docs_do_not_reference_removed_mcp_tools() -> None:
 
 
 def test_mcp_v2_tools_documented() -> None:
+    """Every NEW_TOOL_NAME must be documented somewhere authoritative.
+
+    docs.vaner.ai is the canonical reference; the README is a front-door
+    only and intentionally does not enumerate the full tool surface
+    (see PR #212). We check the in-repo migration doc plus the
+    vaner-docs sibling checkout when present. CI environments that
+    don't clone vaner-docs alongside this repo can satisfy the matrix
+    via ``docs/mcp-migration.md`` alone.
+    """
+
     root = Path(__file__).resolve().parents[2]
     targets: list[Path] = [
-        root / "README.md",
         root / "docs" / "mcp-migration.md",
     ]
     docs_root = root / "vaner-docs"
@@ -58,7 +67,11 @@ def test_mcp_v2_tools_documented() -> None:
         targets.extend(docs_root.glob("content/docs/**/*.mdx"))
     content = "\n".join(path.read_text(encoding="utf-8") for path in targets if path.exists())
     missing = [name for name in sorted(NEW_TOOL_NAMES) if name not in content]
-    assert missing == []
+    assert missing == [], (
+        "Missing tool names from docs/mcp-migration.md (and vaner-docs if checked out): "
+        f"{missing}. Add them to docs/mcp-migration.md or to the appropriate page under "
+        "docs.vaner.ai (vaner-docs/content/docs/)."
+    )
 
 
 def test_source_and_docs_do_not_reference_removed_tools() -> None:
@@ -86,11 +99,19 @@ def test_source_and_docs_do_not_reference_removed_tools() -> None:
     assert violations == []
 
 
-def test_readme_init_flags_match_current_cli_surface() -> None:
+def test_readme_does_not_reference_retired_init_flags() -> None:
+    """The README must not reference flags that were removed from the CLI.
+
+    Previously this test also asserted that ``--no-mcp`` and
+    ``--interactive/--no-interactive`` were *present* in the README. The
+    README is now a front-door (see PR #212) and intentionally does not
+    enumerate every flag — that surface lives at
+    docs.vaner.ai/getting-started. We keep the negative assertions so a
+    stale flag can't sneak back in unnoticed.
+    """
+
     root = Path(__file__).resolve().parents[2]
     readme = (root / "README.md").read_text(encoding="utf-8")
 
     assert "--clients" not in readme
     assert "--accept-cloud-costs" not in readme
-    assert "--no-mcp" in readme
-    assert "--interactive/--no-interactive" in readme
