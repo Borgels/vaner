@@ -176,9 +176,7 @@ def _render_windsurf_md(body: str, version: str) -> str:
     ``alwaysApply: true`` behaviour. Workspace rule files are capped at
     12,000 chars by Windsurf — well above the canonical primer's size.
     """
-    frontmatter = (
-        f"---\ndescription: Vaner usage primer (v={version})\ntrigger: always_on\n---\n"
-    )
+    frontmatter = f"---\ndescription: Vaner usage primer (v={version})\ntrigger: always_on\n---\n"
     return frontmatter + "\n" + body.rstrip() + "\n"
 
 
