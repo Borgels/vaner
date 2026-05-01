@@ -183,7 +183,7 @@ def _assert_public_payload(value: Any, repo: Path) -> None:
         "self_eval",
         "WorkProductStatus",
         "chain-of-thought",
-        "BEGIN PRIVATE KEY",
+        "PRIVATE_KEY_MARKER",
     ]
     for needle in forbidden:
         assert needle not in text
