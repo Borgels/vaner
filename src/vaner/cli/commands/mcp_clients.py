@@ -691,6 +691,232 @@ def launcher_drift(detected: DetectedClient) -> LauncherDrift:
     )
 
 
+# ---------------------------------------------------------------------------
+# Verify — multi-layer leverage stack probe
+# ---------------------------------------------------------------------------
+#
+# The four layers Vaner can install into a client (per
+# docs.vaner.ai/integrations/client-capabilities):
+#
+#   1. MCP server  — universal floor; technical wiring
+#   2. Primer      — system-instruction-like rules file telling the model
+#                    when to call Vaner. Without this, the model rarely
+#                    uses Vaner even when MCP is wired.
+#   3. Skill       — agent-callable subroutine (Vaner ships ``vaner-feedback``
+#                    for clients that use the Agent Skills standard).
+#   4. Plugin      — atomic install bundle with hooks, monitors, MCP, and
+#                    skills (Vaner ships the Claude Code plugin).
+#
+# verify_all() reports per-layer status so the desktop wizard can show
+# the user a chip per client at the right depth, and so doctor flows can
+# distinguish "the AI can call Vaner" from "the AI actually will."
+
+
+@dataclass(slots=True)
+class LayerStatus:
+    """Status of a single leverage layer for one client."""
+
+    applicable: bool
+    wired: bool
+    path: Path | None = None
+    detail: str = ""
+
+
+@dataclass(slots=True)
+class ClientVerification:
+    """Per-client verification of the four-layer leverage stack."""
+
+    client_id: str
+    label: str
+    detected: bool
+    layers: dict[str, LayerStatus]
+    overall: Literal[
+        "ready",
+        "wired-mcp-only",
+        "partial",
+        "missing",
+        "not-detected",
+    ]
+
+
+# Skill-supporting clients today and the per-client SKILL.md path.
+# Vaner currently ships ``vaner-feedback`` to Claude Code and Cursor.
+# When skills land for Codex CLI, VS Code Copilot, etc. (per the
+# capability matrix), add them here.
+def _claude_code_skill_path(_repo_root: Path) -> Path:
+    return _home() / ".claude" / "skills" / "vaner" / "vaner-feedback" / "SKILL.md"
+
+
+def _cursor_skill_path(repo_root: Path) -> Path:
+    return repo_root / ".cursor" / "skills" / "vaner" / "vaner-feedback" / "SKILL.md"
+
+
+_SKILL_PATH_RESOLVERS: dict[str, Callable[[Path], Path]] = {
+    "claude-code": _claude_code_skill_path,
+    "cursor": _cursor_skill_path,
+}
+
+
+# Plugin-supporting clients today. Vaner ships a full Claude Code plugin;
+# Cursor (1.7+) supports plugins but Vaner doesn't yet ship one.
+# When the Cursor plugin lands, add it here.
+def _claude_code_plugin_marker(_repo_root: Path) -> Path:
+    """The Claude Code plugin is installed via the ``/plugin install``
+    marketplace flow, which writes to a per-user plugin store. We use
+    the user's installed-plugins manifest as a proxy. If the user
+    installed the plugin via marketplace, this file lists it.
+    """
+
+    return _home() / ".claude" / "plugins" / "vaner" / ".claude-plugin" / "plugin.json"
+
+
+_PLUGIN_PATH_RESOLVERS: dict[str, Callable[[Path], Path]] = {
+    "claude-code": _claude_code_plugin_marker,
+}
+
+
+def _verify_mcp_layer(spec: ClientSpec, repo_root: Path) -> LayerStatus:
+    """Probe layer 1 — is the client's MCP config wired to Vaner?"""
+
+    config_path = spec.config_path(repo_root)
+    if config_path is None:
+        # CLI-managed clients (Claude Code, Codex CLI) — we shell out to
+        # ``<cli> mcp list`` for the truthy answer. detect_all() already
+        # treats these as "configured" iff the CLI knows about Vaner.
+        return LayerStatus(applicable=True, wired=False, path=None, detail="cli-managed")
+
+    if spec.kind == "json-mcpServers":
+        wired = _contains_vaner_entry(config_path, container_key="mcpServers")
+    elif spec.kind == "json-servers":
+        wired = _contains_vaner_entry(config_path, container_key="servers")
+    elif spec.kind == "json-context_servers":
+        wired = _contains_vaner_entry(config_path, container_key="context_servers")
+    elif spec.kind == "yaml-continue":
+        wired = config_path.exists() and "name: vaner" in config_path.read_text(encoding="utf-8")
+    else:
+        wired = False
+    return LayerStatus(applicable=True, wired=wired, path=config_path)
+
+
+def _verify_primer_layer(client_id: str, repo_root: Path) -> LayerStatus:
+    """Probe layer 2 — does the per-client primer file exist with our block?"""
+
+    # Lazy import: vaner.cli.commands.primer pulls in primer assets.
+    from vaner.cli.commands.primer import (
+        PRIMER_BLOCK_START_PREFIX,
+        PRIMER_SURFACES,
+        PrimerScope,
+    )
+
+    surface = PRIMER_SURFACES.get(client_id)
+    if surface is None:
+        return LayerStatus(applicable=False, wired=False, path=None, detail="no primer surface")
+
+    target = surface.path(repo_root, PrimerScope.REPO)
+    if target is None or not target.exists():
+        return LayerStatus(applicable=True, wired=False, path=target, detail="not written")
+
+    text = target.read_text(encoding="utf-8")
+    if surface.strategy == "replace":
+        # Replace-strategy files are owned by Vaner; if any version of the
+        # file exists with our canonical-primer header it counts as wired.
+        wired = "Using Vaner" in text or "vaner-primer" in text
+    else:
+        wired = PRIMER_BLOCK_START_PREFIX in text
+    return LayerStatus(applicable=True, wired=wired, path=target)
+
+
+def _verify_skill_layer(client_id: str, repo_root: Path) -> LayerStatus:
+    """Probe layer 3 — is the vaner-feedback skill installed?"""
+
+    resolver = _SKILL_PATH_RESOLVERS.get(client_id)
+    if resolver is None:
+        return LayerStatus(applicable=False, wired=False, path=None, detail="no skill surface")
+    target = resolver(repo_root)
+    return LayerStatus(applicable=True, wired=target.exists(), path=target)
+
+
+def _verify_plugin_layer(client_id: str, repo_root: Path) -> LayerStatus:
+    """Probe layer 4 — is the Vaner plugin installed?"""
+
+    resolver = _PLUGIN_PATH_RESOLVERS.get(client_id)
+    if resolver is None:
+        return LayerStatus(applicable=False, wired=False, path=None, detail="no plugin surface")
+    target = resolver(repo_root)
+    return LayerStatus(applicable=True, wired=target.exists(), path=target)
+
+
+def _compute_overall_status(
+    detected: bool,
+    layers: dict[str, LayerStatus],
+) -> Literal["ready", "wired-mcp-only", "partial", "missing", "not-detected"]:
+    """Boil per-layer results into a single chip color for the wizard.
+
+    ``ready``           — every applicable layer is wired
+    ``wired-mcp-only``  — MCP is wired but at least one higher applicable
+                          layer is missing (the "AI probably won't use Vaner"
+                          failure mode)
+    ``partial``         — some layers wired, some not (often a re-install
+                          regression)
+    ``missing``         — detected but Vaner not wired at all
+    ``not-detected``    — client not installed on this machine
+    """
+
+    if not detected:
+        return "not-detected"
+    applicable = {name: s for name, s in layers.items() if s.applicable}
+    wired_names = [name for name, s in applicable.items() if s.wired]
+    if not wired_names:
+        return "missing"
+    if len(wired_names) == len(applicable):
+        return "ready"
+    if wired_names == ["mcp"]:
+        return "wired-mcp-only"
+    return "partial"
+
+
+def verify_all(repo_root: Path | None = None) -> list[ClientVerification]:
+    """Probe every supported MCP client at all four leverage layers.
+
+    Returns one ``ClientVerification`` per registered client, with status
+    chips the desktop wizard or doctor flow can render directly.
+    """
+
+    root = repo_root or Path.cwd()
+    detected_by_id = {d.spec.id: d for d in detect_all(root)}
+    out: list[ClientVerification] = []
+    for spec in CLIENTS:
+        detected_entry = detected_by_id.get(spec.id)
+        detected = detected_entry is not None and detected_entry.status != ClientStatus.MISSING
+
+        # MCP layer: prefer detect_all's CONFIGURED flag for CLI-managed
+        # clients (Claude Code / Codex CLI), since their MCP wiring lives
+        # outside any file we own.
+        if spec.kind in ("cli-claude", "cli-codex"):
+            mcp = LayerStatus(
+                applicable=True,
+                wired=detected_entry is not None and detected_entry.status == ClientStatus.CONFIGURED,
+                path=None,
+                detail="cli-managed",
+            )
+        else:
+            mcp = _verify_mcp_layer(spec, root)
+        primer = _verify_primer_layer(spec.id, root)
+        skill = _verify_skill_layer(spec.id, root)
+        plugin = _verify_plugin_layer(spec.id, root)
+        layers = {"mcp": mcp, "primer": primer, "skill": skill, "plugin": plugin}
+        out.append(
+            ClientVerification(
+                client_id=spec.id,
+                label=spec.label,
+                detected=detected,
+                layers=layers,
+                overall=_compute_overall_status(detected, layers),
+            )
+        )
+    return out
+
+
 def print_other_client_help(launcher_cmd: str, launcher_args: list[str]) -> str:
     snippet = generic_snippet(launcher_cmd, launcher_args)
     lines = [
