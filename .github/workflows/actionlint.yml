@@ -23,3 +23,7 @@ jobs:
         with:
           inputs: .github/workflows
           online-audits: false
+          advanced-security: false
+          annotations: true
+          min-severity: high
+          min-confidence: high
