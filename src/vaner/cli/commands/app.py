@@ -820,31 +820,18 @@ def init(
     else:
         typer.echo("Tip: enable command completion with `vaner --install-completion`.")
 
-    # 0.8.6 WS6: chain into the Simple-Mode setup wizard when interactive.
-    # The wizard is a no-op-or-skip from the user's perspective; they
-    # can also run it later with `vaner setup wizard`.
-    if resolved_interactive:
-        try:
-            run_wizard_now = typer.confirm(
-                "Run the setup wizard now to choose a profile?",
-                default=True,
-            )
-        except (EOFError, KeyboardInterrupt):
-            run_wizard_now = False
-        if run_wizard_now:
-            try:
-                from vaner.cli.commands.setup import wizard_cmd
+    # Auto-pick a sensible policy bundle from the hardware probe,
+    # mirroring the simplified desktop-app onboarding. The five-question
+    # wizard is still available as `vaner setup wizard` for users who
+    # want to fine-tune.
+    try:
+        from vaner.cli.commands.setup import auto_apply_default_bundle
 
-                wizard_cmd(path=str(repo_root))
-            except typer.Exit:
-                # The wizard signals control flow with typer.Exit; let it
-                # propagate normally without aborting the rest of init.
-                pass
-            except Exception as exc:  # pragma: no cover - defensive
-                typer.echo(f"Setup wizard skipped (error: {exc}).")
-                typer.echo("Run `vaner setup wizard` to choose a profile.")
-        else:
-            typer.echo("Skipped. Run `vaner setup wizard` later to choose a profile.")
+        bundle_id, _reasons = auto_apply_default_bundle(repo_root)
+        typer.echo(f"Picked policy bundle '{bundle_id}'. Override with `vaner setup apply <bundle-id>`.")
+    except Exception as exc:  # pragma: no cover - defensive
+        typer.echo(f"Could not auto-apply policy bundle ({exc}).")
+        typer.echo("Run `vaner setup apply <bundle-id>` to set one explicitly.")
 
 
 @daemon_app.command("start")
