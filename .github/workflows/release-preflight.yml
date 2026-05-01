@@ -37,7 +37,9 @@ jobs:
           cache-dependency-path: requirements/release.txt
       - name: Validate requested version
         if: ${{ inputs.version != '' }}
-        run: python scripts/release/preflight.py version "${{ inputs.version }}"
+        env:
+          RELEASE_PREFLIGHT_VERSION: ${{ inputs.version }}
+        run: python scripts/release/preflight.py version "$RELEASE_PREFLIGHT_VERSION"
       - name: Install release toolchain
         run: python -m pip install --require-hashes -r requirements/release.txt
       - name: Build distributions
