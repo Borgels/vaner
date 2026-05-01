@@ -69,6 +69,7 @@ from vaner.cli.commands.primer import PRIMER_SURFACES, write_primers
 from vaner.cli.commands.profile import export_pins, import_pins, pin_fact, profile_show, unpin_fact
 from vaner.cli.commands.runtime_snapshot import runtime_snapshot
 from vaner.cli.commands.setup import setup_app
+from vaner.cli.commands.skills import SKILL_SURFACES, write_skills
 from vaner.cli.commands.supervisor import run_down, run_up
 from vaner.daemon.http import create_daemon_http_app
 from vaner.daemon.preflight import check_repo_root
@@ -550,6 +551,29 @@ def init(
                 typer.echo(f"Warning: could not write primer for {r.client_id}: {r.error}")
         except Exception as exc:  # pragma: no cover - defensive
             typer.echo(f"Warning: could not install primers: {exc}")
+
+        # Skills layer — vaner-feedback per-client adapter (layer 3 of the
+        # leverage stack documented at docs.vaner.ai/integrations/
+        # client-capabilities). Each surface emits the skill in the
+        # client's native idiom (Agent Skills standard for claude-code /
+        # cursor / codex-cli; Continue prompt; Cline/Windsurf workflow;
+        # Roo slash command).
+        try:
+            skill_clients = sorted(SKILL_SURFACES.keys())
+            skill_results = write_skills(skill_clients, repo_root)
+            installed = [r for r in skill_results if r.action in ("added", "updated")]
+            skipped = [r for r in skill_results if r.action == "skipped"]
+            failed = [r for r in skill_results if r.action == "failed"]
+            if installed:
+                typer.echo("Installed vaner-feedback skills / workflows / prompts:")
+                for r in installed:
+                    typer.echo(f"  - {r.path} ({r.action})")
+            if skipped:
+                typer.echo(f"Skill already up to date for {len(skipped)} client(s); no changes needed.")
+            for r in failed:
+                typer.echo(f"Warning: could not write skill for {r.client_id}: {r.error}")
+        except Exception as exc:  # pragma: no cover - defensive
+            typer.echo(f"Warning: could not install skills: {exc}")
 
     import sys as _sys
 

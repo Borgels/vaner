@@ -739,10 +739,11 @@ class ClientVerification:
     ]
 
 
-# Skill-supporting clients today and the per-client SKILL.md path.
-# Vaner currently ships ``vaner-feedback`` to Claude Code and Cursor.
-# When skills land for Codex CLI, VS Code Copilot, etc. (per the
-# capability matrix), add them here.
+# Skill-supporting clients today and the per-client skill-file path.
+# Mirrors :data:`vaner.cli.commands.skills.SKILL_SURFACES`. We can't import
+# from skills.py directly because that module imports from this file
+# transitively via the CLI entry; the resolvers here are kept in lock-step
+# manually.
 def _claude_code_skill_path(_repo_root: Path) -> Path:
     return _home() / ".claude" / "skills" / "vaner" / "vaner-feedback" / "SKILL.md"
 
@@ -751,9 +752,34 @@ def _cursor_skill_path(repo_root: Path) -> Path:
     return repo_root / ".cursor" / "skills" / "vaner" / "vaner-feedback" / "SKILL.md"
 
 
+def _codex_cli_skill_path(_repo_root: Path) -> Path:
+    return _home() / ".codex" / "skills" / "vaner-feedback" / "SKILL.md"
+
+
+def _continue_prompt_path(repo_root: Path) -> Path:
+    return repo_root / ".continue" / "prompts" / "vaner-feedback.md"
+
+
+def _cline_workflow_path(repo_root: Path) -> Path:
+    return repo_root / ".clinerules" / "workflows" / "vaner-feedback.md"
+
+
+def _windsurf_workflow_path(repo_root: Path) -> Path:
+    return repo_root / ".windsurf" / "workflows" / "vaner-feedback.md"
+
+
+def _roo_slash_command_path(repo_root: Path) -> Path:
+    return repo_root / ".roo" / "commands" / "vaner-feedback.md"
+
+
 _SKILL_PATH_RESOLVERS: dict[str, Callable[[Path], Path]] = {
     "claude-code": _claude_code_skill_path,
     "cursor": _cursor_skill_path,
+    "codex-cli": _codex_cli_skill_path,
+    "continue": _continue_prompt_path,
+    "cline": _cline_workflow_path,
+    "windsurf": _windsurf_workflow_path,
+    "roo": _roo_slash_command_path,
 }
 
 
