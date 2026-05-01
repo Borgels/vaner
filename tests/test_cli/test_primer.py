@@ -197,6 +197,68 @@ def test_write_primers_writes_all_supported_clients(temp_repo):
     assert written["codex-cli"].action == "added"
     assert written["cline"].action == "added"
     assert written["continue"].action == "added"
+    assert written["zed"].action == "added"
+    assert written["windsurf"].action == "added"
+    assert written["roo"].action == "added"
+
+
+def test_write_primer_for_client_zed_writes_dot_rules(temp_repo):
+    """Zed auto-detects ``.rules`` at the repo root (alongside other names).
+
+    Block-merge so a user-edited ``.rules`` file is preserved outside the
+    primer block — the same behaviour as Claude Code's ``CLAUDE.md``.
+    """
+
+    result = write_primer_for_client("zed", temp_repo)
+    assert result.action == "added"
+    assert result.path == temp_repo / ".rules"
+    content = result.path.read_text(encoding="utf-8")
+    assert "vaner-primer:start" in content
+    assert "Using Vaner" in content
+
+
+def test_write_primer_for_client_zed_preserves_existing_rules(temp_repo):
+    rules = temp_repo / ".rules"
+    rules.write_text("# Custom Zed rules\n\nKeep this content.\n", encoding="utf-8")
+    result = write_primer_for_client("zed", temp_repo)
+    assert result.action == "added"
+    final = rules.read_text(encoding="utf-8")
+    assert final.startswith("# Custom Zed rules\n\nKeep this content.\n")
+    assert "vaner-primer:start" in final
+
+
+def test_write_primer_for_client_windsurf_uses_md_with_trigger_frontmatter(temp_repo):
+    """Windsurf rules use ``trigger: always_on`` to mirror Cursor's
+    ``alwaysApply: true`` semantics.
+    """
+
+    result = write_primer_for_client("windsurf", temp_repo)
+    assert result.action == "added"
+    assert result.path == temp_repo / ".windsurf" / "rules" / "vaner.md"
+    content = result.path.read_text(encoding="utf-8")
+    assert content.startswith("---\n")
+    assert "trigger: always_on" in content
+    assert "Using Vaner" in content
+
+
+def test_write_primer_for_client_roo_writes_under_dot_roo_rules(temp_repo):
+    result = write_primer_for_client("roo", temp_repo)
+    assert result.action == "added"
+    assert result.path == temp_repo / ".roo" / "rules" / "vaner.md"
+    content = result.path.read_text(encoding="utf-8")
+    assert "Using Vaner" in content
+
+
+def test_zed_windsurf_roo_primers_are_idempotent(temp_repo):
+    """Re-running the primer install produces no diff for any of the
+    new surfaces — same guarantee the existing 6 already had."""
+
+    for client_id in ("zed", "windsurf", "roo"):
+        first = write_primer_for_client(client_id, temp_repo)
+        second = write_primer_for_client(client_id, temp_repo)
+        assert first.action == "added", f"{client_id}: first run should add"
+        assert second.action == "skipped", f"{client_id}: re-run should skip"
+        assert first.path == second.path
 
 
 def test_write_primers_user_scope_only_touches_claude_code(tmp_path, monkeypatch):

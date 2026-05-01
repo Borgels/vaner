@@ -166,6 +166,22 @@ def _render_cursor_mdc(body: str, version: str) -> str:
     return frontmatter + "\n" + body.rstrip() + "\n"
 
 
+def _render_windsurf_md(body: str, version: str) -> str:
+    """Render a Windsurf ``.windsurf/rules/*.md`` rule file.
+
+    Windsurf rules use a ``trigger:`` frontmatter field with values
+    ``always_on``, ``model_decision``, ``glob``, or ``manual`` (per
+    docs.windsurf.com/windsurf/cascade/memories). We pick ``always_on``
+    so the primer is unconditionally injected, mirroring the Cursor
+    ``alwaysApply: true`` behaviour. Workspace rule files are capped at
+    12,000 chars by Windsurf — well above the canonical primer's size.
+    """
+    frontmatter = (
+        f"---\ndescription: Vaner usage primer (v={version})\ntrigger: always_on\n---\n"
+    )
+    return frontmatter + "\n" + body.rstrip() + "\n"
+
+
 # ---------------------------------------------------------------------------
 # Per-client path resolvers
 # ---------------------------------------------------------------------------
@@ -207,6 +223,32 @@ def _path_continue(repo_root: Path, scope: PrimerScope) -> Path | None:
     return repo_root / ".continue" / "rules" / "vaner.md"
 
 
+def _path_zed(repo_root: Path, scope: PrimerScope) -> Path | None:
+    """Zed auto-detects ``.rules`` (and other names) at the repo root.
+
+    See https://zed.dev/docs/ai/rules — Zed reads ``.rules``, ``AGENTS.md``,
+    ``CLAUDE.md``, ``.cursorrules``, ``.windsurfrules``, ``.clinerules``,
+    ``.github/copilot-instructions.md``, and friends. We pick ``.rules`` as
+    the Zed-native name; if the user already has e.g. ``AGENTS.md`` (because
+    Codex CLI is also configured), Zed concatenates all detected rule sources.
+    """
+    if scope != PrimerScope.REPO:
+        return None
+    return repo_root / ".rules"
+
+
+def _path_windsurf(repo_root: Path, scope: PrimerScope) -> Path | None:
+    if scope != PrimerScope.REPO:
+        return None
+    return repo_root / ".windsurf" / "rules" / "vaner.md"
+
+
+def _path_roo(repo_root: Path, scope: PrimerScope) -> Path | None:
+    if scope != PrimerScope.REPO:
+        return None
+    return repo_root / ".roo" / "rules" / "vaner.md"
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -245,6 +287,34 @@ PRIMER_SURFACES: dict[str, PrimerSurface] = {
     ),
     "continue": PrimerSurface(
         path=_path_continue,
+        render=_render_plain_block,
+        strategy="replace",
+        marker_style="html",
+    ),
+    "zed": PrimerSurface(
+        # Zed scans the repo root for any of several rule filenames;
+        # ``.rules`` is the Zed-native one. Block-merge so a user-edited
+        # ``.rules`` file is preserved outside the primer block.
+        path=_path_zed,
+        render=_render_plain_block,
+        strategy="block",
+        marker_style="html",
+    ),
+    "windsurf": PrimerSurface(
+        # ``.windsurf/rules/vaner.md`` — one file per rule, frontmatter
+        # ``trigger: always_on`` makes Cascade unconditionally inject it.
+        # Replace-strategy because the file is named for Vaner and the
+        # frontmatter is part of the contract.
+        path=_path_windsurf,
+        render=_render_windsurf_md,
+        strategy="replace",
+        marker_style="html",
+    ),
+    "roo": PrimerSurface(
+        # ``.roo/rules/vaner.md`` — Roo loads rules alphabetically and
+        # concatenates. No frontmatter / scoping is supported, so we own
+        # the whole file (replace) like Continue does.
+        path=_path_roo,
         render=_render_plain_block,
         strategy="replace",
         marker_style="html",
