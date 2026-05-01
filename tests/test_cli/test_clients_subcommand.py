@@ -325,6 +325,86 @@ def test_doctor_detects_launcher_drift(fake_home: Path, tmp_path: Path, monkeypa
 
 
 # ---------------------------------------------------------------------------
+# verify
+# ---------------------------------------------------------------------------
+
+
+def test_verify_json_returns_per_layer_status_for_every_client(fake_home: Path, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    result = runner.invoke(
+        clients_app,
+        ["verify", "--repo-root", str(repo), "--format", "json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    ids = {r["client_id"] for r in payload["results"]}
+    # The full registry of supported clients shows up.
+    assert {"claude-code", "cursor", "zed", "windsurf", "roo"}.issubset(ids)
+    # Every entry exposes the four layers, even when "applicable" is False.
+    for r in payload["results"]:
+        assert set(r["layers"].keys()) == {"mcp", "primer", "skill", "plugin"}
+        assert r["overall"] in {"ready", "wired-mcp-only", "partial", "missing", "not-detected"}
+
+
+def test_verify_marks_zed_primer_applicable(fake_home: Path, tmp_path: Path) -> None:
+    """Zed is one of the three primer clients added in the recent
+    PR (Phase A). The verify surface must report primer.applicable=true
+    so the desktop wizard knows the layer is reachable here.
+    """
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    result = runner.invoke(
+        clients_app,
+        ["verify", "--repo-root", str(repo), "--format", "json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    zed = next(r for r in payload["results"] if r["client_id"] == "zed")
+    assert zed["layers"]["primer"]["applicable"] is True
+    # No primer file written → wired=False, expected path is .rules.
+    assert zed["layers"]["primer"]["wired"] is False
+    assert zed["layers"]["primer"]["path"].endswith("/.rules")
+
+
+def test_verify_marks_skill_layer_inapplicable_when_no_skill_surface(
+    fake_home: Path,
+    tmp_path: Path,
+) -> None:
+    """Skill is only applicable for the clients Vaner ships a skill into
+    today (claude-code, cursor). Everywhere else the layer is reported
+    as ``applicable=False`` so the wizard hides the chip.
+    """
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    result = runner.invoke(
+        clients_app,
+        ["verify", "--repo-root", str(repo), "--format", "json"],
+    )
+    payload = json.loads(result.output)
+    by_id = {r["client_id"]: r for r in payload["results"]}
+    assert by_id["zed"]["layers"]["skill"]["applicable"] is False
+    assert by_id["windsurf"]["layers"]["skill"]["applicable"] is False
+    assert by_id["claude-code"]["layers"]["skill"]["applicable"] is True
+    assert by_id["cursor"]["layers"]["skill"]["applicable"] is True
+
+
+def test_verify_pretty_format_emits_table(fake_home: Path, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    result = runner.invoke(
+        clients_app,
+        ["verify", "--repo-root", str(repo), "--format", "pretty"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Client leverage stack" in result.output
+    assert "MCP" in result.output
+    assert "Primer" in result.output
+
+
+# ---------------------------------------------------------------------------
 # Top-level command registration
 # ---------------------------------------------------------------------------
 

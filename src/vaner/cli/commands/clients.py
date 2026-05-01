@@ -290,6 +290,103 @@ def status_cmd(
 
 
 @clients_app.command(
+    "verify",
+    help=(
+        "Report each client's leverage stack (MCP / primer / skill / plugin). "
+        "Use --format json for the desktop wizard's verification panel."
+    ),
+)
+def verify_cmd(
+    repo_root: Annotated[
+        Path | None,
+        typer.Option("--repo-root", "-C"),
+    ] = None,
+    format: Annotated[
+        str,
+        typer.Option("--format", help="Output format: pretty (default), json."),
+    ] = "pretty",
+) -> None:
+    """Probe every supported client at all four leverage layers.
+
+    Layers (per docs.vaner.ai/integrations/client-capabilities):
+
+    1. MCP server — is the client's MCP config wired to Vaner?
+    2. Primer — is the per-client rules file populated with Vaner's primer?
+    3. Skill — is the ``vaner-feedback`` skill installed where supported?
+    4. Plugin — is the Vaner plugin installed where supported?
+    """
+
+    root = _resolve_repo_root(repo_root)
+    results = mcp_clients.verify_all(root)
+
+    if format == "json":
+        typer.echo(
+            json.dumps(
+                {"results": [_verification_to_dict(v) for v in results]},
+                indent=2,
+            )
+        )
+        return
+
+    if format != "pretty":
+        raise typer.BadParameter(f"unknown format {format!r}. Choose from: pretty, json")
+
+    console = Console()
+    table = Table(title="Client leverage stack", show_lines=False)
+    table.add_column("Client")
+    table.add_column("Detected")
+    table.add_column("MCP")
+    table.add_column("Primer")
+    table.add_column("Skill")
+    table.add_column("Plugin")
+    table.add_column("Status")
+
+    def _layer_cell(layer: mcp_clients.LayerStatus) -> str:
+        if not layer.applicable:
+            return "—"
+        return "✓" if layer.wired else "✗"
+
+    chip_color = {
+        "ready": "green",
+        "wired-mcp-only": "yellow",
+        "partial": "yellow",
+        "missing": "red",
+        "not-detected": "dim",
+    }
+
+    for r in results:
+        chip = f"[{chip_color.get(r.overall, 'dim')}]{r.overall}[/{chip_color.get(r.overall, 'dim')}]"
+        table.add_row(
+            r.label,
+            "yes" if r.detected else "no",
+            _layer_cell(r.layers["mcp"]),
+            _layer_cell(r.layers["primer"]),
+            _layer_cell(r.layers["skill"]),
+            _layer_cell(r.layers["plugin"]),
+            chip,
+        )
+    console.print(table)
+
+
+def _verification_to_dict(v: mcp_clients.ClientVerification) -> dict[str, object]:
+    return {
+        "client_id": v.client_id,
+        "label": v.label,
+        "detected": v.detected,
+        "overall": v.overall,
+        "layers": {
+            name: {
+                "applicable": layer.applicable,
+                "wired": layer.wired,
+                "path": str(layer.path) if layer.path is not None else None,
+                "detail": layer.detail,
+            }
+            for name, layer in v.layers.items()
+        },
+    }
+
+
+@clients_app.command(
     "doctor",
     help="Detect launcher path drift after Vaner is reinstalled / moved.",
 )
