@@ -138,7 +138,14 @@ def detect_cmd(
     _print_detect_table(detected_list)
 
 
-@clients_app.command("install", help="Install Vaner into one or all MCP clients.")
+@clients_app.command(
+    "install",
+    help=(
+        "Install Vaner into one or all MCP clients. By default, every "
+        "applicable layer (MCP + primer + skill + hooks) is installed; "
+        "pass --mcp-only for the legacy MCP-only behaviour."
+    ),
+)
 def install_cmd(
     name: Annotated[
         str | None,
@@ -147,6 +154,13 @@ def install_cmd(
     install_all: Annotated[
         bool,
         typer.Option("--all", help="Install Vaner for every detected MCP client."),
+    ] = False,
+    mcp_only: Annotated[
+        bool,
+        typer.Option(
+            "--mcp-only",
+            help=("Only write the MCP server entry; skip primer, skill, and hook layers. Equivalent to the pre-Phase-C behaviour."),
+        ),
     ] = False,
     server_key: Annotated[
         str,
@@ -165,7 +179,7 @@ def install_cmd(
     ] = False,
     force: Annotated[
         bool,
-        typer.Option("--force", help="Re-write the entry even when it already matches."),
+        typer.Option("--force", help="Re-write the MCP entry even when it already matches."),
     ] = False,
     format: Annotated[
         str,
@@ -179,46 +193,129 @@ def install_cmd(
 
     root = _resolve_repo_root(repo_root)
     detected_list = mcp_clients.detect_all(root)
-    launcher_cmd, launcher_args = mcp_clients.resolve_launcher(root)
 
     if install_all:
-        targets = [d for d in detected_list if d.status != mcp_clients.ClientStatus.MISSING]
+        target_ids = [d.spec.id for d in detected_list if d.status != mcp_clients.ClientStatus.MISSING]
     else:
-        targets = [d for d in detected_list if d.spec.id == name]
-        if not targets:
+        match = [d for d in detected_list if d.spec.id == name]
+        if not match:
             ids = ", ".join(d.spec.id for d in detected_list)
             raise typer.BadParameter(f"unknown client id {name!r}. Known: {ids}")
-        if targets[0].status == mcp_clients.ClientStatus.MISSING:
+        if match[0].status == mcp_clients.ClientStatus.MISSING:
             typer.secho(
                 f"warning: {name} not detected on this machine — writing config anyway",
                 fg=typer.colors.YELLOW,
                 err=True,
             )
+        target_ids = [match[0].spec.id]
 
-    results: list[mcp_clients.WriteResult] = []
-    for detected in targets:
-        # Per the existing wizard convention, Claude Desktop uses
-        # `vaner-<reponame>` so multiple repos can register independently.
-        key = server_key
-        if key == "vaner" and detected.spec.id == "claude-desktop":
-            key = f"vaner-{root.name}"
-        result = mcp_clients.write_client(
-            detected,
-            launcher_cmd=launcher_cmd,
-            launcher_args=launcher_args,
-            server_key=key,
+    if mcp_only:
+        # Legacy path — keep the MCP-only writer for callers that
+        # explicitly opt in. Same JSON shape as before.
+        targets = [d for d in detected_list if d.spec.id in target_ids]
+        launcher_cmd, launcher_args = mcp_clients.resolve_launcher(root)
+        results: list[mcp_clients.WriteResult] = []
+        for detected in targets:
+            key = server_key
+            if key == "vaner" and detected.spec.id == "claude-desktop":
+                key = f"vaner-{root.name}"
+            results.append(
+                mcp_clients.write_client(
+                    detected,
+                    launcher_cmd=launcher_cmd,
+                    launcher_args=launcher_args,
+                    server_key=key,
+                    dry_run=dry_run,
+                    force=force,
+                )
+            )
+        if format == "json":
+            typer.echo(json.dumps({"results": [_result_to_dict(r) for r in results]}, indent=2))
+            return
+        if format != "pretty":
+            raise typer.BadParameter(f"unknown format {format!r}. Choose from: pretty, json")
+        _print_install_results(results)
+        if any(r.action == "failed" for r in results):
+            raise typer.Exit(code=1)
+        return
+
+    # Default path — full leverage stack per client (MCP + primer +
+    # skill + hooks where applicable). Same orchestrator powers the
+    # top-level ``vaner launch <client>`` alias.
+    from vaner.cli.commands.launch import launch_client
+
+    launch_results = [
+        launch_client(
+            client_id,
+            root,
+            server_key=server_key,
             dry_run=dry_run,
             force=force,
         )
-        results.append(result)
+        for client_id in target_ids
+    ]
 
     if format == "json":
-        typer.echo(json.dumps({"results": [_result_to_dict(r) for r in results]}, indent=2))
+        typer.echo(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "client_id": r.client_id,
+                            "label": r.label,
+                            "detected": r.detected,
+                            "overall": r.overall,
+                            "layers": [
+                                {
+                                    "layer": layer.layer,
+                                    "applicable": layer.applicable,
+                                    "action": layer.action,
+                                    "path": str(layer.path) if layer.path else None,
+                                    "error": layer.error,
+                                }
+                                for layer in r.layers
+                            ],
+                        }
+                        for r in launch_results
+                    ]
+                },
+                indent=2,
+            )
+        )
+        if any(layer.action == "failed" for r in launch_results for layer in r.layers if layer.applicable):
+            raise typer.Exit(code=1)
         return
+
     if format != "pretty":
         raise typer.BadParameter(f"unknown format {format!r}. Choose from: pretty, json")
-    _print_install_results(results)
-    if any(r.action == "failed" for r in results):
+
+    for result in launch_results:
+        overall_color = {
+            "ready": typer.colors.GREEN,
+            "partial": typer.colors.YELLOW,
+            "failed": typer.colors.RED,
+            "missing": typer.colors.RED,
+        }.get(result.overall, typer.colors.WHITE)
+        typer.secho(
+            f"{result.label} ({result.client_id}) — {result.overall}",
+            fg=overall_color,
+            bold=True,
+        )
+        for layer in result.layers:
+            if not layer.applicable:
+                typer.echo(f"  - {layer.layer:6s} —")
+                continue
+            color = {
+                "added": typer.colors.GREEN,
+                "updated": typer.colors.GREEN,
+                "skipped": typer.colors.WHITE,
+                "failed": typer.colors.RED,
+            }.get(layer.action, typer.colors.YELLOW)
+            tail = f" → {layer.path}" if layer.path else ""
+            typer.secho(f"  - {layer.layer:6s} {layer.action}{tail}", fg=color)
+            if layer.error:
+                typer.secho(f"    error: {layer.error}", fg=typer.colors.RED)
+    if any(layer.action == "failed" for r in launch_results for layer in r.layers if layer.applicable):
         raise typer.Exit(code=1)
 
 

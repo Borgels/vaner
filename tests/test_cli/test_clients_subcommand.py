@@ -122,6 +122,10 @@ def test_detect_pretty_format_renders_table(fake_home: Path, tmp_path: Path) -> 
 
 
 def test_install_writes_to_cursor(fake_home: Path, tmp_path: Path) -> None:
+    """Default install path runs the full leverage stack — MCP layer
+    is the one this test cares about. Layer detail lives in
+    test_launch.py / test_skills.py / test_primer.py."""
+
     repo = tmp_path / "repo"
     repo.mkdir()
     _seed_cursor(fake_home, repo)
@@ -132,12 +136,34 @@ def test_install_writes_to_cursor(fake_home: Path, tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["results"][0]["client_id"] == "cursor"
-    assert payload["results"][0]["action"] in ("added", "updated")
-    config_path = Path(payload["results"][0]["path"])
+    mcp_layer = next(layer for layer in payload["results"][0]["layers"] if layer["layer"] == "mcp")
+    assert mcp_layer["action"] in ("added", "updated")
+    config_path = Path(mcp_layer["path"])
     assert config_path.exists()
     blob = json.loads(config_path.read_text(encoding="utf-8"))
     assert "vaner" in blob["mcpServers"]
     assert blob["mcpServers"]["vaner"]["command"] == "/fake/bin/vaner"
+
+
+def test_install_mcp_only_skips_other_layers(fake_home: Path, tmp_path: Path) -> None:
+    """``--mcp-only`` is the legacy MCP-only behaviour for callers that
+    want exactly the pre-Phase-C output shape (single ``action`` /
+    ``path`` per result, no layers)."""
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _seed_cursor(fake_home, repo)
+    result = runner.invoke(
+        clients_app,
+        ["install", "cursor", "--repo-root", str(repo), "--mcp-only", "--format", "json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    # Legacy shape: action + path live at the top level of each result.
+    assert payload["results"][0]["client_id"] == "cursor"
+    assert payload["results"][0]["action"] in ("added", "updated")
+    config_path = Path(payload["results"][0]["path"])
+    assert config_path.exists()
 
 
 def test_install_all_writes_to_every_detected(fake_home: Path, tmp_path: Path) -> None:
@@ -157,6 +183,9 @@ def test_install_all_writes_to_every_detected(fake_home: Path, tmp_path: Path) -
 
 
 def test_install_idempotent_when_entry_present(fake_home: Path, tmp_path: Path) -> None:
+    """Re-running install on a wired client produces ``skipped`` for
+    every applicable layer that already matches the rendered output."""
+
     repo = tmp_path / "repo"
     repo.mkdir()
     _seed_cursor(fake_home, repo)
@@ -166,7 +195,8 @@ def test_install_idempotent_when_entry_present(fake_home: Path, tmp_path: Path) 
         ["install", "cursor", "--repo-root", str(repo), "--format", "json"],
     )
     payload = json.loads(second.output)
-    assert payload["results"][0]["action"] == "skipped"
+    mcp_layer = next(layer for layer in payload["results"][0]["layers"] if layer["layer"] == "mcp")
+    assert mcp_layer["action"] == "skipped"
 
 
 def test_install_preserves_user_other_servers(fake_home: Path, tmp_path: Path) -> None:
