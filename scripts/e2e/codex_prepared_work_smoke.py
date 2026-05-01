@@ -37,9 +37,7 @@ from vaner.store.artefacts import ArtefactStore
 def _run(args: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None, timeout: int = 120) -> str:
     proc = subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout)
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"command failed ({proc.returncode}): {' '.join(args)}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-        )
+        raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(args)}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
     return proc.stdout
 
 
@@ -51,8 +49,7 @@ def _make_fixture(repo: Path) -> None:
     (repo / "src").mkdir(parents=True)
     (repo / "docs").mkdir()
     (repo / "src" / "calculator.py").write_text(
-        "def divide(left, right):\n"
-        "    return left / right\n",
+        "def divide(left, right):\n    return left / right\n",
         encoding="utf-8",
     )
     (repo / "docs" / "calculator.md").write_text(
@@ -82,7 +79,7 @@ async def _seed_prepared_work(repo: Path) -> None:
         "@@\n"
         " def divide(left, right):\n"
         "+    if right == 0:\n"
-        "+        raise ValueError(\"right must not be zero\")\n"
+        '+        raise ValueError("right must not be zero")\n'
         "     return left / right\n"
         "```",
         evidence_refs=[

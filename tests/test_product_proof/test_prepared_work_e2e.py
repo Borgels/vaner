@@ -40,8 +40,7 @@ def _make_public_fixture_repo(repo: Path) -> None:
     (repo / "src").mkdir()
     (repo / "docs").mkdir()
     (repo / "src" / "calculator.py").write_text(
-        "def divide(left, right):\n"
-        "    return left / right\n",
+        "def divide(left, right):\n    return left / right\n",
         encoding="utf-8",
     )
     (repo / "docs" / "calculator.md").write_text(
@@ -82,7 +81,7 @@ async def _seed_products(repo: Path) -> None:
             "@@\n"
             " def divide(left, right):\n"
             "+    if right == 0:\n"
-            "+        raise ValueError(\"right must not be zero\")\n"
+            '+        raise ValueError("right must not be zero")\n'
             "     return left / right\n"
             "```",
             evidence_refs=[
