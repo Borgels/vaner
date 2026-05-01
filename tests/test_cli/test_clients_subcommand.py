@@ -369,7 +369,8 @@ def test_verify_marks_zed_primer_applicable(fake_home: Path, tmp_path: Path) -> 
 
 
 def test_verify_marks_skill_layer_inapplicable_when_no_skill_surface(
-    fake_home: Path, tmp_path: Path,
+    fake_home: Path,
+    tmp_path: Path,
 ) -> None:
     """Skill is only applicable for the clients Vaner ships a skill into
     today (claude-code, cursor). Everywhere else the layer is reported
