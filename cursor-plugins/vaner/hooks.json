@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": ["python3", "${CURSOR_PLUGIN_ROOT}/scripts/session_start.py"],
+        "timeout_ms": 5000,
+        "failClosed": false
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": ["python3", "${CURSOR_PLUGIN_ROOT}/scripts/before_submit_prompt.py"],
+        "timeout_ms": 3000,
+        "failClosed": false
+      }
+    ]
+  }
+}
