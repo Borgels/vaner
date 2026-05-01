@@ -77,6 +77,7 @@ packages = ["src/vaner"]
 line-length = 140
 target-version = "py311"
 src = ["src", "tests"]
+extend-exclude = ["tests/integration/testbed/sample-repo"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "T20"]

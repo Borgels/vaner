@@ -1,0 +1,23 @@
+# Convenience wrapper around the testbed Dockerfile.
+#
+#   docker compose -f tests/integration/testbed/compose.yml run --rm testbed
+#   docker compose -f tests/integration/testbed/compose.yml run --rm smoke
+#
+# `testbed` drops you into an interactive shell at the sample repo.
+# `smoke` runs the Phase D-1 launch suite and exits non-zero on
+# failure — suitable for `gh workflow run` and similar.
+
+services:
+  testbed:
+    build:
+      context: ../../..
+      dockerfile: tests/integration/testbed/Dockerfile
+    image: vaner-testbed:dev
+    tty: true
+    stdin_open: true
+    working_dir: /home/vaner/sample-repo
+
+  smoke:
+    extends:
+      service: testbed
+    command: ["bash", "/opt/testbed/test-launch-clients.sh"]
