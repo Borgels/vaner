@@ -783,21 +783,41 @@ _SKILL_PATH_RESOLVERS: dict[str, Callable[[Path], Path]] = {
 }
 
 
-# Plugin-supporting clients today. Vaner ships a full Claude Code plugin;
-# Cursor (1.7+) supports plugins but Vaner doesn't yet ship one.
-# When the Cursor plugin lands, add it here.
+# Plugin / hook-supporting clients. Vaner ships:
+#   * Claude Code — full plugin (plugins/vaner/), installed via
+#     marketplace; verify by checking the user's plugin store.
+#   * Cursor — full plugin (cursor-plugins/vaner/), installed
+#     manually today; verify by checking the user's plugin store.
+#   * Cline — prompt-submit hook script written to
+#     .clinerules/hooks/UserPromptSubmit (Phase C4).
+#   * Windsurf — .windsurf/hooks.json declaring the prompt-submit
+#     hook (Phase C4).
 def _claude_code_plugin_marker(_repo_root: Path) -> Path:
     """The Claude Code plugin is installed via the ``/plugin install``
-    marketplace flow, which writes to a per-user plugin store. We use
-    the user's installed-plugins manifest as a proxy. If the user
-    installed the plugin via marketplace, this file lists it.
-    """
+    marketplace flow, which writes to a per-user plugin store."""
 
     return _home() / ".claude" / "plugins" / "vaner" / ".claude-plugin" / "plugin.json"
 
 
+def _cursor_plugin_marker(_repo_root: Path) -> Path:
+    """Cursor's plugin store lives under the user's profile dir."""
+
+    return _home() / ".cursor" / "plugins" / "vaner" / ".cursor-plugin" / "plugin.json"
+
+
+def _cline_hook_marker(repo_root: Path) -> Path:
+    return repo_root / ".clinerules" / "hooks" / "UserPromptSubmit"
+
+
+def _windsurf_hook_marker(repo_root: Path) -> Path:
+    return repo_root / ".windsurf" / "hooks.json"
+
+
 _PLUGIN_PATH_RESOLVERS: dict[str, Callable[[Path], Path]] = {
     "claude-code": _claude_code_plugin_marker,
+    "cursor": _cursor_plugin_marker,
+    "cline": _cline_hook_marker,
+    "windsurf": _windsurf_hook_marker,
 }
 
 
