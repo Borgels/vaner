@@ -51,6 +51,7 @@ from vaner.cli.commands.deep_run import deep_run_app
 from vaner.cli.commands.distill import distill_skill_file
 from vaner.cli.commands.explain import render_human, render_json
 from vaner.cli.commands.guidance import guidance_app
+from vaner.cli.commands.hooks import HOOK_SURFACES, write_hooks
 from vaner.cli.commands.init import (
     BACKEND_PRESETS,
     COMPUTE_PRESETS,
@@ -574,6 +575,28 @@ def init(
                 typer.echo(f"Warning: could not write skill for {r.client_id}: {r.error}")
         except Exception as exc:  # pragma: no cover - defensive
             typer.echo(f"Warning: could not install skills: {exc}")
+
+        # Hooks layer — prompt-submit hooks for clients with stable
+        # hook APIs that aren't already covered by an atomic plugin
+        # (Cline, Windsurf today). Same composer-submit script is used
+        # across both. Claude Code + Cursor get hooks via their plugin
+        # bundles; Codex CLI hooks ship when ``codex_hooks`` goes GA.
+        try:
+            hook_clients = sorted(HOOK_SURFACES.keys())
+            hook_results = write_hooks(hook_clients, repo_root)
+            installed = [r for r in hook_results if r.action in ("added", "updated")]
+            skipped = [r for r in hook_results if r.action == "skipped"]
+            failed = [r for r in hook_results if r.action == "failed"]
+            if installed:
+                typer.echo("Installed prompt-submit hooks:")
+                for r in installed:
+                    typer.echo(f"  - {r.path} ({r.action})")
+            if skipped:
+                typer.echo(f"Hook already up to date for {len(skipped)} client(s); no changes needed.")
+            for r in failed:
+                typer.echo(f"Warning: could not write hook for {r.client_id}: {r.error}")
+        except Exception as exc:  # pragma: no cover - defensive
+            typer.echo(f"Warning: could not install hooks: {exc}")
 
     import sys as _sys
 
