@@ -40,7 +40,8 @@ def _load_primer_body() -> str:
     """Return the primer markdown body without the .mdc YAML frontmatter."""
 
     try:
-        text = open(PRIMER_PATH, encoding="utf-8").read()
+        with open(PRIMER_PATH, encoding="utf-8") as fh:
+            text = fh.read()
     except OSError:
         return ""
     # Strip the leading ``---\n...---\n`` frontmatter; everything after
@@ -71,12 +72,15 @@ def _emit(payload: dict) -> None:
 
 
 def main() -> int:
-    # Drain stdin (Cursor sends a JSON event payload but this hook
-    # doesn't need its content); ignore parse errors.
+    # Drain stdin so Cursor's hook channel doesn't backpressure; this
+    # hook ignores the event payload's content. OSError on read is
+    # benign (e.g. closed pipe during shutdown) — silently swallow it
+    # and proceed so session start is never blocked by IO conditions
+    # outside our control.
     try:
         sys.stdin.read()
     except OSError:
-        pass
+        pass  # noqa: S110 — intentional; never block session start
 
     if shutil.which("vaner") is not None:
         primer = _load_primer_body()
