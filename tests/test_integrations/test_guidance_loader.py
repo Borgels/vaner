@@ -12,7 +12,7 @@ from vaner.integrations.guidance import (
 def test_canonical_loads_with_expected_frontmatter() -> None:
     doc = load_guidance("canonical")
     assert doc.variant == "canonical"
-    assert doc.version == 1
+    assert doc.version == 2
     assert doc.minimum_vaner_version == "0.8.5"
     # Canonical must list the core tools agents are expected to call.
     assert "vaner.predictions.active" in doc.recommended_tools

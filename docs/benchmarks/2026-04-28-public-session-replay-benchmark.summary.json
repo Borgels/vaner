@@ -305,6 +305,6 @@
     "TheAlgorithms/Python": "https://github.com/TheAlgorithms/Python"
   },
   "title": "Vaner Public Session-Replay Benchmark",
-  "vaner_repo_sha": "07f519dfd4fdd6b45ea18b15b6b61fb91764240e",
-  "vaner_train_sha": "0df58b519e0ebda7b217bd957e5a024acf878329"
+  "training_bundle_sha": "0df58b519e0ebda7b217bd957e5a024acf878329",
+  "vaner_repo_sha": "07f519dfd4fdd6b45ea18b15b6b61fb91764240e"
 }
