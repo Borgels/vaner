@@ -73,6 +73,27 @@
         color: color-mix(in srgb, CanvasText 60%, transparent);
         font-size: 11px;
       }
+      .why {
+        color: color-mix(in srgb, CanvasText 64%, transparent);
+        font-size: 11px;
+        line-height: 1.35;
+        margin: 6px 0 0;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .action {
+        border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+        border-radius: 6px;
+        background: color-mix(in srgb, Canvas 88%, CanvasText 12%);
+        color: CanvasText;
+        font: inherit;
+        font-size: 11px;
+        padding: 4px 7px;
+      }
       .empty {
         color: color-mix(in srgb, CanvasText 62%, transparent);
         font-size: 13px;
@@ -126,11 +147,14 @@
               <span class="badge"></span>
             </div>
             <p class="summary"></p>
+            <p class="why"></p>
             <div class="facts"></div>
+            <div class="actions" aria-label="Prepared work actions"></div>
           `;
           node.querySelector(".title").textContent = safeText(card.title);
           node.querySelector(".badge").textContent = safeText(card.badge || card.kind);
           node.querySelector(".summary").textContent = safeText(card.summary);
+          node.querySelector(".why").textContent = safeText(card.why_prepared || card.action_note);
           node.querySelector(".facts").textContent = [
             card.confidence_label,
             card.freshness_label,
@@ -139,6 +163,17 @@
           ]
             .filter(Boolean)
             .join(" · ");
+          const actions = [card.primary_action, ...(Array.isArray(card.secondary_actions) ? card.secondary_actions : [])].filter(Boolean);
+          const actionsNode = node.querySelector(".actions");
+          for (const action of actions) {
+            const button = document.createElement("button");
+            button.className = "action";
+            button.type = "button";
+            button.dataset.kind = safeText(action.kind);
+            button.textContent = safeText(action.label || action.kind);
+            button.setAttribute("aria-label", `${button.textContent}: ${safeText(card.title)}`);
+            actionsNode.appendChild(button);
+          }
           cardsNode.appendChild(node);
         }
       }

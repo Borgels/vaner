@@ -42,6 +42,9 @@ eval/
 !src/vaner/eval/
 !src/vaner/eval/**
 scripts/*
+!scripts/e2e/
+!scripts/e2e/**
+scripts/e2e/__pycache__/
 !scripts/install.sh
 !scripts/sync-plugin-skill.sh
 !scripts/sync-plugin-primer.sh

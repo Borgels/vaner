@@ -59,10 +59,14 @@ def test_prepared_work_benchmark_scores_precision_and_value() -> None:
     report = build_prepared_work_benchmark_report([result], run_id="run")
 
     assert result.artifact_precision == 1.0
+    assert result.false_positive_count == 0
     assert result.adoption_value > 0.9
     assert result.groundedness == 1.0
+    assert result.cost_per_useful_artifact_usd == 0.01
     assert report.artifact_precision_mean == 1.0
+    assert report.false_positive_rate == 0.0
     assert report.estimated_cost_usd_total == 0.01
+    assert report.cost_per_useful_artifact_usd == 0.01
 
 
 def test_prepared_work_benchmark_penalizes_stale_exportable_artifacts() -> None:
@@ -73,3 +77,23 @@ def test_prepared_work_benchmark_penalizes_stale_exportable_artifacts() -> None:
 
     assert result.stale_misleading_count == 1
     assert report.stale_misleading_rate == 1.0
+
+
+def test_prepared_work_benchmark_tracks_false_positive_rate() -> None:
+    case = PreparedWorkBenchmarkCase(
+        case_id="wrong-target",
+        archetype="developer",
+        prompt="Fix parser bug",
+        expected_kinds=["diff"],
+        expected_targets=["src/parser.py"],
+    )
+
+    result = score_prepared_work_case(case, [_card(target="docs/parser.md")], estimated_cost_usd=0.02)
+    report = build_prepared_work_benchmark_report([result], run_id="run")
+
+    assert result.useful_count == 0
+    assert result.false_positive_count == 1
+    assert result.artifact_precision == 0.0
+    assert result.cost_per_useful_artifact_usd == 0.02
+    assert report.false_positive_rate == 1.0
+    assert report.cost_per_useful_artifact_usd == 0.02

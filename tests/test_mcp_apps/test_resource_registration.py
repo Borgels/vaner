@@ -39,6 +39,7 @@ def test_list_resources_includes_ui_bundle_when_enabled(tmp_path: Path) -> None:
     resources = asyncio.run(_run())
     uris = {str(r.uri) for r in resources}
     assert "ui://vaner/active-predictions" in uris
+    assert "ui://vaner/prepared-work" in uris
     assert "vaner://guidance/current" in uris
     assert "vaner://guidance/current?variant=weak" in uris
     assert "vaner://guidance/current?variant=strong" in uris
@@ -57,11 +58,13 @@ def test_list_resources_omits_ui_bundle_when_disabled(tmp_path: Path) -> None:
     resources = asyncio.run(_run())
     uris = {str(r.uri) for r in resources}
     assert "ui://vaner/active-predictions" not in uris
+    assert "ui://vaner/prepared-work" not in uris
     assert "vaner://guidance/current" in uris  # guidance resource still advertised
     assert "vaner://guidance/current?variant=weak" in uris
 
 
-def test_read_resource_returns_ui_html(tmp_path: Path) -> None:
+@pytest.mark.parametrize("uri", ["ui://vaner/active-predictions", "ui://vaner/prepared-work"])
+def test_read_resource_returns_ui_html(tmp_path: Path, uri: str) -> None:
     server = _build(tmp_path)
 
     async def _run() -> str:
@@ -74,7 +77,7 @@ def test_read_resource_returns_ui_html(tmp_path: Path) -> None:
         handler = server.request_handlers[ReadResourceRequest]
         req = ReadResourceRequest(
             method="resources/read",
-            params=ReadResourceRequestParams(uri=AnyUrl("ui://vaner/active-predictions")),
+            params=ReadResourceRequestParams(uri=AnyUrl(uri)),
         )
         result = await handler(req)
         return result.root.contents[0].text
@@ -118,5 +121,7 @@ def test_listed_resources_are_readable(tmp_path: Path, apps_ui_enabled: bool) ->
     assert contents_by_uri["vaner://guidance/current?variant=weak"]
     if apps_ui_enabled:
         assert "<!doctype html>" in contents_by_uri["ui://vaner/active-predictions"].lower()
+        assert "<!doctype html>" in contents_by_uri["ui://vaner/prepared-work"].lower()
     else:
         assert "ui://vaner/active-predictions" not in contents_by_uri
+        assert "ui://vaner/prepared-work" not in contents_by_uri

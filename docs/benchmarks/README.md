@@ -110,6 +110,11 @@ Prepared Work is a separate claim family from release readiness. It tests the
 product promise that Vaner can use realistic idle time to prepare useful,
 inspectable work before the user asks.
 
+Before stronger product claims, pair the automated benchmark with the scripted
+[Prepared Work human product-proof test](./human-product-proof.md). That test
+checks whether people understand, inspect, trust, export/adopt, dismiss, and
+give feedback on Prepared Work without being taught Vaner's internals.
+
 The benchmark arms should remain explicit:
 
 - **Naked**: answer model receives only the user request.
