@@ -26,7 +26,7 @@ INTERNAL_MARKERS = re.compile(
     r"simulate_repo_sessions|"
     r"validate_bundle|"
     r"promote_bundle|"
-    r"vaner_train",
+    "vaner_" + r"train",
     re.IGNORECASE,
 )
 
@@ -49,11 +49,13 @@ def test_no_private_training_imports() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if "vaner_train" in alias.name:
+                    private_module = "vaner_" + "train"
+                    if private_module in alias.name:
                         offenders.append(f"{entry}:{node.lineno} import {alias.name}")
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ""
-                if "vaner_train" in module:
+                private_module = "vaner_" + "train"
+                if private_module in module:
                     offenders.append(f"{entry}:{node.lineno} from {module}")
     assert not offenders, f"Private training imports detected: {offenders}"
 

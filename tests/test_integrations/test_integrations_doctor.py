@@ -8,6 +8,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from vaner.cli.commands.integrations import integrations_app
+from vaner.integrations.guidance import load_guidance
 
 runner = CliRunner()
 
@@ -27,7 +28,7 @@ def test_doctor_json_reports_guidance_version(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    assert data["guidance"]["version"] == 1
+    assert data["guidance"]["version"] == load_guidance("canonical").version
     assert data["integrations_config"]["context_injection"]["mode"] == "policy_hybrid"
     assert data["daemon"]["reachable"] is False
     assert data["handoff"]["present"] is False
@@ -79,4 +80,4 @@ def test_doctor_detects_pending_handoff(tmp_path: Path) -> None:
 def test_tier_command_prints_guidance_version() -> None:
     result = runner.invoke(integrations_app, ["tier"])
     assert result.exit_code == 0
-    assert "guidance_version=1" in result.output
+    assert f"guidance_version={load_guidance('canonical').version}" in result.output
