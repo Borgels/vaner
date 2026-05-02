@@ -1808,8 +1808,59 @@ def up(
     ),
     detach: bool = typer.Option(False, "--detach", help="Start processes and return immediately."),
     force: bool = typer.Option(False, "--force", help="Allow broad/non-repo root paths."),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit a single JSON line with the bring-up result and exit. Implies --detach.",
+    ),
 ) -> None:
-    """Start a supervised local Vaner session."""
+    """Start a supervised local Vaner session.
+
+    With ``--json``, emits one structured line of stdout suitable for
+    desktop / scripted callers. The shape is::
+
+        {"started": true, "reattached": false, "ready": true,
+         "cockpit_url": "http://127.0.0.1:8473",
+         "daemon_pid": 1234, "cockpit_pid": 1235,
+         "ports": {...}, "inotify": {...}}
+
+    On failure (non-repo root, no setup, etc.) the CLI emits::
+
+        {"started": false, "error": "...", "fix": "..."}
+
+    and exits non-zero. Implies ``--detach`` because there is no
+    sensible way to "block" with structured output.
+    """
+    if as_json:
+        detach = True
+        try:
+            payload = run_up(
+                _repo_root(path),
+                host=host,
+                port=port,
+                mcp_sse_port=8472,
+                interval_seconds=interval_seconds,
+                open_browser=False,
+                force=force,
+            )
+        except RuntimeError as exc:
+            error_payload: dict[str, object] = {"started": False, "error": str(exc)}
+            typer.echo(json.dumps(error_payload))
+            raise typer.Exit(code=1) from exc
+        # Always emit the canonical key set so callers can rely on
+        # the shape regardless of the reattached / fresh-start branch.
+        emitted = {
+            "started": bool(payload.get("started")),
+            "reattached": bool(payload.get("reattached")),
+            "ready": bool(payload.get("ready", payload.get("reattached", False))),
+            "cockpit_url": payload.get("cockpit_url") or f"http://{host}:{port}",
+            "daemon_pid": payload.get("daemon_pid"),
+            "cockpit_pid": payload.get("cockpit_pid"),
+            "ports": payload.get("ports", {}),
+            "inotify": payload.get("inotify", {}),
+        }
+        typer.echo(json.dumps(emitted))
+        return
     should_open = _console.is_terminal if open_browser is None else open_browser
     payload = run_up(
         _repo_root(path),

@@ -59,6 +59,69 @@ model = "qwen3.5:35b"
     assert not (temp_repo / ".vaner" / "runtime" / "cockpit.pid").exists()
 
 
+def test_up_json_flag_emits_canonical_shape(monkeypatch, temp_repo) -> None:
+    """`vaner up --json` emits exactly one structured line of stdout
+    with the canonical key set, regardless of fresh-start vs reattach.
+    The desktop's auto-bring-up reads this to decide whether to flip
+    out of `.error` immediately or surface a useful failure detail."""
+    import json
+
+    from typer.testing import CliRunner
+
+    from vaner.cli.main import app as cli_app
+
+    monkeypatch.setattr(
+        "vaner.cli.commands.app.run_up",
+        lambda *_args, **_kwargs: {
+            "started": True,
+            "reattached": False,
+            "ready": True,
+            "cockpit_url": "http://127.0.0.1:8473",
+            "daemon_pid": 123,
+            "cockpit_pid": 124,
+            "ports": {"cockpit_port": 8473, "cockpit_changed": False},
+            "inotify": {"ok": True},
+        },
+    )
+
+    result = CliRunner().invoke(cli_app, ["up", "--path", str(temp_repo), "--json"])
+    assert result.exit_code == 0, result.output
+    parsed = json.loads(result.output.strip())
+    assert parsed == {
+        "started": True,
+        "reattached": False,
+        "ready": True,
+        "cockpit_url": "http://127.0.0.1:8473",
+        "daemon_pid": 123,
+        "cockpit_pid": 124,
+        "ports": {"cockpit_port": 8473, "cockpit_changed": False},
+        "inotify": {"ok": True},
+    }
+
+
+def test_up_json_flag_emits_error_payload_on_failure(monkeypatch, temp_repo) -> None:
+    """run_up's RuntimeError surface (e.g. non-repo root + no --force)
+    becomes a JSON error payload on stdout with exit code 1, so the
+    desktop's bring-up flow can show a real fix-it message instead of
+    silently swallowing the failure."""
+    import json
+
+    from typer.testing import CliRunner
+
+    from vaner.cli.main import app as cli_app
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("repo root looks wrong; pass --force to override")
+
+    monkeypatch.setattr("vaner.cli.commands.app.run_up", _boom)
+
+    result = CliRunner().invoke(cli_app, ["up", "--path", str(temp_repo), "--json"])
+    assert result.exit_code == 1
+    parsed = json.loads(result.output.strip())
+    assert parsed["started"] is False
+    assert "repo root looks wrong" in parsed["error"]
+
+
 def test_run_up_is_idempotent_when_processes_already_running(monkeypatch, temp_repo) -> None:
     write_pid(temp_repo, DAEMON_PROCESS, os.getpid())
     write_pid(temp_repo, COCKPIT_PROCESS, os.getpid())
