@@ -40,6 +40,27 @@ _SUBPROCESS_TIMEOUT = 2.0
 logger = logging.getLogger(__name__)
 
 
+MemoryKind = Literal["vram", "unified", "system", "unknown"]
+
+
+@dataclass(frozen=True, slots=True)
+class GPUDevice:
+    """One detected GPU with display-friendly identity + memory.
+
+    Populated from the per-vendor enumerator (pynvml / ``nvidia-smi`` /
+    ``system_profiler`` / ``lspci``). The desktop reads ``name`` to show
+    "NVIDIA GeForce RTX 5090" instead of the generic "NVIDIA GPU"
+    fallback that the legacy single-summary fields produced.
+    """
+
+    name: str
+    vendor: str
+    kind: GPU
+    memory_total_bytes: int | None
+    memory_display_gb: int | None
+    memory_kind: MemoryKind
+
+
 @dataclass(frozen=True, slots=True)
 class HardwareProfile:
     """Immutable snapshot of detected hardware capabilities.
@@ -58,6 +79,10 @@ class HardwareProfile:
     detected_runtimes: tuple[Runtime, ...]
     detected_models: tuple[tuple[str, str, str], ...]
     tier: HardwareTier = field(default="unknown")
+    # Per-device GPU enumeration. Empty tuple when no probe could
+    # identify discrete devices — consumers should fall back to the
+    # ``gpu`` / ``gpu_vram_gb`` summary fields in that case.
+    gpu_devices: tuple[GPUDevice, ...] = field(default_factory=tuple)
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +239,121 @@ def _probe_gpu_nvidia() -> tuple[GPU, int | None] | None:
     except Exception:
         logger.debug("pynvml probe failed", exc_info=True)
         return None
+
+
+def _probe_gpu_devices_nvidia_pynvml() -> tuple[GPUDevice, ...] | None:
+    """Per-device enumeration via pynvml. Returns one GPUDevice per
+    physical NVIDIA card, with the display name (e.g. "NVIDIA GeForce
+    RTX 5090") and total VRAM. None when pynvml isn't installed or
+    fails — caller falls back to nvidia-smi parsing.
+    """
+    try:
+        import pynvml  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    try:
+        pynvml.nvmlInit()
+    except Exception:
+        return None
+    devices: list[GPUDevice] = []
+    try:
+        try:
+            count = int(pynvml.nvmlDeviceGetCount())
+        except Exception:
+            count = 0
+        for i in range(count):
+            try:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                raw_name = pynvml.nvmlDeviceGetName(handle)
+                name = raw_name.decode("utf-8") if isinstance(raw_name, bytes) else str(raw_name)
+                mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                total_bytes = int(getattr(mem, "total", 0)) or None
+                vram_gb = max(1, round(total_bytes / (1024**3))) if total_bytes else None
+                devices.append(
+                    GPUDevice(
+                        name=name.strip() or "NVIDIA GPU",
+                        vendor="NVIDIA",
+                        kind="nvidia",
+                        memory_total_bytes=total_bytes,
+                        memory_display_gb=vram_gb,
+                        memory_kind="vram",
+                    )
+                )
+            except Exception:
+                logger.debug("pynvml device %d enumeration failed", i, exc_info=True)
+    finally:
+        try:
+            pynvml.nvmlShutdown()
+        except Exception:  # pragma: no cover - cleanup
+            pass
+    return tuple(devices) if devices else None
+
+
+def _probe_gpu_devices_nvidia_smi() -> tuple[GPUDevice, ...] | None:
+    """nvidia-smi fallback. Used when pynvml isn't installed (the
+    pipx-shipped CLI doesn't pull pynvml in by default). The CSV
+    format is stable across driver versions.
+    """
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None
+    try:
+        result = subprocess.run(
+            [smi, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+            check=False,
+        )
+    except Exception:
+        logger.debug("nvidia-smi probe failed", exc_info=True)
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    devices: list[GPUDevice] = []
+    for line in result.stdout.splitlines():
+        parts = [p.strip() for p in line.split(",", 1)]
+        if len(parts) != 2 or not parts[0]:
+            continue
+        name = parts[0]
+        try:
+            mib = int(parts[1])
+            total_bytes = mib * 1024 * 1024
+            vram_gb = max(1, round(total_bytes / (1024**3)))
+        except ValueError:
+            total_bytes = None
+            vram_gb = None
+        devices.append(
+            GPUDevice(
+                name=name,
+                vendor="NVIDIA",
+                kind="nvidia",
+                memory_total_bytes=total_bytes,
+                memory_display_gb=vram_gb,
+                memory_kind="vram",
+            )
+        )
+    return tuple(devices) if devices else None
+
+
+def _probe_gpu_devices() -> tuple[GPUDevice, ...]:
+    """Compose per-vendor enumerators. NVIDIA-only today (covers the
+    desktop's first reported gap); macOS/AMD/integrated devices fall
+    through to the empty tuple and consumers use the summary fields.
+    """
+    try:
+        nvidia_pynvml = _probe_gpu_devices_nvidia_pynvml()
+        if nvidia_pynvml:
+            return nvidia_pynvml
+    except Exception:
+        logger.debug("nvidia pynvml device probe failed", exc_info=True)
+    try:
+        nvidia_smi = _probe_gpu_devices_nvidia_smi()
+        if nvidia_smi:
+            return nvidia_smi
+    except Exception:
+        logger.debug("nvidia-smi device probe failed", exc_info=True)
+    return ()
 
 
 def _probe_gpu_macos() -> tuple[GPU, int | None]:
@@ -584,6 +724,7 @@ def detect() -> HardwareProfile:
     os_kind = _probe_os()
     cpu_class, ram_gb = _probe_cpu_and_ram()
     gpu, gpu_vram_gb = _probe_gpu()
+    devices = _probe_gpu_devices()
     is_battery = _probe_battery()
     thermal = _probe_thermal()
     runtimes = _probe_runtimes()
@@ -593,6 +734,13 @@ def detect() -> HardwareProfile:
     # frozen dataclass; fall back to "linux" but force the tier to "unknown"
     # so consumers treat the snapshot as untrusted.
     effective_os: OS = os_kind if os_kind is not None else "linux"
+
+    # If the per-device probe found a card with a name + VRAM but the
+    # legacy summary probe missed VRAM (lspci on a no-pynvml install,
+    # for example), backfill from the first device so consumers that
+    # only consult `gpu_vram_gb` still see a number.
+    if gpu_vram_gb is None and devices:
+        gpu_vram_gb = devices[0].memory_display_gb
 
     profile = HardwareProfile(
         os=effective_os,
@@ -605,6 +753,7 @@ def detect() -> HardwareProfile:
         detected_runtimes=runtimes,
         detected_models=models,
         tier="unknown",
+        gpu_devices=devices,
     )
     final_tier: HardwareTier = "unknown" if os_kind is None else tier_for(profile)
     return HardwareProfile(
@@ -618,10 +767,12 @@ def detect() -> HardwareProfile:
         detected_runtimes=runtimes,
         detected_models=models,
         tier=final_tier,
+        gpu_devices=devices,
     )
 
 
 __all__ = [
+    "GPUDevice",
     "HardwareProfile",
     "HardwareTier",
     "detect",

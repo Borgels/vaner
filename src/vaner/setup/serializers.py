@@ -91,6 +91,17 @@ def hardware_to_dict(hw: HardwareProfile) -> dict[str, Any]:
         "detected_runtimes": list(hw.detected_runtimes),
         "detected_models": [list(row) for row in hw.detected_models],
         "tier": hw.tier,
+        "gpu_devices": [
+            {
+                "name": d.name,
+                "vendor": d.vendor,
+                "kind": d.kind,
+                "memory_total_bytes": d.memory_total_bytes,
+                "memory_display_gb": d.memory_display_gb,
+                "memory_kind": d.memory_kind,
+            }
+            for d in hw.gpu_devices
+        ],
     }
 
 
