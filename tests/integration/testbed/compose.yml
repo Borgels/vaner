@@ -21,3 +21,23 @@ services:
     extends:
       service: testbed
     command: ["bash", "/opt/testbed/test-launch-clients.sh"]
+
+  # Phase D-2 — full Ubuntu desktop in a container, reachable at
+  # http://localhost:6080/vnc.html. Mount the desktop AppImage you
+  # want to drive at /home/vaner/vaner-desktop.AppImage and the
+  # entrypoint launches it after GNOME settles.
+  gui:
+    build:
+      context: ../../..
+      dockerfile: tests/integration/testbed/Dockerfile.gui
+    image: vaner-testbed-gui:dev
+    ports:
+      - "6080:6080"
+    volumes:
+      # Override on the CLI: -v /tmp/vaner-desktop-local-3.AppImage:/home/vaner/vaner-desktop.AppImage:ro
+      - ${VANER_DESKTOP_APPIMAGE:-/dev/null}:/home/vaner/vaner-desktop.AppImage:ro
+    shm_size: "2gb"
+    # GNOME-on-Xvfb wants a plausible amount of /tmp for compositor
+    # state and the AppImage's mount point.
+    tmpfs:
+      - /tmp:size=512M

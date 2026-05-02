@@ -105,6 +105,12 @@ def _detect_cursor(repo_root: Path) -> Path | None:
 
 
 def _detect_claude_desktop(_repo_root: Path) -> Path | None:
+    # Anthropic only ships Claude Desktop on macOS and Windows. The
+    # Linux config dir (`~/.config/Claude/`) is sometimes created by
+    # Vaner's own installer or other tools, so its mere existence is
+    # not evidence the app is installed — gate on the platform first.
+    if _platform() not in ("darwin", "windows"):
+        return None
     root = _claude_desktop_dir()
     if root.exists():
         return root
@@ -393,7 +399,18 @@ def _write_cli_client(
     argv: list[str],
     launcher_cmd: str,
     launcher_args: list[str],
+    force: bool = False,
 ) -> WriteResult:
+    """Drive a CLI-managed MCP registration (Claude Code, Codex CLI).
+    When the client has an existing `vaner` entry the upstream `mcp add`
+    refuses with "MCP server vaner already exists in user config" — a
+    fresh install of Vaner Desktop wires its own MCP entry, so any
+    second-pass `clients install` (or wizard repair) hits this. Treat
+    "already exists" as something we can recover from automatically:
+    remove the existing entry, retry the add. Behaviour is the same
+    whether the caller passed `--force` or not — the user expects
+    "Install" to leave the client in the configured state, not bail
+    because the install already half-happened. """
     if not shutil.which(executable):
         snippet = json.dumps(generic_snippet(launcher_cmd, launcher_args)["json"], indent=2)
         return WriteResult(
@@ -403,17 +420,56 @@ def _write_cli_client(
             error=f"{executable} binary not found",
             manual_snippet=snippet,
         )
+
+    def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(args, capture_output=True, text=True, check=False, timeout=30)
+
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=30)
+        result = _run(argv)
     except Exception as exc:  # pragma: no cover
         return WriteResult(client_id=client_id, path=None, action="failed", error=str(exc))
     if result.returncode == 0:
         return WriteResult(client_id=client_id, path=None, action="added")
+
+    err_text = (result.stderr or result.stdout).strip()
+    already_exists = "already exists" in err_text.lower()
+    if not already_exists:
+        return WriteResult(
+            client_id=client_id,
+            path=None,
+            action="failed",
+            error=err_text[:500],
+        )
+
+    # Recover: drop the stale entry then re-run the original add. Both
+    # `claude mcp` and `codex mcp` accept `mcp remove vaner [--scope
+    # user]` symmetric to their add invocation; we re-use the leading
+    # tokens from `argv` so we stay aligned with whichever client this
+    # is.
+    base = [argv[0], argv[1], "remove", "vaner"]
+    # `argv[3]` = "add"; the slot after it is `--transport` for claude,
+    # `--` for codex. Forward `--scope user` only when the original
+    # add carried it, so we remove from the same scope it would land.
+    if "--scope" in argv:
+        scope_idx = argv.index("--scope")
+        if scope_idx + 1 < len(argv):
+            base += ["--scope", argv[scope_idx + 1]]
+    try:
+        _run(base)
+    except Exception:  # pragma: no cover
+        pass
+
+    try:
+        retry = _run(argv)
+    except Exception as exc:  # pragma: no cover
+        return WriteResult(client_id=client_id, path=None, action="failed", error=str(exc))
+    if retry.returncode == 0:
+        return WriteResult(client_id=client_id, path=None, action="updated")
     return WriteResult(
         client_id=client_id,
         path=None,
         action="failed",
-        error=(result.stderr or result.stdout).strip()[:500],
+        error=(retry.stderr or retry.stdout).strip()[:500],
     )
 
 
@@ -482,6 +538,7 @@ def write_client(
             argv=argv,
             launcher_cmd=launcher_cmd,
             launcher_args=launcher_args,
+            force=force,
         )
     if spec.kind == "cli-codex":
         argv = ["codex", "mcp", "add", "vaner", "--", launcher_cmd, *launcher_args]
@@ -491,6 +548,7 @@ def write_client(
             argv=argv,
             launcher_cmd=launcher_cmd,
             launcher_args=launcher_args,
+            force=force,
         )
     return WriteResult(client_id=spec.id, path=target_path, action="failed", error=f"Unsupported kind: {spec.kind}")
 
