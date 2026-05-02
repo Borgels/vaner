@@ -99,7 +99,8 @@ def test_build_entry_online_uses_manifest_size() -> None:
     # ~24 GB on disk → at Q4_K_M (0.55 GB/B) ≈ 43.6 B params.
     fake_bytes = int(24 * 1024**3)
     entry = build_registry_entry_for_family(
-        seed, family,
+        seed,
+        family,
         quant="Q4_K_M",
         online=True,
         manifest_fetcher=lambda _f: _fake_manifest(fake_bytes),
@@ -120,7 +121,10 @@ def test_build_entry_online_skips_when_manifest_missing() -> None:
     seed = _seed()
     families = families_from_seed(seed)
     entry = build_registry_entry_for_family(
-        seed, families[0], quant="Q4_K_M", online=True,
+        seed,
+        families[0],
+        quant="Q4_K_M",
+        online=True,
         manifest_fetcher=lambda _f: None,
     )
     assert entry is None
@@ -238,9 +242,7 @@ def test_split_parameters_separates_sampling_and_runtime() -> None:
 def test_split_parameters_fills_runtime_defaults() -> None:
     from vaner.setup.model_recommendation import _split_parameters
 
-    capability, runtime_params, sampling = _split_parameters(
-        {"context_window": 16384, "max_response_tokens": 2048}
-    )
+    capability, runtime_params, sampling = _split_parameters({"context_window": 16384, "max_response_tokens": 2048})
     # When the registry omits keep_alive / num_ctx / num_predict, the
     # split fills them so Ollama actually uses the full context window.
     assert runtime_params["keep_alive"] == "10m"

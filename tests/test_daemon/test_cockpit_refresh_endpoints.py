@@ -72,7 +72,7 @@ async def test_goals_endpoint_returns_workspace_goals(temp_repo: Path) -> None:
         confidence=1.0,
         status="active",
         evidence_json="[]",
-        related_files_json="[\"src/auth.py\"]",
+        related_files_json='["src/auth.py"]',
     )
 
     app = create_daemon_http_app(_config(temp_repo))

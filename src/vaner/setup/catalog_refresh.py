@@ -257,7 +257,8 @@ def build_registry(
     for family in families:
         try:
             entry = build_registry_entry_for_family(
-                seed, family,
+                seed,
+                family,
                 quant=default_quant,
                 online=online,
                 manifest_fetcher=manifest_fetcher,

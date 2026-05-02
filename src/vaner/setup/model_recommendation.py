@@ -393,9 +393,7 @@ _CONTEXT_WINDOW_FLOOR = 32768
 
 # Archetypes that benefit from longer context (whole-file, repo-scope,
 # multi-doc work). Anything not in this set gets the floor as the target.
-_LONG_CONTEXT_WORK_STYLES = frozenset(
-    {"coding", "research", "planning", "mixed"}
-)
+_LONG_CONTEXT_WORK_STYLES = frozenset({"coding", "research", "planning", "mixed"})
 
 
 def compute_effective_context_window(

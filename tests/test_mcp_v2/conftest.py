@@ -12,35 +12,70 @@ from vaner.store.scenarios import ScenarioStore
 
 
 class OfflineDaemonClient:
-    async def get_prepared_work(self, **_kwargs):
+    """Test stub used by every test in `test_mcp_v2/`. Each method
+    raises ``VanerDaemonUnavailable`` so the MCP server's local-
+    fallback code paths run without a real cockpit on the wire.
+
+    PR #211's cockpit refresh added new daemon endpoints
+    (``/predictions/active?include_all=true``, ``/scenarios/{id}``,
+    extensions to ``/work-products/{id}/inspect``, ``/goals``,
+    ``/artefacts``, ``/learning/recent``) and the MCP server gained
+    call sites for each. The stub funnels all of them to the same
+    daemon-unavailable signal so the local-fallback paths exercise
+    correctly without a manual per-method override."""
+
+    async def _unavailable(self):
         from vaner.clients.daemon import VanerDaemonUnavailable
 
         raise VanerDaemonUnavailable("offline test daemon")
+
+    async def get_prepared_work(self, **_kwargs):
+        await self._unavailable()
 
     async def list_work_products(self, **_kwargs):
-        from vaner.clients.daemon import VanerDaemonUnavailable
-
-        raise VanerDaemonUnavailable("offline test daemon")
+        await self._unavailable()
 
     async def inspect_work_product(self, _product_id: str):
-        from vaner.clients.daemon import VanerDaemonUnavailable
-
-        raise VanerDaemonUnavailable("offline test daemon")
+        await self._unavailable()
 
     async def export_work_product(self, _product_id: str):
-        from vaner.clients.daemon import VanerDaemonUnavailable
-
-        raise VanerDaemonUnavailable("offline test daemon")
+        await self._unavailable()
 
     async def dismiss_work_product(self, _product_id: str):
-        from vaner.clients.daemon import VanerDaemonUnavailable
-
-        raise VanerDaemonUnavailable("offline test daemon")
+        await self._unavailable()
 
     async def feedback_work_product(self, _product_id: str, _feedback_state: str):
-        from vaner.clients.daemon import VanerDaemonUnavailable
+        await self._unavailable()
 
-        raise VanerDaemonUnavailable("offline test daemon")
+    async def get_predictions_active(self, **_kwargs):
+        await self._unavailable()
+
+    async def get_status(self):
+        await self._unavailable()
+
+    async def get_prediction(self, _prediction_id: str):
+        await self._unavailable()
+
+    async def adopt_prediction(self, _prediction_id: str):
+        await self._unavailable()
+
+    async def get_goals(self):
+        await self._unavailable()
+
+    async def get_artefacts(self, **_kwargs):
+        await self._unavailable()
+
+    async def get_artefact(self, _artefact_id: str):
+        await self._unavailable()
+
+    async def get_learning_recent(self, **_kwargs):
+        await self._unavailable()
+
+    async def get_scenario(self, _scenario_id: str):
+        await self._unavailable()
+
+    async def resolve(self, *_args, **_kwargs):
+        await self._unavailable()
 
 
 @pytest.fixture
