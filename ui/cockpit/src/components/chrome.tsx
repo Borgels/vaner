@@ -27,6 +27,8 @@ export interface CommandItem {
   run: () => void
 }
 
+export type CockpitView = 'pipeline' | 'goals'
+
 interface TopBarProps {
   running: boolean
   onToggleRun: () => void
@@ -36,6 +38,13 @@ interface TopBarProps {
   mode: UIMode
   query: string
   onQuery: (value: string) => void
+  /**
+   * Cockpit refresh: when present, render a small Pipeline/Goals toggle
+   * so advanced users can switch the main canvas to the goals destination
+   * without leaving the cockpit. Omitted on hosts that don't expose goals.
+   */
+  view?: CockpitView
+  onChangeView?: (view: CockpitView) => void
 }
 
 const MODE_LABEL: Record<UIMode, string> = {
@@ -44,7 +53,18 @@ const MODE_LABEL: Record<UIMode, string> = {
   mcp: 'MCP',
 }
 
-export function TopBar({ running, onToggleRun, packageState, onOpenSettings, onOpenPalette, mode, query, onQuery }: TopBarProps) {
+export function TopBar({
+  running,
+  onToggleRun,
+  packageState,
+  onOpenSettings,
+  onOpenPalette,
+  mode,
+  query,
+  onQuery,
+  view,
+  onChangeView,
+}: TopBarProps) {
   return (
     <div
       style={{
@@ -111,6 +131,32 @@ export function TopBar({ running, onToggleRun, packageState, onOpenSettings, onO
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        {view && onChangeView ? (
+          <div
+            role="tablist"
+            aria-label="Cockpit view"
+            style={{ display: 'flex', border: '1px solid var(--line-1)', borderRadius: 'var(--r-1)' }}
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === 'pipeline'}
+              onClick={() => onChangeView('pipeline')}
+              style={viewTabStyle(view === 'pipeline')}
+            >
+              Pipeline
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === 'goals'}
+              onClick={() => onChangeView('goals')}
+              style={viewTabStyle(view === 'goals')}
+            >
+              Goals
+            </button>
+          </div>
+        ) : null}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span
             style={{
@@ -186,6 +232,19 @@ const headerBtn: React.CSSProperties = {
   gap: 5,
 }
 
+function viewTabStyle(active: boolean): React.CSSProperties {
+  return {
+    background: active ? 'var(--bg-2)' : 'transparent',
+    border: 'none',
+    color: active ? 'var(--fg-1)' : 'var(--fg-3)',
+    padding: '5px 10px',
+    fontFamily: 'var(--font-mono)',
+    fontSize: 10.5,
+    letterSpacing: 0.4,
+    cursor: 'pointer',
+  }
+}
+
 interface LeftRailProps {
   mode: UIMode
   skills: UISkill[]
@@ -196,6 +255,12 @@ interface LeftRailProps {
   scenarioCount: number
   impact?: ImpactSummary
   header?: React.ReactNode
+  /**
+   * Cockpit refresh: small slot below the existing skills/pinned blocks.
+   * Used to render the learning summary so feedback the user gives is
+   * visibly reflected back without taking the user away from the canvas.
+   */
+  footer?: React.ReactNode
 }
 
 export function LeftRail({
@@ -208,6 +273,7 @@ export function LeftRail({
   scenarioCount,
   impact,
   header,
+  footer,
 }: LeftRailProps) {
   return (
     <div
@@ -355,6 +421,17 @@ export function LeftRail({
           ) : null}
         </div>
       </div>
+
+      {footer ? (
+        <div
+          style={{
+            padding: '12px 16px',
+            borderTop: '1px solid var(--line-hair)',
+          }}
+        >
+          {footer}
+        </div>
+      ) : null}
 
       <div style={{ flex: 1 }} />
 

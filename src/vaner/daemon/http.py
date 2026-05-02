@@ -451,6 +451,25 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         selection = select_policy_bundle(answers, hardware)
         return JSONResponse(_selection_to_dict_http(selection))
 
+    @app.post("/models/recommended")
+    async def models_recommended(request: Request) -> JSONResponse:
+        """Return the concrete runtime/model recommendation contract."""
+
+        from vaner.setup.model_recommendation import recommend_local_model
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be a JSON object")
+        raw_answers = body.get("answers")
+        answers = _answers_from_payload_http(raw_answers) if isinstance(raw_answers, dict) else None
+        hardware = _get_hardware_profile_cached()
+        return JSONResponse(recommend_local_model(answers=answers, hardware=hardware))
+
     @app.post("/setup/apply")
     async def setup_apply(request: Request) -> JSONResponse:
         """Persist answers + selected bundle id to ``.vaner/config.toml``.
@@ -476,7 +495,8 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             apply_policy_bundle,
         )
         from vaner.setup.catalog import bundle_by_id
-        from vaner.setup.config_io import persist_setup_and_policy
+        from vaner.setup.config_io import persist_runtime_recommendation, persist_setup_and_policy
+        from vaner.setup.model_recommendation import recommend_local_model
         from vaner.setup.select import select_policy_bundle
         from vaner.setup.serializers import answers_from_payload
 
@@ -585,6 +605,8 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
 
         completed_at = datetime.now(UTC)
         config_path = persist_setup_and_policy(repo_root, answers, chosen_bundle_id, completed_at=completed_at)
+        model_recommendation = recommend_local_model(answers=answers, hardware=_get_hardware_profile_cached())
+        persist_runtime_recommendation(repo_root, model_recommendation)
 
         return JSONResponse(
             {
@@ -596,6 +618,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 "applied_policy": applied_summary,
                 "bundle": _bundle_to_dict_http(bundle),
                 "config_path": str(config_path),
+                "model_recommendation": model_recommendation.get("user"),
             }
         )
 
@@ -888,7 +911,30 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         row = await scenario_store.get(scenario_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Scenario not found")
-        return JSONResponse(row.model_dump(mode="json"))
+        body = row.model_dump(mode="json")
+        # Surface the most recent invalidation signal so the Inspector can
+        # render a 'stale because' line. Only attached when the scenario
+        # is not fresh — fresh rows do not need a justification.
+        if body.get("freshness") and body["freshness"] != "fresh":
+            try:
+                from vaner.store.artefacts import ArtefactStore
+
+                store = ArtefactStore(config.repo_root / ".vaner" / "artefacts.db")
+                await store.initialize()
+                from vaner.models.signal import SignalEvent
+
+                events: list[SignalEvent] = await store.list_signal_events(limit=1)
+                if events:
+                    evt = events[0]
+                    body["latest_invalidation_signal"] = {
+                        "kind": evt.kind,
+                        "source": evt.source,
+                        "timestamp": evt.timestamp,
+                    }
+            except Exception:
+                # Don't break the route on a store hiccup.
+                pass
+        return JSONResponse(body)
 
     @app.post("/scenarios/{scenario_id}/expand")
     async def expand_item(scenario_id: str) -> JSONResponse:
@@ -936,11 +982,31 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         return store
 
     @app.get("/predictions/active")
-    async def predictions_active() -> JSONResponse:
+    async def predictions_active(include_all: bool = False) -> JSONResponse:
+        """Return ready predictions plus, optionally, all in-flight states.
+
+        ``predictions`` keeps the existing shape for back-compat (only the
+        ready tail). When ``include_all=true`` is passed, ``by_state``
+        groups every prompt in the registry by its ``readiness`` so the
+        cockpit can render the full pipeline (queued / grounding /
+        evidence_gathering / drafting / ready).
+        """
         if engine is None:
-            return JSONResponse({"predictions": []})
+            body: dict[str, Any] = {"predictions": []}
+            if include_all:
+                body["by_state"] = {}
+            return JSONResponse(body)
         active = engine.get_active_predictions()
-        return JSONResponse({"predictions": [_serialize_prediction(p) for p in active]})
+        body = {
+            "predictions": [_serialize_prediction(p) for p in active],
+        }
+        if include_all and getattr(engine, "prediction_registry", None) is not None:
+            by_state: dict[str, list[dict[str, Any]]] = {}
+            for prompt in engine.prediction_registry.all():
+                state = str(getattr(prompt.run, "readiness", "") or "unknown")
+                by_state.setdefault(state, []).append(_serialize_prediction(prompt))
+            body["by_state"] = by_state
+        return JSONResponse(body)
 
     @app.get("/predictions/{prediction_id}")
     async def predictions_one(
@@ -1015,7 +1081,26 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             raise HTTPException(status_code=404, detail="work product not found")
         inspection = build_work_product_inspection(product)
         await store.record_work_product_event(product_id, "inspect", metadata={"surface": "http"})
-        return JSONResponse(inspection.model_dump(mode="json"))
+        body = inspection.model_dump(mode="json")
+        # Cockpit refresh: surface the per-product self-eval scores and the
+        # lifecycle event log so the inspector can render confidence bars
+        # plus a 'CANDIDATE -> SURFACED -> ...' strip without round-tripping.
+        body["self_eval"] = product.self_eval.model_dump(mode="json")
+        try:
+            event_log = await store.list_work_product_events(product_id, limit=20)
+        except Exception:
+            event_log = []
+        body["events"] = [
+            {
+                "event_type": str(evt.get("event_type") or ""),
+                "timestamp": float(evt.get("timestamp") or 0.0),
+            }
+            for evt in event_log
+        ]
+        body["status"] = product.status.value
+        body["adoptability"] = product.adoptability.value
+        body["feedback_state"] = product.feedback_state.value
+        return JSONResponse(body)
 
     @app.get("/prepared-work")
     async def prepared_work(
@@ -1099,6 +1184,151 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             )
         await store.record_work_product_event(product_id, "export", metadata={"surface": "http"})
         return JSONResponse(exported.model_dump(mode="json"))
+
+    # ------------------------------------------------------------------
+    # Cockpit refresh: goals, artefacts, learning
+    # Read-only HTTP wrappers around the same store accessors used by
+    # the matching MCP tools (vaner.goals.*, vaner.artefacts.*).
+    # ------------------------------------------------------------------
+
+    async def _artefact_store() -> Any:
+        from vaner.store.artefacts import ArtefactStore
+
+        store = ArtefactStore(config.repo_root / ".vaner" / "artefacts.db")
+        await store.initialize()
+        return store
+
+    @app.get("/goals")
+    async def list_goals(status: str | None = None, limit: int = 50) -> JSONResponse:
+        store = await _artefact_store()
+        rows = await store.list_workspace_goals(
+            status=status if isinstance(status, str) and status else None,
+            limit=max(1, min(200, int(limit))),
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            entry = dict(row)
+            try:
+                entry["evidence"] = json.loads(str(row.get("evidence_json") or "[]"))
+            except Exception:
+                entry["evidence"] = []
+            try:
+                entry["related_files"] = json.loads(str(row.get("related_files_json") or "[]"))
+            except Exception:
+                entry["related_files"] = []
+            try:
+                entry["artefact_refs"] = json.loads(str(row.get("artefact_refs_json") or "[]"))
+            except Exception:
+                entry["artefact_refs"] = []
+            entry.pop("evidence_json", None)
+            entry.pop("related_files_json", None)
+            entry.pop("artefact_refs_json", None)
+            out.append(entry)
+        return JSONResponse({"goals": out})
+
+    @app.get("/artefacts")
+    async def list_artefacts(
+        status: str | None = None,
+        connector: str | None = None,
+        source_tier: str | None = None,
+        limit: int = 50,
+    ) -> JSONResponse:
+        store = await _artefact_store()
+        rows = await store.list_intent_artefacts(
+            status=status if isinstance(status, str) and status else None,
+            connector=connector if isinstance(connector, str) and connector else None,
+            source_tier=source_tier if isinstance(source_tier, str) and source_tier else None,
+            limit=max(1, min(200, int(limit))),
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            entry = dict(row)
+            try:
+                entry["linked_goals"] = json.loads(str(row.get("linked_goals_json") or "[]"))
+            except Exception:
+                entry["linked_goals"] = []
+            try:
+                entry["linked_files"] = json.loads(str(row.get("linked_files_json") or "[]"))
+            except Exception:
+                entry["linked_files"] = []
+            entry.pop("linked_goals_json", None)
+            entry.pop("linked_files_json", None)
+            out.append(entry)
+        return JSONResponse({"artefacts": out})
+
+    @app.get("/artefacts/{artefact_id}")
+    async def fetch_artefact(artefact_id: str) -> JSONResponse:
+        store = await _artefact_store()
+        row = await store.get_intent_artefact(artefact_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"no such artefact: {artefact_id}")
+        latest_snapshot_id = str(row.get("latest_snapshot") or "")
+        item_rows = (
+            await store.list_intent_artefact_items(
+                artefact_id=artefact_id,
+                snapshot_id=latest_snapshot_id or None,
+            )
+            if latest_snapshot_id
+            else []
+        )
+        items: list[dict[str, Any]] = []
+        for item_row in item_rows:
+            entry = dict(item_row)
+            for json_field, friendly in (
+                ("related_files_json", "related_files"),
+                ("related_entities_json", "related_entities"),
+                ("evidence_refs_json", "evidence_refs"),
+            ):
+                try:
+                    entry[friendly] = json.loads(str(item_row.get(json_field) or "[]"))
+                except Exception:
+                    entry[friendly] = []
+                entry.pop(json_field, None)
+            items.append(entry)
+        artefact_payload = dict(row)
+        try:
+            artefact_payload["linked_goals"] = json.loads(str(row.get("linked_goals_json") or "[]"))
+        except Exception:
+            artefact_payload["linked_goals"] = []
+        try:
+            artefact_payload["linked_files"] = json.loads(str(row.get("linked_files_json") or "[]"))
+        except Exception:
+            artefact_payload["linked_files"] = []
+        artefact_payload.pop("linked_goals_json", None)
+        artefact_payload.pop("linked_files_json", None)
+        outcomes = await store.list_reconciliation_outcomes(artefact_id=artefact_id, limit=5)
+        return JSONResponse(
+            {
+                "artefact": artefact_payload,
+                "items": items,
+                "snapshot_id": latest_snapshot_id,
+                "recent_outcomes": outcomes,
+            }
+        )
+
+    @app.get("/learning/recent")
+    async def learning_recent(limit: int = 5) -> JSONResponse:
+        store = await _artefact_store()
+        bounded = max(1, min(50, int(limit)))
+        events = await store.list_feedback_events(limit=bounded)
+        # Surface a small set of learning_state keys that downstream
+        # cockpit code can render as one-line summaries. The keys here
+        # are best-effort — missing keys simply don't appear.
+        learning_keys = (
+            "scenario_kind_priors",
+            "skill_weights",
+            "intent_priors",
+            "frontier_priors",
+        )
+        learning: dict[str, Any] = {}
+        for key in learning_keys:
+            try:
+                value = await store.get_learning_state(key)
+            except Exception:
+                value = None
+            if value is not None:
+                learning[key] = value
+        return JSONResponse({"feedback_events": events, "learning_state": learning})
 
     @app.get("/integrations/guidance")
     async def integrations_guidance(variant: str = "canonical", format: str = "body") -> JSONResponse:

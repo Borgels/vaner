@@ -570,7 +570,7 @@ ensure_ollama_model() {
   if [[ "$VANER_WITH_OLLAMA" != "1" ]]; then
     return 0
   fi
-  local target_model="${VANER_BACKEND_MODEL:-qwen2.5-coder:7b}"
+  local target_model="${VANER_BACKEND_MODEL:-qwen3.5:8b}"
   ensure_ollama || return 1
   if ollama_has_model "$target_model"; then
     ui_success "Ollama model already available: $target_model"
@@ -600,7 +600,7 @@ ollama_has_model() {
 }
 
 select_existing_ollama_model() {
-  local default_model="${1:-qwen2.5-coder:7b}"
+  local default_model="${1:-qwen3.5:8b}"
   local models=()
   local idx=1
   local choice=""
@@ -950,7 +950,7 @@ collect_backend_details() {
   case "$VANER_BACKEND_PRESET" in
     ollama)
       VANER_BACKEND_URL="${VANER_BACKEND_URL:-http://127.0.0.1:11434/v1}"
-      local default_ollama_model="qwen2.5-coder:7b"
+      local default_ollama_model="qwen3.5:8b"
       if [[ -z "$VANER_BACKEND_MODEL" ]]; then
         VANER_BACKEND_MODEL="$(select_existing_ollama_model "$default_ollama_model")"
       fi

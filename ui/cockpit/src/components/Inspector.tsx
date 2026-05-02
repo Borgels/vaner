@@ -1,4 +1,4 @@
-import type { UIEvidence, UIScenario } from '../types'
+import type { LatestInvalidationSignal, UIEvidence, UIScenario } from '../types'
 
 export interface ScoreComponent {
   label: string
@@ -12,6 +12,12 @@ interface InspectorProps {
   evidenceById: Record<string, UIEvidence[]>
   scoreComponentsById: Record<string, ScoreComponent[]>
   preparedById: Record<string, string>
+  /**
+   * Optional 'why is this stale' signal per scenario, populated lazily
+   * by Inspector callers that fetch /scenarios/{id}. Absent for fresh
+   * scenarios — they don't need a justification.
+   */
+  invalidationById?: Record<string, LatestInvalidationSignal | null | undefined>
   onSelect: (id: string) => void
   onFeedback: (id: string, result: 'useful' | 'partial' | 'irrelevant') => void
   onPin: (id: string) => void
@@ -25,6 +31,7 @@ export function Inspector({
   evidenceById,
   scoreComponentsById,
   preparedById,
+  invalidationById,
   onSelect,
   onFeedback,
   onPin,
@@ -45,6 +52,10 @@ export function Inspector({
   const evidence = evidenceById[scenario.id] ?? []
   const scores = scoreComponentsById[scenario.id] ?? []
   const prepared = preparedById[scenario.id]
+  const invalidation =
+    invalidationById && scenario.freshness !== 'fresh'
+      ? invalidationById[scenario.id] ?? null
+      : null
 
   return (
     <div className="scroll" style={{ height: '100%', overflow: 'auto', padding: 18 }}>
@@ -55,8 +66,17 @@ export function Inspector({
           </div>
           <div style={{ fontFamily: 'var(--font-display)', fontSize: 18, color: 'var(--fg-1)' }}>{scenario.title}</div>
           <div className="mono" style={{ fontSize: 10.5, color: 'var(--fg-4)', marginTop: 6 }}>
-            {scenario.id} · {scenario.kind} · score {scenario.score.toFixed(3)}
+            {scenario.id} · {scenario.kind} · score {scenario.score.toFixed(3)} · {scenario.freshness}
           </div>
+          {invalidation ? (
+            <div
+              className="mono"
+              style={{ fontSize: 10.5, color: 'var(--amber, #e6b656)', marginTop: 4 }}
+              data-testid="inspector-invalidation"
+            >
+              stale because: {invalidation.kind} ({formatTimestamp(invalidation.timestamp)})
+            </div>
+          ) : null}
         </div>
         <button type="button" onClick={onClose} style={buttonStyle} aria-label="Close inspector">
           x
@@ -87,12 +107,17 @@ export function Inspector({
 
       <div style={{ marginTop: 16 }}>
         <div className="mono" style={sectionTitle}>SCORE</div>
-        {scores.length ? scores.map((item) => (
-          <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '5px 0' }}>
-            <span>{item.label}</span>
-            <span className="mono">{Number(item.value).toFixed(3)}</span>
-          </div>
-        )) : <div style={emptyStyle}>No score breakdown.</div>}
+        {scores.length ? (
+          <>
+            <ScoreFactorBar scores={scores} />
+            {scores.map((item) => (
+              <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '5px 0' }}>
+                <span title={item.description}>{item.label}</span>
+                <span className="mono">{Number(item.value).toFixed(3)}</span>
+              </div>
+            ))}
+          </>
+        ) : <div style={emptyStyle}>No score breakdown.</div>}
       </div>
 
       {prepared ? (
@@ -141,3 +166,58 @@ const cardStyle: React.CSSProperties = {
 }
 const preStyle: React.CSSProperties = { ...cardStyle, color: 'var(--fg-2)', whiteSpace: 'pre-wrap', overflow: 'auto', fontSize: 11 }
 const emptyStyle: React.CSSProperties = { color: 'var(--fg-4)', fontSize: 12 }
+
+function formatTimestamp(epoch: number): string {
+  if (!epoch) return 'unknown'
+  const dt = Math.max(0, Date.now() / 1000 - epoch)
+  if (dt < 60) return `${Math.round(dt)}s ago`
+  if (dt < 3600) return `${Math.round(dt / 60)}m ago`
+  if (dt < 86400) return `${Math.round(dt / 3600)}h ago`
+  return `${Math.round(dt / 86400)}d ago`
+}
+
+const FACTOR_PALETTE = [
+  '#5eb2ff',
+  '#e6b656',
+  '#6cc76c',
+  '#a96666',
+  '#a36cc7',
+  '#6cc7c0',
+] as const
+
+function ScoreFactorBar({ scores }: { scores: ScoreComponent[] }) {
+  // Bar shows the relative magnitude of each factor's contribution. We
+  // normalize on absolute value so negative penalties are visible too.
+  const total = scores.reduce((sum, item) => sum + Math.abs(Number(item.value) || 0), 0)
+  if (total <= 0) return null
+  return (
+    <div
+      role="img"
+      aria-label="Score factor attribution"
+      data-testid="inspector-score-bar"
+      style={{
+        display: 'flex',
+        height: 6,
+        borderRadius: 3,
+        overflow: 'hidden',
+        marginBottom: 8,
+        background: 'var(--bg-inset, #0e0e12)',
+      }}
+    >
+      {scores.map((item, idx) => {
+        const fraction = (Math.abs(Number(item.value) || 0) / total) * 100
+        if (fraction <= 0) return null
+        const color = FACTOR_PALETTE[idx % FACTOR_PALETTE.length]
+        return (
+          <span
+            key={item.label}
+            title={`${item.label}: ${Number(item.value).toFixed(3)}${
+              item.description ? ` — ${item.description}` : ''
+            }`}
+            style={{ width: `${fraction}%`, background: color }}
+          />
+        )
+      })}
+    </div>
+  )
+}

@@ -172,19 +172,26 @@ def _assert_no_project_mutation(repo: Path) -> None:
     assert _run_git(repo, "diff", "--", "README.md", "src/calculator.py", "docs/calculator.md") == ""
 
 
-def _assert_public_payload(value: Any, repo: Path) -> None:
+def _assert_public_payload(value: Any, repo: Path, *, allow_inspect_internals: bool = False) -> None:
+    """Verify the public payload doesn't leak filesystem paths or
+    internal state. The four cockpit-refresh fields (`adoptability`,
+    `self_eval`, plus the lifecycle/feedback labels they pair with)
+    are deliberately exposed on `/work-products/{id}/inspect` so the
+    cockpit Inspector can render score-factor bars and lifecycle
+    strips. Pass `allow_inspect_internals=True` for the inspect
+    endpoint; everywhere else those fields stay forbidden."""
     text = json.dumps(value, sort_keys=True)
     forbidden = [
         str(repo),
         str(repo.parent),
         "/home/",
         "\\Users\\",
-        "adoptability",
-        "self_eval",
         "WorkProductStatus",
         "chain-of-thought",
         "PRIVATE_KEY_MARKER",
     ]
+    if not allow_inspect_internals:
+        forbidden.extend(["adoptability", "self_eval"])
     for needle in forbidden:
         assert needle not in text
 
@@ -232,7 +239,7 @@ async def test_prepared_work_product_proof_http_and_mcp_path(tmp_path: Path) -> 
         assert inspection["export_preview"]
         assert any(ref["path"] == "src/calculator.py" for ref in inspection["evidence_refs"])
         assert any(action["kind"] == "export" for action in inspection["allowed_actions"])
-        _assert_public_payload(inspection, repo)
+        _assert_public_payload(inspection, repo, allow_inspect_internals=True)
 
         exported = client.post("/work-products/wp-zero-guard-diff/export")
         assert exported.status_code == 200

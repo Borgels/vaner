@@ -1,0 +1,196 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-05-01",
+  "comment": "Family-level seed for the catalog refresher. The refresher (vaner.setup.catalog_refresh) emits one row per family using the family's :latest Ollama tag, derives params/size from the manifest's vnd.ollama.image.model layer bytes, and computes memory budgets. The seed carries family-level metadata that doesn't depend on size — display name, workload tags, ranks, sampling defaults, the model's max_context_window — plus the Ollama family name and an optional HF repo template. context_window here is the architectural ceiling; recommend_local_model picks a hardware/archetype-aware effective_context_window at recommend time, floored at 32K.",
+  "quantization_profiles": {
+    "Q4_K_M": { "bytes_per_param": 0.55, "label": "Q4_K_M", "ratio_to_fp16": 0.275 },
+    "Q5_K_M": { "bytes_per_param": 0.7, "label": "Q5_K_M", "ratio_to_fp16": 0.35 },
+    "Q6_K":   { "bytes_per_param": 0.84, "label": "Q6_K", "ratio_to_fp16": 0.42 },
+    "Q8_0":   { "bytes_per_param": 1.06, "label": "Q8_0", "ratio_to_fp16": 0.53 },
+    "FP16":   { "bytes_per_param": 2.0, "label": "FP16", "ratio_to_fp16": 1.0 }
+  },
+  "default_quantization": "Q4_K_M",
+  "families": [
+    {
+      "id": "qwen3.6",
+      "display_name": "Qwen 3.6",
+      "runtime": "ollama",
+      "ollama_family": "qwen3.6",
+      "hf_org": "Qwen",
+      "hf_repo_template": "Qwen/Qwen3.6-{size}-Instruct",
+      "workload_tags": ["general", "coding", "summarization"],
+      "stability_rank": 85,
+      "quality_rank": 98,
+      "recency_rank": 100,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 8192,
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05
+      }
+    },
+    {
+      "id": "qwen3.5",
+      "display_name": "Qwen 3.5",
+      "runtime": "ollama",
+      "ollama_family": "qwen3.5",
+      "hf_org": "Qwen",
+      "hf_repo_template": "Qwen/Qwen3.5-{size}-Instruct",
+      "workload_tags": ["general", "coding", "summarization"],
+      "stability_rank": 90,
+      "quality_rank": 95,
+      "recency_rank": 90,
+      "parameters": {
+        "context_window": 131072,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 8192,
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05
+      }
+    },
+    {
+      "id": "qwen3-coder-next",
+      "display_name": "Qwen 3 Coder Next",
+      "runtime": "ollama",
+      "ollama_family": "qwen3-coder-next",
+      "hf_org": "Qwen",
+      "hf_repo_template": "Qwen/Qwen3-Coder-Next-{size}",
+      "workload_tags": ["coding", "general"],
+      "stability_rank": 85,
+      "quality_rank": 92,
+      "recency_rank": 95,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 8192,
+        "temperature": 0.2,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05
+      }
+    },
+    {
+      "id": "qwen3-next",
+      "display_name": "Qwen 3 Next",
+      "runtime": "ollama",
+      "ollama_family": "qwen3-next",
+      "hf_org": "Qwen",
+      "hf_repo_template": "Qwen/Qwen3-Next-{size}",
+      "workload_tags": ["general", "coding"],
+      "stability_rank": 85,
+      "quality_rank": 90,
+      "recency_rank": 92,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 8192,
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05
+      }
+    },
+    {
+      "id": "llama4",
+      "display_name": "Llama 4",
+      "runtime": "ollama",
+      "ollama_family": "llama4",
+      "hf_org": "meta-llama",
+      "hf_repo_template": "meta-llama/Llama-4-{size}-Instruct",
+      "workload_tags": ["general", "summarization"],
+      "stability_rank": 90,
+      "quality_rank": 94,
+      "recency_rank": 95,
+      "parameters": {
+        "context_window": 1048576,
+        "reasoning_mode": "none",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 0,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "top_k": 50,
+        "repeat_penalty": 1.1
+      }
+    },
+    {
+      "id": "gemma4",
+      "display_name": "Gemma 4",
+      "runtime": "ollama",
+      "ollama_family": "gemma4",
+      "hf_org": "google",
+      "hf_repo_template": "google/gemma-4-{size}-it",
+      "workload_tags": ["general", "summarization", "lightweight"],
+      "stability_rank": 88,
+      "quality_rank": 78,
+      "recency_rank": 92,
+      "parameters": {
+        "context_window": 131072,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 3072,
+        "reasoning_token_budget": 4096,
+        "temperature": 0.8,
+        "top_p": 0.95,
+        "top_k": 64,
+        "repeat_penalty": 1.0
+      }
+    },
+    {
+      "id": "deepseek-r2",
+      "display_name": "DeepSeek-R2",
+      "runtime": "ollama",
+      "ollama_family": "deepseek-r2",
+      "hf_org": "deepseek-ai",
+      "hf_repo_template": "deepseek-ai/DeepSeek-R2-Distill-Qwen-{size}",
+      "workload_tags": ["general", "coding", "research"],
+      "stability_rank": 80,
+      "quality_rank": 96,
+      "recency_rank": 96,
+      "parameters": {
+        "context_window": 131072,
+        "reasoning_mode": "forced",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 16384,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 40,
+        "repeat_penalty": 1.0
+      }
+    },
+    {
+      "id": "qwen3",
+      "display_name": "Qwen 3",
+      "runtime": "ollama",
+      "ollama_family": "qwen3",
+      "hf_org": "Qwen",
+      "hf_repo_template": "Qwen/Qwen3-{size}-Instruct",
+      "workload_tags": ["general", "lightweight"],
+      "stability_rank": 95,
+      "quality_rank": 75,
+      "recency_rank": 80,
+      "parameters": {
+        "context_window": 32768,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 2048,
+        "reasoning_token_budget": 2048,
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.05
+      }
+    }
+  ]
+}

@@ -99,8 +99,15 @@ async def test_work_products_http_lifecycle(temp_repo: Path) -> None:
         ui_payload = ui_inspected.json()
         assert ui_payload["title"] == "Brief"
         assert ui_payload["why_prepared"]
-        assert "adoptability" not in ui_payload
-        assert "self_eval" not in ui_payload
+        # Cockpit refresh: /inspect now surfaces the per-product self-eval
+        # scores, the lifecycle event log, and the lifecycle/adoptability
+        # state so the UI can render confidence bars + a status strip.
+        assert "self_eval" in ui_payload
+        assert "evidence_coverage" in ui_payload["self_eval"]
+        assert "adoptability" in ui_payload
+        assert "status" in ui_payload
+        assert "feedback_state" in ui_payload
+        assert isinstance(ui_payload["events"], list)
 
         exported = client.post(f"/work-products/{pid}/export")
         assert exported.status_code == 200

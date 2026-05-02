@@ -56,6 +56,13 @@ export interface ActivePredictionsPanelProps {
   onAdopt?: (predictionId: string) => void
   /** Optional fetch override (for tests). */
   fetcher?: typeof fetch
+  /**
+   * Cockpit refresh: when true (the default) the panel asks the daemon
+   * for all in-flight predictions grouped by readiness, and renders a
+   * lane per state instead of a flat list. Set to false to retain the
+   * pre-refresh ready-only rendering.
+   */
+  showAllStates?: boolean
 }
 
 const READINESS_COLORS: Record<ReadinessState, string> = {
@@ -82,16 +89,29 @@ function isAdoptable(state: ReadinessState): boolean {
   return state === 'ready' || state === 'drafting'
 }
 
+const PIPELINE_LANES: ReadinessState[] = [
+  'queued',
+  'grounding',
+  'evidence_gathering',
+  'drafting',
+  'ready',
+]
+
 export function ActivePredictionsPanel({
   baseUrl = '',
   intervalMs = 2000,
   onAdopt,
   fetcher,
+  showAllStates = true,
 }: ActivePredictionsPanelProps) {
   const [rows, setRows] = useState<PredictionRow[]>([])
+  const [byState, setByState] = useState<Record<string, PredictionRow[]>>({})
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState<boolean>(true)
-  const endpoint = useMemo(() => `${baseUrl}/predictions/active`, [baseUrl])
+  const endpoint = useMemo(
+    () => `${baseUrl}/predictions/active${showAllStates ? '?include_all=true' : ''}`,
+    [baseUrl, showAllStates],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -105,6 +125,12 @@ export function ActivePredictionsPanel({
         const data = await response.json()
         if (cancelled) return
         setRows(Array.isArray(data.predictions) ? data.predictions : [])
+        const grouped = data.by_state && typeof data.by_state === 'object' ? data.by_state : {}
+        const cleaned: Record<string, PredictionRow[]> = {}
+        for (const [state, items] of Object.entries(grouped)) {
+          if (Array.isArray(items)) cleaned[state] = items as PredictionRow[]
+        }
+        setByState(cleaned)
         setError(null)
       } catch (err) {
         if (cancelled) return
@@ -139,11 +165,82 @@ export function ActivePredictionsPanel({
     )
   }
 
-  if (rows.length === 0) {
+  const hasGrouped = showAllStates && Object.keys(byState).length > 0
+  const totalGrouped = hasGrouped
+    ? Object.values(byState).reduce((sum, list) => sum + list.length, 0)
+    : 0
+
+  if (rows.length === 0 && totalGrouped === 0) {
     return (
       <section aria-label="Active predictions" className="active-predictions">
         <header>Active predictions</header>
         <p>No active predictions yet — Vaner hasn't enrolled any for this cycle.</p>
+      </section>
+    )
+  }
+
+  if (hasGrouped) {
+    return (
+      <section aria-label="Active predictions" className="active-predictions">
+        <header>Predictions pipeline</header>
+        <div className="pipeline-lanes" role="list">
+          {PIPELINE_LANES.map((state) => {
+            const items = byState[state] ?? []
+            const color = READINESS_COLORS[state] ?? 'var(--fg-3)'
+            return (
+              <div
+                key={state}
+                role="listitem"
+                className="pipeline-lane"
+                data-readiness={state}
+                data-testid={`prediction-lane-${state}`}
+              >
+                <div
+                  className="pipeline-lane-header"
+                  style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}
+                >
+                  <span style={{ color, fontFamily: 'var(--font-mono, monospace)', fontSize: 11 }}>
+                    {state.replace(/_/g, ' ')}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--fg-3)' }}>{items.length}</span>
+                </div>
+                <ul style={{ margin: '4px 0 0', padding: 0, listStyle: 'none' }}>
+                  {items.slice(0, 3).map((row) => {
+                    const adoptable = isAdoptable(row.run.readiness)
+                    return (
+                      <li
+                        key={row.id}
+                        data-prediction-id={row.id}
+                        style={{ fontSize: 12, padding: '2px 0' }}
+                      >
+                        <button
+                          type="button"
+                          disabled={!adoptable}
+                          onClick={() => onAdopt?.(row.id)}
+                          aria-label={`Adopt ${row.spec.label}`}
+                          style={{
+                            all: 'unset',
+                            cursor: adoptable ? 'pointer' : 'default',
+                            color: adoptable ? 'var(--accent, #5eb2ff)' : 'var(--fg-2)',
+                            display: 'block',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {renderLabel(row)}
+                        </button>
+                      </li>
+                    )
+                  })}
+                  {items.length > 3 ? (
+                    <li style={{ fontSize: 11, color: 'var(--fg-3)' }}>+{items.length - 3} more</li>
+                  ) : null}
+                </ul>
+              </div>
+            )
+          })}
+        </div>
       </section>
     )
   }
