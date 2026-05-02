@@ -101,7 +101,7 @@ def test_persist_runtime_recommendation_writes_backend(tmp_path: Path) -> None:
 
 
 def test_models_recommended_cli(monkeypatch) -> None:
-    monkeypatch.setattr("vaner.cli.commands.setup.detect", lambda: _profile())
+    monkeypatch.setattr("vaner.cli.commands.setup.detect", _profile)
     result = runner.invoke(setup_app, ["models-recommended", "--work-styles", "coding"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
