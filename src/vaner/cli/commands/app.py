@@ -1832,7 +1832,10 @@ def up(
     sensible way to "block" with structured output.
     """
     if as_json:
-        detach = True
+        # `--json` always returns immediately after emitting the line,
+        # so we don't need to flip the local `detach` flag — the
+        # branch ends with `return` before the foreground-keepalive
+        # block at the bottom of the function ever runs.
         try:
             payload = run_up(
                 _repo_root(path),
