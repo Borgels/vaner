@@ -7,6 +7,38 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-05-02
+
+### Added
+
+- `vaner up --json` emits a single structured stdout line (`{"started", "reattached", "ready", "cockpit_url", "daemon_pid", "cockpit_pid", "ports", "inotify"}`) so desktop apps and scripts can read the bring-up result without parsing human prose. (#221)
+- `HardwareProfile.gpu_devices` per-device GPU enumeration (NVML → nvidia-smi → lspci on Linux, `system_profiler` on macOS). The desktop reads `gpu_devices[0].name` to show "NVIDIA GeForce RTX 5090" instead of the generic "NVIDIA GPU" fallback. `HardwareProfile` also gains `memory_total_bytes` / `memory_display_gb` / `memory_is_unified` for sub-GB-precision budget calc. (#221, #211)
+- `vaner setup catalog refresh` — regenerates `model_registry.json` from real Ollama manifests with family-aware sampling defaults (`temperature`, `top_p`, `top_k`, `repeat_penalty`, `min_p`), runtime defaults (`keep_alive`, `num_ctx`, `num_predict`), and per-family architectural max context. The bundled registry now ships honest `params_b` derived from each family's `vnd.ollama.image.model` layer bytes. (#211)
+- `vaner setup models-recommended` — JSON CLI surface that emits the `ModelsRecommendedPayload` shape Vaner Desktop's onboarding wizard binds against (`registry`, `budget`, `hardware`, `selected`, `alternatives`, `user.next_actions`, …). Backed by `vaner.setup.model_recommendation.recommend_local_model` with hardware-aware effective-context-window calc + best-effort Ollama install probe. (#211)
+- `compute_effective_context_window()` picks a runtime-effective context per archetype + accelerator memory: 32K floor, model-architectural max ceiling, scaled by available memory headroom and boosted for long-context archetypes (coding, research, planning, mixed). (#211)
+- Cockpit refresh: new `/goals`, `/artefacts`, `/artefacts/{id}`, `/learning/recent`; `/predictions/active?include_all=true` returns the five-lane `by_state` (queued → grounding → evidence_gathering → drafting → ready); `/scenarios/{id}` attaches `latest_invalidation_signal`; `/work-products/{id}/inspect` returns `self_eval`, `events`, `status`, `adoptability`, `feedback_state`. The cockpit UI's Goals destination, ActivePredictionsPanel state-machine view, Inspector score-factor stacked bar, PreparedWorkPanel self-eval bars, and LearningPanel left-rail footer all bind against these. (#211)
+- `vaner launch <client>` end-to-end installer for Claude Code / Cursor / Codex CLI / VS Code / Zed / Windsurf / Cline / Continue / Roo Code — drops the four-layer leverage stack (MCP entry + primer + skill + plugin/hook) in one shot. (#218)
+- `vaner clients verify` reports per-layer status (MCP / Primer / Skill / Plugin) per detected client; the desktop's onboarding-completion verification panel and Companion → Agents pane both consume the same payload. (#214)
+- Per-client skill / workflow / prompt installers for Claude Code, Cursor, Codex CLI, VS Code, Cline, Continue, Roo Code (`vaner-feedback` skill across all seven). (#215)
+- Cline + Windsurf prompt-submit hooks (Phase C4) so those clients participate in Vaner's intent-capture lifecycle without manual plumbing. (#217)
+- Cursor primer surface (parallel to `plugins/vaner/`) plus Zed, Windsurf, Roo Code primers. (#213, #216)
+- Phase D-1 integration testbed: containerized Ubuntu 24.04 with Claude Code + Codex CLI + Vaner CLI installed from the working tree. `tests/integration/testbed/test-launch-clients.sh` smoke runs `vaner launch` against every supported CLI client and asserts every leverage layer landed. (#219)
+- Phase D-2 GUI testbed: full Ubuntu desktop in a container (Xvfb + metacity + x11vnc + websockify + noVNC), exposed at `http://localhost:6080/vnc.html` for end-to-end Vaner Desktop verification. (#222)
+
+### Changed
+
+- `vaner init` auto-applies the recommended policy bundle when answers can be safely defaulted; the five-question wizard is now opt-in instead of unavoidable on every new repo. (#220)
+- Local-model picker rebalanced (`stability * 1.5 + quality * 3.0 + recency * 1.0 + download_savings * 0.5`) so `vaner setup models-recommended` lands on the latest + highest-quality model that fits ("Vaner picks the best model that fits") rather than the safest small model. The "recommended" tier is also relaxed from `recommended_effective_memory_gb` (computed against the family's max context window) to `min_effective_memory_gb + 4 GB` (weights + a sensible 32K-ish KV cache), matching what `compute_effective_context_window` actually picks at runtime. RTX 5090 + Q4 now lands on Qwen 3.6 instead of Qwen 3.5. (#224)
+
+### Fixed
+
+- `vaner clients` Linux false-positive on Claude Desktop. Anthropic ships Claude Desktop only on macOS and Windows; the Linux config dir (`~/.config/Claude/`) was being created by Vaner's own installer (and other tools), so the detector flagged it as installed on every Linux machine that had ever wired a Vaner MCP entry. `_detect_claude_desktop` now gates on platform first. (#222)
+- `vaner clients install claude-code` / `codex-cli` MCP wiring: `claude mcp add` / `codex mcp add` refuse to add when a `vaner` entry already exists. The desktop's wizard "Repair" button used to bounce on this and report `mcp=failed`. The CLI now recovers automatically — drops the stale entry with the matching `mcp remove vaner [--scope user]` and retries the add — returning `action="updated"` on success. (#222)
+
+### Validation
+
+- 0.8.9 inherits 0.8.8's release-gate suite (schema, coverage, quality, regression, performance, cost, leak scan, reproducibility); no regression detected on the cockpit-refresh + model-catalog deltas.
+
 ## [0.8.8] - 2026-04-30
 
 ### Added
