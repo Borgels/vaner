@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-05-02
+
+### Changed
+
+- First PyPI publish via the `pypa/gh-action-pypi-publish` trusted-publisher OIDC flow (no API token in CI). The `release.yml` workflow gates the PyPI step on `vars.PYPI_PUBLISH=1`; flipping the variable on the repo enables auto-publish on every `v*` tag push. No code changes from 0.8.9 — this is a release-pipeline shake-down.
+
 ## [0.8.9] - 2026-05-02
 
 ### Added
