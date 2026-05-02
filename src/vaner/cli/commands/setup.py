@@ -57,7 +57,6 @@ from vaner.setup.apply import (
     apply_policy_bundle,
 )
 from vaner.setup.catalog import bundle_by_id
-from vaner.setup.models_registry import recommend as recommend_models
 from vaner.setup.config_io import (
     persist_setup_and_policy,
     read_policy_section,
@@ -66,6 +65,7 @@ from vaner.setup.config_io import (
     update_toml_section,
 )
 from vaner.setup.hardware import HardwareProfile, detect
+from vaner.setup.models_registry import recommend as recommend_models
 from vaner.setup.select import SelectionResult, select_policy_bundle
 from vaner.setup.serializers import (
     AnswersValidationError,
@@ -737,8 +737,7 @@ def recommend_cmd(
 @setup_app.command(
     "models-recommended",
     help=(
-        "Curated local-model recommendation for the user's hardware. "
-        "Emits the JSON shape Vaner Desktop's onboarding wizard binds against."
+        "Curated local-model recommendation for the user's hardware. Emits the JSON shape Vaner Desktop's onboarding wizard binds against."
     ),
 )
 def models_recommended_cmd(
@@ -746,10 +745,7 @@ def models_recommended_cmd(
         str | None,
         typer.Option(
             "--work-styles",
-            help=(
-                "Comma-separated list of WorkStyle ids (e.g. 'coding' or "
-                "'coding,research'). When omitted, defaults to 'mixed'."
-            ),
+            help=("Comma-separated list of WorkStyle ids (e.g. 'coding' or 'coding,research'). When omitted, defaults to 'mixed'."),
         ),
     ] = None,
 ) -> None:

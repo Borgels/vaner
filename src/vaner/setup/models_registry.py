@@ -117,6 +117,13 @@ MODELS: tuple[ModelEntry, ...] = (
 )
 
 
+def _gpu_devices(hw: HardwareProfile) -> list:
+    """Per-device GPU list when the WS-up-json HardwareProfile shape is
+    in flight, empty otherwise. Stays main-compatible — older
+    HardwareProfile dataclasses don't carry the field at all."""
+    return list(getattr(hw, "gpu_devices", None) or [])
+
+
 def _effective_budget_gb(hw: HardwareProfile) -> tuple[float, str, str]:
     """Return (gb, memory_source, accelerator_kind) for the picker.
 
@@ -124,18 +131,21 @@ def _effective_budget_gb(hw: HardwareProfile) -> tuple[float, str, str]:
     matches the desktop's RecommendedBudget shape.
     """
 
-    # Prefer per-device data when the daemon emitted it (0.8.9+).
-    devices = list(hw.gpu_devices) if hw.gpu_devices else []
+    # Prefer per-device data when the daemon emitted it (newer
+    # HardwareProfile shape — see `feat/up-json-and-gpu-devices`).
+    devices = _gpu_devices(hw)
     if devices:
         # Pick the device with the most memory.
-        best = max(devices, key=lambda d: d.memory_total_bytes or 0)
-        gb = (best.memory_total_bytes or 0) / (1024 ** 3)
-        if best.memory_kind == "vram":
-            return (gb, "vram", best.vendor or hw.gpu)
-        if best.memory_kind == "unified":
-            # Leave 4 GB headroom for the OS + foreground apps.
-            return (max(0.0, gb - 4.0), "unified", best.vendor or hw.gpu)
-    # Fallback to the older HardwareProfile shape.
+        best = max(devices, key=lambda d: getattr(d, "memory_total_bytes", 0) or 0)
+        bytes_total = getattr(best, "memory_total_bytes", 0) or 0
+        gb = bytes_total / (1024**3)
+        kind = getattr(best, "memory_kind", "vram")
+        vendor = getattr(best, "vendor", None) or hw.gpu
+        if kind == "vram":
+            return (gb, "vram", vendor)
+        if kind == "unified":
+            return (max(0.0, gb - 4.0), "unified", vendor)
+    # Fallback to the older HardwareProfile shape (main as of 0.8.8).
     if hw.gpu in ("nvidia", "amd") and hw.gpu_vram_gb:
         return (float(hw.gpu_vram_gb), "vram", hw.gpu)
     if hw.gpu == "apple_silicon" and hw.ram_gb:
@@ -146,10 +156,10 @@ def _effective_budget_gb(hw: HardwareProfile) -> tuple[float, str, str]:
 
 
 def _accelerator_label(hw: HardwareProfile) -> str:
-    devices = list(hw.gpu_devices) if hw.gpu_devices else []
+    devices = _gpu_devices(hw)
     if devices:
-        best = max(devices, key=lambda d: d.memory_total_bytes or 0)
-        return best.name or "GPU"
+        best = max(devices, key=lambda d: getattr(d, "memory_total_bytes", 0) or 0)
+        return getattr(best, "name", None) or "GPU"
     if hw.gpu == "nvidia":
         return "NVIDIA GPU"
     if hw.gpu == "amd":
@@ -219,11 +229,7 @@ def recommend(
     }.get(accelerator, "cpu_only")
 
     selected_dict = _entry_to_dict(selected, already_installed=selected.id in installed_models)
-    alternatives = [
-        _entry_to_dict(m, already_installed=m.id in installed_models)
-        for m in MODELS
-        if m.id != selected.id
-    ]
+    alternatives = [_entry_to_dict(m, already_installed=m.id in installed_models) for m in MODELS if m.id != selected.id]
 
     return {
         "registry": {
@@ -259,7 +265,9 @@ def recommend(
             "needs_model_download": selected.id not in installed_models,
             "next_actions": [
                 f"ollama pull {selected.id}",
-            ] if selected.id not in installed_models else [],
+            ]
+            if selected.id not in installed_models
+            else [],
             "explanation": (
                 f"{selected.display_name} fits in your {round(budget_gb, 1)} GB "
                 f"{memory_source} budget with comfortable headroom for context and KV cache."

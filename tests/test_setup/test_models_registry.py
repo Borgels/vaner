@@ -3,44 +3,38 @@
 
 from __future__ import annotations
 
-from vaner.setup.hardware import GPUDevice, HardwareProfile
+from vaner.setup.hardware import HardwareProfile
 from vaner.setup.models_registry import recommend
 
 
-def _profile(*, vram_gb: float, gpu: str = "nvidia", name: str = "GPU") -> HardwareProfile:
-    devices = (
-        GPUDevice(
-            name=name,
-            vendor=gpu,
-            kind="discrete",
-            memory_total_bytes=int(vram_gb * (1024 ** 3)),
-            memory_display_gb=vram_gb,
-            memory_kind="vram",
-        ),
-    )
+def _profile(*, vram_gb: float | None = None, ram_gb: int = 64, gpu: str = "nvidia") -> HardwareProfile:
+    """Build a HardwareProfile using only main-compatible fields.
+
+    The `gpu_devices` extension lands with `feat/up-json-and-gpu-
+    devices`; this test module stays main-compatible by sticking to
+    the legacy shape (`gpu_vram_gb`) so CI can run without that PR
+    merged first. The picker reads both shapes via `getattr`."""
     return HardwareProfile(
         os="linux",
         cpu_class="high",
-        ram_gb=64,
+        ram_gb=ram_gb,
         gpu=gpu,
-        gpu_vram_gb=vram_gb,
+        gpu_vram_gb=int(vram_gb) if vram_gb is not None else None,
         is_battery=False,
         thermal_constrained=False,
         detected_runtimes=(),
         detected_models=(),
-        tier="high_performance" if vram_gb >= 24 else ("capable" if vram_gb >= 12 else "light"),
-        gpu_devices=devices,
+        tier=("high_performance" if (vram_gb or 0) >= 24 else ("capable" if (vram_gb or 0) >= 12 else "light")),
     )
 
 
 def test_rtx_5090_picks_qwen3_32b() -> None:
     """The user's actual setup: RTX 5090, mixed work_style → qwen3:32b."""
-    payload = recommend(_profile(vram_gb=32, name="NVIDIA GeForce RTX 5090"))
+    payload = recommend(_profile(vram_gb=32))
     assert payload["selected"]["id"] == "qwen3:32b"
     assert payload["selected"]["family"] == "qwen3"
     assert payload["budget"]["accelerator"] == "nvidia"
     assert payload["budget"]["effective_gb_q4"] == 32.0
-    assert "RTX 5090" in payload["budget"]["accelerator_label"]
 
 
 def test_coding_workstyle_keeps_qwen3_when_it_fits() -> None:
