@@ -760,12 +760,8 @@ def detect() -> HardwareProfile:
     # comes off raw bytes. Apple Silicon and any device the per-GPU
     # probe flagged as `memory_kind == "unified"` count as unified.
     memory_total_bytes = max(0, int(ram_gb) * (1024**3))
-    memory_display_gb = (
-        max(1, round(memory_total_bytes / 1_000_000_000)) if memory_total_bytes > 0 else 0
-    )
-    memory_is_unified = gpu == "apple_silicon" or any(
-        getattr(d, "memory_kind", None) == "unified" for d in devices
-    )
+    memory_display_gb = max(1, round(memory_total_bytes / 1_000_000_000)) if memory_total_bytes > 0 else 0
+    memory_is_unified = gpu == "apple_silicon" or any(getattr(d, "memory_kind", None) == "unified" for d in devices)
 
     profile = HardwareProfile(
         os=effective_os,
