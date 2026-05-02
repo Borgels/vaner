@@ -921,7 +921,9 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
 
                 store = ArtefactStore(config.repo_root / ".vaner" / "artefacts.db")
                 await store.initialize()
-                events = await store.list_signal_events(limit=1)
+                from vaner.models.signal import SignalEvent
+
+                events: list[SignalEvent] = await store.list_signal_events(limit=1)
                 if events:
                     evt = events[0]
                     body["latest_invalidation_signal"] = {
