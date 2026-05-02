@@ -57,6 +57,7 @@ from vaner.setup.apply import (
     apply_policy_bundle,
 )
 from vaner.setup.catalog import bundle_by_id
+from vaner.setup.models_registry import recommend as recommend_models
 from vaner.setup.config_io import (
     persist_setup_and_policy,
     read_policy_section,
@@ -731,6 +732,63 @@ def recommend_cmd(
     hardware = detect()
     selection = select_policy_bundle(answers, hardware)
     typer.echo(json.dumps(_selection_to_dict(selection), indent=2))
+
+
+@setup_app.command(
+    "models-recommended",
+    help=(
+        "Curated local-model recommendation for the user's hardware. "
+        "Emits the JSON shape Vaner Desktop's onboarding wizard binds against."
+    ),
+)
+def models_recommended_cmd(
+    work_styles: Annotated[
+        str | None,
+        typer.Option(
+            "--work-styles",
+            help=(
+                "Comma-separated list of WorkStyle ids (e.g. 'coding' or "
+                "'coding,research'). When omitted, defaults to 'mixed'."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Programmatic model-recommendation surface for desktop / MCP wiring.
+    Reads the hardware profile, scans Ollama for already-installed
+    models (best-effort), runs the curated picker in
+    :mod:`vaner.setup.models_registry`, and prints the resulting
+    payload as JSON. The picker is intentionally small + opinionated —
+    "Vaner's pick", not "every model on Ollama" — so the wizard always
+    has a single sensible default to surface.
+    """
+    styles_tuple: tuple[str, ...] = ("mixed",)
+    if work_styles:
+        parts = [s.strip() for s in work_styles.split(",") if s.strip()]
+        if parts:
+            styles_tuple = tuple(parts)
+
+    hardware = detect()
+
+    # Best-effort probe of Ollama's installed models so we can mark
+    # the recommended entry as `already_installed=True` and skip the
+    # download step in the install plan. Failure is non-fatal — empty
+    # tuple just means "we couldn't tell, assume not installed".
+    installed: tuple[str, ...] = ()
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=2) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+            installed = tuple(m.get("name", "") for m in payload.get("models", []) if m.get("name"))
+    except Exception:
+        installed = ()
+
+    typer.echo(
+        json.dumps(
+            recommend_models(hardware, work_styles=styles_tuple, installed_models=installed),
+            indent=2,
+        )
+    )
 
 
 @setup_app.command(
