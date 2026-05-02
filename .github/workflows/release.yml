@@ -67,9 +67,36 @@ jobs:
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: "dist/*"
+      - name: Stage clean PyPI dist (drop Sigstore + intoto + SBOM siblings)
+        if: ${{ vars.PYPI_PUBLISH == '1' }}
+        run: |
+          set -euo pipefail
+          # `pypa/gh-action-pypi-publish` runs `twine check` over every file
+          # in `packages-dir`; the Sigstore bundle (`*.sigstore.json`) and any
+          # SLSA in-toto envelopes that the previous Sign / Attest steps
+          # dropped next to the wheel + sdist trip twine with
+          # "InvalidDistribution: Unknown distribution format". Stage a
+          # filtered dist that contains only the wheel + sdist + their
+          # PEP-740 attestations, leaving the rest in `dist/` for the
+          # GitHub-release upload below.
+          mkdir -p dist-pypi
+          shopt -s nullglob
+          for f in dist/*.whl dist/*.tar.gz; do
+            cp "$f" dist-pypi/
+          done
+          # Also copy attestations the action expects when `attestations:
+          # true` is set — at the time of writing those are produced by
+          # `actions/attest-build-provenance` and live alongside the
+          # artifacts inside dist/.
+          for f in dist/*.publish.attestation; do
+            [ -f "$f" ] && cp "$f" dist-pypi/
+          done
+          ls -la dist-pypi/
       - name: Publish to PyPI
         if: ${{ vars.PYPI_PUBLISH == '1' }}
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          packages-dir: dist-pypi/
       - name: Attach artifacts to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

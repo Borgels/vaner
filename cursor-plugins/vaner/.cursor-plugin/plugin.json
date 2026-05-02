@@ -1,6 +1,6 @@
 {
   "name": "vaner",
-  "version": "0.8.9",
+  "version": "0.8.10",
   "description": "Vaner: predictive context middleware for AI coding workflows. Bundles the Vaner MCP server, the vaner-feedback skill, an alwaysApply primer rule, a sessionStart hook that checks for the `vaner` CLI, and a beforeSubmitPrompt hook that pre-fetches prepared work as you type.",
   "author": {
     "name": "Borgels Olsen Holding ApS",
