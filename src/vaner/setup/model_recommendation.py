@@ -300,7 +300,25 @@ def _workload_tags(answers: SetupAnswers | None) -> set[str]:
 
 
 def _fit_status(model: RecommendedModel, effective_memory_gb: float) -> Literal["recommended", "fits", "too_large"]:
-    if effective_memory_gb >= model.recommended_effective_memory_gb:
+    """Bucket how well a model fits the user's accelerator budget.
+
+    The registry's ``recommended_effective_memory_gb`` is derived from
+    the family's *max* context window — qwen3.6 with its 262K ceiling
+    needs ~56 GB to be "recommended" by that yardstick. That's
+    accurate but punitive: a 32 GB card can comfortably run qwen3.6
+    with a 32K-or-65K context, which is what
+    :func:`compute_effective_context_window` ends up picking at
+    runtime. So we relax the "recommended" tier to "min × 1.3"
+    (weights + ~30% KV headroom — enough for a sensible context) so
+    the picker doesn't always default to a much smaller model on
+    hardware that can clearly run the larger one. The strict
+    "recommended" tier remains the upper bound.
+    """
+    # `min + 4` GB ≈ weights + a sensible 32K-ish KV-cache budget, which
+    # is what `compute_effective_context_window` actually picks at
+    # runtime on a card sized at the model's `min_effective_memory_gb`.
+    relaxed_recommended = model.min_effective_memory_gb + 4.0
+    if effective_memory_gb >= min(model.recommended_effective_memory_gb, relaxed_recommended):
         return "recommended"
     if effective_memory_gb >= model.min_effective_memory_gb:
         return "fits"
@@ -314,12 +332,22 @@ def _score_model(
     runtime_available: bool,
     fit: str,
 ) -> float:
+    """Score a candidate against the user's hardware + workload tags.
+
+    Weight choices encode "Vaner picks the best model that fits"
+    rather than "the safest small model". Quality and recency carry
+    more weight than stability or download size — a 22 GB download
+    is a one-time cost on a user's machine, but a quality / recency
+    delta is the experience every cycle. Stability stays in the
+    sum because brand-new releases occasionally have rough edges,
+    but its multiplier is reduced so the latest-of-latest entry
+    isn't penalised into oblivion."""
     tag_overlap = len(workload_tags.intersection(model.workload_tags))
-    score = model.stability_rank * 3.0
-    score += model.quality_rank * 2.2
+    score = model.stability_rank * 1.5
+    score += model.quality_rank * 3.0
     score += tag_overlap * 35.0
-    score += max(0.0, 30.0 - model.download_size_gb) * 1.5
-    score += model.recency_rank * 0.35
+    score += max(0.0, 30.0 - model.download_size_gb) * 0.5
+    score += model.recency_rank * 1.0
     if fit == "recommended":
         score += 75
     elif fit == "fits":
