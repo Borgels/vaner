@@ -42,15 +42,22 @@ def _seed_cursor(home: Path, repo_root: Path) -> None:
     (home / ".cursor").mkdir(parents=True, exist_ok=True)
 
 
-def _seed_claude_desktop(home: Path) -> None:
-    """Seed Claude Desktop's config dir at whatever path the detection
-    helper looks at on the current OS — `~/Library/Application
-    Support/Claude` on macOS, `~/.config/Claude` on Linux,
-    `%APPDATA%\\Claude` on Windows. Without this dispatch the test would
-    pass on Linux runners and fail on macOS.
+def _seed_claude_desktop(home: Path, monkeypatch: pytest.MonkeyPatch | None = None) -> None:
+    """Seed Claude Desktop's config dir under the current host's
+    detection path. Anthropic only ships Claude Desktop on macOS and
+    Windows, so the post-fix detector returns None on Linux even
+    when `~/.config/Claude/` exists (Vaner installs into that dir
+    too — see commit "fix(cli): claude-desktop Linux false-positive").
+
+    When called with a monkeypatch, force the detector to behave as
+    if running on macOS so the claude-desktop path stays exercised
+    on every CI runner. Tests that *want* the Linux behaviour
+    (false-positive guard) don't pass a monkeypatch.
     """
     from vaner.cli.commands import mcp_clients
 
+    if monkeypatch is not None:
+        monkeypatch.setattr(mcp_clients, "_platform", lambda: "darwin")
     target_dir = mcp_clients._claude_desktop_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -89,11 +96,11 @@ def test_detect_returns_every_known_client(fake_home: Path, tmp_path: Path) -> N
     assert expected.issubset(ids)
 
 
-def test_detect_marks_seeded_clients_as_installed(fake_home: Path, tmp_path: Path) -> None:
+def test_detect_marks_seeded_clients_as_installed(fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _seed_cursor(fake_home, repo)
-    _seed_claude_desktop(fake_home)
+    _seed_claude_desktop(fake_home, monkeypatch)
     _seed_continue(fake_home)
     result = runner.invoke(clients_app, ["detect", "--repo-root", str(repo), "--format", "json"])
     payload = json.loads(result.output)
@@ -104,6 +111,26 @@ def test_detect_marks_seeded_clients_as_installed(fake_home: Path, tmp_path: Pat
     # Unseeded clients remain missing.
     assert by_id["zed"]["detected"] is False
     assert by_id["windsurf"]["detected"] is False
+
+
+def test_detect_skips_claude_desktop_on_linux(fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anthropic doesn't ship Claude Desktop on Linux; seeing the
+    config dir alone (Vaner's own installer creates it) must not
+    flag the client as detected. Regression guard for the
+    `_detect_claude_desktop` platform gate."""
+    from vaner.cli.commands import mcp_clients
+
+    monkeypatch.setattr(mcp_clients, "_platform", lambda: "linux")
+    # Seed without forcing darwin — exercises the production Linux path.
+    target_dir = mcp_clients._claude_desktop_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    result = runner.invoke(clients_app, ["detect", "--repo-root", str(repo), "--format", "json"])
+    payload = json.loads(result.output)
+    by_id = {c["id"]: c for c in payload["clients"]}
+    assert by_id["claude-desktop"]["detected"] is False
 
 
 def test_detect_pretty_format_renders_table(fake_home: Path, tmp_path: Path) -> None:
@@ -166,11 +193,11 @@ def test_install_mcp_only_skips_other_layers(fake_home: Path, tmp_path: Path) ->
     assert config_path.exists()
 
 
-def test_install_all_writes_to_every_detected(fake_home: Path, tmp_path: Path) -> None:
+def test_install_all_writes_to_every_detected(fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _seed_cursor(fake_home, repo)
-    _seed_claude_desktop(fake_home)
+    _seed_claude_desktop(fake_home, monkeypatch)
     result = runner.invoke(
         clients_app,
         ["install", "--all", "--repo-root", str(repo), "--format", "json"],
@@ -245,12 +272,12 @@ def test_install_requires_name_or_all(fake_home: Path, tmp_path: Path) -> None:
     assert result.exit_code != 0
 
 
-def test_install_claude_desktop_uses_repo_scoped_server_key(fake_home: Path, tmp_path: Path) -> None:
+def test_install_claude_desktop_uses_repo_scoped_server_key(fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from vaner.cli.commands import mcp_clients
 
     repo = tmp_path / "myrepo"
     repo.mkdir()
-    _seed_claude_desktop(fake_home)
+    _seed_claude_desktop(fake_home, monkeypatch)
     result = runner.invoke(
         clients_app,
         ["install", "claude-desktop", "--repo-root", str(repo)],

@@ -410,7 +410,7 @@ def _write_cli_client(
     remove the existing entry, retry the add. Behaviour is the same
     whether the caller passed `--force` or not — the user expects
     "Install" to leave the client in the configured state, not bail
-    because the install already half-happened. """
+    because the install already half-happened."""
     if not shutil.which(executable):
         snippet = json.dumps(generic_snippet(launcher_cmd, launcher_args)["json"], indent=2)
         return WriteResult(
