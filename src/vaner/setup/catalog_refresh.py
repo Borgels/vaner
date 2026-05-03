@@ -4,14 +4,13 @@
 The seed at ``vaner/defaults/catalog_seed.json`` carries family-level
 metadata (workload tags, sampling/runtime parameter defaults from the
 model authors, quality/stability/recency ranks). The refresher emits
-**one registry row per family** using the family's ``:latest`` Ollama
-tag. ``:latest`` is what whoever published the family declared the
-canonical pull, so it's the safest default; users who want a different
-size can edit ``backend.model`` afterwards.
+**one registry row per family** using the family's configured Ollama tag.
+Most families use ``:latest``; families with hardware-sensitive sizing can
+pin a concrete tag so the setup recommendation is stable.
 
 For each family the refresher:
 
-1. ``HEAD https://registry.ollama.ai/v2/library/<family>/manifests/latest``.
+1. ``GET https://registry.ollama.ai/v2/library/<family>/manifests/<tag>``.
    404 → skip the family (not pullable). Anything else → continue.
 2. ``GET`` the manifest, sum the size of layers whose ``mediaType``
    starts with ``application/vnd.ollama.image.model`` to get the
@@ -20,9 +19,8 @@ For each family the refresher:
    quantization profile's ``bytes_per_param``. Memory budgets follow.
 
 Fallbacks: ``--offline`` / unreachable network produces a seed-only
-registry where each family becomes a single ``<family>:latest`` row
-with the seed's declared default sizing (params_b unknown, budgets
-seed-derived).
+registry where each family becomes a single ``<family>:<tag>`` row with
+the seed's declared default sizing (params_b unknown, budgets seed-derived).
 """
 
 from __future__ import annotations
@@ -48,11 +46,14 @@ class FamilySeed:
     display_name: str
     runtime: str
     ollama_family: str
+    ollama_tag: str
     hf_repo_template: str
     workload_tags: tuple[str, ...]
     quality_rank: int
     stability_rank: int
     recency_rank: int
+    default_params_b: float
+    default_download_size_gb: float
     parameters: dict[str, Any] = field(default_factory=dict)
 
 
@@ -72,11 +73,14 @@ def families_from_seed(seed: dict[str, Any]) -> list[FamilySeed]:
                 display_name=str(entry.get("display_name", entry["id"])),
                 runtime=str(entry.get("runtime", "ollama")),
                 ollama_family=str(entry.get("ollama_family", entry["id"])),
+                ollama_tag=str(entry.get("ollama_tag", "latest")),
                 hf_repo_template=str(entry.get("hf_repo_template", "")),
                 workload_tags=tuple(str(t) for t in entry.get("workload_tags", [])),
                 quality_rank=int(entry.get("quality_rank", 0)),
                 stability_rank=int(entry.get("stability_rank", 0)),
                 recency_rank=int(entry.get("recency_rank", 0)),
+                default_params_b=float(entry.get("default_params_b", 0.0)),
+                default_download_size_gb=float(entry.get("default_download_size_gb", 0.0)),
                 parameters=dict(entry.get("parameters", {})),
             )
         )
@@ -183,7 +187,7 @@ def build_registry_entry_for_family(
     online: bool,
     manifest_fetcher=fetch_ollama_manifest,
 ) -> dict[str, Any] | None:
-    """Translate one family into a single ``<family>:latest`` registry row.
+    """Translate one family into a single ``<family>:<tag>`` registry row.
 
     Returns ``None`` when the family is unreachable on Ollama (online
     mode) — caller skips it.
@@ -194,7 +198,7 @@ def build_registry_entry_for_family(
     download_gb: float = 0.0
 
     if online:
-        manifest = manifest_fetcher(family.ollama_family)
+        manifest = manifest_fetcher(family.ollama_family, tag=family.ollama_tag)
         if manifest is None:
             return None
         weights_bytes = manifest_weights_bytes(manifest)
@@ -206,10 +210,10 @@ def build_registry_entry_for_family(
         # honest than guessing; the user pulls exactly these bytes.
         params_b = round(weights_bytes / (1024**3) / bytes_per_param, 1)
     else:
-        # Offline path: emit a placeholder so the registry has a row per
-        # family. Memory budgets stay 0 — callers should refresh online.
-        params_b = 0.0
-        download_gb = 0.0
+        # Offline path: use seed sizing when available, otherwise emit a
+        # placeholder so the registry has a row per family.
+        params_b = float(family.default_params_b or 0.0)
+        download_gb = float(family.default_download_size_gb or 0.0)
 
     context_window = int(family.parameters.get("context_window", 8192))
     min_gb, rec_gb = estimate_memory_budget(params_b, bytes_per_param, context_window)
@@ -217,7 +221,7 @@ def build_registry_entry_for_family(
     parameters = dict(family.parameters)
     parameters.setdefault("num_ctx", context_window)
 
-    full_tag = f"{family.ollama_family}:latest" if family.runtime == "ollama" else family.id
+    full_tag = f"{family.ollama_family}:{family.ollama_tag}" if family.runtime == "ollama" else family.id
 
     return {
         "id": full_tag,
@@ -268,7 +272,7 @@ def build_registry(
             skipped.append({"family": family.id, "reason": f"build_error: {exc}"})
             continue
         if entry is None:
-            skipped.append({"family": family.id, "reason": "ollama_latest_not_found"})
+            skipped.append({"family": family.id, "reason": "ollama_tag_not_found", "tag": family.ollama_tag})
             continue
         models.append(entry)
 

@@ -9,8 +9,8 @@
   ],
   "models": [
     {
-      "id": "qwen3.6:latest",
-      "display_name": "Qwen 3.6",
+      "id": "qwen3.6:27b",
+      "display_name": "Qwen 3.6 27B",
       "runtime": "ollama",
       "workload_tags": [
         "general",
@@ -20,9 +20,9 @@
       "quality_rank": 98,
       "stability_rank": 85,
       "recency_rank": 100,
-      "download_size_gb": 22.3,
-      "min_effective_memory_gb": 25.4,
-      "recommended_effective_memory_gb": 55.9,
+      "download_size_gb": 14.9,
+      "min_effective_memory_gb": 17.2,
+      "recommended_effective_memory_gb": 37.9,
       "parameters": {
         "context_window": 262144,
         "reasoning_mode": "allowed",
@@ -36,7 +36,7 @@
         "num_ctx": 262144
       },
       "family_id": "qwen3.6",
-      "params_b": 40.5,
+      "params_b": 27.1,
       "quantization": "Q4_K_M"
     },
     {

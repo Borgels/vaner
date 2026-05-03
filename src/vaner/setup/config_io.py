@@ -74,9 +74,16 @@ def persist_runtime_recommendation(repo_root: Path, recommendation: dict[str, An
     model_id = str(selected.get("model_id") or selected.get("id") or "")
     base_url = str(selected.get("base_url") or "http://127.0.0.1:11434/v1")
     params = selected.get("params") if isinstance(selected.get("params"), dict) else {}
+    capability = selected.get("capability") if isinstance(selected.get("capability"), dict) else {}
+    runtime_params = selected.get("runtime_params") if isinstance(selected.get("runtime_params"), dict) else {}
     reasoning_mode = str(params.get("reasoning_mode") or "allowed")
     max_response_tokens = int(params.get("max_response_tokens") or 3072)
     reasoning_token_budget = int(params.get("reasoning_token_budget") or 4096)
+    context_window = int(capability.get("context_window") or runtime_params.get("num_ctx") or params.get("context_window") or 32768)
+    # Keep Vaner's own evidence package large enough to use long-context
+    # models, while leaving most of the window for the user's prompt,
+    # generated answer, reasoning budget, and runtime overhead.
+    max_context_tokens = min(65536, max(8192, context_window // 4))
     hardware = recommendation.get("hardware", {})
     memory_source = hardware.get("memory_source") if isinstance(hardware, dict) else None
     accelerator_type = hardware.get("accelerator_type") if isinstance(hardware, dict) else None
@@ -117,6 +124,13 @@ def persist_runtime_recommendation(repo_root: Path, recommendation: dict[str, An
         {
             "device": device,
             "embedding_device": device if device in {"cuda", "mps"} else "cpu",
+        },
+    )
+    text = update_toml_section(
+        text,
+        "limits",
+        {
+            "max_context_tokens": max_context_tokens,
         },
     )
     _atomic_write_text(config_path, text)

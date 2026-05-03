@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "generated_at": "2026-05-01",
-  "comment": "Family-level seed for the catalog refresher. The refresher (vaner.setup.catalog_refresh) emits one row per family using the family's :latest Ollama tag, derives params/size from the manifest's vnd.ollama.image.model layer bytes, and computes memory budgets. The seed carries family-level metadata that doesn't depend on size — display name, workload tags, ranks, sampling defaults, the model's max_context_window — plus the Ollama family name and an optional HF repo template. context_window here is the architectural ceiling; recommend_local_model picks a hardware/archetype-aware effective_context_window at recommend time, floored at 32K.",
+  "comment": "Family-level seed for the catalog refresher. The refresher (vaner.setup.catalog_refresh) emits one row per family using the family's configured Ollama tag, derives params/size from the manifest's vnd.ollama.image.model layer bytes, and computes memory budgets. The seed carries family-level metadata that doesn't depend on size — display name, workload tags, ranks, sampling defaults, the model's max_context_window — plus the Ollama family name and an optional HF repo template. context_window here is the architectural ceiling; recommend_local_model picks a hardware/archetype-aware effective_context_window at recommend time, floored at 32K.",
   "quantization_profiles": {
     "Q4_K_M": { "bytes_per_param": 0.55, "label": "Q4_K_M", "ratio_to_fp16": 0.275 },
     "Q5_K_M": { "bytes_per_param": 0.7, "label": "Q5_K_M", "ratio_to_fp16": 0.35 },
@@ -16,12 +16,15 @@
       "display_name": "Qwen 3.6",
       "runtime": "ollama",
       "ollama_family": "qwen3.6",
+      "ollama_tag": "27b",
       "hf_org": "Qwen",
       "hf_repo_template": "Qwen/Qwen3.6-{size}-Instruct",
       "workload_tags": ["general", "coding", "summarization"],
       "stability_rank": 85,
       "quality_rank": 98,
       "recency_rank": 100,
+      "default_params_b": 27.1,
+      "default_download_size_gb": 14.9,
       "parameters": {
         "context_window": 262144,
         "reasoning_mode": "allowed",
