@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import time
+
+import pytest
 
 from vaner.models.scenario import EvidenceRef, Scenario
 from vaner.store.scenarios import ScenarioStore
@@ -31,6 +34,8 @@ def test_suggest_returns_candidates(temp_repo, mcp_server) -> None:
 
 
 def test_suggest_does_not_wait_on_slow_prediction_snapshot(temp_repo) -> None:
+    if importlib.util.find_spec("mcp") is None:  # pragma: no cover - CI matrix dependent
+        pytest.skip("mcp package is unavailable in this test environment")
     from vaner.mcp.server import build_server
 
     (temp_repo / ".vaner").mkdir(parents=True, exist_ok=True)
