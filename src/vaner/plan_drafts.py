@@ -13,8 +13,9 @@ from typing import Any
 
 from vaner.policy.privacy import sanitize_no_absolute_paths
 
-_PLAN_BLOCK_RE = re.compile(r"<proposed_plan>\s*(.*?)\s*</proposed_plan>", re.DOTALL | re.IGNORECASE)
 _LINE_MARKER_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+")
+_PLAN_OPEN_TAG = "<proposed_plan>"
+_PLAN_CLOSE_TAG = "</proposed_plan>"
 ACTIVE_PLAN_DRAFT_STATUSES = {"draft", "active"}
 TERMINAL_PLAN_DRAFT_STATUSES = {"implemented", "completed", "superseded", "abandoned"}
 PLAN_DRAFT_STATUSES = ACTIVE_PLAN_DRAFT_STATUSES | TERMINAL_PLAN_DRAFT_STATUSES
@@ -66,10 +67,25 @@ def extract_proposed_plan_blocks(value: Any) -> list[str]:
 
     blocks: list[str] = []
 
+    def plan_blocks(text: str) -> list[str]:
+        lower = text.lower()
+        found: list[str] = []
+        cursor = 0
+        while True:
+            start = lower.find(_PLAN_OPEN_TAG, cursor)
+            if start < 0:
+                return found
+            content_start = start + len(_PLAN_OPEN_TAG)
+            end = lower.find(_PLAN_CLOSE_TAG, content_start)
+            if end < 0:
+                return found
+            found.append(text[content_start:end].strip())
+            cursor = end + len(_PLAN_CLOSE_TAG)
+
     def walk(item: Any) -> None:
         if isinstance(item, str):
-            for match in _PLAN_BLOCK_RE.finditer(item):
-                text = _normalize_plan_text(match.group(1))
+            for block in plan_blocks(item):
+                text = _normalize_plan_text(block)
                 if _is_valid_plan_text(text):
                     blocks.append(text)
             return
@@ -117,9 +133,9 @@ def record_plan_draft(
 ) -> PlanDraft:
     ts = time.time() if now is None else float(now)
     clean_text = str(sanitize_no_absolute_paths(_normalize_plan_text(text)))
-    plan_id = "plan_" + hashlib.sha256(
-        f"{source_client}\n{session_id}\n{turn_id}\n{source_event_id}\n{clean_text}".encode()
-    ).hexdigest()[:16]
+    plan_id = (
+        "plan_" + hashlib.sha256(f"{source_client}\n{session_id}\n{turn_id}\n{source_event_id}\n{clean_text}".encode()).hexdigest()[:16]
+    )
     title = _title_from_plan(clean_text)
     tasks = _tasks_from_plan(clean_text)
     summary = _summary_from_plan(clean_text, title=title, tasks=tasks)

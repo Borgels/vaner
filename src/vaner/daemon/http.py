@@ -556,8 +556,8 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 status=status,
                 accepted=body.get("accepted") if isinstance(body.get("accepted"), bool) else None,
             )
-        except ValueError as exc:
-            return JSONResponse({"code": "invalid_status", "message": str(exc)}, status_code=400)
+        except ValueError:
+            return JSONResponse({"code": "invalid_status", "message": "unsupported plan draft status"}, status_code=400)
         if draft is None:
             raise HTTPException(status_code=404, detail="plan draft not found")
         wake = request_precompute_wake(config.repo_root, reason=f"plan_draft_{status}")
@@ -658,8 +658,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                         "signal_kind": signal.kind,
                         "fs_scan": 1 if signal.source in {"fs", "fs_scan", "repo_scan"} else 0,
                         "workspace_changed": 1
-                        if signal.source in {"git", "codex", "codex_prompt", "composer"}
-                        or signal.source.startswith("intent_artefact:")
+                        if signal.source in {"git", "codex", "codex_prompt", "composer"} or signal.source.startswith("intent_artefact:")
                         else 0,
                         "path": path,
                     },
@@ -2010,11 +2009,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             limit=max(1, min(200, int(limit))),
         )
         prediction = _prediction_row_by_id(normalized_id) if entity_type == "prediction" else None
-        fallback_status = str(
-            (prediction or {}).get("readiness")
-            or ((prediction or {}).get("run") or {}).get("readiness")
-            or "queued"
-        )
+        fallback_status = str((prediction or {}).get("readiness") or ((prediction or {}).get("run") or {}).get("readiness") or "queued")
         status_value, summary, active, updated_at = _live_status_from_events(events, fallback_status)
         worker_status = read_worker_status(config.repo_root) or {}
         return JSONResponse(
@@ -2076,9 +2071,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             body: dict[str, Any] = {"predictions": []}
             if snapshot is not None:
                 body["predictions"] = [
-                    compact_serialized_prediction(row)
-                    for row in list(snapshot.get("predictions") or [])
-                    if isinstance(row, dict)
+                    compact_serialized_prediction(row) for row in list(snapshot.get("predictions") or []) if isinstance(row, dict)
                 ]
                 body["cycle_id"] = snapshot.get("cycle_id")
                 body["generated_at"] = snapshot.get("generated_at")
@@ -2089,13 +2082,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                     str(state): [compact_serialized_prediction(row) for row in list(items or []) if isinstance(row, dict)]
                     for state, items in by_state.items()
                 }
-                existing = [
-                    item
-                    for items in by_state.values()
-                    if isinstance(items, list)
-                    for item in items
-                    if isinstance(item, dict)
-                ]
+                existing = [item for items in by_state.values() if isinstance(items, list) for item in items if isinstance(item, dict)]
                 live_cards = await _live_prompt_overlay(existing, generated_at=float(body.get("generated_at") or 0.0))
                 if live_cards:
                     by_state["queued"] = [*live_cards, *list(by_state.get("queued") or [])]
@@ -2414,8 +2401,8 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
 
         try:
             apply_sources_permissions(config.repo_root, payload)
-        except OSError as exc:
-            return JSONResponse({"code": "config_write_failed", "message": str(exc)}, status_code=400)
+        except OSError:
+            return JSONResponse({"code": "config_write_failed", "message": "failed to write source permissions"}, status_code=400)
         refreshed = load_config(config.repo_root)
         config.sources = refreshed.sources
         counts = await _best_effort(_artefact_counts_by_connector(), {}, label="sources permission artefact counts")
@@ -3096,10 +3083,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                         active = engine.get_active_predictions()
                         predictions_payload = [_serialize_prediction(p) for p in active]
                     elif read_prediction_snapshot(config.repo_root) is not None:
-                        predictions_payload = [
-                            compact_serialized_prediction(row)
-                            for row in _prediction_snapshot_rows()
-                        ]
+                        predictions_payload = [compact_serialized_prediction(row) for row in _prediction_snapshot_rows()]
                     else:
                         predictions_payload = []
                     serialized_p = json.dumps(predictions_payload, sort_keys=True, default=str)
