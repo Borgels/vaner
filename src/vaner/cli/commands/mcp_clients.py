@@ -260,12 +260,33 @@ def detect_all(repo_root: Path | None = None) -> list[DetectedClient]:
             configured = config_path is not None and _contains_vaner_entry(config_path, container_key="context_servers")
         elif spec.kind == "yaml-continue":
             configured = config_path is not None and config_path.exists() and "name: vaner" in config_path.read_text(encoding="utf-8")
+        elif spec.kind in ("cli-claude", "cli-codex"):
+            configured = _cli_mcp_list_has_vaner(evidence)
         else:
             configured = False
         status = ClientStatus.CONFIGURED if configured else ClientStatus.INSTALLED
         detail = "already configured" if configured else "installed"
         detected.append(DetectedClient(spec=spec, status=status, path=config_path, detail=detail))
     return detected
+
+
+def _cli_mcp_list_has_vaner(executable: Path | None) -> bool:
+    if executable is None:
+        return False
+    try:
+        result = subprocess.run(
+            [str(executable), "mcp", "list"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    if result.returncode != 0:
+        return False
+    text = f"{result.stdout}\n{result.stderr}".lower()
+    return "vaner" in text
 
 
 def generic_snippet(launcher_cmd: str, launcher_args: list[str]) -> dict[str, object]:
@@ -396,9 +417,11 @@ def _write_cli_client(
     *,
     client_id: str,
     executable: str,
+    executable_path: Path | None,
     argv: list[str],
     launcher_cmd: str,
     launcher_args: list[str],
+    dry_run: bool = False,
     force: bool = False,
 ) -> WriteResult:
     """Drive a CLI-managed MCP registration (Claude Code, Codex CLI).
@@ -411,7 +434,8 @@ def _write_cli_client(
     whether the caller passed `--force` or not — the user expects
     "Install" to leave the client in the configured state, not bail
     because the install already half-happened."""
-    if not shutil.which(executable):
+    resolved = executable_path or (Path(binary) if (binary := shutil.which(executable)) else None)
+    if resolved is None:
         snippet = json.dumps(generic_snippet(launcher_cmd, launcher_args)["json"], indent=2)
         return WriteResult(
             client_id=client_id,
@@ -420,6 +444,9 @@ def _write_cli_client(
             error=f"{executable} binary not found",
             manual_snippet=snippet,
         )
+    argv = [str(resolved), *argv[1:]]
+    if dry_run:
+        return WriteResult(client_id=client_id, path=None, action="added")
 
     def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(args, capture_output=True, text=True, check=False, timeout=30)
@@ -535,9 +562,11 @@ def write_client(
         return _write_cli_client(
             client_id=spec.id,
             executable="claude",
+            executable_path=detected.path,
             argv=argv,
             launcher_cmd=launcher_cmd,
             launcher_args=launcher_args,
+            dry_run=dry_run,
             force=force,
         )
     if spec.kind == "cli-codex":
@@ -545,9 +574,11 @@ def write_client(
         return _write_cli_client(
             client_id=spec.id,
             executable="codex",
+            executable_path=detected.path,
             argv=argv,
             launcher_cmd=launcher_cmd,
             launcher_args=launcher_args,
+            dry_run=dry_run,
             force=force,
         )
     return WriteResult(client_id=spec.id, path=target_path, action="failed", error=f"Unsupported kind: {spec.kind}")

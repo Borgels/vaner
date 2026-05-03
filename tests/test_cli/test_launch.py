@@ -19,6 +19,7 @@ reported as ``applicable=False`` so the desktop wizard / CLI render
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -126,6 +127,98 @@ def test_launch_cline_writes_all_four_layers(fake_home: Path, tmp_path: Path) ->
             f"{layer_name} should write on a fresh tree; got {by_name[layer_name].action}"
         )
     assert result.overall == "ready"
+
+
+def test_launch_claude_code_wires_mcp_skill_and_plugin(
+    fake_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "vaner.cli.commands.mcp_clients.shutil.which",
+        lambda name: f"/fake/bin/{name}" if name in {"vaner", "claude"} else None,
+    )
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        if args[:3] == ["/fake/bin/claude", "mcp", "list"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr("vaner.cli.commands.mcp_clients.subprocess.run", fake_run)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = launch_client("claude-code", repo)
+    by_name = {layer.layer: layer for layer in result.layers}
+
+    assert by_name["mcp"].action == "added"
+    assert by_name["skill"].path == fake_home / ".claude" / "skills" / "vaner" / "vaner-feedback" / "SKILL.md"
+    assert by_name["hook"].path == fake_home / ".claude" / "plugins" / "vaner"
+    assert (fake_home / ".claude" / "plugins" / "vaner" / ".claude-plugin" / "plugin.json").exists()
+    assert any(call[:3] == ["/fake/bin/claude", "mcp", "add"] for call in calls)
+
+
+def test_launch_codex_cli_uses_detected_binary_for_mcp(
+    fake_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "vaner.cli.commands.mcp_clients.shutil.which",
+        lambda name: f"/fake/bin/{name}" if name in {"vaner", "codex"} else None,
+    )
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        if args[:3] == ["/fake/bin/codex", "mcp", "list"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr("vaner.cli.commands.mcp_clients.subprocess.run", fake_run)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = launch_client("codex-cli", repo)
+    by_name = {layer.layer: layer for layer in result.layers}
+
+    assert by_name["mcp"].action == "added"
+    assert by_name["skill"].path == fake_home / ".codex" / "skills" / "vaner-feedback" / "SKILL.md"
+    assert by_name["hook"].applicable is False
+    assert any(call[:3] == ["/fake/bin/codex", "mcp", "add"] for call in calls)
+
+
+def test_launch_codex_cli_dry_run_does_not_add_mcp(
+    fake_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "vaner.cli.commands.mcp_clients.shutil.which",
+        lambda name: f"/fake/bin/{name}" if name in {"vaner", "codex"} else None,
+    )
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        if args[:3] == ["/fake/bin/codex", "mcp", "list"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        raise AssertionError(f"dry-run should not execute {args}")
+
+    monkeypatch.setattr("vaner.cli.commands.mcp_clients.subprocess.run", fake_run)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = launch_client("codex-cli", repo, dry_run=True)
+    by_name = {layer.layer: layer for layer in result.layers}
+
+    assert by_name["mcp"].action == "added"
+    assert all(call[:3] == ["/fake/bin/codex", "mcp", "list"] for call in calls)
 
 
 def test_launch_unknown_client_returns_missing(tmp_path: Path) -> None:
