@@ -31,8 +31,17 @@ def _json(payload: dict[str, Any]) -> None:
     typer.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
-async def _daemon_get(kind: str) -> dict[str, Any]:
+async def _daemon_client_for_repo(repo_root: Path) -> VanerDaemonClient:
     client = VanerDaemonClient(base_url=daemon_base_url_from_env())
+    status = await client.get_status()
+    daemon_repo = status.get("repo_root") if isinstance(status, dict) else None
+    if not daemon_repo or Path(str(daemon_repo)).expanduser().resolve() != repo_root.resolve():
+        raise VanerDaemonUnavailable("daemon is serving a different repository")
+    return client
+
+
+async def _daemon_get(kind: str, repo_root: Path) -> dict[str, Any]:
+    client = await _daemon_client_for_repo(repo_root)
     if kind == "focus":
         return await client.get_focus()
     if kind == "route":
@@ -44,13 +53,13 @@ async def _daemon_get(kind: str) -> dict[str, Any]:
     raise ValueError(kind)
 
 
-async def _daemon_focus_action(action: str, **kwargs: Any) -> dict[str, Any]:
-    client = VanerDaemonClient(base_url=daemon_base_url_from_env())
+async def _daemon_focus_action(repo_root: Path, action: str, **kwargs: Any) -> dict[str, Any]:
+    client = await _daemon_client_for_repo(repo_root)
     return await client.focus_action(action, **kwargs)
 
 
-async def _daemon_route_set(payload: dict[str, Any]) -> dict[str, Any]:
-    client = VanerDaemonClient(base_url=daemon_base_url_from_env())
+async def _daemon_route_set(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    client = await _daemon_client_for_repo(repo_root)
     return await client.set_focus_route(payload)
 
 
@@ -151,7 +160,7 @@ def focus_status(
 ) -> None:
     root = _repo_root(repo_root)
     try:
-        payload = asyncio.run(_daemon_get("focus"))
+        payload = asyncio.run(_daemon_get("focus", root))
     except VanerDaemonUnavailable:
         payload = _local_focus(root).build_state().model_dump(mode="json")
         payload["source"] = "local_fallback"
@@ -168,7 +177,7 @@ def route_status(
 ) -> None:
     root = _repo_root(repo_root)
     try:
-        payload = asyncio.run(_daemon_get("route"))
+        payload = asyncio.run(_daemon_get("route", root))
     except VanerDaemonUnavailable:
         payload = _local_focus(root).route_state().model_dump(mode="json")
         payload["source"] = "local_fallback"
@@ -215,7 +224,7 @@ def route_set(
     if ttl_seconds is not None:
         payload["ttl_seconds"] = ttl_seconds
     try:
-        result = asyncio.run(_daemon_route_set(payload))
+        result = asyncio.run(_daemon_route_set(root, payload))
     except VanerDaemonUnavailable:
         manager = _local_focus(root)
         manager.set_route_preferences(
@@ -242,8 +251,9 @@ def focus_work_here(
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     target = str(_repo_root(path))
+    root = Path(target)
     try:
-        payload = asyncio.run(_daemon_focus_action("work-here", path=target, ttl_seconds=ttl_seconds))
+        payload = asyncio.run(_daemon_focus_action(root, "work-here", path=target, ttl_seconds=ttl_seconds))
     except VanerDaemonUnavailable:
         payload = _local_focus(Path(target)).work_here(Path(target), ttl_seconds=ttl_seconds).model_dump(mode="json")
         payload["source"] = "local_fallback"
@@ -253,8 +263,9 @@ def focus_work_here(
 @focus_app.command("pin")
 def focus_pin(path: Annotated[Path | None, typer.Argument(help="Workspace path. Defaults to cwd.")] = None) -> None:
     target = str(_repo_root(path))
+    root = Path(target)
     try:
-        payload = asyncio.run(_daemon_focus_action("pin", path=target))
+        payload = asyncio.run(_daemon_focus_action(root, "pin", path=target))
     except VanerDaemonUnavailable:
         payload = _local_focus(Path(target)).pin(Path(target)).model_dump(mode="json")
     _print_focus(payload)
@@ -264,7 +275,7 @@ def focus_pin(path: Annotated[Path | None, typer.Argument(help="Workspace path. 
 def focus_unpin(repo_root: Annotated[Path | None, typer.Option("--repo-root", "-C")] = None) -> None:
     root = _repo_root(repo_root)
     try:
-        payload = asyncio.run(_daemon_focus_action("unpin", path=str(root)))
+        payload = asyncio.run(_daemon_focus_action(root, "unpin", path=str(root)))
     except VanerDaemonUnavailable:
         payload = _local_focus(root).unpin().model_dump(mode="json")
     _print_focus(payload)
@@ -277,7 +288,7 @@ def focus_pause(
 ) -> None:
     root = _repo_root(path)
     try:
-        payload = asyncio.run(_daemon_focus_action("pause-all" if all_workspaces else "pause", path=str(root)))
+        payload = asyncio.run(_daemon_focus_action(root, "pause-all" if all_workspaces else "pause", path=str(root)))
     except VanerDaemonUnavailable:
         manager = _local_focus(root)
         payload = manager.pause_all().model_dump(mode="json") if all_workspaces else manager.pause(root).model_dump(mode="json")
@@ -288,7 +299,7 @@ def focus_pause(
 def focus_resume(path: Annotated[Path | None, typer.Argument(help="Workspace path. Defaults to cwd.")] = None) -> None:
     root = _repo_root(path)
     try:
-        payload = asyncio.run(_daemon_focus_action("resume", path=str(root)))
+        payload = asyncio.run(_daemon_focus_action(root, "resume", path=str(root)))
     except VanerDaemonUnavailable:
         payload = _local_focus(root).resume(root).model_dump(mode="json")
     _print_focus(payload)
@@ -300,9 +311,9 @@ def focus_mode(
     resource_mode: Annotated[str | None, typer.Option("--resource-mode", help="balanced, low_power, or performance.")] = None,
 ) -> None:
     try:
-        payload = asyncio.run(_daemon_focus_action("mode", mode=mode, resource_mode=resource_mode))
-    except VanerDaemonUnavailable:
         root = Path.cwd().resolve()
+        payload = asyncio.run(_daemon_focus_action(root, "mode", mode=mode, resource_mode=resource_mode))
+    except VanerDaemonUnavailable:
         payload = _local_focus(root).set_mode(mode, resource_mode=resource_mode).model_dump(mode="json")  # type: ignore[arg-type]
     _print_focus(payload)
 
@@ -317,7 +328,7 @@ def resources_status(
 ) -> None:
     root = _repo_root(repo_root)
     try:
-        payload = asyncio.run(_daemon_get("resources"))
+        payload = asyncio.run(_daemon_get("resources", root))
     except VanerDaemonUnavailable:
         payload = _local_focus(root).resources_state().model_dump(mode="json")
         payload["source"] = "local_fallback"
@@ -331,7 +342,7 @@ def jobs_status(
 ) -> None:
     root = _repo_root(repo_root)
     try:
-        payload = asyncio.run(_daemon_get("jobs"))
+        payload = asyncio.run(_daemon_get("jobs", root))
     except VanerDaemonUnavailable:
         payload = _local_focus(root).jobs_state()
         payload["source"] = "local_fallback"

@@ -52,6 +52,7 @@ export function Inspector({
   const evidence = evidenceById[scenario.id] ?? []
   const scores = scoreComponentsById[scenario.id] ?? []
   const prepared = preparedById[scenario.id]
+  const livePreparation = scenario.id.startsWith('prediction:')
   const invalidation =
     invalidationById && scenario.freshness !== 'fresh'
       ? invalidationById[scenario.id] ?? null
@@ -66,7 +67,7 @@ export function Inspector({
           </div>
           <div style={{ fontFamily: 'var(--font-display)', fontSize: 18, color: 'var(--fg-1)' }}>{scenario.title}</div>
           <div className="mono" style={{ fontSize: 10.5, color: 'var(--fg-4)', marginTop: 6 }}>
-            {scenario.id} · {scenario.kind} · score {scenario.score.toFixed(3)} · {scenario.freshness}
+            {livePreparation ? 'live preparation' : scenario.id} · {scenario.kind} · score {scenario.score.toFixed(3)} · {scenario.freshness}
           </div>
           {invalidation ? (
             <div
@@ -83,14 +84,16 @@ export function Inspector({
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
-        <button type="button" onClick={() => onFeedback(scenario.id, 'useful')} style={buttonStyle}>useful</button>
-        <button type="button" onClick={() => onFeedback(scenario.id, 'partial')} style={buttonStyle}>partial</button>
-        <button type="button" onClick={() => onFeedback(scenario.id, 'irrelevant')} style={buttonStyle}>irrelevant</button>
-        <button type="button" onClick={() => onPin(scenario.id)} style={buttonStyle}>
-          {pinnedIds.has(scenario.id) ? 'unpin' : 'pin'}
-        </button>
-      </div>
+      {livePreparation ? null : (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
+          <button type="button" onClick={() => onFeedback(scenario.id, 'useful')} style={buttonStyle}>useful</button>
+          <button type="button" onClick={() => onFeedback(scenario.id, 'partial')} style={buttonStyle}>partial</button>
+          <button type="button" onClick={() => onFeedback(scenario.id, 'irrelevant')} style={buttonStyle}>irrelevant</button>
+          <button type="button" onClick={() => onPin(scenario.id)} style={buttonStyle}>
+            {pinnedIds.has(scenario.id) ? 'unpin' : 'pin'}
+          </button>
+        </div>
+      )}
 
       <Section title="Reason">{scenario.reason || 'No reason recorded.'}</Section>
       <Section title="Path">{scenario.path || 'No path recorded.'}</Section>

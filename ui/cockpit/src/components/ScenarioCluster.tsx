@@ -19,6 +19,20 @@ export function scenarioScoreScale(score: number): number {
   return 1.35
 }
 
+function isPlanScenario(scenario: UIScenario): boolean {
+  return scenario.id.startsWith('plan_') || scenario.path.includes('/prep/plan_') || scenario.path.includes('plan draft')
+}
+
+function isPredictionScenario(scenario: UIScenario): boolean {
+  return scenario.id.startsWith('prediction:')
+}
+
+function scenarioNodeBadge(scenario: UIScenario): string {
+  if (isPlanScenario(scenario)) return 'plan'
+  if (isPredictionScenario(scenario)) return 'prep'
+  return scenario.score.toFixed(3)
+}
+
 /**
  * Jaccard similarity between two sets of path strings. Used to derive
  * implicit edges between scenarios that touch the same files even when they
@@ -522,13 +536,15 @@ export function ScenarioCluster({
           if (!position) {
             return null
           }
-          const color = KIND_COLOR[scenario.kind]
+          const plan = isPlanScenario(scenario)
+          const prediction = isPredictionScenario(scenario)
+          const color = plan ? 'var(--accent)' : KIND_COLOR[scenario.kind]
           const radius = 17 * scenarioScoreScale(scenario.score)
           const selected = selectedId === scenario.id
           const pulse = activePulses.has(scenario.id)
           const chosen = scenario.decisionState === 'chosen'
           const rejected = scenario.decisionState === 'rejected'
-          const pinned = pinnedIds.has(scenario.id)
+          const pinned = pinnedIds.has(scenario.id) || plan
           const dim = Boolean(selectedId && !highlight.has(scenario.id))
 
           return (
@@ -544,15 +560,17 @@ export function ScenarioCluster({
                 top: position.y - radius,
                 width: radius * 2,
                 height: radius * 2,
-                borderRadius: '50%',
+                borderRadius: plan ? '28%' : '50%',
                 cursor: 'pointer',
-                background: rejected ? 'transparent' : `color-mix(in oklch, ${color} 18%, transparent)`,
-                border: `1.5px solid ${color}`,
-                opacity: rejected ? 0.25 : dim ? 0.12 : 1,
+                background: rejected ? 'transparent' : `color-mix(in oklch, ${color} ${plan || prediction ? 28 : 18}%, transparent)`,
+                border: `${plan || prediction ? 2 : 1.5}px solid ${color}`,
+                opacity: rejected ? 0.25 : dim ? 0.42 : 1,
                 boxShadow: selected
                   ? `0 0 0 3px var(--bg-0), 0 0 0 5px ${color}, 0 0 26px ${color}80`
                   : pinned
                     ? `0 0 0 2px var(--bg-0), 0 0 0 4px var(--amber)`
+                  : prediction
+                    ? `0 0 18px ${color}55`
                   : chosen
                     ? `0 0 18px ${color}80`
                     : 'none',
@@ -586,7 +604,7 @@ export function ScenarioCluster({
                   whiteSpace: 'normal',
                   fontSize: 9.5,
                   lineHeight: 1.18,
-                  color: selected ? 'var(--fg-1)' : 'var(--fg-3)',
+                  color: selected || prediction ? 'var(--fg-1)' : 'var(--fg-3)',
                   marginTop: 4,
                   pointerEvents: 'none',
                   width: selected ? 260 : 210,
@@ -614,7 +632,7 @@ export function ScenarioCluster({
                   fontWeight: 500,
                 }}
               >
-                {scenario.score.toFixed(3)}
+                {scenarioNodeBadge(scenario)}
               </div>
             </div>
           )

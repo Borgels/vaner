@@ -28,10 +28,12 @@ from vaner.intent.readiness import (
 _SOURCE_LABELS: dict[str, str] = {
     "arc": "Recent work",
     "pattern": "Conversation pattern",
+    "seed_prior": "Default prior",
     "llm_branch": "Model signal",
     "macro": "Workspace signal",
     "history": "Historical pattern",
     "goal": "Active goal",
+    "horizon": "Possible next work",
     # 0.8.7 WS4 — composer-anchored predictions surface as draft-derived.
     "composer_intent": "From your current draft",
 }
@@ -94,12 +96,7 @@ def derive_card_fields(prompt: PredictedPrompt) -> CardDerivations:
 
 
 def rank_cards(prompts: list[PredictedPrompt]) -> list[PredictedPrompt]:
-    """Order predictions for the dashboard: adoptable-first, ready > drafting.
-
-    Preserves the incoming order for everything below the adoptable bar so
-    the underlying ranker (which sorts by confidence × evidence × goal
-    alignment) stays visible.
-    """
+    """Order predictions for dashboard surfaces with source-aware trust."""
     readiness_priority = {
         "ready": 0,
         "drafting": 1,
@@ -108,11 +105,31 @@ def rank_cards(prompts: list[PredictedPrompt]) -> list[PredictedPrompt]:
         "queued": 4,
         "stale": 5,
     }
+    source_priority = {
+        "composer_intent": 0,
+        "history": 1,
+        "horizon": 2,
+        "artefact_item": 3,
+        "goal": 4,
+        "arc": 5,
+        "pattern": 6,
+        "llm_branch": 7,
+        "macro": 8,
+        "seed_prior": 9,
+    }
+    specificity_priority = {
+        "concrete": 0,
+        "anchor": 1,
+        "category": 2,
+    }
     return sorted(
         prompts,
         key=lambda p: (
             0 if is_adoptable(p) else 1,
             readiness_priority.get(p.run.readiness, 9),
+            source_priority.get(p.spec.source, 9),
+            specificity_priority.get(p.spec.specificity, 9),
+            -p.artifacts.evidence_score,
             -p.spec.confidence,
         ),
     )

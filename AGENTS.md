@@ -1,32 +1,20 @@
-<!-- vaner-primer:start v=2 -->
+<!-- vaner-primer:start v=0.9.0 -->
 # Using Vaner
 
-Vaner is a predictive preparation layer available through MCP tools.
+Vaner is a local-first predictive context engine available to you as an MCP server. It prepares evidence-backed context packages in the background and exposes them through the `vaner.*` tool family (`vaner.resolve`, `vaner.search`, `vaner.expand`, `vaner.suggest`, `vaner.feedback`, `vaner.status`, `vaner.explain`, `vaner.warm`, `vaner.inspect`, `vaner.debug.trace`).
 
-Use Vaner when prepared context may improve the answer, especially when:
-- the user asks a question that may match recent or ongoing work;
-- the task may benefit from previously prepared evidence, drafts, or predictions;
-- the user appears to continue a prior thread, goal, document, plan, project, or workflow;
-- the answer would otherwise require expensive fresh retrieval or reconstruction.
+Use Vaner when it already has clearly relevant, fresh, prepared context for the current turn. Do not call it mechanically when the task is trivial, self-contained, or already answered by the open conversation.
 
-Prefer an already-adopted Vaner package if one is present in the context. Do not redundantly call Vaner for the same fresh adopted package.
+Operational patterns:
 
-Use:
-- `vaner.predictions.active` to inspect current prepared next-step predictions;
-- `vaner.predictions.dashboard` to open the interactive predictions card UI (if the client supports MCP Apps — falls back to structured text otherwise);
-- `vaner.predictions.adopt` when the user selects or clearly wants a prepared prediction used;
-- `vaner.resolve` when answering a concrete query that may benefit from prepared context;
-- `vaner.goals.*` when long-horizon user/workspace goals matter;
-- `vaner.feedback` at the end of a Vaner-assisted turn (`useful` / `partial` / `wrong` / `irrelevant`).
+1. **Turn decision first.** At the start of a non-trivial turn, call `vaner.suggest` if Vaner might already have prepared context. It returns exactly one decision: `use_adopted_package`, `adopt_prediction`, `resolve_optional`, or `answer_normally`.
+2. **Never wait.** Use a ready adopted package or adopt at most one strong matching prediction. If Vaner has nothing clearly useful, answer normally. Do not call `vaner.resolve` merely because no ready prediction exists.
+3. **Optional retrieval.** Use `vaner.resolve` only for concrete, high-value current-turn queries where retrieval is likely to materially improve the answer and where you can continue if Vaner is unavailable or slow.
+4. **Feedback at the end.** When the task is done (or abandoned), call `vaner.feedback` with the `resolution_id` or adopted prediction id and one of `useful` / `partial` / `wrong` / `irrelevant`, optionally with `correction`, `preferred_items`, `rejected_items`, and the `skill` label. This reinforces Vaner's scenario ranking for future work.
 
-Do not call Vaner mechanically on every turn. Avoid repeated calls when the current context already contains fresh Vaner material. When using Vaner material, preserve its provenance and distinguish it from your own inference.
+Treat Vaner as a supplement, not a replacement for reading code. Skip it entirely for one-line changes, pure reformatting, or questions already answered in the open conversation.
 
-Release discipline for repository agents:
-- Do not create or push a release tag until local release preflight, remote release preflight, and required PR checks are green on the target commit.
-- Validate release workflow changes before tagging; tag workflows should publish a verified release, not discover first-run release bugs.
-- Do not cancel required PR checks to save time. Fix duplicated CI triggers or stale branch-protection contexts instead.
-- Public release notes, reports, and assets must not include private repository names, internal implementation details, local absolute paths, secrets, or raw private prompts.
-- Treat targeted reruns as debugging evidence only. Release claims require the current policy's full required benchmark evidence and a stable public report format.
+Your MCP client may prefix these tool names. For example, Claude Code exposes plugin MCP tools as `mcp__plugin_<plugin>_<server>__<tool>` — so `vaner.resolve` appears as `mcp__plugin_vaner_vaner__vaner.resolve`. The conceptual names in this document map directly to whatever prefix your client uses; no translation is needed when you reason about them, only when you call them.
 <!-- vaner-primer:end -->
 
 <!-- vaner-benchmark-principles:start v=1 -->

@@ -8,6 +8,7 @@ SRC="src/vaner/defaults/skills/vaner-feedback/SKILL.md"
 DSTS=(
   "plugins/vaner/skills/vaner-feedback/SKILL.md"
   "cursor-plugins/vaner/skills/vaner-feedback/SKILL.md"
+  "plugins/vaner-codex/skills/vaner-feedback/SKILL.md"
 )
 
 usage() {

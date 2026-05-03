@@ -17,6 +17,7 @@ import pytest
 from vaner.engine import VanerEngine
 from vaner.intent.adapter import CodeRepoAdapter
 from vaner.intent.prediction_registry import PredictionRegistry
+from vaner.plan_drafts import record_plan_draft, update_plan_draft_status
 
 
 def _make_engine(repo_root: Path, *, llm) -> VanerEngine:
@@ -117,6 +118,82 @@ async def test_arc_seeded_scenarios_receive_prediction_id(temp_repo: Path):
         "didn't carry prediction_id or _process_scenario didn't wire the "
         "registry mutation"
     )
+
+
+@pytest.mark.asyncio
+async def test_latest_history_query_prediction_is_primed_first(temp_repo: Path):
+    _seed_repo_with_category_keywords(temp_repo)
+    engine = _make_engine(temp_repo, llm=_stub_llm_returning_high_confidence)
+    engine.config.exploration.llm_gate = "none"
+    await engine.initialize()
+    query = "prioritize parser prompt signal work"
+    engine._arc_model.observe(query)
+    await engine.store.insert_query_history(
+        session_id="s",
+        query_text=query,
+        selected_paths=[],
+        hit_precomputed=False,
+        token_used=0,
+    )
+
+    await engine.precompute_cycle()
+
+    concrete_history = [
+        prompt
+        for prompt in engine.get_active_predictions()
+        if prompt.spec.source == "history" and prompt.spec.anchor == query and prompt.spec.specificity == "concrete"
+    ]
+    assert concrete_history
+    prompt = concrete_history[0]
+    assert prompt.run.readiness == "ready"
+    assert prompt.artifacts.prepared_briefing
+    assert any(scenario_id.startswith("latest-query:") for scenario_id in prompt.artifacts.scenario_ids)
+
+
+@pytest.mark.asyncio
+async def test_post_plan_horizon_predictions_are_enrolled(temp_repo: Path):
+    _seed_repo_with_category_keywords(temp_repo)
+    (temp_repo / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (temp_repo / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+    engine = _make_engine(temp_repo, llm=_stub_llm_returning_high_confidence)
+    engine.config.exploration.llm_gate = "none"
+    await engine.initialize()
+    for q in ["implement the plan", "run exploration tests", "review hardening before release"]:
+        engine._arc_model.observe(q)
+        await engine.store.insert_query_history(
+            session_id="s",
+            query_text=q,
+            selected_paths=[],
+            hit_precomputed=False,
+            token_used=0,
+        )
+    draft = record_plan_draft(
+        temp_repo,
+        text="1. Add the shared turn decision layer\n2. Update UI cards\n3. Run focused tests",
+        source_client="codex",
+    )
+    update_plan_draft_status(temp_repo, draft.id, status="implemented", accepted=True)
+
+    callback_sources: list[set[str]] = []
+
+    def _capture_sources(current_engine: VanerEngine) -> None:
+        callback_sources.append({prompt.spec.source for prompt in current_engine.get_active_predictions()})
+
+    await engine.precompute_cycle(registry_ready_callback=_capture_sources)
+
+    horizon = [prompt for prompt in engine.get_active_predictions() if prompt.spec.source == "horizon"]
+    assert horizon
+    assert callback_sources
+    assert "horizon" in callback_sources[0]
+    labels = {prompt.spec.label for prompt in horizon}
+    assert {
+        "Validate current work",
+        "Review quality and risks",
+        "Harden edge cases and failure modes",
+        "Run static and security checks",
+        "Prepare commit and release handoff",
+    } <= labels
+    assert any(prompt.spec.structured and prompt.spec.structured.evidence_targets for prompt in horizon)
 
 
 # ---------------------------------------------------------------------------

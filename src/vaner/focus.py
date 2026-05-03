@@ -12,8 +12,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
-import subprocess
 import time
 from dataclasses import dataclass, field
 from ipaddress import ip_address
@@ -165,19 +163,8 @@ class _Prefs:
     pause_all: bool = False
 
 
-_PROCESS_HINTS: dict[str, tuple[str, ...]] = {
-    "cursor": ("cursor",),
-    "claude-desktop": ("claude", "Claude"),
-    "claude-code": ("claude",),
-    "vscode-copilot": ("code", "Code"),
-    "codex-cli": ("codex",),
-    "windsurf": ("windsurf",),
-    "zed": ("zed",),
-    "continue": ("continue",),
-    "cline": ("cline",),
-    "roo": ("roo",),
-}
 _SUPPORTED_OBSERVATION_CLIENT_IDS = {spec.id for spec in mcp_clients.CLIENTS} | {"mcp-session", "composer"}
+_DEFAULT_DETECT_ALL = mcp_clients.detect_all
 
 
 def _now() -> float:
@@ -208,31 +195,96 @@ def _coerce_resource_mode(mode: str) -> ResourceMode:
     return mode  # type: ignore[return-value]
 
 
-def _process_running(names: tuple[str, ...]) -> bool:
-    lowered = {name.lower() for name in names if name}
-    if not lowered:
-        return False
+def _process_name(value: Any) -> str:
+    name = str(value or "").strip().lower()
+    if not name:
+        return ""
+    return Path(name).name.removesuffix(".exe")
+
+
+def _process_tokens(cmdline: Any) -> list[str]:
+    if isinstance(cmdline, str):
+        raw = cmdline.split()
+    elif isinstance(cmdline, list | tuple):
+        raw = [str(part) for part in cmdline]
+    else:
+        raw = []
+    return [token for token in raw if token]
+
+
+def _token_basenames(tokens: list[str]) -> set[str]:
+    return {_process_name(token) for token in tokens if token}
+
+
+def _claude_management_command(tokens: list[str]) -> bool:
+    basenames = [_process_name(token) for token in tokens]
+    for index, name in enumerate(basenames):
+        if name != "claude":
+            continue
+        if index + 1 < len(basenames) and basenames[index + 1] in {"mcp", "plugin", "config"}:
+            return True
+    return False
+
+
+def _process_info_matches(client_id: str, name: Any, cmdline: Any) -> bool:
+    """Return whether a process snapshot represents a live supported client."""
+
+    proc_name = _process_name(name)
+    tokens = _process_tokens(cmdline)
+    basenames = _token_basenames(tokens)
+
+    if client_id == "codex-cli":
+        return proc_name == "codex" or "codex" in basenames or any("@openai/codex" in token.lower() for token in tokens)
+    if client_id == "vscode-copilot":
+        return proc_name in {"code", "code-insiders"}
+    if client_id == "claude-code":
+        return (proc_name == "claude" or "claude" in basenames) and not _claude_management_command(tokens)
+    if client_id == "claude-desktop":
+        return proc_name in {"claude-desktop", "claude desktop"}
+
+    exact_names: dict[str, set[str]] = {
+        "cursor": {"cursor"},
+        "windsurf": {"windsurf"},
+        "zed": {"zed", "zeditor"},
+        "continue": {"continue"},
+        "cline": {"cline"},
+        "roo": {"roo"},
+    }
+    return proc_name in exact_names.get(client_id, {client_id})
+
+
+def _iter_process_snapshots() -> list[tuple[str, list[str]]]:
+    snapshots: list[tuple[str, list[str]]] = []
     try:
         import psutil  # type: ignore[import-untyped]
 
         for proc in psutil.process_iter(["name", "cmdline"]):
             try:
-                name = str(proc.info.get("name") or "").lower()
-                cmdline = " ".join(str(part) for part in (proc.info.get("cmdline") or [])).lower()
+                snapshots.append((str(proc.info.get("name") or ""), _process_tokens(proc.info.get("cmdline") or [])))
             except Exception:
                 continue
-            if any(hint in name or hint in cmdline for hint in lowered):
-                return True
     except Exception:
-        pass
-    if shutil.which("pgrep"):
-        for name in lowered:
+        proc_root = Path("/proc")
+        for pid_dir in proc_root.iterdir() if proc_root.exists() else []:
+            if not pid_dir.name.isdigit():
+                continue
             try:
-                result = subprocess.run(["pgrep", "-f", name], capture_output=True, text=True, timeout=0.5, check=False)
+                name = pid_dir.joinpath("comm").read_text(encoding="utf-8").strip()
             except Exception:
                 continue
-            if result.returncode == 0 and result.stdout.strip():
-                return True
+            try:
+                raw_cmdline = pid_dir.joinpath("cmdline").read_bytes().decode("utf-8", errors="ignore")
+                cmdline = [part for part in raw_cmdline.split("\0") if part]
+            except Exception:
+                cmdline = []
+            snapshots.append((name, cmdline))
+    return snapshots
+
+
+def _client_process_running(client_id: str) -> bool:
+    for name, cmdline in _iter_process_snapshots():
+        if _process_info_matches(client_id, name, cmdline):
+            return True
     return False
 
 
@@ -501,11 +553,50 @@ class FocusManager:
     def _detect_clients(self, prefs: _Prefs) -> list[ClientObservation]:
         now = _now()
         detected: list[ClientObservation] = []
-        for item in mcp_clients.detect_all(self.repo_root):
-            status = item.status.value
-            configured = item.status == mcp_clients.ClientStatus.CONFIGURED
-            installed = item.status != mcp_clients.ClientStatus.MISSING
-            running = _process_running(_PROCESS_HINTS.get(item.spec.id, (item.spec.id,))) if installed else False
+        if mcp_clients.detect_all is not _DEFAULT_DETECT_ALL:
+            source_items = [
+                (
+                    item.spec,
+                    item.status != mcp_clients.ClientStatus.MISSING,
+                    item.status == mcp_clients.ClientStatus.CONFIGURED,
+                    item.path,
+                    item.status.value,
+                )
+                for item in mcp_clients.detect_all(self.repo_root)
+            ]
+        else:
+            source_items = []
+            for spec in mcp_clients.CLIENTS:
+                evidence = spec.detect(self.repo_root)
+                config_path = spec.config_path(self.repo_root)
+                installed = evidence is not None
+                configured = False
+                if installed:
+                    if spec.kind == "json-mcpServers":
+                        configured = config_path is not None and mcp_clients._contains_vaner_entry(config_path, container_key="mcpServers")
+                    elif spec.kind == "json-servers":
+                        configured = config_path is not None and mcp_clients._contains_vaner_entry(config_path, container_key="servers")
+                    elif spec.kind == "json-context_servers":
+                        configured = (
+                            config_path is not None
+                            and mcp_clients._contains_vaner_entry(config_path, container_key="context_servers")
+                        )
+                    elif spec.kind == "yaml-continue":
+                        configured = (
+                            config_path is not None
+                            and config_path.exists()
+                            and "name: vaner" in config_path.read_text(encoding="utf-8")
+                        )
+                    elif spec.kind in {"cli-claude", "cli-codex"}:
+                        # Hot focus/status paths must never shell out to host CLIs.
+                        # The installer owns exact CLI activation checks; focus only
+                        # needs a fast, conservative signal for routing.
+                        configured = True
+                status = "configured" if configured else ("installed" if installed else "missing")
+                source_items.append((spec, installed, configured, config_path, status))
+
+        for spec, installed, configured, raw_config_path, status in source_items:
+            running = _client_process_running(spec.id) if installed else False
             integration_state: Literal["missing", "installed", "configured", "wired"]
             if configured:
                 integration_state = "wired"
@@ -513,15 +604,16 @@ class FocusManager:
                 integration_state = "installed"
             else:
                 integration_state = "missing"
-            config_path = _safe_resolve(item.path) if item.path is not None else None
+            config_path = _safe_resolve(raw_config_path) if raw_config_path is not None else None
             repo_scoped_config = bool(config_path is not None and self.repo_root in config_path.parents)
-            workspace_hints = [str(self.repo_root)] if configured and repo_scoped_config else []
+            cli_managed_config = spec.kind in {"cli-claude", "cli-codex"}
+            workspace_hints = [str(self.repo_root)] if configured and (repo_scoped_config or cli_managed_config) else []
             focus_confidence = 0.75 if running and configured else (0.45 if configured else 0.0)
             detected.append(
                 ClientObservation(
-                    id=item.spec.id,
-                    kind=item.spec.kind,
-                    display_name=item.spec.label,
+                    id=spec.id,
+                    kind=spec.kind,
+                    display_name=spec.label,
                     source="daemon",
                     running=running,
                     foreground=False,
@@ -530,16 +622,17 @@ class FocusManager:
                     observed_at=now,
                     focus_confidence=focus_confidence,
                     reason_code="supported_client_probe",
-                    explanation=f"{item.spec.label} is {status}.",
+                    explanation=f"{spec.label} is {status}.",
                 )
             )
         # Keep fresh external observations for one recent activity window.
+        external: list[ClientObservation] = []
         for key, obs in list(self._observations.items()):
             if now - obs.observed_at > RECENT_ACTIVITY_SECONDS:
                 self._observations.pop(key, None)
                 continue
-            detected.append(obs)
-        return detected
+            external.append(obs)
+        return external + detected
 
     def build_state(self) -> FocusState:
         prefs = self._load_prefs()

@@ -80,6 +80,21 @@ describe('scenarioDisplayTitle', () => {
     ).toBe('Update related changes in CHANGELOG.md and pyproject.toml')
   })
 
+  it('summarizes same-directory file clusters by area', () => {
+    expect(
+      scenarioDisplayTitle(
+        payload({
+          kind: 'change',
+          entities: [
+            'ui/cockpit/src/components/PipelineCanvas.tsx',
+            'ui/cockpit/src/components/ScenarioCluster.tsx',
+            'ui/cockpit/src/components/chrome.tsx',
+          ],
+        }),
+      ),
+    ).toBe('Update 3 files in ui/cockpit/src/components')
+  })
+
   it('fills a useful reason when the daemon did not provide one', () => {
     const adapted = adaptScenario(
       payload({

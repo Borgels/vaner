@@ -71,7 +71,7 @@ def build_digest(
 
 
 def _render(entries: Sequence[DigestEntry], *, include_confidence_details: bool) -> str:
-    lines: list[str] = [OPEN_TAG, "Top prepared predictions:"]
+    lines: list[str] = [OPEN_TAG, "Top prepared context:"]
     for i, entry in enumerate(entries, start=1):
         header = f'{i}. [{entry.readiness_label}] "{entry.label}"'
         if entry.eta_bucket_label and entry.eta_bucket_label != entry.readiness_label:
@@ -85,6 +85,6 @@ def _render(entries: Sequence[DigestEntry], *, include_confidence_details: bool)
         if extras:
             lines.append("   " + " ".join(extras))
     lines.append("")
-    lines.append("If relevant, use vaner.predictions.active or vaner.predictions.adopt to inspect or adopt one.")
+    lines.append("If relevant, use vaner.suggest for the no-wait turn decision; adopt at most one strong match.")
     lines.append(CLOSE_TAG)
     return "\n".join(lines)

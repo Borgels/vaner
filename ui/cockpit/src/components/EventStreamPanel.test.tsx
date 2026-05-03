@@ -115,7 +115,7 @@ describe('EventStreamPanel', () => {
       />,
     )
 
-    expect(screen.getByText('0 active predictions')).toBeInTheDocument()
+    expect(screen.getByText('0 prepared context items')).toBeInTheDocument()
     expect(document.body.textContent).not.toContain('undefined')
   })
 })

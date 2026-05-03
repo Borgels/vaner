@@ -133,3 +133,29 @@ def test_run_up_is_idempotent_when_processes_already_running(monkeypatch, temp_r
     payload = run_up(temp_repo, host="127.0.0.1", port=8473, mcp_sse_port=8472, interval_seconds=15, open_browser=False)
     assert payload["reattached"] is True
     assert payload["started"] is False
+
+
+def test_run_down_stops_stale_same_repo_runtime_pids(monkeypatch, temp_repo) -> None:
+    write_pid(temp_repo, DAEMON_PROCESS, 1001)
+    write_pid(temp_repo, COCKPIT_PROCESS, 1002)
+    stopped: list[int] = []
+
+    monkeypatch.setattr(
+        "vaner.cli.commands.daemon._is_pid_running",
+        lambda pid: pid in {1001, 1002, 2001},
+    )
+    monkeypatch.setattr(
+        "vaner.cli.commands.supervisor._runtime_pids_for_repo",
+        lambda _repo_root: {1001, 1002, 2001},
+    )
+
+    def _fake_stop(pid: int, *_args, **_kwargs) -> bool:
+        stopped.append(pid)
+        return True
+
+    monkeypatch.setattr("vaner.cli.commands.supervisor._stop_pid", _fake_stop)
+
+    payload = run_down(temp_repo)
+
+    assert stopped == [1001, 1002, 2001]
+    assert payload["stale"] == {"pids": [2001], "stopped": [2001]}

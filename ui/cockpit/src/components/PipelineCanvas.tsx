@@ -9,7 +9,7 @@ import type {
   SignalRow,
   TargetRow,
 } from '../api/usePipelineEvents'
-import type { PipelineStage, UIScenario } from '../types'
+import type { PipelineStage, PlanDraftSummary, UIScenario } from '../types'
 import { ScenarioCluster } from './ScenarioCluster'
 
 interface LaneConfig {
@@ -30,6 +30,7 @@ const LANES: LaneConfig[] = [
 
 export interface PipelineCanvasProps {
   scenarios: UIScenario[]
+  activePlan?: PlanDraftSummary | null
   heading?: string
   emptyHint?: string
   selectedId: string | null
@@ -60,6 +61,7 @@ export interface PipelineCanvasProps {
  */
 export function PipelineCanvas({
   scenarios,
+  activePlan = null,
   heading = 'suggestions',
   emptyHint = 'No scenarios are available from the daemon yet. They will appear here after Vaner observes useful workspace activity.',
   selectedId,
@@ -103,7 +105,22 @@ export function PipelineCanvas({
           <div style={{ fontSize: 15, color: 'var(--fg-1)', fontFamily: 'var(--font-display)', marginTop: 2 }}>
             {scenarios.length} {heading} · shared file links · drag to reposition
           </div>
+          <div className="mono" style={{ marginTop: 6, color: 'var(--fg-4)', fontSize: 10, maxWidth: 520, lineHeight: 1.4 }}>
+            Node size = readiness score. Solid links = parent/child. Dashed links = shared files or plan tasks.
+          </div>
         </div>
+        {activePlan ? (
+          <div style={activePlanStyle}>
+            <div className="mono" style={{ color: 'var(--accent)', fontSize: 10, letterSpacing: 1 }}>ACTIVE PLAN</div>
+            <div style={{ color: 'var(--fg-1)', fontSize: 13, fontFamily: 'var(--font-display)', marginTop: 4 }}>{activePlan.title}</div>
+            <div style={{ color: 'var(--fg-3)', fontSize: 11.5, lineHeight: 1.4, marginTop: 5 }}>{activePlan.summary}</div>
+            {activePlan.tasks.length ? (
+              <div className="mono" style={{ color: 'var(--fg-4)', fontSize: 10, marginTop: 6 }}>
+                {activePlan.tasks.slice(0, 3).join(' · ')}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <ScenarioCluster
           scenarios={scenarios}
           selectedId={selectedId}
@@ -115,6 +132,20 @@ export function PipelineCanvas({
       </div>
     </div>
   )
+}
+
+const activePlanStyle: React.CSSProperties = {
+  position: 'absolute',
+  right: 18,
+  top: 14,
+  zIndex: 3,
+  width: 320,
+  maxWidth: 'calc(100% - 40px)',
+  padding: 12,
+  border: '1px solid var(--line-1)',
+  borderRadius: 'var(--r-2)',
+  background: 'color-mix(in oklch, var(--bg-1) 94%, transparent)',
+  boxShadow: '0 18px 40px rgba(0,0,0,.24)',
 }
 
 interface PipelineRibbonProps {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { openEventSource } from './client'
+import { getRecentEvents, openEventSource } from './client'
 import type { PipelineStage, UIEvent } from '../types'
 
 /** Shape emitted by `/events/stream` after the unified event bus refactor. */
@@ -112,6 +112,7 @@ function stageForKind(kind: string | undefined): PipelineStage {
   if (kind.startsWith('artefact.')) return 'artefacts'
   if (kind.startsWith('decision.')) return 'decisions'
   if (kind.startsWith('prediction.')) return 'prediction'
+  if (kind.startsWith('work.')) return 'work'
   return 'system'
 }
 
@@ -147,7 +148,7 @@ function snapshotMessage(stage: PipelineStage, payload: Record<string, unknown>)
     case 'scenarios':
       return `${items?.length ?? 0} scenarios available`
     case 'predictions':
-      return `${items?.length ?? 0} active predictions`
+      return `${items?.length ?? 0} prepared context items`
     case 'prediction':
       return 'Prediction metrics updated'
     case 'calibration':
@@ -157,6 +158,10 @@ function snapshotMessage(stage: PipelineStage, payload: Record<string, unknown>)
     case 'budget': {
       const util = Number(payload.budget_utilization ?? 0)
       return `Budget utilization ${(util * 100).toFixed(0)}%`
+    }
+    case 'work': {
+      const items = Array.isArray(payload.items) ? payload.items : []
+      return `${items.length} live work events`
     }
     default:
       return `${stage} updated`
@@ -418,6 +423,25 @@ export function usePipelineEvents({
       }
     }
 
+    const seedRecentEvents = async () => {
+      if (stages && !stages.includes('signals')) {
+        return
+      }
+      try {
+        const recent = await getRecentEvents({ limit: MAX_ROWS })
+        if (closed) {
+          return
+        }
+        for (const raw of [...recent.events].reverse()) {
+          const event = adaptLegacyEvent(raw)
+          setEvents((prev) => (prev.some((item) => item.id === event.id) ? prev : [event, ...prev].slice(0, MAX_EVENTS)))
+          applyEvent(event)
+        }
+      } catch {
+        // The live stream is still useful when replay is unavailable.
+      }
+    }
+
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         setLive(false)
@@ -432,6 +456,7 @@ export function usePipelineEvents({
       connect()
     }
 
+    void seedRecentEvents()
     connect()
     document.addEventListener('visibilitychange', onVisibilityChange)
 

@@ -50,6 +50,12 @@ class VanerDaemon:
             repo_root,
             len(changed_files) if changed_files is not None else "scan",
         )
+        try:
+            from vaner.intent.source_refresh import refresh_intent_artefacts_from_sources
+
+            await refresh_intent_artefacts_from_sources(self.config, self.store)
+        except Exception:
+            logger.exception("Intent artefact source refresh failed")
         include = self.config.privacy.allowed_paths or None
         files = changed_files if changed_files is not None else scan_repo_files(repo_root, include_paths=include)
         git_state = read_git_state(repo_root)

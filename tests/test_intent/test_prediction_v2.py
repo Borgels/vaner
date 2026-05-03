@@ -94,3 +94,20 @@ def test_docs_contract_prediction_can_remain_draft_ready_on_doc_evidence() -> No
     )
 
     assert structured.readiness_mode == "draft_ready"
+
+
+def test_generic_evidence_ready_overlap_is_related_not_compatible() -> None:
+    structured = structured_from_prediction_fields(
+        label="Goal: Cli",
+        description="Recent commits mention codex MCP and CLI launch",
+        anchor="cli",
+        evidence_targets=("src/vaner/cli/commands/launch.py",),
+        readiness_mode="evidence_ready",
+        confidence=0.6,
+        reason_codes=("goal",),
+    )
+
+    result = compatibility_for_query("Plan the Codex plugin prompt/session integration", structured)
+
+    assert not result.compatible
+    assert result.reason in {"related", "incompatible"}

@@ -17,6 +17,7 @@ const STAGE_COLORS: Record<PipelineStage, string> = {
   calibration: 'var(--kind-change)',
   draft: 'var(--kind-debug)',
   budget: 'var(--amber)',
+  work: 'var(--accent)',
   system: 'var(--fg-4)',
 }
 
@@ -32,6 +33,7 @@ const STAGE_ORDER: PipelineStage[] = [
   'calibration',
   'draft',
   'budget',
+  'work',
   'system',
 ]
 

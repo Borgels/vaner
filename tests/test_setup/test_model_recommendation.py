@@ -131,7 +131,8 @@ def test_persist_runtime_recommendation_writes_backend(tmp_path: Path) -> None:
     parsed = tomllib.loads((repo / ".vaner" / "config.toml").read_text(encoding="utf-8"))
     assert parsed["backend"]["name"] == "ollama"
     assert parsed["backend"]["model"] == payload["selected"]["model_id"]
-    assert parsed["exploration"]["exploration_model"] == payload["selected"]["model_id"]
+    assert parsed["exploration"]["model"] == payload["selected"]["model_id"]
+    assert "exploration_model" not in parsed["exploration"]
     assert parsed["compute"]["device"] == "cuda"
     assert parsed["limits"]["max_context_tokens"] == payload["selected"]["capability"]["context_window"] // 4
 

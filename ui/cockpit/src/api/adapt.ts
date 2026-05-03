@@ -23,6 +23,28 @@ function fileName(path: string): string {
   return path.split('/').filter(Boolean).pop() || path
 }
 
+function commonDirectory(paths: string[]): string | null {
+  const directories = paths
+    .map((path) => path.split('/').filter(Boolean).slice(0, -1))
+    .filter((parts) => parts.length > 0)
+  if (!directories.length) {
+    return null
+  }
+  const [first, ...rest] = directories
+  const common: string[] = []
+  for (const [index, part] of first.entries()) {
+    if (rest.every((candidate) => candidate[index] === part)) {
+      common.push(part)
+    } else {
+      break
+    }
+  }
+  if (!common.length) {
+    return null
+  }
+  return common.join('/')
+}
+
 function humanPathList(paths: string[]): string {
   const labels = paths.map(pathLabel)
   if (labels.length <= 2) {
@@ -64,6 +86,10 @@ function labelFromDiff(path: string, text: string): string | null {
 function labelFromPath(payload: ScenarioApiPayload): string | null {
   const entities = (payload.entities ?? []).filter(Boolean)
   if (entities.length > 1) {
+    const directory = commonDirectory(entities)
+    if (directory) {
+      return `${actionVerb(payload.kind)} ${entities.length} files in ${directory}`
+    }
     return `${actionVerb(payload.kind)} related changes in ${humanPathList(entities)}`
   }
   const path = cleanText(payload.path ?? payload.evidence?.find((item) => cleanText(item.source_path))?.source_path ?? entities[0])

@@ -113,11 +113,12 @@ def persist_runtime_recommendation(repo_root: Path, recommendation: dict[str, An
         text,
         "exploration",
         {
-            "exploration_endpoint": base_url.removesuffix("/v1") if runtime == "ollama" else base_url,
-            "exploration_model": model_id,
-            "exploration_backend": "ollama" if runtime == "ollama" else "openai",
+            "endpoint": base_url.removesuffix("/v1") if runtime == "ollama" else base_url,
+            "model": model_id,
+            "backend": "ollama" if runtime == "ollama" else "openai",
         },
     )
+    text = remove_toml_keys(text, "exploration", {"exploration_endpoint", "exploration_model", "exploration_backend"})
     text = update_toml_section(
         text,
         "compute",
@@ -199,6 +200,41 @@ def update_toml_section(text: str, section: str, values: dict[str, object]) -> s
             lines.insert(insert_at, f"{key} = {toml_literal(val)}")
             insert_at += 1
     out = "\n".join(lines)
+    return out + ("\n" if not out.endswith("\n") else "")
+
+
+def remove_toml_keys(text: str, section: str, keys: set[str]) -> str:
+    """Remove obsolete top-level keys from one TOML section."""
+
+    if not keys:
+        return text
+    lines = text.splitlines()
+    header = f"[{section}]"
+    start: int | None = None
+    for idx, line in enumerate(lines):
+        if line.strip() == header:
+            start = idx
+            break
+    if start is None:
+        return text
+
+    end = len(lines)
+    for idx in range(start + 1, len(lines)):
+        stripped = lines[idx].strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            end = idx
+            break
+
+    kept: list[str] = []
+    for idx, line in enumerate(lines):
+        if start < idx < end:
+            stripped = line.lstrip()
+            if stripped and not stripped.startswith("#"):
+                key = stripped.split("=", 1)[0].strip()
+                if key in keys:
+                    continue
+        kept.append(line)
+    out = "\n".join(kept)
     return out + ("\n" if not out.endswith("\n") else "")
 
 

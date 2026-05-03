@@ -7,6 +7,8 @@ import {
   getBackendPresets,
   getComputeDevices,
   getImpactSummary,
+  getSignalCapabilities,
+  getSourcesPermissions,
   getStatus,
   listDecisions,
   listPinnedFacts,
@@ -21,13 +23,17 @@ import {
   updateMcp,
 } from './api/client'
 import { useBootstrap } from './api/useBootstrap'
+import { useActiveWork } from './api/useActiveWork'
 import { useEvents } from './api/useEvents'
+import { useFocusRuntime } from './api/useFocusRuntime'
+import { useLiveWork, type LiveWorkSelection } from './api/useLiveWork'
 import { usePipelineEvents } from './api/usePipelineEvents'
 import { usePreparedWork } from './api/usePreparedWork'
 import { useScenarios } from './api/useScenarios'
 import {
   BoardView,
   EvidenceView,
+  FocusView,
   NowView,
   PreparedWorkView,
   TimelineView,
@@ -45,6 +51,7 @@ import {
 import { EventStreamPanel } from './components/EventStreamPanel'
 import { Inspector } from './components/Inspector'
 import { LearningPanel } from './components/LearningPanel'
+import { LiveWorkInspector } from './components/LiveWorkInspector'
 import { PipelineCanvas } from './components/PipelineCanvas'
 import { SystemVitals } from './components/SystemVitals'
 import { ACCENT_MAP, DEFAULT_COCKPIT_SETTINGS, KIND_COLOR } from './lib/constants'
@@ -59,10 +66,15 @@ import type {
   LatestInvalidationSignal,
   LimitSettings,
   MCPSettings,
+  PredictionsByState,
   PredictionSummary,
   ScenarioApiPayload,
+  SignalCapabilitiesPayload,
+  SourcesPermissionsPayload,
   StatusPayload,
   UIEvent,
+  UIScenario,
+  UIScenarioKind,
   UIPackageState,
   UIPinnedFact,
   UISkill,
@@ -72,6 +84,113 @@ import { fetchScenarioDetail } from './api/client'
 const COCKPIT_BUILD_SHA = (import.meta as unknown as { env?: { VITE_COCKPIT_SHA?: string } }).env?.VITE_COCKPIT_SHA ?? ''
 
 type ScenarioScope = 'all' | 'session' | 'focus'
+
+const PREDICTION_STATE_ORDER = ['ready', 'drafting', 'evidence_gathering', 'grounding', 'queued', 'stale']
+
+function predictionReadiness(prediction: PredictionSummary): string {
+  return String(prediction.readiness ?? prediction.run?.readiness ?? 'queued')
+}
+
+function predictionSource(prediction: PredictionSummary): string {
+  return String(prediction.spec?.source ?? prediction.source_label ?? '').toLowerCase()
+}
+
+function predictionTitle(prediction: PredictionSummary): string {
+  return prediction.display_label ?? prediction.title ?? prediction.label ?? prediction.prompt ?? prediction.spec?.label ?? prediction.id
+}
+
+function predictionTargets(prediction: PredictionSummary): string[] {
+  const targets = prediction.evidence_targets ?? prediction.watched_sources ?? prediction.spec?.structured?.evidence_targets ?? []
+  return targets.filter((target): target is string => typeof target === 'string' && target.length > 0)
+}
+
+function isHorizonPrediction(prediction: PredictionSummary): boolean {
+  return predictionSource(prediction).includes('horizon') || String(prediction.source_label ?? '').toLowerCase().includes('possible next work')
+}
+
+function predictionSortRank(prediction: PredictionSummary): number {
+  const state = predictionReadiness(prediction)
+  const stateRank = PREDICTION_STATE_ORDER.includes(state) ? PREDICTION_STATE_ORDER.indexOf(state) : PREDICTION_STATE_ORDER.length
+  if (isHorizonPrediction(prediction) && state !== 'stale') {
+    return state === 'ready' || state === 'drafting' ? -2 : -1
+  }
+  return stateRank
+}
+
+function normalizePrediction(prediction: PredictionSummary): PredictionSummary {
+  return {
+    ...prediction,
+    title: prediction.title ?? prediction.display_label ?? prediction.label ?? prediction.spec?.label ?? prediction.prompt ?? prediction.id,
+    readiness: prediction.readiness ?? prediction.run?.readiness,
+    confidence: prediction.confidence ?? prediction.spec?.confidence,
+    updated_at: prediction.updated_at ?? prediction.run?.updated_at,
+  }
+}
+
+function flattenPredictions(payload: PredictionsByState): PredictionSummary[] {
+  const byId = new Map<string, PredictionSummary>()
+  const add = (prediction: PredictionSummary) => {
+    const key = prediction.id || prediction.prediction_id
+    if (!key || byId.has(key)) return
+    byId.set(key, normalizePrediction(prediction))
+  }
+
+  ;(payload.predictions ?? []).forEach(add)
+  for (const state of PREDICTION_STATE_ORDER) {
+    ;(payload.by_state?.[state] ?? []).forEach(add)
+  }
+  Object.entries(payload.by_state ?? {})
+    .filter(([state]) => !PREDICTION_STATE_ORDER.includes(state))
+    .forEach(([, group]) => group.forEach(add))
+
+  return [...byId.values()].sort((a, b) => {
+    const lhsRank = predictionSortRank(a)
+    const rhsRank = predictionSortRank(b)
+    if (lhsRank !== rhsRank) return lhsRank - rhsRank
+    return (b.confidence ?? 0) - (a.confidence ?? 0)
+  })
+}
+
+function predictionKind(prediction: PredictionSummary): UIScenarioKind {
+  const text = `${predictionTitle(prediction)} ${prediction.ui_summary ?? ''} ${prediction.spec?.description ?? ''}`.toLowerCase()
+  if (text.includes('refactor')) return 'refactor'
+  if (/(security|codeql|test|validate|harden|failure|risk|audit|check)/i.test(text)) return 'debug'
+  if (/(document|docs|summary|explain|decision)/i.test(text)) return 'explain'
+  if (/(research|explore|compare|investigate)/i.test(text)) return 'research'
+  return 'change'
+}
+
+function predictionReason(prediction: PredictionSummary): string {
+  const matchReason = prediction.match_reason ?? ''
+  if (matchReason && !matchReason.toLowerCase().startsWith('no current-turn')) {
+    return matchReason
+  }
+  return prediction.ui_summary ?? prediction.spec?.description ?? 'Vaner is preparing this as likely next work.'
+}
+
+function scenarioFromPrediction(prediction: PredictionSummary): UIScenario {
+  const targets = predictionTargets(prediction)
+  const readiness = predictionReadiness(prediction)
+  return {
+    id: `prediction:${prediction.id || prediction.prediction_id}`,
+    kind: predictionKind(prediction),
+    title: predictionTitle(prediction),
+    score: prediction.confidence ?? prediction.spec?.confidence ?? 0.55,
+    freshness: readiness === 'stale' ? 'stale' : readiness === 'ready' || readiness === 'drafting' ? 'fresh' : 'recent',
+    depth: 0,
+    parent: null,
+    path: targets[0] ?? 'background preparation',
+    skill: null,
+    decisionState: prediction.recommended_action === 'adopt' ? 'chosen' : 'pending',
+    reason: predictionReason(prediction),
+    entities: targets.slice(0, 10),
+    pinned: false,
+  }
+}
+
+function isPredictionScenarioId(id: string): boolean {
+  return id.startsWith('prediction:')
+}
 
 function formatDecisionTime(assembledAt: number): string {
   return new Date(assembledAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -108,12 +227,14 @@ function proxyPackageFromDecision(decision: DecisionRecordPayload | null): UIPac
 function App() {
   const bootstrap = useBootstrap()
   const pipeline = usePipelineEvents({ path: '/events/stream' })
+  const activeWork = useActiveWork(2500)
   const preparedWork = usePreparedWork(24)
+  const focusRuntime = useFocusRuntime(3500)
   const [cockpit, setCockpit] = useState<CockpitSettings>(DEFAULT_COCKPIT_SETTINGS)
   const [query, setQuery] = useState('')
   const scenarioResult = useScenarios(cockpit.topK, pipeline.events)
   const { setScenarios, scenarioMap, setScenarioMap } = scenarioResult
-  const [scenarioScope, setScenarioScope] = useState<ScenarioScope>('session')
+  const [scenarioScope, setScenarioScope] = useState<ScenarioScope>('all')
   const [backend, setBackend] = useState<BackendSettings | null>(null)
   const [compute, setCompute] = useState<ComputeSettings | null>(null)
   const [mcp, setMcp] = useState<MCPSettings | null>(null)
@@ -125,10 +246,11 @@ function App() {
   const [skills, setSkills] = useState<UISkill[]>([])
   const [pinnedFacts, setPinnedFacts] = useState<UIPinnedFact[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [liveSelection, setLiveSelection] = useState<LiveWorkSelection | null>(null)
   const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [view, setView] = useState<CockpitView>('prepared-work')
+  const [view, setView] = useState<CockpitView>('focus')
   const [selectedWorkId, setSelectedWorkId] = useState<string | null>(null)
   // Cockpit refresh: lazy-loaded "stale because" reasons keyed by scenario
   // id. We only fetch on selection (and only for non-fresh rows) to avoid
@@ -145,6 +267,9 @@ function App() {
   const [predictionCalibration, setPredictionCalibration] = useState<StatusPayload['prediction_calibration'] | null>(null)
   const [predictions, setPredictions] = useState<PredictionSummary[]>([])
   const [focusState, setFocusState] = useState<StatusPayload['focus'] | null>(null)
+  const [sourcesPermissions, setSourcesPermissions] = useState<SourcesPermissionsPayload | null>(null)
+  const [signalCapabilities, setSignalCapabilities] = useState<SignalCapabilitiesPayload | null>(null)
+  const liveWork = useLiveWork(liveSelection)
 
   const bootstrapPayload = bootstrap.payload
   const mode = bootstrapPayload?.mode ?? 'daemon'
@@ -152,21 +277,56 @@ function App() {
     !bootstrapPayload?.workspace_id ||
     !focusState?.active_workspace_id ||
     focusState.active_workspace_id === bootstrapPayload.workspace_id
+  const livePlanScenario = useMemo<UIScenario | null>(() => {
+    const draft = activeWork.snapshot?.plan_draft
+    if (!draft) return null
+    return {
+      id: draft.id,
+      kind: 'change',
+      title: draft.title,
+      score: 0.99,
+      freshness: 'fresh',
+      depth: 0,
+      parent: null,
+      path: draft.prep_dir || 'plan draft',
+      skill: null,
+      decisionState: 'pending',
+      reason: draft.summary || 'Vaner is preparing against this draft plan.',
+      entities: draft.tasks?.slice(0, 6) ?? [],
+      pinned: true,
+    }
+  }, [activeWork.snapshot?.plan_draft])
+
+  const predictionScenarios = useMemo<UIScenario[]>(
+    () =>
+      predictions
+        .filter((prediction) => prediction.trust_status !== 'invalidated')
+        .filter((prediction) => isHorizonPrediction(prediction))
+        .filter((prediction) => predictionReadiness(prediction) !== 'stale')
+        .slice(0, 10)
+        .map(scenarioFromPrediction),
+    [predictions],
+  )
+
   const scenarios = useMemo(() => {
+    const withLive = (rows: UIScenario[]) => {
+      const combined = [...predictionScenarios, ...rows.filter((row) => !predictionScenarios.some((prediction) => prediction.id === row.id))]
+      return livePlanScenario ? [livePlanScenario, ...combined.filter((row) => row.id !== livePlanScenario.id)] : combined
+    }
     if (scenarioScope === 'focus' && !focusMatches) {
       return []
     }
     if (scenarioScope !== 'session' || !bootstrapPayload?.daemon_started_at) {
-      return scenarioResult.scenarios
+      return withLive(scenarioResult.scenarios)
     }
-    return scenarioResult.scenarios.filter((scenario) => {
+    return withLive(scenarioResult.scenarios.filter((scenario) => {
       if (scenario.freshness === 'stale') {
         return false
       }
       const refreshedAt = scenarioMap[scenario.id]?.last_refreshed_at ?? scenarioMap[scenario.id]?.created_at
       return typeof refreshedAt === 'number' && refreshedAt >= bootstrapPayload.daemon_started_at!
-    })
-  }, [bootstrapPayload?.daemon_started_at, focusMatches, scenarioMap, scenarioResult.scenarios, scenarioScope])
+    }))
+  }, [bootstrapPayload?.daemon_started_at, focusMatches, livePlanScenario, predictionScenarios, scenarioMap, scenarioResult.scenarios, scenarioScope])
 
   const preparedCards = useMemo(() => {
     const freshnessRank = (label: string) => {
@@ -246,7 +406,7 @@ function App() {
       return
     }
     if (!selectedId || !scenarios.some((scenario) => scenario.id === selectedId)) {
-      setSelectedId(scenarios[0].id)
+      selectScenario(scenarios[0].id)
     }
   }, [scenarios, selectedId])
 
@@ -325,15 +485,21 @@ function App() {
 
   const refreshPredictions = useCallback(async () => {
     const payload = await listPredictionsByState()
-    setPredictions(payload.predictions ?? [])
+    setPredictions(flattenPredictions(payload))
+  }, [])
+
+  const refreshSourceState = useCallback(async () => {
+    const [sourcesPayload, capabilitiesPayload] = await Promise.all([getSourcesPermissions(), getSignalCapabilities()])
+    setSourcesPermissions(sourcesPayload)
+    setSignalCapabilities(capabilitiesPayload)
   }, [])
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshStatus(), refreshDevices(), refreshPresets(), refreshSkillsPinned(), preparedWork.refresh(), refreshPredictions()])
+    await Promise.all([refreshStatus(), refreshDevices(), refreshPresets(), refreshSkillsPinned(), preparedWork.refresh(), refreshPredictions(), focusRuntime.refresh(), refreshSourceState(), activeWork.refresh()])
     if (mode === 'proxy') {
       await refreshProxyData()
     }
-  }, [mode, preparedWork.refresh, refreshDevices, refreshPredictions, refreshPresets, refreshProxyData, refreshSkillsPinned, refreshStatus])
+  }, [activeWork.refresh, focusRuntime.refresh, mode, preparedWork.refresh, refreshDevices, refreshPredictions, refreshPresets, refreshProxyData, refreshSkillsPinned, refreshSourceState, refreshStatus])
 
   useEffect(() => {
     refreshAll().catch(() => {
@@ -345,16 +511,31 @@ function App() {
     const interval = window.setInterval(() => {
       refreshStatus().catch(() => undefined)
       refreshPredictions().catch(() => undefined)
+      refreshSourceState().catch(() => undefined)
+      activeWork.refresh().catch(() => undefined)
       if (mode === 'proxy') {
         getImpactSummary().then(setImpact).catch(() => undefined)
       }
     }, 15000)
     return () => window.clearInterval(interval)
-  }, [mode, refreshPredictions, refreshStatus])
+  }, [activeWork.refresh, mode, refreshPredictions, refreshSourceState, refreshStatus])
 
   function showToast(msg: string, color: string) {
     setToast({ msg, color })
     window.setTimeout(() => setToast(null), 2200)
+  }
+
+  function selectScenario(id: string | null) {
+    setSelectedId(id)
+    if (id && isPredictionScenarioId(id)) {
+      setLiveSelection({ entityType: 'prediction', entityId: id.replace(/^prediction:/, '') })
+    } else {
+      setLiveSelection(null)
+    }
+  }
+
+  function selectPrediction(predictionId: string) {
+    setLiveSelection({ entityType: 'prediction', entityId: predictionId.replace(/^prediction:/, '') })
   }
 
   async function applyScenarioPayload(payload: ScenarioApiPayload | null) {
@@ -374,6 +555,10 @@ function App() {
   }
 
   async function handleFeedback(id: string, result: 'useful' | 'partial' | 'irrelevant') {
+    if (isPredictionScenarioId(id)) {
+      showToast('Prediction feedback is available from Prepared Work.', 'var(--fg-4)')
+      return
+    }
     try {
       const response = await sendOutcome(id, result)
       await applyScenarioPayload(response.scenario)
@@ -384,6 +569,10 @@ function App() {
   }
 
   async function handleTogglePin(id: string) {
+    if (isPredictionScenarioId(id)) {
+      showToast('Live preparation nodes cannot be pinned yet.', 'var(--fg-4)')
+      return
+    }
     const scenario = scenarios.find((item) => item.id === id)
     if (!scenario) {
       return
@@ -398,6 +587,10 @@ function App() {
   }
 
   async function handleExpand(id: string) {
+    if (isPredictionScenarioId(id)) {
+      showToast('Live preparation expands in the background.', 'var(--fg-4)')
+      return
+    }
     try {
       const response = await expandScenario(id)
       await applyScenarioPayload(response.scenario)
@@ -491,12 +684,13 @@ function App() {
       }
       if (mode !== 'proxy') {
         const shortcutView: Record<string, CockpitView> = {
-          '1': 'prepared-work',
-          '2': 'now',
-          '3': 'scenario-map',
-          '4': 'timeline',
-          '5': 'board',
-          '6': 'evidence',
+          '1': 'focus',
+          '2': 'prepared-work',
+          '3': 'now',
+          '4': 'scenario-map',
+          '5': 'timeline',
+          '6': 'board',
+          '7': 'evidence',
         }
         const nextView = shortcutView[event.key]
         if (nextView) {
@@ -511,14 +705,14 @@ function App() {
         if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
           const next = scenarios[(index + 1 + scenarios.length) % scenarios.length]
           if (next) {
-            setSelectedId(next.id)
+            selectScenario(next.id)
           }
           event.preventDefault()
         }
         if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
           const next = scenarios[(index - 1 + scenarios.length) % scenarios.length]
           if (next) {
-            setSelectedId(next.id)
+            selectScenario(next.id)
           }
           event.preventDefault()
         }
@@ -548,6 +742,7 @@ function App() {
 
   useEffect(() => {
     if (!selectedScenario || selectedScenario.freshness === 'fresh') return
+    if (isPredictionScenarioId(selectedScenario.id)) return
     if (invalidationById[selectedScenario.id] !== undefined) return
     let cancelled = false
     void fetchScenarioDetail(selectedScenario.id)
@@ -604,12 +799,13 @@ function App() {
     const common: CommandItem[] = [
       { id: 'refresh', kind: 'action', label: 'Refresh cockpit data', hint: '↻', run: () => void refreshAll() },
       { id: 'settings', kind: 'action', label: 'Open settings', hint: '⌘,', run: () => setDrawerOpen(true) },
-      { id: 'view-prepared-work', kind: 'view', label: 'View Prepared Work', hint: '1', run: () => setView('prepared-work') },
-      { id: 'view-now', kind: 'view', label: 'View Now', hint: '2', run: () => setView('now') },
-      { id: 'view-scenario-map', kind: 'view', label: 'View Scenario Map', hint: '3', run: () => setView('scenario-map') },
-      { id: 'view-timeline', kind: 'view', label: 'View Timeline', hint: '4', run: () => setView('timeline') },
-      { id: 'view-board', kind: 'view', label: 'View Board', hint: '5', run: () => setView('board') },
-      { id: 'view-evidence', kind: 'view', label: 'View Evidence', hint: '6', run: () => setView('evidence') },
+      { id: 'view-focus', kind: 'view', label: 'View Focus', hint: '1', run: () => setView('focus') },
+      { id: 'view-prepared-work', kind: 'view', label: 'View Prepared Work', hint: '2', run: () => setView('prepared-work') },
+      { id: 'view-now', kind: 'view', label: 'View Now', hint: '3', run: () => setView('now') },
+      { id: 'view-scenario-map', kind: 'view', label: 'View Scenario Map', hint: '4', run: () => setView('scenario-map') },
+      { id: 'view-timeline', kind: 'view', label: 'View Timeline', hint: '5', run: () => setView('timeline') },
+      { id: 'view-board', kind: 'view', label: 'View Board', hint: '6', run: () => setView('board') },
+      { id: 'view-evidence', kind: 'view', label: 'View Evidence', hint: '7', run: () => setView('evidence') },
       {
         id: 'clear-events',
         kind: 'action',
@@ -637,7 +833,7 @@ function App() {
           label: scenario.title,
           keywords: `${scenario.path} ${scenario.id}`,
           hint: scenario.score.toFixed(3),
-          run: () => setSelectedId(scenario.id),
+          run: () => selectScenario(scenario.id),
         })),
       ]
     }
@@ -665,16 +861,16 @@ function App() {
   const showScenarioPane = mode !== 'proxy'
   const scenarioHeading =
     scenarioScope === 'all'
-      ? 'stored suggestions'
+      ? 'live suggestions'
       : scenarioScope === 'focus'
         ? 'focus suggestions'
         : 'session suggestions'
   const scenarioEmptyHint =
     scenarioScope === 'all'
-      ? 'No stored suggestions are available yet.'
+      ? 'No suggestions or live preparation nodes are available yet.'
       : scenarioScope === 'focus'
-        ? 'No suggestions for the current Auto Focus workspace yet.'
-        : 'No suggestions have been created in this cockpit session yet. Switch to History to inspect older stored suggestions.'
+        ? 'No suggestions or live preparation nodes for the current Auto Focus workspace yet.'
+        : 'No suggestions have been created in this cockpit session yet. Switch to History to inspect older suggestions.'
 
   return (
     <div className="cockpit-root">
@@ -734,10 +930,11 @@ function App() {
               ) : null}
               <PipelineCanvas
                 scenarios={scenarios}
+                activePlan={activeWork.snapshot?.plan_draft ?? null}
                 heading={scenarioHeading}
                 emptyHint={scenarioEmptyHint}
                 selectedId={selectedId}
-                onSelect={setSelectedId}
+                onSelect={selectScenario}
                 activePulses={activePulses}
                 pinnedIds={new Set(scenarios.filter((scenario) => scenario.pinned).map((scenario) => scenario.id))}
                 signals={pipeline.signals}
@@ -751,6 +948,21 @@ function App() {
             </>
           ) : (
             <div style={{ minHeight: 0, overflow: 'hidden' }}>
+              {view === 'focus' ? (
+                <FocusView
+                  focus={focusState ?? null}
+                  route={focusRuntime.route}
+                  jobs={focusRuntime.jobs}
+                  activity={focusRuntime.activity}
+                  predictions={predictions}
+                  activeWork={activeWork.snapshot}
+                  sources={sourcesPermissions}
+                  capabilities={signalCapabilities}
+                  loading={focusRuntime.loading}
+                  error={focusRuntime.error}
+                  onSelectPrediction={selectPrediction}
+                />
+              ) : null}
               {view === 'prepared-work' ? (
                 <PreparedWorkView
                   cards={preparedCards}
@@ -765,11 +977,14 @@ function App() {
               {view === 'now' ? (
                 <NowView
                   cards={preparedCards}
+                  predictions={predictions}
                   scenarios={scenarios}
+                  activeWork={activeWork.snapshot}
                   selectedWorkId={selectedWorkId}
                   selectedScenarioId={selectedId}
                   onSelectWork={setSelectedWorkId}
-                  onSelectScenario={setSelectedId}
+                  onSelectScenario={selectScenario}
+                  onSelectPrediction={selectPrediction}
                 />
               ) : null}
               {view === 'timeline' ? (
@@ -777,7 +992,7 @@ function App() {
                   events={pipeline.events}
                   live={pipeline.live}
                   pendingLlm={pipeline.model.pending.size}
-                  onSelect={setSelectedId}
+                  onSelect={selectScenario}
                 />
               ) : null}
               {view === 'board' ? (
@@ -788,7 +1003,8 @@ function App() {
                   selectedWorkId={selectedWorkId}
                   selectedScenarioId={selectedId}
                   onSelectWork={setSelectedWorkId}
-                  onSelectScenario={setSelectedId}
+                  onSelectScenario={selectScenario}
+                  onSelectPrediction={selectPrediction}
                 />
               ) : null}
               {view === 'evidence' ? (
@@ -799,7 +1015,7 @@ function App() {
                   selectedWorkId={selectedWorkId}
                   selectedScenarioId={selectedId}
                   onSelectWork={setSelectedWorkId}
-                  onSelectScenario={setSelectedId}
+                  onSelectScenario={selectScenario}
                 />
               ) : null}
             </div>
@@ -885,19 +1101,34 @@ function App() {
       >
         <div style={{ minHeight: 0, overflow: 'hidden', borderBottom: '1px solid var(--line-1)', background: 'var(--bg-1)' }}>
           {showScenarioPane ? (
-            <Inspector
-              scenario={selectedScenario}
-              scenarios={scenarios}
-              evidenceById={evidenceById}
-              scoreComponentsById={scoreComponentsById}
-              preparedById={preparedById}
-              invalidationById={invalidationById}
-              onSelect={setSelectedId}
-              onFeedback={(id, result) => void handleFeedback(id, result)}
-              onPin={(id) => void handleTogglePin(id)}
-              pinnedIds={new Set(scenarios.filter((scenario) => scenario.pinned).map((scenario) => scenario.id))}
-              onClose={() => setSelectedId(null)}
-            />
+            liveSelection ? (
+              <LiveWorkInspector
+                snapshot={liveWork.snapshot}
+                live={liveWork.live}
+                error={liveWork.error}
+                title={selectedScenario?.title}
+                onClose={() => {
+                  setLiveSelection(null)
+                  if (selectedId && isPredictionScenarioId(selectedId)) {
+                    setSelectedId(null)
+                  }
+                }}
+              />
+            ) : (
+              <Inspector
+                scenario={selectedScenario}
+                scenarios={scenarios}
+                evidenceById={evidenceById}
+                scoreComponentsById={scoreComponentsById}
+                preparedById={preparedById}
+                invalidationById={invalidationById}
+                onSelect={selectScenario}
+                onFeedback={(id, result) => void handleFeedback(id, result)}
+                onPin={(id) => void handleTogglePin(id)}
+                pinnedIds={new Set(scenarios.filter((scenario) => scenario.pinned).map((scenario) => scenario.id))}
+                onClose={() => selectScenario(null)}
+              />
+            )
           ) : (
             <div className="scroll" style={{ height: '100%', overflow: 'auto', padding: 18 }}>
               <div className="mono" style={{ fontSize: 10, letterSpacing: 1.2, color: 'var(--fg-4)', marginBottom: 10 }}>
@@ -924,7 +1155,7 @@ function App() {
             title={mode === 'proxy' ? 'DECISION STREAM' : 'EVENT STREAM'}
             subtitle={mode === 'proxy' ? 'Live proxy decisions' : 'Live daemon activity'}
             events={streamEvents}
-            onSelect={mode === 'proxy' ? setSelectedDecisionId : setSelectedId}
+            onSelect={mode === 'proxy' ? setSelectedDecisionId : selectScenario}
             live={streamLive}
             pendingLlm={mode === 'proxy' ? 0 : pipeline.model.pending.size}
           />

@@ -1,19 +1,27 @@
 import type {
   ArtefactDetail,
+  ActiveWorkPayload,
   BackendPreset,
   BackendSettings,
   ComputeDevice,
   ComputeSettings,
   DecisionRecordPayload,
+  FocusRoutePayload,
   Goal,
   ImpactSummary,
+  JobsStatusPayload,
   LearningRecent,
   LimitSettings,
+  LiveWorkSnapshot,
   MCPSettings,
   PredictionsByState,
   PreparedWorkCard,
+  RecentActivityPayload,
+  RecentEventsPayload,
   ScenarioApiPayload,
   ScenarioInspectorPayload,
+  SignalCapabilitiesPayload,
+  SourcesPermissionsPayload,
   StatusPayload,
   UIPinnedFact,
   UISkill,
@@ -38,6 +46,45 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getStatus(): Promise<StatusPayload> {
   return request<StatusPayload>('/status')
+}
+
+export function getFocusRoute(): Promise<FocusRoutePayload> {
+  return request<FocusRoutePayload>('/focus/route')
+}
+
+export function getJobsStatus(): Promise<JobsStatusPayload> {
+  return request<JobsStatusPayload>('/jobs')
+}
+
+export function getSourcesPermissions(): Promise<SourcesPermissionsPayload> {
+  return request<SourcesPermissionsPayload>('/sources/permissions')
+}
+
+export function getSignalCapabilities(): Promise<SignalCapabilitiesPayload> {
+  return request<SignalCapabilitiesPayload>('/signals/capabilities')
+}
+
+export function getRecentActivity(params: { limit?: number; hostApp?: string; source?: string } = {}): Promise<RecentActivityPayload> {
+  const query = new URLSearchParams()
+  query.set('limit', String(params.limit ?? 12))
+  if (params.hostApp) query.set('host_app', params.hostApp)
+  if (params.source) query.set('source', params.source)
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 7000)
+  return request<RecentActivityPayload>(`/activity/recent?${query.toString()}`, { signal: controller.signal }).finally(() => {
+    window.clearTimeout(timeout)
+  })
+}
+
+export function getRecentEvents(params: { limit?: number; corpusId?: string } = {}): Promise<RecentEventsPayload> {
+  const query = new URLSearchParams()
+  query.set('limit', String(params.limit ?? 50))
+  if (params.corpusId) query.set('corpus_id', params.corpusId)
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 7000)
+  return request<RecentEventsPayload>(`/events/recent?${query.toString()}`, { signal: controller.signal }).finally(() => {
+    window.clearTimeout(timeout)
+  })
 }
 
 export function getComputeDevices(): Promise<{ devices: ComputeDevice[]; warning?: string | null }> {
@@ -162,6 +209,25 @@ export function fetchArtefact(id: string): Promise<ArtefactDetail> {
 
 export function listPredictionsByState(): Promise<PredictionsByState> {
   return request('/predictions/active?include_all=true')
+}
+
+export function getActiveWork(): Promise<ActiveWorkPayload> {
+  return request('/work/active')
+}
+
+export function getLiveWork(entityType: string, entityId: string, limit = 80): Promise<LiveWorkSnapshot> {
+  const query = new URLSearchParams()
+  query.set('entity_type', entityType)
+  query.set('entity_id', entityId)
+  query.set('limit', String(limit))
+  return request(`/work/live?${query.toString()}`)
+}
+
+export function liveWorkStreamPath(entityType: string, entityId: string): string {
+  const query = new URLSearchParams()
+  query.set('entity_type', entityType)
+  query.set('entity_id', entityId)
+  return `/work/live/stream?${query.toString()}`
 }
 
 export function inspectWorkProduct(id: string): Promise<WorkProductInspection> {

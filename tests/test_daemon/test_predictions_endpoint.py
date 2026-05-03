@@ -3,13 +3,18 @@
 
 from __future__ import annotations
 
+import json
+import os
 import platform
+import time
 from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
 
 from vaner.daemon.http import create_daemon_http_app
+from vaner.daemon.live_work import append_live_work_event
+from vaner.daemon.precompute_worker import prediction_snapshot_path, worker_status_path
 from vaner.intent.prediction import PredictionSpec, prediction_id
 from vaner.intent.prediction_registry import PredictionRegistry
 from vaner.models.config import VanerConfig
@@ -63,6 +68,69 @@ def test_predictions_active_empty_when_no_engine(temp_repo):
     assert response.json() == {"predictions": []}
 
 
+def test_predictions_active_include_all_surfaces_active_plan_draft(temp_repo):
+    from vaner.plan_drafts import record_plan_draft
+
+    record_plan_draft(
+        temp_repo,
+        text="# Harden Vaner\n\n- Add conservative relevance tests\n- Verify the web UI",
+        source_client="codex-cli",
+        session_id="test-session",
+        workspace_id=str(temp_repo),
+        now=123.0,
+    )
+    config = _make_config(temp_repo)
+    app = create_daemon_http_app(config)  # no engine, worker may still be warming
+
+    with TestClient(app) as client:
+        response = client.get("/predictions/active", params={"include_all": "true"})
+
+    assert response.status_code == 200
+    body = response.json()
+    queued = body["by_state"]["queued"]
+    row = queued[0]
+    assert row["id"].startswith("plan-draft-")
+    assert row["display_label"] == "Preparing active plan: Harden Vaner"
+    assert row["source_label"] == "Active draft plan"
+    assert row["recommended_action"] == "ignore"
+    assert row["adoptable"] is False
+    assert row["snapshot_freshness"] == "warming"
+
+
+def test_predictions_active_include_all_surfaces_worker_progress_when_warming(temp_repo):
+    config = _make_config(temp_repo)
+    path = worker_status_path(temp_repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "worker": {
+                    "state": "running",
+                    "phase": "prediction_precompute",
+                    "pid": os.getpid(),
+                    "last_heartbeat_at": time.time(),
+                },
+                "queue": {"size": 0, "max_size": 2},
+                "jobs": [],
+                "profile": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_daemon_http_app(config)  # no engine, worker snapshot still warming
+
+    with TestClient(app) as client:
+        response = client.get("/predictions/active", params={"include_all": "true"})
+
+    assert response.status_code == 200
+    row = response.json()["by_state"]["queued"][0]
+    assert row["id"] == "worker-progress-prediction_precompute"
+    assert row["display_label"] == "Exploring likely next work"
+    assert row["source_label"] == "Background worker"
+    assert row["adoptable"] is False
+    assert row["snapshot_freshness"] == "warming"
+
+
 def test_predictions_active_returns_live_predictions(temp_repo):
     config = _make_config(temp_repo)
     registry = PredictionRegistry(cycle_token_pool=1_000)
@@ -88,6 +156,10 @@ def test_predictions_active_returns_live_predictions(temp_repo):
     assert row["freshness"] == "recent"
     assert row["watched_sources"] == []
     assert row["diagnostic_status"] == "not_checked"
+    assert row["display_label"] == "Write the next test"
+    assert row["match_state"] == "unrelated"
+    assert row["recommended_action"] == "ignore"
+    assert row["snapshot_freshness"] == "warming"
 
 
 def test_predictions_single_returns_404_when_registry_absent(temp_repo):
@@ -201,6 +273,57 @@ def test_adopt_returns_409_when_registry_absent(temp_repo):
     assert body["code"] == "engine_unavailable"
 
 
+def test_adopt_returns_resolution_from_worker_snapshot_without_engine(temp_repo):
+    config = _make_config(temp_repo)
+    pid = "pred-snapshot-1"
+    path = prediction_snapshot_path(temp_repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "predictions": [
+                    {
+                        "id": pid,
+                        "spec": {
+                            "label": "Use Vaner background context",
+                            "description": "Prepared from the precompute worker",
+                            "source": "artefact_item",
+                            "confidence": 0.82,
+                        },
+                        "run": {"token_budget": 1200, "readiness": "ready"},
+                        "artifacts": {
+                            "scenario_ids": ["scn-one"],
+                            "has_briefing": True,
+                            "has_draft": False,
+                        },
+                        "watched_sources": ["src/vaner/intent/prediction.py"],
+                        "ui_summary": "Prepared worker snapshot is ready.",
+                        "freshness": "fresh",
+                    }
+                ],
+                "by_state": {},
+                "cycle_id": "cycle-one",
+                "generated_at": 123.0,
+                "source": "precompute_worker",
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_daemon_http_app(config)  # no in-process engine
+
+    with TestClient(app) as client:
+        response = client.post(f"/predictions/{pid}/adopt")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["adopted_from_prediction_id"] == pid
+    assert body["provenance"]["mode"] == "predictive_hit"
+    assert body["prepared_briefing"] is not None
+    assert "precompute-worker snapshot" in body["prepared_briefing"]
+    assert body["evidence"][0]["locator"]["scenario_id"] == "scn-one"
+    assert body["evidence"][1]["locator"]["path"] == "src/vaner/intent/prediction.py"
+
+
 def test_adopt_returns_400_for_whitespace_id(temp_repo):
     config = _make_config(temp_repo)
     registry = PredictionRegistry(cycle_token_pool=1_000)
@@ -231,6 +354,124 @@ def test_events_stream_includes_predictions_stage(temp_repo):
     assert response.status_code == 200
     body = response.text
     assert '"stage": "predictions"' in body
+
+
+def test_events_stream_includes_worker_snapshot_predictions_when_engine_absent(temp_repo):
+    config = _make_config(temp_repo)
+    path = prediction_snapshot_path(temp_repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "predictions": [{"id": "snap-pred-one", "spec": {"label": "Snapshot prediction"}, "run": {"readiness": "ready"}}],
+                "by_state": {},
+                "cycle_id": "cycle-one",
+                "generated_at": 123.0,
+                "source": "precompute_worker",
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_daemon_http_app(config)
+
+    with TestClient(app) as client:
+        response = client.get("/events/stream", params={"stages": "predictions", "limit": 1})
+
+    assert response.status_code == 200
+    assert '"stage": "predictions"' in response.text
+    assert "snap-pred-one" in response.text
+
+
+def test_work_live_returns_prediction_snapshot_and_events(temp_repo):
+    config = _make_config(temp_repo)
+    path = prediction_snapshot_path(temp_repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "predictions": [],
+                "by_state": {
+                    "drafting": [
+                        {
+                            "id": "pred-live-one",
+                            "spec": {"label": "Prepare live inspector"},
+                            "run": {"readiness": "drafting"},
+                        }
+                    ]
+                },
+                "cycle_id": "cycle-one",
+                "generated_at": 123.0,
+                "source": "precompute_worker",
+            }
+        ),
+        encoding="utf-8",
+    )
+    append_live_work_event(
+        temp_repo,
+        entity_type="prediction",
+        entity_id="pred-live-one",
+        stage="model",
+        status="running",
+        summary="Asking the background model for a draft.",
+        model="local-test-model",
+        ts=123.5,
+    )
+    app = create_daemon_http_app(config)
+
+    with TestClient(app) as client:
+        response = client.get("/work/live", params={"entity_type": "prediction", "entity_id": "prediction:pred-live-one"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entity_id"] == "pred-live-one"
+    assert body["status"] == "running"
+    assert body["summary"] == "Asking the background model for a draft."
+    assert body["prediction"]["id"] == "pred-live-one"
+    assert body["events"][0]["model"] == "local-test-model"
+
+
+def test_work_live_stream_returns_existing_events(temp_repo):
+    config = _make_config(temp_repo)
+    append_live_work_event(
+        temp_repo,
+        entity_type="prediction",
+        entity_id="pred-stream-one",
+        stage="artifact",
+        status="updated",
+        summary="Added prepared briefing artifact.",
+        ts=124.0,
+    )
+    app = create_daemon_http_app(config)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/work/live/stream",
+            params={"entity_type": "prediction", "entity_id": "pred-stream-one", "limit": 1},
+        )
+
+    assert response.status_code == 200
+    assert "Added prepared briefing artifact." in response.text
+
+
+def test_events_stream_includes_work_stage(temp_repo):
+    config = _make_config(temp_repo)
+    append_live_work_event(
+        temp_repo,
+        entity_type="worker",
+        entity_id="precompute-worker",
+        stage="prediction_precompute",
+        status="running",
+        summary="Exploring likely next work.",
+        ts=125.0,
+    )
+    app = create_daemon_http_app(config)
+
+    with TestClient(app) as client:
+        response = client.get("/events/stream", params={"stages": "work", "limit": 1})
+
+    assert response.status_code == 200
+    assert '"stage": "work"' in response.text
+    assert "Exploring likely next work." in response.text
 
 
 # ---------------------------------------------------------------------------

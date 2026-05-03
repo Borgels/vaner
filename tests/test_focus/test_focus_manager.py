@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from vaner.focus import FocusManager, _is_local_url
+from vaner.cli.commands import mcp_clients
+from vaner.focus import FocusManager, _is_local_url, _process_info_matches
 from vaner.models.config import VanerConfig
 
 
@@ -13,6 +14,30 @@ def _config(tmp_path: Path) -> VanerConfig:
     (repo / ".vaner").mkdir(parents=True)
     (repo / ".vaner" / "config.toml").write_text("", encoding="utf-8")
     return VanerConfig(repo_root=repo, store_path=repo / ".vaner" / "store.db", telemetry_path=repo / ".vaner" / "telemetry.db")
+
+
+@pytest.fixture(autouse=True)
+def _stable_client_detection(monkeypatch: pytest.MonkeyPatch) -> None:
+    cursor = mcp_clients.ClientSpec(
+        "cursor",
+        "Cursor",
+        "json-mcpServers",
+        lambda repo: repo / ".cursor",
+        lambda repo: repo / ".cursor" / "mcp.json",
+        "Cursor user MCP config",
+    )
+    monkeypatch.setattr(
+        "vaner.focus.mcp_clients.detect_all",
+        lambda repo: [
+            mcp_clients.DetectedClient(
+                spec=cursor,
+                status=mcp_clients.ClientStatus.CONFIGURED,
+                path=repo / ".cursor" / "mcp.json",
+                detail="already configured",
+            )
+        ],
+    )
+    monkeypatch.setattr("vaner.focus._client_process_running", lambda _client_id: False)
 
 
 def test_focus_defaults_to_idle_without_running_client(tmp_path: Path) -> None:
@@ -101,6 +126,38 @@ def test_unknown_observation_client_is_ignored(tmp_path: Path) -> None:
 
     assert state.active_workspace_id is None
     assert state.proactive_allowed is False
+
+
+def test_running_cli_managed_client_activates_current_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = FocusManager(_config(tmp_path))
+    spec = mcp_clients.ClientSpec(
+        "codex-cli",
+        "Codex CLI",
+        "cli-codex",
+        lambda _repo: Path("/usr/bin/codex"),
+        lambda _repo: None,
+        "codex mcp add command",
+    )
+    monkeypatch.setattr(
+        "vaner.focus.mcp_clients.detect_all",
+        lambda _repo: [
+            mcp_clients.DetectedClient(
+                spec=spec,
+                status=mcp_clients.ClientStatus.CONFIGURED,
+                path=None,
+                detail="already configured",
+            )
+        ],
+    )
+    monkeypatch.setattr("vaner.focus._client_process_running", lambda client_id: client_id == "codex-cli")
+
+    state = manager.build_state()
+
+    assert state.status == "active"
+    assert state.active_client_id == "codex-cli"
+    assert state.active_workspace_id == manager.current_workspace_id
+    assert state.proactive_allowed is True
+    assert state.detected_clients[0].workspace_hints == [str(manager.repo_root)]
 
 
 def test_corrupt_focus_preferences_recover_to_defaults(tmp_path: Path) -> None:
@@ -198,3 +255,21 @@ def test_local_url_detection_does_not_match_substrings() -> None:
     assert _is_local_url("http://localhost:1234") is True
     assert _is_local_url("http://notlocalhost.example/v1") is False
     assert _is_local_url("https://api.example.com/v1") is False
+
+
+def test_process_matching_does_not_confuse_codex_with_vs_code() -> None:
+    codex_cmdline = [
+        "node",
+        "/home/abo/.npm-global/bin/codex",
+    ]
+
+    assert _process_info_matches("codex-cli", "node", codex_cmdline) is True
+    assert _process_info_matches("vscode-copilot", "node", codex_cmdline) is False
+    assert _process_info_matches("vscode-copilot", "codex", ["/usr/bin/codex"]) is False
+
+
+def test_process_matching_ignores_transient_claude_management_commands() -> None:
+    assert _process_info_matches("claude-code", "claude", ["claude", "mcp", "list"]) is False
+    assert _process_info_matches("claude-desktop", "claude", ["claude", "mcp", "list"]) is False
+    assert _process_info_matches("claude-code", "claude", ["claude"]) is True
+    assert _process_info_matches("claude-desktop", "claude-desktop", ["claude-desktop"]) is True

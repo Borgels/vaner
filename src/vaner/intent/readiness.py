@@ -90,6 +90,8 @@ def is_adoptable(prompt: PredictedPrompt) -> bool:
     additionally require a draft and are semantically gated at resolve time.
     """
     run = prompt.run
+    if prompt.spec.source == "seed_prior":
+        return False
     if run.spent:
         return False
     if run.readiness not in ("drafting", "ready"):
@@ -110,6 +112,8 @@ def suppression_reason(prompt: PredictedPrompt) -> str | None:
         return "already_adopted"
     if prompt.run.readiness == "stale":
         return "stale"
+    if prompt.spec.source == "seed_prior":
+        return "seed_prior_needs_real_use"
     if prompt.run.readiness not in ("drafting", "ready"):
         return "not_ready_yet"
     if not is_adoptable(prompt):

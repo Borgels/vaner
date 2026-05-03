@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from vaner.intent.prediction_serialization import compact_serialized_prediction
 from vaner.intent.readiness import is_adoptable, readiness_label
 from vaner.models.prepared_work import (
     PreparedWorkAction,
@@ -106,6 +107,94 @@ def build_prepared_work_cards(
             best_by_cluster[item.cluster_key] = item
     ordered = sorted(best_by_cluster.values(), key=lambda item: item.score, reverse=True)
     return [item.card for item in ordered[: max(1, min(100, int(limit)))]]
+
+
+def build_prediction_payload_cards(
+    *,
+    predictions: list[dict[str, Any]],
+    include_diagnostics: bool = False,
+    context_id: str | None = None,
+    limit: int = 12,
+    now: float | None = None,
+) -> list[PreparedWorkCard]:
+    """Build cards from serialized worker-snapshot predictions.
+
+    The HTTP daemon often runs without an in-process engine while the
+    long-lived precompute worker owns live prediction state. In that mode
+    ``/prepared-work`` still needs UI-safe cards, so this helper accepts the
+    already-serialized payload written by the worker.
+    """
+
+    ts = time.time() if now is None else float(now)
+    ranked: list[_RankedPreparedWorkCard] = []
+    for prediction in predictions:
+        candidate = _card_from_prediction_payload(
+            prediction,
+            include_diagnostics=include_diagnostics,
+            context_id=context_id,
+            now=ts,
+        )
+        if candidate is not None:
+            ranked.append(candidate)
+    ordered = sorted(ranked, key=lambda item: item.score, reverse=True)
+    return [item.card for item in ordered[: max(1, min(100, int(limit)))]]
+
+
+def build_plan_draft_cards(
+    *,
+    drafts: list[Any],
+    limit: int = 6,
+    now: float | None = None,
+) -> list[PreparedWorkCard]:
+    ts = time.time() if now is None else float(now)
+    cards: list[PreparedWorkCard] = []
+    for draft in drafts[: max(1, min(50, int(limit)))]:
+        if isinstance(draft, dict):
+            def get(key: str, default: Any = None, *, _draft: dict[str, Any] = draft) -> Any:
+                return _draft.get(key, default)
+        else:
+            def get(key: str, default: Any = None, *, _draft: Any = draft) -> Any:
+                return getattr(_draft, key, default)
+        plan_id = str(get("id", "") or "")
+        if not plan_id:
+            continue
+        updated_at = float(get("updated_at", ts) or ts)
+        title = str(sanitize_no_absolute_paths(str(get("title", "Draft plan") or "Draft plan")))
+        summary = str(sanitize_no_absolute_paths(str(get("summary", "Vaner captured a draft plan.") or "")))
+        tasks = get("tasks", []) or []
+        task_count = len(tasks) if isinstance(tasks, list) else 0
+        cards.append(
+            PreparedWorkCard(
+                id=f"plan:{plan_id}",
+                source_id=plan_id,
+                source_type=PreparedWorkSourceType.PREDICTION,
+                kind=PreparedWorkKind.BRIEF,
+                title=title,
+                summary=summary,
+                badge="Plan draft",
+                confidence_label="high",
+                freshness_label=_freshness_label(updated_at, ts),
+                freshness_state=_prediction_freshness_state(updated_at, ts),
+                target_label="Draft plan",
+                why_prepared="Vaner is preparing against this draft plan in its local runtime area.",
+                action_note="Inspect only; Vaner will not change workspace files from this draft.",
+                evidence_count=task_count,
+                created_at=float(get("created_at", updated_at) or updated_at),
+                updated_at=updated_at,
+                primary_action=PreparedWorkAction(
+                    kind=PreparedWorkActionKind.INSPECT,
+                    label="Inspect",
+                    tool="vaner.plan_drafts.inspect",
+                    endpoint=f"/plans/drafts/{plan_id}",
+                    arguments={"plan_id": plan_id},
+                ),
+                secondary_actions=[],
+                diagnostic_refs=[
+                    PreparedWorkDiagnosticRef(kind="record", id=plan_id, reason="plan draft"),
+                ],
+            )
+        )
+    return cards
 
 
 def _card_from_work_product(
@@ -253,6 +342,91 @@ def _card_from_prediction(
         card=card,
         score=score,
         cluster_key=_cluster_key(str(spec.anchor or spec.label), "prediction"),
+        advisory=False,
+    )
+
+
+def _card_from_prediction_payload(
+    prediction: dict[str, Any],
+    *,
+    include_diagnostics: bool,
+    context_id: str | None,
+    now: float,
+) -> _RankedPreparedWorkCard | None:
+    readiness = str(prediction.get("readiness") or prediction.get("run", {}).get("readiness") or "")
+    if readiness not in {"ready", "drafting"}:
+        return None
+    compact = compact_serialized_prediction(prediction)
+    spec = prediction.get("spec") if isinstance(prediction.get("spec"), dict) else {}
+    run = prediction.get("run") if isinstance(prediction.get("run"), dict) else {}
+    artifacts = prediction.get("artifacts") if isinstance(prediction.get("artifacts"), dict) else {}
+    pid = str(compact.get("id") or prediction.get("id") or spec.get("id") or "")
+    if not pid:
+        return None
+    title = str(compact.get("label") or pid)
+    summary = str(compact.get("ui_summary") or title)
+    anchor = str(spec.get("source") or compact.get("source_label") or "Current flow")
+    source = str(compact.get("source_label") or spec.get("source") or "worker snapshot")
+    confidence = float(compact.get("confidence") or spec.get("confidence") or prediction.get("confidence") or 0.5)
+    updated_at = float(compact.get("updated_at") or run.get("updated_at") or prediction.get("updated_at") or now)
+    scenario_ids = artifacts.get("scenario_ids") if isinstance(artifacts.get("scenario_ids"), list) else []
+    evidence_count = len(scenario_ids)
+    kind = PreparedWorkKind.DRAFT if artifacts.get("has_draft") else PreparedWorkKind.PREDICTION
+    refs: list[PreparedWorkDiagnosticRef] = []
+    if include_diagnostics:
+        refs.append(PreparedWorkDiagnosticRef(kind="prediction", id=pid, reason=source))
+        for scenario_id in scenario_ids[:8]:
+            refs.append(PreparedWorkDiagnosticRef(kind="record", id=str(scenario_id), reason="prediction scenario"))
+    score = _score(
+        kind=kind,
+        confidence=confidence,
+        updated_at=updated_at,
+        evidence_count=evidence_count,
+        action_level="adopt",
+        stale_risk=0.1 if readiness == "ready" else 0.22,
+        context_id=context_id,
+        target_text=f"{title} {summary} {anchor}",
+        now=now,
+    )
+    card = PreparedWorkCard(
+        id=f"prediction:{pid}",
+        source_id=pid,
+        source_type=PreparedWorkSourceType.PREDICTION,
+        kind=kind,
+        title=str(sanitize_no_absolute_paths(title)),
+        summary=str(sanitize_no_absolute_paths(summary)),
+        badge=str(prediction.get("readiness_label") or readiness_label(readiness)),
+        confidence_label=_confidence_label(confidence),
+        freshness_label=_freshness_label(updated_at, now),
+        freshness_state=_prediction_freshness_state(updated_at, now),
+        target_label=str(sanitize_no_absolute_paths(anchor)),
+        why_prepared=str(sanitize_no_absolute_paths(f"Vaner prepared this because {source} suggests {anchor} may be needed next.")),
+        action_note="",
+        evidence_count=evidence_count,
+        created_at=float(spec.get("created_at") or updated_at),
+        updated_at=updated_at,
+        primary_action=PreparedWorkAction(
+            kind=PreparedWorkActionKind.ADOPT,
+            label="Adopt",
+            tool="vaner.predictions.adopt",
+            endpoint=f"/predictions/{pid}/adopt",
+            arguments={"prediction_id": pid},
+        ),
+        secondary_actions=[
+            PreparedWorkAction(
+                kind=PreparedWorkActionKind.INSPECT,
+                label="Inspect",
+                tool="vaner.predictions.active",
+                endpoint=f"/predictions/{pid}",
+                arguments={"prediction_id": pid},
+            )
+        ],
+        diagnostic_refs=refs,
+    )
+    return _RankedPreparedWorkCard(
+        card=card,
+        score=score,
+        cluster_key=_cluster_key(anchor or title, "prediction"),
         advisory=False,
     )
 

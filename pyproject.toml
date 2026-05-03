@@ -76,10 +76,12 @@ packages = ["src/vaner"]
 [tool.hatch.build.targets.wheel.force-include]
 "ui/cockpit/dist" = "vaner/daemon/cockpit_dist"
 "plugins/vaner" = "vaner/defaults/plugins/claude-code/vaner"
+"plugins/vaner-codex" = "vaner/defaults/plugins/codex/vaner-codex"
 
 [tool.hatch.build.targets.sdist.force-include]
 "ui/cockpit/dist" = "ui/cockpit/dist"
 "plugins/vaner" = "plugins/vaner"
+"plugins/vaner-codex" = "plugins/vaner-codex"
 
 [tool.ruff]
 line-length = 140

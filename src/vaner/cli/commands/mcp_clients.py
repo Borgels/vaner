@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -260,8 +261,10 @@ def detect_all(repo_root: Path | None = None) -> list[DetectedClient]:
             configured = config_path is not None and _contains_vaner_entry(config_path, container_key="context_servers")
         elif spec.kind == "yaml-continue":
             configured = config_path is not None and config_path.exists() and "name: vaner" in config_path.read_text(encoding="utf-8")
-        elif spec.kind in ("cli-claude", "cli-codex"):
-            configured = _cli_mcp_list_has_vaner(evidence)
+        elif spec.kind == "cli-claude":
+            configured = _cli_mcp_list_has_vaner(evidence, profile_dir=_home() / ".claude")
+        elif spec.kind == "cli-codex":
+            configured = _cli_mcp_list_has_vaner(evidence, profile_dir=_home() / ".codex")
         else:
             configured = False
         status = ClientStatus.CONFIGURED if configured else ClientStatus.INSTALLED
@@ -270,8 +273,10 @@ def detect_all(repo_root: Path | None = None) -> list[DetectedClient]:
     return detected
 
 
-def _cli_mcp_list_has_vaner(executable: Path | None) -> bool:
+def _cli_mcp_list_has_vaner(executable: Path | None, *, profile_dir: Path) -> bool:
     if executable is None:
+        return False
+    if not profile_dir.exists():
         return False
     try:
         result = subprocess.run(
@@ -877,6 +882,8 @@ _SKILL_PATH_RESOLVERS: dict[str, Callable[[Path], Path]] = {
 #     marketplace; verify by checking the user's plugin store.
 #   * Cursor — full plugin (cursor-plugins/vaner/), installed
 #     manually today; verify by checking the user's plugin store.
+#   * Codex CLI — full Codex plugin (plugins/vaner-codex/), installed
+#     into the user's Codex plugin store.
 #   * Cline — prompt-submit hook script written to
 #     .clinerules/hooks/UserPromptSubmit (Phase C4).
 #   * Windsurf — .windsurf/hooks.json declaring the prompt-submit
@@ -894,6 +901,36 @@ def _cursor_plugin_marker(_repo_root: Path) -> Path:
     return _home() / ".cursor" / "plugins" / "vaner" / ".cursor-plugin" / "plugin.json"
 
 
+def _codex_cli_plugin_marker(_repo_root: Path) -> Path:
+    return _home() / ".codex" / "plugins" / "vaner-codex" / ".codex-plugin" / "plugin.json"
+
+
+def _codex_cli_plugin_cache_marker(repo_root: Path) -> Path | None:
+    marker = _codex_cli_plugin_marker(repo_root)
+    if not marker.exists():
+        return None
+    try:
+        manifest = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    version = str(manifest.get("version") or "").strip()
+    if not version:
+        return None
+    return _home() / ".codex" / "plugins" / "cache" / "vaner-local" / "vaner-codex" / version / ".codex-plugin" / "plugin.json"
+
+
+def _codex_cli_plugin_enabled() -> bool:
+    config = _home() / ".codex" / "config.toml"
+    if not config.exists():
+        return False
+    try:
+        parsed = tomllib.loads(config.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return False
+    plugin = parsed.get("plugins", {}).get("vaner-codex@vaner-local", {})
+    return bool(plugin.get("enabled"))
+
+
 def _cline_hook_marker(repo_root: Path) -> Path:
     return repo_root / ".clinerules" / "hooks" / "UserPromptSubmit"
 
@@ -905,6 +942,7 @@ def _windsurf_hook_marker(repo_root: Path) -> Path:
 _PLUGIN_PATH_RESOLVERS: dict[str, Callable[[Path], Path]] = {
     "claude-code": _claude_code_plugin_marker,
     "cursor": _cursor_plugin_marker,
+    "codex-cli": _codex_cli_plugin_marker,
     "cline": _cline_hook_marker,
     "windsurf": _windsurf_hook_marker,
 }
@@ -978,6 +1016,15 @@ def _verify_plugin_layer(client_id: str, repo_root: Path) -> LayerStatus:
     if resolver is None:
         return LayerStatus(applicable=False, wired=False, path=None, detail="no plugin surface")
     target = resolver(repo_root)
+    if client_id == "codex-cli":
+        if not target.exists():
+            return LayerStatus(applicable=True, wired=False, path=target, detail="plugin bundle not installed")
+        cache_marker = _codex_cli_plugin_cache_marker(repo_root)
+        if cache_marker is None or not cache_marker.exists():
+            return LayerStatus(applicable=True, wired=False, path=target, detail="plugin cache entry missing")
+        if not _codex_cli_plugin_enabled():
+            return LayerStatus(applicable=True, wired=False, path=target, detail="installed but not enabled in Codex")
+        return LayerStatus(applicable=True, wired=True, path=target)
     return LayerStatus(applicable=True, wired=target.exists(), path=target)
 
 

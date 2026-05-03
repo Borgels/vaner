@@ -120,3 +120,13 @@ def test_rank_higher_confidence_wins_within_tier() -> None:
     high = _prompt(label="high", readiness="ready", briefing="x", confidence=0.9)
     ordered = rank_cards([low, high])
     assert ordered[0] is high
+
+
+def test_seed_priors_are_not_adoptable_and_rank_below_real_sources() -> None:
+    seed = _prompt(label="Seed prior: implement feature", readiness="ready", source="seed_prior", briefing="x", confidence=0.9)
+    real = _prompt(label="Composer intent: Codex plugin", readiness="ready", source="composer_intent", briefing="x", confidence=0.4)
+    seed_card = derive_card_fields(seed)
+
+    assert seed_card.adoptable is False
+    assert seed_card.suppression_reason == "seed_prior_needs_real_use"
+    assert rank_cards([seed, real])[0] is real

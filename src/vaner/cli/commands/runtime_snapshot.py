@@ -50,7 +50,7 @@ def _release_probe(enabled: bool) -> dict[str, object]:
     try:
         response = httpx.get("https://pypi.org/pypi/vaner/json", timeout=0.3)
         latest = str(response.json().get("info", {}).get("version", "")).strip()
-        up_to_date = (not latest) or latest == __version__
+        up_to_date = (not latest) or _version_tuple(__version__) >= _version_tuple(latest)
         return {
             "ok": up_to_date,
             "detail": f"installed={__version__} latest={latest or 'unknown'}",
@@ -60,11 +60,24 @@ def _release_probe(enabled: bool) -> dict[str, object]:
         return {"ok": False, "detail": str(exc), "latest": ""}
 
 
+def _version_tuple(value: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for part in str(value or "").split("."):
+        digits = ""
+        for char in part:
+            if not char.isdigit():
+                break
+            digits += char
+        if digits:
+            parts.append(int(digits))
+    return tuple(parts or [0])
+
+
 def runtime_snapshot(repo_root: Path, cockpit_url: str) -> dict[str, object]:
     config = load_config(repo_root)
     daemon_state = process_status(repo_root, DAEMON_PROCESS)
     cockpit_state = process_status(repo_root, COCKPIT_PROCESS)
-    cockpit_ok, cockpit_detail = _probe(f"{cockpit_url.rstrip('/')}/health", timeout=1.8)
+    cockpit_ok, cockpit_detail = _probe(f"{cockpit_url.rstrip('/')}/health", timeout=3.0)
     backend_ok, backend_detail = _backend_reachable(config.backend.base_url)
     root_check = check_repo_root(repo_root, force=False)
     inotify_check = check_inotify_budget(repo_root)

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -188,8 +189,34 @@ def test_launch_codex_cli_uses_detected_binary_for_mcp(
 
     assert by_name["mcp"].action == "added"
     assert by_name["skill"].path == fake_home / ".codex" / "skills" / "vaner-feedback" / "SKILL.md"
-    assert by_name["hook"].applicable is False
+    assert by_name["hook"].path == fake_home / ".codex" / "plugins" / "vaner-codex"
+    assert (fake_home / ".codex" / "plugins" / "vaner-codex" / ".codex-plugin" / "plugin.json").exists()
+    config = tomllib.loads((fake_home / ".codex" / "config.toml").read_text(encoding="utf-8"))
+    assert config["plugins"]["vaner-codex@vaner-local"]["enabled"] is True
+    assert config["features"]["codex_hooks"] is True
+    hooks = json.loads((fake_home / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    prompt_command = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert str(fake_home / ".codex" / "plugins" / "vaner-codex" / "scripts" / "codex_prompt_submit.py") in prompt_command
+    version = json.loads((fake_home / ".codex" / "plugins" / "vaner-codex" / ".codex-plugin" / "plugin.json").read_text())[
+        "version"
+    ]
+    assert (
+        fake_home
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "vaner-local"
+        / "vaner-codex"
+        / version
+        / ".codex-plugin"
+        / "plugin.json"
+    ).exists()
     assert any(call[:3] == ["/fake/bin/codex", "mcp", "add"] for call in calls)
+
+    from vaner.cli.commands import mcp_clients
+
+    verified = {row.client_id: row for row in mcp_clients.verify_all(repo)}
+    assert verified["codex-cli"].layers["plugin"].wired is True
 
 
 def test_launch_codex_cli_dry_run_does_not_add_mcp(

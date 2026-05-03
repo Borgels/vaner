@@ -107,8 +107,10 @@ def test_predictions_active_envelope_shape():
             "pattern",
             "llm_branch",
             "macro",
+            "seed_prior",
             "history",
             "goal",
+            "horizon",
             "artefact_item",
             "composer_intent",
         }

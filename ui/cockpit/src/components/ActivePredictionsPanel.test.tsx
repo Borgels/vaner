@@ -71,7 +71,7 @@ describe('ActivePredictionsPanel', () => {
     const fetcher = makeFetcher([])
     render(<ActivePredictionsPanel fetcher={fetcher as unknown as typeof fetch} />)
     await waitFor(() => expect(fetcher).toHaveBeenCalled())
-    expect(await screen.findByText(/No active predictions yet/i)).toBeInTheDocument()
+    expect(await screen.findByText(/No prepared context is ready/i)).toBeInTheDocument()
   })
 
   it('renders an error message when the endpoint fails', async () => {
@@ -92,7 +92,7 @@ describe('ActivePredictionsPanel', () => {
         onAdopt={onAdopt}
       />,
     )
-    const button = await screen.findByRole('button', { name: /Adopt/ })
+    const button = await screen.findByRole('button', { name: /Use/ })
     fireEvent.click(button)
     expect(onAdopt).toHaveBeenCalledWith('pred-1')
   })
@@ -106,7 +106,7 @@ describe('ActivePredictionsPanel', () => {
         onAdopt={onAdopt}
       />,
     )
-    const button = await screen.findByRole('button', { name: /Adopt/ })
+    const button = await screen.findByRole('button', { name: /Use/ })
     expect(button).toBeDisabled()
     fireEvent.click(button)
     expect(onAdopt).not.toHaveBeenCalled()
@@ -130,5 +130,28 @@ describe('ActivePredictionsPanel', () => {
     render(<ActivePredictionsPanel fetcher={fetcher as unknown as typeof fetch} />)
     await waitFor(() => expect(fetcher).toHaveBeenCalled())
     expect(await screen.findByText(/Vaner is exploring:/)).toBeInTheDocument()
+  })
+
+  it('renders compact snapshot rows without nested spec/run objects', async () => {
+    const fetcher = makeFetcher([
+      {
+        id: 'compact-1',
+        label: 'Prepared compact context',
+        source_label: 'Recent work',
+        readiness: 'ready',
+        readiness_label: 'Ready',
+        token_budget: 200,
+        tokens_used: 40,
+        recommended_action: 'inspect',
+        match_reason: 'Prepared context has one signal.',
+      } as PredictionRow,
+    ])
+
+    render(<ActivePredictionsPanel fetcher={fetcher as unknown as typeof fetch} showAllStates={false} />)
+
+    await waitFor(() => expect(fetcher).toHaveBeenCalled())
+    expect(await screen.findByText('Prepared compact context')).toBeInTheDocument()
+    expect(screen.getByText('Recent work')).toBeInTheDocument()
+    expect(screen.getByLabelText('20% of token budget used')).toBeInTheDocument()
   })
 })
