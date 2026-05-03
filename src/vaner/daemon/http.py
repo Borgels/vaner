@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -12,17 +13,24 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 
-from vaner.cli.commands.config import load_config, set_compute_value
-from vaner.daemon.cockpit_html import build_cockpit_html
+from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
+from vaner.daemon.cockpit_assets import cockpit_dist_dir, cockpit_response, mount_cockpit_assets
 from vaner.events.bus import build_stage_payloads
+from vaner.focus import FocusManager
 from vaner.models.config import VanerConfig
 from vaner.models.work_product import WorkProductFeedbackState, WorkProductType
 from vaner.store.scenarios import ScenarioStore
 from vaner.telemetry.metrics import MetricsStore
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.expanduser().resolve() == right.expanduser().resolve()
+    except Exception:
+        return left.expanduser().absolute() == right.expanduser().absolute()
 
 
 def _metrics_path(repo_root: Path) -> Path:
@@ -51,20 +59,13 @@ def _sanitize_validation_errors(exc: Any) -> list[dict[str, Any]]:
     return safe
 
 
-def _cockpit_dist_dir() -> Path | None:
-    candidate = Path(__file__).resolve().parents[3] / "ui" / "cockpit" / "dist"
-    if (candidate / "index.html").exists():
-        return candidate
-    return None
-
-
 # How long to wait between precompute cycles when the daemon holds a live
 # engine. Reusing the existing idle-gate + timing-aware cycle budget, so this
 # is just the outer rhythm — the engine itself may return early under load.
 _PRECOMPUTE_INTERVAL_SECONDS = 90.0
 
 
-async def _periodic_precompute(engine: Any) -> None:
+async def _periodic_precompute(engine: Any, focus_manager: FocusManager | None = None) -> None:
     """Run engine.precompute_cycle() on a loop.
 
     Errors are swallowed — the background task must not crash the daemon
@@ -80,6 +81,12 @@ async def _periodic_precompute(engine: Any) -> None:
         return
     while True:
         try:
+            if focus_manager is not None:
+                gate = focus_manager.proactive_gate(job_class="prepared_work")
+                if gate.status == "deferred":
+                    _log.debug("daemon: precompute deferred by Auto Focus: %s", gate.defer_reason)
+                    await asyncio.sleep(_PRECOMPUTE_INTERVAL_SECONDS)
+                    continue
             await engine.precompute_cycle()
         except asyncio.CancelledError:
             raise
@@ -101,6 +108,8 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
     """
     scenario_store = ScenarioStore(config.repo_root / ".vaner" / "scenarios.db")
     metrics_store = MetricsStore(_metrics_path(config.repo_root))
+    focus_manager = FocusManager(config)
+    daemon_started_at = time.time()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -111,7 +120,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         # prediction registry stays populated for MCP queries.
         precompute_task: asyncio.Task[None] | None = None
         if engine is not None:
-            precompute_task = asyncio.create_task(_periodic_precompute(engine))
+            precompute_task = asyncio.create_task(_periodic_precompute(engine, focus_manager))
         try:
             yield
         finally:
@@ -123,9 +132,8 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                     pass
 
     app = FastAPI(title="Vaner Cockpit", version="0.2.0", lifespan=lifespan)
-    cockpit_dist = _cockpit_dist_dir()
-    if cockpit_dist is not None and (cockpit_dist / "assets").exists():
-        app.mount("/assets", StaticFiles(directory=cockpit_dist / "assets"), name="cockpit-assets")
+    cockpit_dist = cockpit_dist_dir()
+    mount_cockpit_assets(app, cockpit_dist)
 
     def _prediction_health() -> dict[str, Any]:
         readiness_counts = {state: 0 for state in ["queued", "grounding", "evidence_gathering", "drafting", "ready", "stale"]}
@@ -171,8 +179,14 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         return {"status": "ok"}
 
     @app.get("/bootstrap")
-    async def bootstrap() -> dict[str, str]:
-        return {"mode": "daemon", "version": app.version, "cockpit_sha": os.environ.get("VANER_COCKPIT_SHA", "")}
+    async def bootstrap() -> dict[str, Any]:
+        return {
+            "mode": "daemon",
+            "version": app.version,
+            "cockpit_sha": os.environ.get("VANER_COCKPIT_SHA", ""),
+            "daemon_started_at": daemon_started_at,
+            "workspace_id": focus_manager.current_workspace_id,
+        }
 
     @app.get("/status")
     async def status() -> JSONResponse:
@@ -203,6 +217,186 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 "prediction_metrics": prediction_metrics,
                 "prediction_calibration": calibration,
                 "prediction_health": _prediction_health(),
+                "focus": focus_manager.build_state().model_dump(mode="json"),
+            }
+        )
+
+    @app.get("/focus")
+    async def focus() -> JSONResponse:
+        return JSONResponse(focus_manager.build_state().model_dump(mode="json"))
+
+    @app.get("/focus/route")
+    async def focus_route() -> JSONResponse:
+        return JSONResponse(focus_manager.route_state().model_dump(mode="json"))
+
+    async def _focus_json_body(request: Request) -> dict[str, Any] | JSONResponse:
+        if not request.headers.get("content-length"):
+            return {}
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"code": "invalid_input", "message": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"code": "invalid_input", "message": "JSON object body required"}, status_code=400)
+        return body
+
+    def _focus_action_path(workspace_id: str, body: dict[str, Any]) -> Path | JSONResponse:
+        path = Path(str(body.get("path") or config.repo_root))
+        expected_id = "current" if _safe_same_path(path, config.repo_root) else focus_manager.workspace_id_for_path(path)
+        if workspace_id not in {"current", expected_id}:
+            return JSONResponse(
+                {
+                    "code": "workspace_id_mismatch",
+                    "message": "workspace id does not match the requested workspace path",
+                },
+                status_code=404,
+            )
+        return path
+
+    @app.post("/focus/observations")
+    async def focus_observations(request: Request) -> JSONResponse:
+        body = await _focus_json_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        return JSONResponse(focus_manager.record_observation(body).model_dump(mode="json"))
+
+    @app.post("/focus/workspaces/{workspace_id}/work-here")
+    async def focus_work_here(workspace_id: str, request: Request) -> JSONResponse:
+        body = await _focus_json_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        path = _focus_action_path(workspace_id, body)
+        if isinstance(path, JSONResponse):
+            return path
+        try:
+            ttl = int(body.get("ttl_seconds") or 1800)
+        except (TypeError, ValueError):
+            return JSONResponse({"code": "invalid_input", "message": "ttl_seconds must be an integer"}, status_code=400)
+        return JSONResponse(focus_manager.work_here(path, ttl_seconds=ttl).model_dump(mode="json"))
+
+    @app.post("/focus/workspaces/{workspace_id}/pin")
+    async def focus_pin(workspace_id: str, request: Request) -> JSONResponse:
+        body = await _focus_json_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        path = _focus_action_path(workspace_id, body)
+        if isinstance(path, JSONResponse):
+            return path
+        return JSONResponse(focus_manager.pin(path).model_dump(mode="json"))
+
+    @app.post("/focus/workspaces/{workspace_id}/unpin")
+    async def focus_unpin(workspace_id: str) -> JSONResponse:
+        return JSONResponse(focus_manager.unpin().model_dump(mode="json"))
+
+    @app.post("/focus/workspaces/{workspace_id}/pause")
+    async def focus_pause(workspace_id: str, request: Request) -> JSONResponse:
+        body = await _focus_json_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        path = _focus_action_path(workspace_id, body)
+        if isinstance(path, JSONResponse):
+            return path
+        return JSONResponse(focus_manager.pause(path).model_dump(mode="json"))
+
+    @app.post("/focus/workspaces/{workspace_id}/resume")
+    async def focus_resume(workspace_id: str, request: Request) -> JSONResponse:
+        body = await _focus_json_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        path = _focus_action_path(workspace_id, body)
+        if isinstance(path, JSONResponse):
+            return path
+        return JSONResponse(focus_manager.resume(path).model_dump(mode="json"))
+
+    @app.post("/focus/pause-all")
+    async def focus_pause_all() -> JSONResponse:
+        return JSONResponse(focus_manager.pause_all().model_dump(mode="json"))
+
+    @app.post("/focus/mode")
+    async def focus_mode(request: Request) -> JSONResponse:
+        body = await _focus_json_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        mode = str(body.get("mode") or "").strip()
+        if mode not in {"auto", "manual-only", "paused"}:
+            return JSONResponse({"code": "invalid_mode", "message": "mode must be auto|manual-only|paused"}, status_code=400)
+        resource_mode = body.get("resource_mode")
+        if resource_mode is not None and resource_mode not in {"balanced", "low_power", "performance"}:
+            return JSONResponse(
+                {"code": "invalid_resource_mode", "message": "resource_mode must be balanced|low_power|performance"},
+                status_code=400,
+            )
+        return JSONResponse(focus_manager.set_mode(mode, resource_mode=resource_mode).model_dump(mode="json"))  # type: ignore[arg-type]
+
+    @app.post("/focus/route")
+    async def focus_route_update(request: Request) -> JSONResponse:
+        nonlocal config
+        body = await _focus_json_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        try:
+            workspace_path = None
+            if body.get("workspace_path") is not None:
+                workspace_path = Path(str(body.get("workspace_path"))).expanduser()
+                if not workspace_path.is_absolute():
+                    return JSONResponse({"code": "invalid_workspace", "message": "workspace_path must be absolute"}, status_code=400)
+                if not workspace_path.exists() or not workspace_path.is_dir():
+                    return JSONResponse(
+                        {"code": "invalid_workspace", "message": "workspace_path must be an existing directory"},
+                        status_code=400,
+                    )
+            client_supplied = "client_id" in body
+            client_id = body.get("client_id") if client_supplied else ...
+            focus_manager.set_route_preferences(
+                workspace_policy=str(body["workspace_policy"]) if "workspace_policy" in body else None,
+                workspace_path=workspace_path,
+                client_id=client_id,
+                resource_mode=str(body["resource_mode"]) if "resource_mode" in body else None,
+                ttl_seconds=int(body["ttl_seconds"]) if "ttl_seconds" in body and body.get("ttl_seconds") is not None else None,
+            )
+            if "compute_device" in body and body.get("compute_device") is not None:
+                device = str(body.get("compute_device")).strip()
+                allowed = {"auto", "cpu", "cuda", "mps", "metal"}
+                allowed.update(
+                    str(device.get("id"))
+                    for device in focus_manager.route_state().hardware_options.get("devices", [])
+                    if isinstance(device, dict)
+                )
+                if device not in allowed:
+                    return JSONResponse({"code": "invalid_compute_device", "message": "compute_device is not available"}, status_code=400)
+                set_compute_value(config.repo_root, "device", device)
+            backend = body.get("backend")
+            if backend is not None:
+                if not isinstance(backend, dict):
+                    return JSONResponse({"code": "invalid_backend", "message": "backend must be an object"}, status_code=400)
+                for key in ("name", "base_url", "model", "api_key_env"):
+                    if key in backend and backend[key] is not None:
+                        set_config_value(config.repo_root, "backend", key, str(backend[key]))
+            config = load_config(config.repo_root)
+            focus_manager.config = config
+        except ValueError as exc:
+            return JSONResponse({"code": "invalid_route", "message": str(exc)}, status_code=400)
+        except FileNotFoundError as exc:
+            return JSONResponse({"code": "config_missing", "message": str(exc)}, status_code=400)
+        return JSONResponse(focus_manager.route_state().model_dump(mode="json"))
+
+    @app.get("/resources")
+    async def resources() -> JSONResponse:
+        return JSONResponse(focus_manager.resources_state().model_dump(mode="json"))
+
+    @app.get("/jobs")
+    async def jobs() -> JSONResponse:
+        return JSONResponse(focus_manager.jobs_state())
+
+    @app.post("/jobs/{job_id}/cancel")
+    async def jobs_cancel(job_id: str) -> JSONResponse:
+        return JSONResponse(
+            {
+                "ok": True,
+                "job_id": job_id,
+                "status": "cancelled",
+                "reason_code": "cancel_requested",
+                "explanation": "Cancellable background work will be skipped at the next scheduler gate.",
             }
         )
 
@@ -822,13 +1016,13 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                     {
                         "name": "Ollama local",
                         "base_url": "http://127.0.0.1:11434/v1",
-                        "default_model": config.backend.model or "qwen3.5:35b",
+                        "default_model": config.backend.model or "qwen3.6:27b",
                         "api_key_env": "OPENAI_API_KEY",
                     },
                     {
                         "name": "vLLM OpenAI-compatible",
                         "base_url": "http://127.0.0.1:8000/v1",
-                        "default_model": config.backend.model or "Qwen/Qwen3.5-32B",
+                        "default_model": config.backend.model or "Qwen/Qwen3.6-27B-Instruct",
                         "api_key_env": "OPENAI_API_KEY",
                     },
                     {
@@ -1738,10 +1932,8 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         return StreamingResponse(event_gen(), media_type="text/event-stream")
 
     @app.get("/", response_class=HTMLResponse)
-    async def cockpit() -> str:
-        if cockpit_dist is not None:
-            return (cockpit_dist / "index.html").read_text(encoding="utf-8")
-        return build_cockpit_html("daemon")
+    async def cockpit() -> HTMLResponse:
+        return cockpit_response(cockpit_dist)
 
     @app.get("/ui")
     async def ui() -> RedirectResponse:

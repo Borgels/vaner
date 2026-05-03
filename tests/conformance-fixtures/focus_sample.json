@@ -1,0 +1,45 @@
+{
+  "mode": "auto",
+  "status": "active",
+  "resource_mode": "balanced",
+  "focus_epoch": 4,
+  "active_workspace_id": "w_example",
+  "active_client_id": "cursor",
+  "selected_by": "foreground_or_running_client",
+  "detected_clients": [
+    {
+      "id": "cursor",
+      "kind": "json-mcpServers",
+      "display_name": "Cursor",
+      "source": "daemon",
+      "running": true,
+      "foreground": false,
+      "integration_state": "wired",
+      "workspace_hints": ["/Users/example/code/vaner"],
+      "observed_at": 1777680000.0,
+      "focus_confidence": 0.75,
+      "reason_code": "supported_client_probe",
+      "explanation": "Cursor is configured."
+    }
+  ],
+  "workspaces": [
+    {
+      "id": "w_example",
+      "display_name": "vaner",
+      "canonical_path": "/Users/example/code/vaner",
+      "trust_state": "trusted",
+      "integration_state": "wired",
+      "tier": "active",
+      "pinned": false,
+      "paused": false,
+      "last_activity_at": 1777680000.0,
+      "focus_confidence": 0.75,
+      "work_value_confidence": 0.0,
+      "eligibility_reasons": ["eligible_active_workspace"],
+      "blocked_reasons": []
+    }
+  ],
+  "explanation": "Working in vaner because foreground or running client selected it.",
+  "why_not": [],
+  "proactive_allowed": true
+}

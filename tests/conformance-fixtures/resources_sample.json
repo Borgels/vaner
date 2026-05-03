@@ -1,0 +1,22 @@
+{
+  "resource_mode": "balanced",
+  "cloud_execution_policy": "disabled_v1",
+  "runtimes": [
+    {
+      "id": "ollama",
+      "kind": "ollama",
+      "endpoint": null,
+      "local": true,
+      "detected": true,
+      "available": true,
+      "healthy": true,
+      "eligible": true,
+      "selected": false,
+      "enabled": true,
+      "explanation": "ollama detected by local hardware probe."
+    }
+  ],
+  "models": [],
+  "devices": [],
+  "explanation": "Read-only minimal resource inventory from Vaner config and hardware probes."
+}

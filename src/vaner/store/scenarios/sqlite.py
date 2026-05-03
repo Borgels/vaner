@@ -258,6 +258,7 @@ class ScenarioStore:
                 """
                 UPDATE scenarios
                 SET freshness = CASE
+                    WHEN freshness = 'stale' THEN 'stale'
                     WHEN ? - last_refreshed_at > 1800 THEN 'stale'
                     WHEN ? - last_refreshed_at > 300 THEN 'recent'
                     ELSE freshness
@@ -265,6 +266,18 @@ class ScenarioStore:
                 """,
                 (now, now),
             )
+            await db.commit()
+
+    async def mark_absent_stale(self, active_ids: set[str]) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            if not active_ids:
+                await db.execute("UPDATE scenarios SET freshness = 'stale' WHERE pinned = 0")
+            else:
+                placeholders = ", ".join("?" for _ in active_ids)
+                await db.execute(
+                    f"UPDATE scenarios SET freshness = 'stale' WHERE pinned = 0 AND id NOT IN ({placeholders})",
+                    tuple(sorted(active_ids)),
+                )
             await db.commit()
 
     async def freshness_counts(self) -> dict[str, int]:

@@ -99,6 +99,7 @@ class VanerDaemon:
         generation_semaphore = asyncio.Semaphore(concurrent_limit)
         written = 0
         generated_files = []
+        diff_artefacts = []
 
         async def _generate_with_limit(target: Path) -> Artefact:
             async with generation_semaphore:
@@ -138,21 +139,26 @@ class VanerDaemon:
             diff_artefact.metadata.setdefault("corpus_id", "repo")
             diff_artefact.metadata.setdefault("privacy_zone", "project_local")
             await self.store.upsert(diff_artefact)
+            diff_artefacts.append(diff_artefact)
             written += 1
 
         working_keys = [f"file_summary:{path}" for path in sorted(recent_paths | staged_paths)]
+        working_keys.extend(f"diff_summary:{path}" for path in sorted(recent_paths | staged_paths))
         working_keys.extend(artefact.key for artefact in generated_files[:8])
+        working_keys.extend(artefact.key for artefact in diff_artefacts)
         working_set = WorkingSet(
             session_id=f"{repo_root}:{git_state.get('branch') or 'default'}",
             artefact_keys=sorted(set(working_keys)),
             updated_at=time.time(),
-            reason="git_and_recency",
+            reason="workspace_activity",
         )
         await self.store.upsert_working_set(working_set)
-        latest_artefacts = await self.store.list(limit=max(50, written * 2))
-        scenarios = build_scenarios(self.config.repo_root, latest_artefacts, sorted(recent_paths | staged_paths))
+        working_artefacts = await self._load_working_artefacts(working_set.artefact_keys)
+        scenarios = build_scenarios(self.config.repo_root, working_artefacts, sorted(recent_paths | staged_paths))
+        active_scenario_ids = {scenario.id for scenario in scenarios}
         for scenario in scenarios:
             await self.scenarios.upsert(scenario)
+        await self.scenarios.mark_absent_stale(active_scenario_ids)
         await self.scenarios.mark_stale()
         await self.telemetry.record("artefacts_written", float(written))
         logger.info(
@@ -164,6 +170,18 @@ class VanerDaemon:
             (time.monotonic() - cycle_started) * 1000.0,
         )
         return written
+
+    async def _load_working_artefacts(self, artefact_keys: list[str]) -> list[Artefact]:
+        artefacts: list[Artefact] = []
+        seen: set[str] = set()
+        for key in artefact_keys:
+            if key in seen:
+                continue
+            seen.add(key)
+            artefact = await self.store.get(key)
+            if artefact is not None:
+                artefacts.append(artefact)
+        return artefacts
 
     async def run_forever(self, interval_seconds: int = 15) -> None:
         self._running = True

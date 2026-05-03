@@ -78,6 +78,44 @@ def test_demote_sets_state_and_bumps_contradiction_signal(tmp_path) -> None:
     asyncio.run(_run())
 
 
+def test_mark_absent_stale_preserves_active_and_pinned_scenarios(tmp_path) -> None:
+    async def _run() -> None:
+        store = ScenarioStore(tmp_path / ".vaner" / "scenarios.db")
+        await store.initialize()
+        await store.upsert(Scenario(id="active", kind="change", freshness="fresh"))
+        await store.upsert(Scenario(id="inactive", kind="change", freshness="fresh"))
+        await store.upsert(Scenario(id="pinned", kind="change", freshness="fresh", pinned=1))
+
+        await store.mark_absent_stale({"active"})
+
+        active = await store.get("active")
+        inactive = await store.get("inactive")
+        pinned = await store.get("pinned")
+        assert active is not None
+        assert inactive is not None
+        assert pinned is not None
+        assert active.freshness == "fresh"
+        assert inactive.freshness == "stale"
+        assert pinned.freshness == "fresh"
+
+    asyncio.run(_run())
+
+
+def test_mark_stale_does_not_promote_explicitly_stale_scenarios(tmp_path) -> None:
+    async def _run() -> None:
+        store = ScenarioStore(tmp_path / ".vaner" / "scenarios.db")
+        await store.initialize()
+        await store.upsert(Scenario(id="s1", kind="change", freshness="stale"))
+
+        await store.mark_stale()
+
+        scenario = await store.get("s1")
+        assert scenario is not None
+        assert scenario.freshness == "stale"
+
+    asyncio.run(_run())
+
+
 def test_merge_memory_section_rejects_unknown_tag(tmp_path) -> None:
     async def _run() -> None:
         store = ScenarioStore(tmp_path / ".vaner" / "scenarios.db")

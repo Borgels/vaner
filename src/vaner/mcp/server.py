@@ -865,6 +865,55 @@ def build_server(
                     inputSchema={"type": "object", "properties": {"scope": {"type": "object"}}},
                 ),
                 Tool(
+                    name="vaner.focus.status",
+                    description="Return daemon-owned Auto Focus state, including current workspace and why Vaner is or is not working.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.focus.work_here",
+                    description="Set the current MCP workspace as the temporary Auto Focus target.",
+                    inputSchema={"type": "object", "properties": {"ttl_seconds": {"type": "integer", "default": 1800}}},
+                ),
+                Tool(
+                    name="vaner.focus.pin_current_workspace",
+                    description="Pin the current MCP workspace as the proactive Auto Focus target.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.focus.pause_current_workspace",
+                    description="Pause proactive Vaner work for the current MCP workspace.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.focus.resume_current_workspace",
+                    description="Resume proactive Vaner work for the current MCP workspace.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.focus.set_mode",
+                    description="Set Auto Focus mode.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"mode": {"type": "string", "enum": ["auto", "manual-only", "paused"]}},
+                        "required": ["mode"],
+                    },
+                ),
+                Tool(
+                    name="vaner.resources.status",
+                    description="Return minimal read-only local runtime/device inventory.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.jobs.status",
+                    description="Return background job gate status and defer/cancel explanations.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.jobs.cancel",
+                    description="Cancel or skip a cancellable Vaner background job.",
+                    inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
+                ),
+                Tool(
                     name="vaner.suggest",
                     description="Return lightweight intent suggestions before resolution.",
                     inputSchema={
@@ -1761,6 +1810,74 @@ def build_server(
             append_log(repo_root, tool=name, label="status", decision_id=None, provenance_mode=None, memory_state=None)
             await _record("ok")
             return _json_result(payload)
+
+        if name in {
+            "vaner.focus.status",
+            "vaner.focus.work_here",
+            "vaner.focus.pin_current_workspace",
+            "vaner.focus.pause_current_workspace",
+            "vaner.focus.resume_current_workspace",
+            "vaner.focus.set_mode",
+            "vaner.resources.status",
+            "vaner.jobs.status",
+            "vaner.jobs.cancel",
+        }:
+            from vaner.focus import FocusManager
+
+            manager = FocusManager(config)
+            try:
+                if name == "vaner.focus.status":
+                    body = await _daemon().get_focus()
+                elif name == "vaner.focus.work_here":
+                    body = await _daemon().focus_action(
+                        "work-here",
+                        path=str(active_repo_root),
+                        ttl_seconds=int(args.get("ttl_seconds") or 1800),
+                    )
+                elif name == "vaner.focus.pin_current_workspace":
+                    body = await _daemon().focus_action("pin", path=str(active_repo_root))
+                elif name == "vaner.focus.pause_current_workspace":
+                    body = await _daemon().focus_action("pause", path=str(active_repo_root))
+                elif name == "vaner.focus.resume_current_workspace":
+                    body = await _daemon().focus_action("resume", path=str(active_repo_root))
+                elif name == "vaner.focus.set_mode":
+                    body = await _daemon().focus_action("mode", mode=str(args.get("mode") or "auto"))
+                elif name == "vaner.resources.status":
+                    body = await _daemon().get_resources()
+                elif name == "vaner.jobs.status":
+                    body = await _daemon().get_jobs()
+                elif name == "vaner.jobs.cancel":
+                    body = await _daemon().cancel_job(str(args.get("job_id") or ""))
+                else:  # pragma: no cover - guarded by enclosing name set
+                    body = {}
+            except VanerDaemonUnavailable:
+                if name == "vaner.focus.status":
+                    body = manager.build_state().model_dump(mode="json")
+                elif name == "vaner.focus.work_here":
+                    body = manager.work_here(active_repo_root, ttl_seconds=int(args.get("ttl_seconds") or 1800)).model_dump(mode="json")
+                elif name == "vaner.focus.pin_current_workspace":
+                    body = manager.pin(active_repo_root).model_dump(mode="json")
+                elif name == "vaner.focus.pause_current_workspace":
+                    body = manager.pause(active_repo_root).model_dump(mode="json")
+                elif name == "vaner.focus.resume_current_workspace":
+                    body = manager.resume(active_repo_root).model_dump(mode="json")
+                elif name == "vaner.focus.set_mode":
+                    body = manager.set_mode(str(args.get("mode") or "auto")).model_dump(mode="json")  # type: ignore[arg-type]
+                elif name == "vaner.resources.status":
+                    body = manager.resources_state().model_dump(mode="json")
+                elif name == "vaner.jobs.status":
+                    body = manager.jobs_state()
+                else:
+                    body = {
+                        "ok": True,
+                        "job_id": str(args.get("job_id") or ""),
+                        "status": "cancelled",
+                        "reason_code": "local_fallback",
+                        "explanation": "Daemon was unavailable; matching cancellable jobs will be skipped by focus gates.",
+                    }
+                body["source"] = "local_fallback"
+            await _record("ok")
+            return _json_result(body)
 
         if name == "vaner.suggest":
             query = str(args.get("query", "")).strip()

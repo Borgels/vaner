@@ -30,7 +30,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from vaner import __version__, api
+from vaner import VERSION, api
 from vaner.broker.prompting import build_evidence_bound_context_prompt
 from vaner.cli.commands import mcp_clients
 from vaner.cli.commands.clients import clients_app
@@ -50,6 +50,7 @@ from vaner.cli.commands.daemon import (
 from vaner.cli.commands.deep_run import deep_run_app
 from vaner.cli.commands.distill import distill_skill_file
 from vaner.cli.commands.explain import render_human, render_json
+from vaner.cli.commands.focus import focus_app, jobs_app, resources_app
 from vaner.cli.commands.guidance import guidance_app
 from vaner.cli.commands.hooks import HOOK_SURFACES, write_hooks
 from vaner.cli.commands.init import (
@@ -455,7 +456,7 @@ def app_callback(
     version: bool = typer.Option(False, "--version", help="Show installed Vaner version and exit.", is_eager=True),
 ) -> None:
     if version:
-        typer.echo(f"vaner {__version__}")
+        typer.echo(f"vaner {VERSION}")
         raise typer.Exit()
     global _VERBOSE
     _VERBOSE = verbose
@@ -2418,6 +2419,9 @@ app.add_typer(config_app, name="config", rich_help_panel="Configure")
 app.add_typer(profile_app, name="profile", rich_help_panel="Background and local")
 app.add_typer(scenarios_app, name="scenarios", rich_help_panel="Use with an agent")
 app.add_typer(deep_run_app, name="deep-run", rich_help_panel="Background and local")
+app.add_typer(focus_app, name="focus", rich_help_panel="Background and local")
+app.add_typer(resources_app, name="resources", rich_help_panel="Background and local")
+app.add_typer(jobs_app, name="jobs", rich_help_panel="Background and local")
 app.add_typer(guidance_app, name="guidance", rich_help_panel="Use with an agent")
 app.add_typer(integrations_app, name="integrations", rich_help_panel="Inspect and debug")
 app.add_typer(clients_app, name="clients", rich_help_panel="Connect MCP clients")
