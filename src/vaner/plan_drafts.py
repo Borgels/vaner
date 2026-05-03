@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -13,7 +12,6 @@ from typing import Any
 
 from vaner.policy.privacy import sanitize_no_absolute_paths
 
-_LINE_MARKER_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+")
 _PLAN_OPEN_TAG = "<proposed_plan>"
 _PLAN_CLOSE_TAG = "</proposed_plan>"
 ACTIVE_PLAN_DRAFT_STATUSES = {"draft", "active"}
@@ -246,15 +244,15 @@ def _is_valid_plan_text(text: str) -> bool:
     normalized = _normalize_plan_text(text)
     if len(normalized) < 12:
         return False
-    if re.fullmatch(r"[\s\\().*?+|^${}\[\]-]+", normalized):
+    if normalized and all(ch.isspace() or ch in "\\().*?+|^${}[]-" for ch in normalized):
         return False
     if "\\s" in normalized or "(.*?)" in normalized:
         return False
-    words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", normalized)
+    words = _word_tokens(normalized)
     if len(words) < 3:
         return False
     lower = normalized.lower()
-    has_plan_shape = bool(re.search(r"(?m)^\s*(?:#{1,3}\s+|\s*(?:[-*]|\d+[.)])\s+)", normalized))
+    has_plan_shape = any(_line_has_plan_shape(line) for line in normalized.splitlines())
     has_plan_language = any(term in lower for term in ("plan", "todo", "implement", "fix", "test", "verify", "ship", "prepare"))
     return has_plan_shape or has_plan_language
 
@@ -280,7 +278,7 @@ def _has_actionable_plan_content(draft: PlanDraft) -> bool:
     if len(tasks) >= 2:
         return True
     text = " ".join([title, *tasks]).lower()
-    tokens = re.findall(r"[a-z][a-z0-9_-]{2,}", text)
+    tokens = _word_tokens(text)
     concrete_tokens = {token for token in tokens if token not in _GENERIC_PLAN_TOKENS}
     if title in _GENERIC_PLAN_TITLES and len(concrete_tokens) < 2:
         return False
@@ -291,8 +289,8 @@ def _draft_rank_key(draft: PlanDraft) -> tuple[int, float]:
     """Prefer actionable draft plans over tiny incidental captures."""
 
     task_count = min(12, len(draft.tasks))
-    title_words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", draft.title)
-    summary_words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", draft.summary)
+    title_words = _word_tokens(draft.title)
+    summary_words = _word_tokens(draft.summary)
     structure_score = task_count * 10 + min(10, len(set(title_words + summary_words)))
     return (structure_score, float(draft.updated_at or draft.created_at or 0.0))
 
@@ -305,7 +303,7 @@ def _title_from_plan(text: str) -> str:
             if title:
                 return str(sanitize_no_absolute_paths(title[:120]))
     for line in text.splitlines():
-        stripped = _LINE_MARKER_RE.sub("", line).strip()
+        stripped = _strip_line_marker(line) or line.strip()
         if stripped and not stripped.startswith("<"):
             return str(sanitize_no_absolute_paths(stripped[:120]))
     return "Draft plan"
@@ -315,9 +313,9 @@ def _tasks_from_plan(text: str) -> list[str]:
     tasks: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
-        if not _LINE_MARKER_RE.match(stripped):
+        task = _strip_line_marker(stripped)
+        if task is None:
             continue
-        task = _LINE_MARKER_RE.sub("", stripped).strip()
         if not task or len(task) < 4:
             continue
         tasks.append(str(sanitize_no_absolute_paths(task[:180])))
@@ -333,6 +331,43 @@ def _summary_from_plan(text: str, *, title: str, tasks: list[str]) -> str:
     if body:
         return str(sanitize_no_absolute_paths(body[:220]))
     return "Vaner captured a draft plan and can prepare against it locally."
+
+
+def _line_has_plan_shape(line: str) -> bool:
+    stripped = line.lstrip()
+    return stripped.startswith(("# ", "## ", "### ")) or _strip_line_marker(stripped) is not None
+
+
+def _strip_line_marker(line: str) -> str | None:
+    stripped = line.lstrip()
+    if len(stripped) >= 3 and stripped[0] in {"-", "*"} and stripped[1].isspace():
+        return stripped[2:].strip()
+    idx = 0
+    while idx < len(stripped) and stripped[idx].isdigit():
+        idx += 1
+    if idx == 0 or idx >= len(stripped) - 1:
+        return None
+    if stripped[idx] not in {".", ")"} or not stripped[idx + 1].isspace():
+        return None
+    return stripped[idx + 2 :].strip()
+
+
+def _word_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    for ch in str(text or ""):
+        if ch.isascii() and (ch.isalnum() or ch in {"_", "-"}):
+            current.append(ch.lower())
+            continue
+        _append_word_token(tokens, current)
+    _append_word_token(tokens, current)
+    return tokens
+
+
+def _append_word_token(tokens: list[str], current: list[str]) -> None:
+    if len(current) >= 3 and current[0].isalpha():
+        tokens.append("".join(current))
+    current.clear()
 
 
 def _store_path(repo_root: Path) -> Path:
