@@ -352,11 +352,6 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                         status_code=400,
                     )
                 workspace_path = Path(workspace_text)
-                if not workspace_path.exists() or not workspace_path.is_dir():
-                    return JSONResponse(
-                        {"code": "invalid_workspace", "message": "workspace_path must be an existing directory"},
-                        status_code=400,
-                    )
             client_supplied = "client_id" in body
             client_id = body.get("client_id") if client_supplied else ...
             focus_manager.set_route_preferences(
