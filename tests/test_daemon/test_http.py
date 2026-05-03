@@ -25,7 +25,8 @@ def test_cockpit_root_serves_html_and_expected_endpoints(temp_repo, monkeypatch)
     (cockpit_dist / "brand").mkdir(parents=True)
     (cockpit_dist / "brand" / "lockup-dark-animated.svg").write_text("<svg></svg>", encoding="utf-8")
     (cockpit_dist / "index.html").write_text(
-        '<!doctype html><title>Vaner Cockpit</title><div id="root"></div><img src="/brand/lockup-dark-animated.svg"><script src="/assets/index.js"></script>',
+        "<!doctype html><title>Vaner Cockpit</title><div id=\"root\"></div>"
+        '<img src="/brand/lockup-dark-animated.svg"><script src="/assets/index.js"></script>',
         encoding="utf-8",
     )
     monkeypatch.setattr("vaner.daemon.http.cockpit_dist_dir", lambda: cockpit_dist)

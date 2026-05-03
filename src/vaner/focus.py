@@ -904,7 +904,12 @@ class FocusManager:
         if selected_client is None and prefs.preferred_client_id:
             preferred = next((client for client in state.detected_clients if client.id == prefs.preferred_client_id), None)
             if preferred is not None:
-                selected_client = self._route_client_option(preferred, selected_workspace, prefs.preferred_client_id, state.active_client_id)
+                selected_client = self._route_client_option(
+                    preferred,
+                    selected_workspace,
+                    prefs.preferred_client_id,
+                    state.active_client_id,
+                )
                 client_options.insert(0, selected_client)
 
         route_workspace = self._route_workspace_option(selected_workspace, selected_workspace) if selected_workspace else None
@@ -947,7 +952,9 @@ class FocusManager:
             "warnings": [],
         }
         if prefs.preferred_client_id and selected_client is None:
-            diagnostics["warnings"].append({"code": "preferred_client_unavailable", "message": "Preferred client is not eligible right now."})
+            diagnostics["warnings"].append(
+                {"code": "preferred_client_unavailable", "message": "Preferred client is not eligible right now."}
+            )
         return FocusRouteState(
             effective_route=effective_route,
             workspace_options=workspace_options,
