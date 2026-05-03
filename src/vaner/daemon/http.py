@@ -27,14 +27,9 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_same_path(left: Path, right: Path) -> bool:
-    try:
-        # Paths are local repo/workspace candidates and are resolved only for equality checks.
-        # codeql[py/path-injection]
-        return left.expanduser().resolve() == right.expanduser().resolve()
-    except Exception:
-        # Paths are local repo/workspace candidates and are normalized only for equality checks.
-        # codeql[py/path-injection]
-        return left.expanduser().absolute() == right.expanduser().absolute()
+    left_path = os.path.abspath(os.path.expanduser(os.fspath(left)))
+    right_path = os.path.abspath(os.path.expanduser(os.fspath(right)))
+    return left_path == right_path
 
 
 def _metrics_path(repo_root: Path) -> Path:
@@ -341,11 +336,22 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         try:
             workspace_path = None
             if body.get("workspace_path") is not None:
-                # User-provided workspaces must be absolute existing directories before use.
-                # codeql[py/path-injection]
-                workspace_path = Path(str(body.get("workspace_path"))).expanduser()
-                if not workspace_path.is_absolute():
+                expanded_workspace = os.path.expanduser(str(body.get("workspace_path")))
+                if not os.path.isabs(expanded_workspace):
                     return JSONResponse({"code": "invalid_workspace", "message": "workspace_path must be absolute"}, status_code=400)
+                workspace_text = os.path.abspath(expanded_workspace)
+                available_paths = {
+                    os.path.abspath(os.path.expanduser(str(workspace.get("canonical_path"))))
+                    for workspace in focus_manager.route_state().workspace_options
+                    if isinstance(workspace, dict) and workspace.get("canonical_path")
+                }
+                available_paths.add(os.path.abspath(os.path.expanduser(os.fspath(config.repo_root))))
+                if workspace_text not in available_paths:
+                    return JSONResponse(
+                        {"code": "invalid_workspace", "message": "workspace_path must be a known workspace"},
+                        status_code=400,
+                    )
+                workspace_path = Path(workspace_text)
                 if not workspace_path.exists() or not workspace_path.is_dir():
                     return JSONResponse(
                         {"code": "invalid_workspace", "message": "workspace_path must be an existing directory"},
