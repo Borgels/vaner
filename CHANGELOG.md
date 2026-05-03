@@ -7,6 +7,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-02
+
+### Added
+
+- Auto Focus V1: daemon-owned `/focus` state, supported-client observations,
+  workspace pin/work-here/pause/manual controls, focus explanations, and
+  why-not-working reasons.
+- Focus-gated proactive Prepared Work with mandatory `focus_epoch` state and
+  conservative `/jobs` visibility.
+- Compute Routing V0.5 read-only `/resources` inventory from existing config,
+  hardware, and local runtime probes.
+- CLI and MCP surfaces for focus, resources, and jobs.
+
+### Changed
+
+- Periodic daemon precompute now defers when Auto Focus has no eligible active
+  workspace.
+- Prepared Work generation is gated by daemon focus state while the existing
+  `/prepared-work` read contract stays compatible.
+
 ## [0.8.10] - 2026-05-02
 
 ### Changed
