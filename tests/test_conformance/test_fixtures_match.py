@@ -258,13 +258,13 @@ def test_every_fixture_is_registered():
         "setup_hardware_profile_sample.json",
         "setup_selection_sample.json",
         "setup_deep_run_defaults_sample.json",
-            # 0.8.7 WS8 — composer_intent + composer_engagement fixtures.
-            "predictions_active_composer_sample.json",
-            "adopt_response_composer.json",
-            # 0.9.0 — Auto Focus + Compute Routing V0.5 fixtures.
-            "focus_sample.json",
-            "resources_sample.json",
-        }
+        # 0.8.7 WS8 — composer_intent + composer_engagement fixtures.
+        "predictions_active_composer_sample.json",
+        "adopt_response_composer.json",
+        # 0.9.0 — Auto Focus + Compute Routing V0.5 fixtures.
+        "focus_sample.json",
+        "resources_sample.json",
+    }
     found = {str(p.relative_to(FIXTURES)) for p in FIXTURES.rglob("*.json")}
     orphans = found - known
     missing = known - found

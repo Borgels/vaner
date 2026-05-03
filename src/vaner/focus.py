@@ -285,15 +285,11 @@ class FocusManager:
             parsed_work_here_expires_at = 0.0
         return _Prefs(
             mode=raw.get("mode", "auto") if raw.get("mode") in _FOCUS_MODES else "auto",
-            resource_mode=raw.get("resource_mode", "balanced")
-            if raw.get("resource_mode") in _RESOURCE_MODES
-            else "balanced",
+            resource_mode=raw.get("resource_mode", "balanced") if raw.get("resource_mode") in _RESOURCE_MODES else "balanced",
             focus_epoch=parsed_focus_epoch,
             preferred_client_id=raw.get("preferred_client_id") if isinstance(raw.get("preferred_client_id"), str) else None,
             pinned_workspace_path=raw.get("pinned_workspace_path") if isinstance(raw.get("pinned_workspace_path"), str) else None,
-            work_here_workspace_path=raw.get("work_here_workspace_path")
-            if isinstance(raw.get("work_here_workspace_path"), str)
-            else None,
+            work_here_workspace_path=raw.get("work_here_workspace_path") if isinstance(raw.get("work_here_workspace_path"), str) else None,
             work_here_expires_at=parsed_work_here_expires_at,
             paused_workspace_paths={
                 str(item)
