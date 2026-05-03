@@ -64,11 +64,7 @@ async def refresh_intent_artefacts_from_sources(config: Any, store: ArtefactStor
         )
 
     global_cfg = getattr(intent_cfg, "global_client_plans", None)
-    if (
-        global_cfg is not None
-        and bool(getattr(global_cfg, "enabled", False))
-        and str(getattr(tiers, "T2", "opt_in")) != "off"
-    ):
+    if global_cfg is not None and bool(getattr(global_cfg, "enabled", False)) and str(getattr(tiers, "T2", "opt_in")) != "off":
         adapters.append(
             GlobalClientPlansAdapter(
                 workspace_root=config.repo_root,

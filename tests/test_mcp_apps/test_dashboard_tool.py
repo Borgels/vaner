@@ -191,14 +191,14 @@ def test_dashboard_empty_engine_renders_empty_state(tmp_path: Path) -> None:
     server = _build(tmp_path, [])
     payload = _call(server, "vaner.predictions.dashboard")
     assert payload["predictions"] == []
-    assert "preparing likely next steps" in payload["fallback_text"]
+    assert "preparing likely next work" in payload["fallback_text"]
 
 
 def test_dashboard_fallback_text_matches_card_count(tmp_path: Path) -> None:
     prompts = [_prompt(label=f"p{i}") for i in range(4)]
     server = _build(tmp_path, prompts)
     payload = _call(server, "vaner.predictions.dashboard", {"limit": 2})
-    assert "2 active prediction(s)" in payload["fallback_text"]
+    assert "2 prepared context item(s)" in payload["fallback_text"]
 
 
 def test_dashboard_include_details_default_false_strips_description(tmp_path: Path) -> None:

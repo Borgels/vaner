@@ -1,16 +1,33 @@
 # Using Vaner
 
-Vaner is a local-first predictive context engine available to you as an MCP server. It prepares evidence-backed context packages in the background and exposes them through the `vaner.*` tool family (`vaner.resolve`, `vaner.search`, `vaner.expand`, `vaner.suggest`, `vaner.feedback`, `vaner.status`, `vaner.explain`, `vaner.warm`, `vaner.inspect`, `vaner.debug.trace`).
+Vaner is a predictive preparation layer available through MCP tools.
 
-Use Vaner when it already has clearly relevant, fresh, prepared context for the current turn. Do not call it mechanically when the task is trivial, self-contained, or already answered by the open conversation.
+At the start of a non-trivial turn, the product question is:
 
-Operational patterns:
+> What, if anything, should Vaner contribute to this user turn?
 
-1. **Turn decision first.** At the start of a non-trivial turn, call `vaner.suggest` if Vaner might already have prepared context. It returns exactly one decision: `use_adopted_package`, `adopt_prediction`, `resolve_optional`, or `answer_normally`.
-2. **Never wait.** Use a ready adopted package or adopt at most one strong matching prediction. If Vaner has nothing clearly useful, answer normally. Do not call `vaner.resolve` merely because no ready prediction exists.
-3. **Optional retrieval.** Use `vaner.resolve` only for concrete, high-value current-turn queries where retrieval is likely to materially improve the answer and where you can continue if Vaner is unavailable or slow.
-4. **Feedback at the end.** When the task is done (or abandoned), call `vaner.feedback` with the `resolution_id` or adopted prediction id and one of `useful` / `partial` / `wrong` / `irrelevant`, optionally with `correction`, `preferred_items`, `rejected_items`, and the `skill` label. This reinforces Vaner's scenario ranking for future work.
+Use `vaner.suggest` as the canonical turn-start API. It returns exactly one decision:
+- `use_adopted_package`
+- `adopt_prediction`
+- `resolve_optional`
+- `answer_normally`
 
-Treat Vaner as a supplement, not a replacement for reading code. Skip it entirely for one-line changes, pure reformatting, or questions already answered in the open conversation.
+Prefer an already-adopted Vaner package if one is present in the context. Do not redundantly call Vaner for the same fresh adopted package.
 
-Your MCP client may prefix these tool names. For example, Claude Code exposes plugin MCP tools as `mcp__plugin_<plugin>_<server>__<tool>` — so `vaner.resolve` appears as `mcp__plugin_vaner_vaner__vaner.resolve`. The conceptual names in this document map directly to whatever prefix your client uses; no translation is needed when you reason about them, only when you call them.
+Use:
+- `vaner.suggest` to decide immediately and non-blockingly whether Vaner should contribute;
+- `vaner.predictions.active` to inspect current prepared context for diagnostics;
+- `vaner.predictions.dashboard` to open the interactive predictions card UI (if the client supports MCP Apps — falls back to structured text otherwise);
+- `vaner.predictions.adopt` only when `vaner.suggest` returns `adopt_prediction` or shared relevance fields show a strong current-turn match;
+- `vaner.resolve` only when `vaner.suggest` returns `resolve_optional` or a concrete high-value query is likely to benefit from retrieval;
+- `vaner.goals.*` when long-horizon user/workspace goals matter;
+- `vaner.feedback` at the end of a Vaner-assisted turn (`useful` / `partial` / `wrong` / `irrelevant`).
+
+Do not call Vaner mechanically on every turn. Never wait for Vaner; if no clearly relevant prepared context is ready, answer normally. Never call `vaner.resolve` merely because no ready prediction exists. Adopt at most one prediction. Avoid repeated calls when the current context already contains fresh Vaner material. When using Vaner material, preserve its provenance and distinguish it from your own inference.
+
+Release discipline for repository agents:
+- Do not create or push a release tag until local release preflight, remote release preflight, and required PR checks are green on the target commit.
+- Validate release workflow changes before tagging; tag workflows should publish a verified release, not discover first-run release bugs.
+- Do not cancel required PR checks to save time. Fix duplicated CI triggers or stale branch-protection contexts instead.
+- Public release notes, reports, and assets must not include private repository names, internal implementation details, local absolute paths, secrets, or raw private prompts.
+- Treat targeted reruns as debugging evidence only. Release claims require the current policy's full required benchmark evidence and a stable public report format.

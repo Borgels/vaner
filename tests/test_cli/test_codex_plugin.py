@@ -59,13 +59,7 @@ def test_codex_plugin_install_refreshes_existing_bundle_and_global_hooks(tmp_pat
     (target / "scripts" / "codex_tool_event.py").write_text("# stale\n", encoding="utf-8")
     (home / ".codex" / "hooks.json").write_text(
         json.dumps(
-            {
-                "hooks": {
-                    "UserPromptSubmit": [
-                        {"matcher": "*", "hooks": [{"type": "command", "command": "echo user hook", "timeout": 1}]}
-                    ]
-                }
-            }
+            {"hooks": {"UserPromptSubmit": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo user hook", "timeout": 1}]}]}}
         ),
         encoding="utf-8",
     )
@@ -82,11 +76,7 @@ def test_codex_plugin_install_refreshes_existing_bundle_and_global_hooks(tmp_pat
     assert '[plugins."vaner-codex@vaner-local"]' in config
     assert "codex_hooks = true" in config
     hooks = json.loads((home / ".codex" / "hooks.json").read_text(encoding="utf-8"))
-    commands = [
-        hook["command"]
-        for entry in hooks["hooks"]["UserPromptSubmit"]
-        for hook in entry["hooks"]
-    ]
+    commands = [hook["command"] for entry in hooks["hooks"]["UserPromptSubmit"] for hook in entry["hooks"]]
     assert "echo user hook" in commands
     assert any("codex_prompt_submit.py" in command for command in commands)
 

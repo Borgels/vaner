@@ -186,6 +186,9 @@ def serialize_prediction_compact(prompt: PredictedPrompt, *, rank: int | None = 
     }
     if rank is not None:
         payload["rank"] = rank
+    composer_engagement = composer_engagement_payload(prompt)
+    if composer_engagement is not None:
+        payload["composer_engagement"] = composer_engagement
     relevance = evaluate_prediction_relevance(payload)
     payload["label"] = relevance.display_label
     payload.update(relevance.as_dict())

@@ -307,8 +307,7 @@ def _path_score(path: str, *, family: HorizonFamily, domain: str, recent_terms: 
     if family.key == "document" and lower.endswith((".md", ".rst", ".txt")):
         score += 0.85
     if family.key == "handoff" and any(
-        part in lower
-        for part in ("commit", "release", "deploy", "workflow", "changelog", "readme", "package", "preflight", "semantic-pr")
+        part in lower for part in ("commit", "release", "deploy", "workflow", "changelog", "readme", "package", "preflight", "semantic-pr")
     ):
         score += 0.9
     if family.key in {"review", "harden"} and any(part in lower for part in ("policy", "contract", "security", "test", "error")):

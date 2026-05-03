@@ -137,4 +137,3 @@ def _source_patch(source_id: str, enabled: bool) -> dict[str, Any]:
     if source_id != "global_client_plans":
         raise typer.BadParameter("Only global_client_plans is currently user-toggleable.")
     return {"global_client_plans": {"enabled": enabled}}
-

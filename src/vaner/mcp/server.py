@@ -572,8 +572,7 @@ def _compact_prediction_body_for_mcp(body: dict[str, Any]) -> dict[str, Any]:
             for state, rows in by_state.items()
         }
     compact["predictions"] = [
-        compact_serialized_prediction(row, rank=index + 1)
-        for index, row in enumerate(sorted(rows_by_id.values(), key=_rank))
+        compact_serialized_prediction(row, rank=index + 1) for index, row in enumerate(sorted(rows_by_id.values(), key=_rank))
     ]
     return compact
 
@@ -859,7 +858,7 @@ def build_server(
             if engine is not None:
                 predictions = [_serialize_prediction_for_mcp(p) for p in engine.get_active_predictions()]
             else:
-                body = await (await _daemon_for_repo()).get_predictions_active(include_all=True)
+                body = await _get_predictions_active_body(await _daemon_for_repo(), include_all=True)
                 predictions = list(body.get("predictions", []))
         except VanerDaemonUnavailable:
             engine_unavailable = True
@@ -953,7 +952,7 @@ def build_server(
                 status_health = status_body.get("prediction_health") if isinstance(status_body, dict) else None
                 if isinstance(status_health, dict):
                     return status_health
-                    body = await daemon.get_predictions_active(include_all=True)
+                body = await _get_predictions_active_body(daemon, include_all=True)
                 rows = list(body.get("predictions", []))
                 engine_available = True
                 total_count = len(rows)
@@ -979,6 +978,13 @@ def build_server(
             "stale_or_invalidated_reasons": stale_reasons[-8:],
             "diagnostic_status": diagnostic_status,
         }
+
+    async def _get_predictions_active_body(daemon: Any, *, include_all: bool = True) -> dict[str, Any]:
+        try:
+            body = await daemon.get_predictions_active(include_all=include_all)
+        except TypeError:
+            body = await daemon.get_predictions_active()
+        return body if isinstance(body, dict) else {"predictions": []}
 
     @server.list_tools()
     async def list_tools() -> ListToolsResult:
@@ -2051,7 +2057,7 @@ def build_server(
                     prediction_rows = [_serialize_prediction_for_mcp(p) for p in engine.get_active_predictions()]
                 else:
                     daemon = await _await_with_suggest_timeout(_daemon_for_repo())
-                    prediction_body = await _await_with_suggest_timeout(daemon.get_predictions_active(include_all=True))
+                    prediction_body = await _await_with_suggest_timeout(_get_predictions_active_body(daemon, include_all=True))
                     prediction_rows = list(prediction_body.get("predictions", []))
             except (VanerDaemonUnavailable, TimeoutError):
                 engine_unavailable = True
@@ -2076,8 +2082,7 @@ def build_server(
                 evaluated_predictions,
                 context=context_arg,
                 has_retrieval_candidate=any(
-                    int(item.get("query_overlap") or 0) > 0 and float(item.get("confidence") or 0.0) >= 0.4
-                    for item in picked
+                    int(item.get("query_overlap") or 0) > 0 and float(item.get("confidence") or 0.0) >= 0.4 for item in picked
                 ),
                 engine_unavailable=engine_unavailable,
             ).as_dict()
@@ -2644,7 +2649,7 @@ def build_server(
             # When the daemon is up with `--with-engine`, this returns live
             # predictions from its background precompute task.
             try:
-                body = await (await _daemon_for_repo()).get_predictions_active(include_all=True)
+                body = await _get_predictions_active_body(await _daemon_for_repo(), include_all=True)
             except VanerDaemonUnavailable:
                 await _record("ok")
                 return _json_result(
@@ -2684,7 +2689,7 @@ def build_server(
                 if engine is not None:
                     active_prompts = list(engine.get_active_predictions())
                 else:
-                    body = await (await _daemon_for_repo()).get_predictions_active(include_all=True)
+                    body = await _get_predictions_active_body(await _daemon_for_repo(), include_all=True)
                     # body["predictions"] is already serialized; we can't re-rank
                     # without the live prompt objects, so fall through to a
                     # direct payload return.
@@ -2714,6 +2719,9 @@ def build_server(
             ]
             ranked = rank_cards(filtered)[:limit]
             cards = [_serialize_prediction_for_mcp(p, rank=i + 1) for i, p in enumerate(ranked)]
+            if include_details:
+                for card, prompt in zip(cards, ranked, strict=False):
+                    card["description"] = str(prompt.spec.description)
             if not include_details:
                 for card in cards:
                     # Trim the heaviest fields from the payload — the iframe

@@ -1773,9 +1773,7 @@ class VanerEngine:
             changed_paths_for_horizon = [
                 line.strip()
                 for line in (
-                    str(git_state_for_horizon.get("recent_diff", ""))
-                    + "\n"
-                    + str(git_state_for_horizon.get("staged", ""))
+                    str(git_state_for_horizon.get("recent_diff", "")) + "\n" + str(git_state_for_horizon.get("staged", ""))
                 ).splitlines()
                 if line.strip()
             ]

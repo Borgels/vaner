@@ -197,20 +197,8 @@ def test_launch_codex_cli_uses_detected_binary_for_mcp(
     hooks = json.loads((fake_home / ".codex" / "hooks.json").read_text(encoding="utf-8"))
     prompt_command = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     assert str(fake_home / ".codex" / "plugins" / "vaner-codex" / "scripts" / "codex_prompt_submit.py") in prompt_command
-    version = json.loads((fake_home / ".codex" / "plugins" / "vaner-codex" / ".codex-plugin" / "plugin.json").read_text())[
-        "version"
-    ]
-    assert (
-        fake_home
-        / ".codex"
-        / "plugins"
-        / "cache"
-        / "vaner-local"
-        / "vaner-codex"
-        / version
-        / ".codex-plugin"
-        / "plugin.json"
-    ).exists()
+    version = json.loads((fake_home / ".codex" / "plugins" / "vaner-codex" / ".codex-plugin" / "plugin.json").read_text())["version"]
+    assert (fake_home / ".codex" / "plugins" / "cache" / "vaner-local" / "vaner-codex" / version / ".codex-plugin" / "plugin.json").exists()
     assert any(call[:3] == ["/fake/bin/codex", "mcp", "add"] for call in calls)
 
     from vaner.cli.commands import mcp_clients

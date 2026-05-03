@@ -30,4 +30,3 @@ async def test_global_client_plans_requires_workspace_match(tmp_path, monkeypatc
 
     candidates = list(await adapter.discover())
     assert [candidate.title_hint for candidate in candidates] == ["current.md"]
-

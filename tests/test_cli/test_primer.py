@@ -340,8 +340,8 @@ def test_load_canonical_primer_reads_shipped_file():
     body = load_canonical_primer()
     assert body.strip().startswith("# Using Vaner")
     # Anchored on the user-provided principle.
-    assert "reduce uncertainty" in body
-    assert "do not call it mechanically" in body.lower()
+    assert "canonical turn-start API" in body
+    assert "do not call vaner mechanically" in body.lower()
 
 
 def test_primer_version_tracks_package_version():

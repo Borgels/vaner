@@ -577,15 +577,12 @@ class FocusManager:
                     elif spec.kind == "json-servers":
                         configured = config_path is not None and mcp_clients._contains_vaner_entry(config_path, container_key="servers")
                     elif spec.kind == "json-context_servers":
-                        configured = (
-                            config_path is not None
-                            and mcp_clients._contains_vaner_entry(config_path, container_key="context_servers")
+                        configured = config_path is not None and mcp_clients._contains_vaner_entry(
+                            config_path, container_key="context_servers"
                         )
                     elif spec.kind == "yaml-continue":
                         configured = (
-                            config_path is not None
-                            and config_path.exists()
-                            and "name: vaner" in config_path.read_text(encoding="utf-8")
+                            config_path is not None and config_path.exists() and "name: vaner" in config_path.read_text(encoding="utf-8")
                         )
                     elif spec.kind in {"cli-claude", "cli-codex"}:
                         # Hot focus/status paths must never shell out to host CLIs.

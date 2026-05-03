@@ -113,4 +113,4 @@ def read_live_work_events(
         if entity_id and str(row.get("entity_id") or "") != entity_id:
             continue
         events.append(row)
-    return events[-max(1, min(1000, int(limit))):]
+    return events[-max(1, min(1000, int(limit))) :]

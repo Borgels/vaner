@@ -150,11 +150,14 @@ def build_plan_draft_cards(
     cards: list[PreparedWorkCard] = []
     for draft in drafts[: max(1, min(50, int(limit)))]:
         if isinstance(draft, dict):
+
             def get(key: str, default: Any = None, *, _draft: dict[str, Any] = draft) -> Any:
                 return _draft.get(key, default)
         else:
+
             def get(key: str, default: Any = None, *, _draft: Any = draft) -> Any:
                 return getattr(_draft, key, default)
+
         plan_id = str(get("id", "") or "")
         if not plan_id:
             continue

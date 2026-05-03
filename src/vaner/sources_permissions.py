@@ -121,4 +121,3 @@ def _display_path(path: str) -> str:
 
 def dump_json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, indent=2, sort_keys=True)
-

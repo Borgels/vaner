@@ -170,9 +170,7 @@ def run_up(
     daemon_state = process_status(repo_root, DAEMON_PROCESS)
     cockpit_state = process_status(repo_root, COCKPIT_PROCESS)
     worker_state = process_status(repo_root, WORKER_PROCESS)
-    if daemon_state["running"] and cockpit_state["running"] and (
-        worker_state["running"] or daemon_state["pid"] == cockpit_state["pid"]
-    ):
+    if daemon_state["running"] and cockpit_state["running"] and (worker_state["running"] or daemon_state["pid"] == cockpit_state["pid"]):
         return {
             "started": False,
             "reattached": True,
@@ -239,11 +237,7 @@ def run_down(repo_root: Path) -> dict[str, object]:
     daemon_state = process_status(repo_root, DAEMON_PROCESS)
     cockpit_state = process_status(repo_root, COCKPIT_PROCESS)
     worker_state = process_status(repo_root, WORKER_PROCESS)
-    tracked_pids = {
-        int(pid)
-        for pid in (daemon_state["pid"], cockpit_state["pid"], worker_state["pid"])
-        if pid is not None
-    }
+    tracked_pids = {int(pid) for pid in (daemon_state["pid"], cockpit_state["pid"], worker_state["pid"]) if pid is not None}
     runtime_pids = _runtime_pids_for_repo(repo_root)
 
     stopped_daemon = False
