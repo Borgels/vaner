@@ -376,7 +376,15 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             if backend is not None:
                 if not isinstance(backend, dict):
                     return JSONResponse({"code": "invalid_backend", "message": "backend must be an object"}, status_code=400)
-                for key in ("name", "base_url", "model", "api_key_env"):
+                if "api_key_env" in backend and backend["api_key_env"] is not None:
+                    return JSONResponse(
+                        {
+                            "code": "invalid_backend",
+                            "message": "api_key_env must be changed with `vaner config set backend.api_key_env <ENV_VAR>`",
+                        },
+                        status_code=400,
+                    )
+                for key in ("name", "base_url", "model"):
                     if key in backend and backend[key] is not None:
                         set_config_value(config.repo_root, "backend", key, str(backend[key]))
             config = load_config(config.repo_root)

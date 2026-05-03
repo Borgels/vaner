@@ -191,6 +191,8 @@ def route_set(
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     root = _repo_root(repo_root)
+    if backend_api_key_env is not None:
+        raise typer.BadParameter("Use `vaner config set backend.api_key_env <ENV_VAR>` to change backend credentials.")
     payload: dict[str, Any] = {}
     if workspace_policy is not None:
         payload["workspace_policy"] = workspace_policy
@@ -206,7 +208,6 @@ def route_set(
         "name": backend_name,
         "base_url": backend_base_url,
         "model": backend_model,
-        "api_key_env": backend_api_key_env,
     }
     backend = {key: value for key, value in backend.items() if value is not None}
     if backend:
