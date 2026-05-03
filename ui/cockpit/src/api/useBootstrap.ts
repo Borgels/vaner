@@ -2,23 +2,40 @@ import { useEffect, useState } from 'react'
 
 import type { BootstrapPayload } from '../types'
 
-const DEFAULT_BOOTSTRAP: BootstrapPayload = { mode: 'daemon' }
+export interface BootstrapState {
+  payload: BootstrapPayload | null
+  loading: boolean
+  error: string | null
+}
 
-export function useBootstrap(): BootstrapPayload {
-  const [payload, setPayload] = useState<BootstrapPayload>(DEFAULT_BOOTSTRAP)
+export function useBootstrap(): BootstrapState {
+  const [state, setState] = useState<BootstrapState>({ payload: null, loading: true, error: null })
 
   useEffect(() => {
     let cancelled = false
     fetch('/bootstrap')
-      .then((response) => (response.ok ? response.json() : DEFAULT_BOOTSTRAP))
-      .then((next: BootstrapPayload) => {
-        if (!cancelled) setPayload({ ...DEFAULT_BOOTSTRAP, ...next })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error((await response.text().catch(() => '')) || `HTTP ${response.status}`)
+        }
+        return response.json()
       })
-      .catch(() => undefined)
+      .then((next: BootstrapPayload) => {
+        if (!cancelled) setState({ payload: next, loading: false, error: null })
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setState({
+            payload: null,
+            loading: false,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      })
     return () => {
       cancelled = true
     }
   }, [])
 
-  return payload
+  return state
 }

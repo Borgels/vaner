@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="220" height="56" viewBox="0 0 220 56" aria-label="Vaner">
+  <style>
+    .wm {
+      fill: #f4efe7;
+      font-family: "Share Tech Mono", "JetBrains Mono", ui-monospace, monospace;
+      font-size: 30px;
+      letter-spacing: 0.02em;
+    }
+    .cur {
+      fill: #e0a557;
+      animation: vaner-cursor 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    }
+    .state-sat {
+      filter: url(#sat-glow);
+    }
+    @keyframes vaner-cursor {
+      0%, 58%, 100% { opacity: 1; }
+      70%, 88% { opacity: 0.18; }
+    }
+  </style>
+  <defs>
+    <filter id="sat-glow" x="-8" y="-8" width="20" height="20" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="1.2" result="blur"></feGaussianBlur>
+      <feMerge>
+        <feMergeNode in="blur"></feMergeNode>
+        <feMergeNode in="SourceGraphic"></feMergeNode>
+      </feMerge>
+    </filter>
+  </defs>
+  <g transform="translate(4 16)">
+    <circle cx="11" cy="11" r="9" fill="none" stroke="#b299d1" stroke-width="1.4"></circle>
+    <circle cx="11" cy="11" r="4" fill="#b299d1"></circle>
+    <path d="M11 11 L18 6" stroke="#e0a557" stroke-width="0.9"></path>
+    <circle cx="18" cy="6" r="1.6" fill="#e0a557"></circle>
+    <circle class="state-sat" cx="18" cy="6" r="1.6" fill="#e0a557" opacity="0.9">
+      <animate attributeName="r" values="1.6;2.0;1.6" dur="3.2s" repeatCount="indefinite"></animate>
+      <animate attributeName="opacity" values="0.9;1;0.9" dur="3.2s" repeatCount="indefinite"></animate>
+    </circle>
+  </g>
+  <text x="38" y="40" class="wm">vaner<tspan class="cur">_</tspan></text>
+</svg>

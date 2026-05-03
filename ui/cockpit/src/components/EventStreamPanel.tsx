@@ -12,6 +12,7 @@ const STAGE_COLORS: Record<PipelineStage, string> = {
   artefacts: 'var(--kind-refactor)',
   scenarios: 'var(--accent)',
   decisions: 'var(--kind-research)',
+  predictions: 'var(--kind-explain)',
   prediction: 'var(--kind-explain)',
   calibration: 'var(--kind-change)',
   draft: 'var(--kind-debug)',
@@ -26,6 +27,11 @@ const STAGE_ORDER: PipelineStage[] = [
   'artefacts',
   'scenarios',
   'decisions',
+  'predictions',
+  'prediction',
+  'calibration',
+  'draft',
+  'budget',
   'system',
 ]
 

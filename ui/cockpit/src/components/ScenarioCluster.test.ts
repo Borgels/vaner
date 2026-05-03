@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { computeEdges, initialLayout, jaccard, scenarioPaths, tickForces } from './ScenarioCluster'
+import { computeEdges, initialLayout, jaccard, scenarioPaths, scenarioScoreScale, tickForces } from './ScenarioCluster'
 import type { UIScenario } from '../types'
 
 function scenario(overrides: Partial<UIScenario>): UIScenario {
@@ -46,6 +46,15 @@ describe('scenarioPaths', () => {
       scenario({ id: 'a', path: 'src/main.py', entities: ['src/util.py', 'README.md'] }),
     )
     expect(paths).toEqual(new Set(['src/main.py', 'src/util.py', 'README.md']))
+  })
+})
+
+describe('scenarioScoreScale', () => {
+  it('keeps score sizing inside a subtle bounded range', () => {
+    expect(scenarioScoreScale(0.5)).toBe(0.85)
+    expect(scenarioScoreScale(0.75)).toBe(1)
+    expect(scenarioScoreScale(0.9)).toBe(1.18)
+    expect(scenarioScoreScale(0.98)).toBe(1.35)
   })
 })
 

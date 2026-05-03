@@ -5,19 +5,19 @@ import type { PipelineStage, UIEvent } from '../types'
 
 /** Shape emitted by `/events/stream` after the unified event bus refactor. */
 export interface PipelineEventPayload {
-  id: string
-  ts: number
-  stage: PipelineStage
-  kind: string
-  payload: Record<string, unknown>
-  scn: string | null
-  path: string | null
-  cycle_id: string | null
+  id?: string
+  ts?: number
+  stage?: PipelineStage
+  kind?: string
+  payload?: Record<string, unknown> | unknown[]
+  scn?: string | null
+  path?: string | null
+  cycle_id?: string | null
   // Legacy envelope preserved for one release.
-  t: string
-  tag: string
-  color: string
-  msg: string
+  t?: string
+  tag?: string
+  color?: string
+  msg?: string
 }
 
 export interface PipelineEvent extends UIEvent {
@@ -33,7 +33,7 @@ export interface SignalRow {
   cycleId: string | null
   ts: number
   fsScan: number
-  gitChanged: number
+  workspaceChanges: number
   msg: string
 }
 
@@ -83,20 +83,93 @@ const MAX_ROWS = 20
 const LATENCY_WINDOW = 20
 
 function adaptLegacyEvent(payload: PipelineEventPayload): PipelineEvent {
+  const ts = payload.ts ?? Date.now() / 1000
+  const stage = payload.stage ?? stageForKind(payload.kind)
+  const snapshotKind = snapshotKindForStage(stage)
+  const kind = payload.kind ?? snapshotKind
+  const body = normalizePayload(payload.payload)
   return {
-    id: payload.id,
-    t: payload.t ?? new Date((payload.ts ?? Date.now() / 1000) * 1000).toLocaleTimeString(),
-    tag: payload.tag ?? payload.kind?.split('.')[0] ?? payload.stage,
+    id: payload.id ?? `${kind}-${hashPayload(body)}-${Math.round(ts * 1000)}`,
+    t: payload.t ?? new Date(ts * 1000).toLocaleTimeString(),
+    tag: payload.tag ?? payload.kind?.split('.')[0] ?? stage,
     color: payload.color ?? 'var(--fg-3)',
-    msg: payload.msg ?? `${payload.stage}:${payload.kind}`,
+    msg: payload.msg ?? snapshotMessage(stage, body),
     scn: payload.scn ?? null,
-    stage: payload.stage,
-    kind: payload.kind,
-    ts: payload.ts,
+    stage,
+    kind,
+    ts,
     path: payload.path ?? null,
     cycleId: payload.cycle_id ?? null,
-    payload: payload.payload ?? {},
+    payload: body,
   }
+}
+
+function stageForKind(kind: string | undefined): PipelineStage {
+  if (!kind) return 'system'
+  if (kind.startsWith('signal.')) return 'signals'
+  if (kind.startsWith('target.')) return 'targets'
+  if (kind.startsWith('llm.')) return 'model'
+  if (kind.startsWith('artefact.')) return 'artefacts'
+  if (kind.startsWith('decision.')) return 'decisions'
+  if (kind.startsWith('prediction.')) return 'prediction'
+  return 'system'
+}
+
+function normalizePayload(payload: PipelineEventPayload['payload']): Record<string, unknown> {
+  if (Array.isArray(payload)) {
+    return { items: payload }
+  }
+  return payload ?? {}
+}
+
+function snapshotKindForStage(stage: PipelineStage): string {
+  switch (stage) {
+    case 'scenarios':
+      return 'scenarios.snapshot'
+    case 'predictions':
+      return 'predictions.snapshot'
+    case 'prediction':
+      return 'prediction.metrics'
+    case 'calibration':
+      return 'calibration.snapshot'
+    case 'draft':
+      return 'draft.metrics'
+    case 'budget':
+      return 'budget.metrics'
+    default:
+      return `${stage}.snapshot`
+  }
+}
+
+function snapshotMessage(stage: PipelineStage, payload: Record<string, unknown>): string {
+  const items = Array.isArray(payload.items) ? payload.items : null
+  switch (stage) {
+    case 'scenarios':
+      return `${items?.length ?? 0} scenarios available`
+    case 'predictions':
+      return `${items?.length ?? 0} active predictions`
+    case 'prediction':
+      return 'Prediction metrics updated'
+    case 'calibration':
+      return 'Calibration updated'
+    case 'draft':
+      return 'Draft quality metrics updated'
+    case 'budget': {
+      const util = Number(payload.budget_utilization ?? 0)
+      return `Budget utilization ${(util * 100).toFixed(0)}%`
+    }
+    default:
+      return `${stage} updated`
+  }
+}
+
+function hashPayload(payload: Record<string, unknown>): string {
+  const serialized = JSON.stringify(payload)
+  let hash = 0
+  for (let i = 0; i < serialized.length; i += 1) {
+    hash = (hash * 31 + serialized.charCodeAt(i)) >>> 0
+  }
+  return hash.toString(16)
 }
 
 interface Particle {
@@ -256,7 +329,7 @@ export function usePipelineEvents({
                 cycleId: event.cycleId,
                 ts: event.ts,
                 fsScan: Number(event.payload.fs_scan ?? 0),
-                gitChanged: Number(event.payload.git_changed ?? 0),
+                workspaceChanges: Number(event.payload.workspace_changed ?? event.payload.git_changed ?? 0),
                 msg: event.msg,
               },
               ...prev,

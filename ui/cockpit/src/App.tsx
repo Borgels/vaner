@@ -10,8 +10,8 @@ import {
   getStatus,
   listDecisions,
   listPinnedFacts,
+  listPredictionsByState,
   listSkills,
-  nudgeSkill as apiNudgeSkill,
   sendOutcome,
   toggleGateway,
   togglePin as toggleScenarioPin,
@@ -23,7 +23,15 @@ import {
 import { useBootstrap } from './api/useBootstrap'
 import { useEvents } from './api/useEvents'
 import { usePipelineEvents } from './api/usePipelineEvents'
+import { usePreparedWork } from './api/usePreparedWork'
 import { useScenarios } from './api/useScenarios'
+import {
+  BoardView,
+  EvidenceView,
+  NowView,
+  PreparedWorkView,
+  TimelineView,
+} from './components/CockpitViews'
 import type { ScoreComponent } from './components/Inspector'
 import {
   CommandPalette,
@@ -35,11 +43,9 @@ import {
   type CommandItem,
 } from './components/chrome'
 import { EventStreamPanel } from './components/EventStreamPanel'
-import { GoalsPanel } from './components/GoalsPanel'
 import { Inspector } from './components/Inspector'
 import { LearningPanel } from './components/LearningPanel'
 import { PipelineCanvas } from './components/PipelineCanvas'
-import { PreparedWorkPanel } from './components/PreparedWorkPanel'
 import { SystemVitals } from './components/SystemVitals'
 import { ACCENT_MAP, DEFAULT_COCKPIT_SETTINGS, KIND_COLOR } from './lib/constants'
 import type {
@@ -53,6 +59,7 @@ import type {
   LatestInvalidationSignal,
   LimitSettings,
   MCPSettings,
+  PredictionSummary,
   ScenarioApiPayload,
   StatusPayload,
   UIEvent,
@@ -63,6 +70,8 @@ import type {
 import { fetchScenarioDetail } from './api/client'
 
 const COCKPIT_BUILD_SHA = (import.meta as unknown as { env?: { VITE_COCKPIT_SHA?: string } }).env?.VITE_COCKPIT_SHA ?? ''
+
+type ScenarioScope = 'all' | 'session' | 'focus'
 
 function formatDecisionTime(assembledAt: number): string {
   return new Date(assembledAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -99,9 +108,12 @@ function proxyPackageFromDecision(decision: DecisionRecordPayload | null): UIPac
 function App() {
   const bootstrap = useBootstrap()
   const pipeline = usePipelineEvents({ path: '/events/stream' })
+  const preparedWork = usePreparedWork(24)
   const [cockpit, setCockpit] = useState<CockpitSettings>(DEFAULT_COCKPIT_SETTINGS)
-  const [query, setQuery] = useState('why is the ponder loop dropping scenarios after reweight?')
-  const { scenarios, setScenarios, scenarioMap, setScenarioMap } = useScenarios(cockpit.topK, pipeline.events)
+  const [query, setQuery] = useState('')
+  const scenarioResult = useScenarios(cockpit.topK, pipeline.events)
+  const { setScenarios, scenarioMap, setScenarioMap } = scenarioResult
+  const [scenarioScope, setScenarioScope] = useState<ScenarioScope>('session')
   const [backend, setBackend] = useState<BackendSettings | null>(null)
   const [compute, setCompute] = useState<ComputeSettings | null>(null)
   const [mcp, setMcp] = useState<MCPSettings | null>(null)
@@ -116,7 +128,8 @@ function App() {
   const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [view, setView] = useState<CockpitView>('pipeline')
+  const [view, setView] = useState<CockpitView>('prepared-work')
+  const [selectedWorkId, setSelectedWorkId] = useState<string | null>(null)
   // Cockpit refresh: lazy-loaded "stale because" reasons keyed by scenario
   // id. We only fetch on selection (and only for non-fresh rows) to avoid
   // a second round-trip for every list-time render.
@@ -130,15 +143,71 @@ function App() {
   const [bundleMismatch, setBundleMismatch] = useState(false)
   const [predictionMetrics, setPredictionMetrics] = useState<StatusPayload['prediction_metrics'] | null>(null)
   const [predictionCalibration, setPredictionCalibration] = useState<StatusPayload['prediction_calibration'] | null>(null)
+  const [predictions, setPredictions] = useState<PredictionSummary[]>([])
+  const [focusState, setFocusState] = useState<StatusPayload['focus'] | null>(null)
 
-  const mode = bootstrap.mode
+  const bootstrapPayload = bootstrap.payload
+  const mode = bootstrapPayload?.mode ?? 'daemon'
+  const focusMatches =
+    !bootstrapPayload?.workspace_id ||
+    !focusState?.active_workspace_id ||
+    focusState.active_workspace_id === bootstrapPayload.workspace_id
+  const scenarios = useMemo(() => {
+    if (scenarioScope === 'focus' && !focusMatches) {
+      return []
+    }
+    if (scenarioScope !== 'session' || !bootstrapPayload?.daemon_started_at) {
+      return scenarioResult.scenarios
+    }
+    return scenarioResult.scenarios.filter((scenario) => {
+      if (scenario.freshness === 'stale') {
+        return false
+      }
+      const refreshedAt = scenarioMap[scenario.id]?.last_refreshed_at ?? scenarioMap[scenario.id]?.created_at
+      return typeof refreshedAt === 'number' && refreshedAt >= bootstrapPayload.daemon_started_at!
+    })
+  }, [bootstrapPayload?.daemon_started_at, focusMatches, scenarioMap, scenarioResult.scenarios, scenarioScope])
+
+  const preparedCards = useMemo(() => {
+    const freshnessRank = (label: string) => {
+      const lower = label.toLowerCase()
+      if (lower.includes('fresh')) return 3
+      if (lower.includes('recent')) return 2
+      if (lower.includes('stale')) return 0
+      return 1
+    }
+    const confidenceRank = (label: string) => {
+      const lower = label.toLowerCase()
+      if (lower.includes('high')) return 3
+      if (lower.includes('medium')) return 2
+      if (lower.includes('low')) return 0
+      return 1
+    }
+    return [...preparedWork.cards].sort((a, b) => {
+      const actionDelta = Number(Boolean(b.primary_action?.endpoint)) - Number(Boolean(a.primary_action?.endpoint))
+      if (actionDelta) return actionDelta
+      const confidenceDelta = confidenceRank(b.confidence_label) - confidenceRank(a.confidence_label)
+      if (confidenceDelta) return confidenceDelta
+      const freshnessDelta = freshnessRank(b.freshness_label) - freshnessRank(a.freshness_label)
+      if (freshnessDelta) return freshnessDelta
+      const evidenceDelta = b.evidence_count - a.evidence_count
+      if (evidenceDelta) return evidenceDelta
+      return b.updated_at - a.updated_at
+    })
+  }, [preparedWork.cards])
 
   useEffect(() => {
-    if (!bootstrap.cockpit_sha || !COCKPIT_BUILD_SHA) {
+    if (!bootstrapPayload?.cockpit_sha || !COCKPIT_BUILD_SHA) {
       return
     }
-    setBundleMismatch(bootstrap.cockpit_sha !== COCKPIT_BUILD_SHA)
-  }, [bootstrap.cockpit_sha])
+    setBundleMismatch(bootstrapPayload.cockpit_sha !== COCKPIT_BUILD_SHA)
+  }, [bootstrapPayload?.cockpit_sha])
+
+  useEffect(() => {
+    if (bootstrap.error) {
+      setToast({ msg: `Bootstrap failed: ${bootstrap.error}`.slice(0, 100), color: 'var(--err)' })
+    }
+  }, [bootstrap.error])
 
   const handleProxyDecision = useCallback((record: DecisionRecordPayload) => {
     setDecisions((previous) => [record, ...previous.filter((item) => item.id !== record.id)].slice(0, 100))
@@ -173,11 +242,22 @@ function App() {
   }, [pipeline.events])
 
   useEffect(() => {
-    if (!scenarios.length || selectedId) {
+    if (!scenarios.length) {
       return
     }
-    setSelectedId(scenarios[0].id)
+    if (!selectedId || !scenarios.some((scenario) => scenario.id === selectedId)) {
+      setSelectedId(scenarios[0].id)
+    }
   }, [scenarios, selectedId])
+
+  useEffect(() => {
+    if (!preparedCards.length) {
+      return
+    }
+    if (!selectedWorkId || !preparedCards.some((card) => card.id === selectedWorkId)) {
+      setSelectedWorkId(preparedCards[0].id)
+    }
+  }, [preparedCards, selectedWorkId])
 
   useEffect(() => {
     if (!decisions.length || selectedDecisionId) {
@@ -209,6 +289,7 @@ function App() {
     if (payload.prediction_calibration) {
       setPredictionCalibration(payload.prediction_calibration)
     }
+    setFocusState(payload.focus ?? null)
   }, [])
 
   const refreshDevices = useCallback(async () => {
@@ -225,8 +306,8 @@ function App() {
     try {
       const payload = await getBackendPresets()
       setPresets(payload.presets ?? [])
-    } catch {
-      setPresets([])
+    } catch (error) {
+      showToast(String(error instanceof Error ? error.message : 'Could not load backend presets').slice(0, 80), 'var(--err)')
     }
   }, [])
 
@@ -242,12 +323,17 @@ function App() {
     setDecisions(decisionsPayload.items)
   }, [])
 
+  const refreshPredictions = useCallback(async () => {
+    const payload = await listPredictionsByState()
+    setPredictions(payload.predictions ?? [])
+  }, [])
+
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshStatus(), refreshDevices(), refreshPresets(), refreshSkillsPinned()])
+    await Promise.all([refreshStatus(), refreshDevices(), refreshPresets(), refreshSkillsPinned(), preparedWork.refresh(), refreshPredictions()])
     if (mode === 'proxy') {
       await refreshProxyData()
     }
-  }, [mode, refreshDevices, refreshPresets, refreshProxyData, refreshSkillsPinned, refreshStatus])
+  }, [mode, preparedWork.refresh, refreshDevices, refreshPredictions, refreshPresets, refreshProxyData, refreshSkillsPinned, refreshStatus])
 
   useEffect(() => {
     refreshAll().catch(() => {
@@ -258,12 +344,13 @@ function App() {
   useEffect(() => {
     const interval = window.setInterval(() => {
       refreshStatus().catch(() => undefined)
+      refreshPredictions().catch(() => undefined)
       if (mode === 'proxy') {
         getImpactSummary().then(setImpact).catch(() => undefined)
       }
     }, 15000)
     return () => window.clearInterval(interval)
-  }, [mode, refreshStatus])
+  }, [mode, refreshPredictions, refreshStatus])
 
   function showToast(msg: string, color: string) {
     setToast({ msg, color })
@@ -321,19 +408,13 @@ function App() {
   }
 
   async function handleUnpinFact(id: string) {
-    await deletePinnedFact(id)
-    const payload = await listPinnedFacts()
-    setPinnedFacts(payload.facts)
-  }
-
-  async function handleSkillNudge(name: string, delta: number) {
     try {
-      const response = await apiNudgeSkill(name, delta)
-      setSkills((current) =>
-        current.map((skill) => (skill.name === response.name ? { ...skill, weight: response.weight } : skill)),
-      )
+      await deletePinnedFact(id)
+      const payload = await listPinnedFacts()
+      setPinnedFacts(payload.facts)
+      showToast('Context unpinned', 'var(--amber)')
     } catch {
-      showToast(`Failed to nudge ${name}`, 'var(--err)')
+      showToast('Failed to unpin context', 'var(--err)')
     }
   }
 
@@ -408,6 +489,22 @@ function App() {
         setDrawerOpen(false)
         return
       }
+      if (mode !== 'proxy') {
+        const shortcutView: Record<string, CockpitView> = {
+          '1': 'prepared-work',
+          '2': 'now',
+          '3': 'scenario-map',
+          '4': 'timeline',
+          '5': 'board',
+          '6': 'evidence',
+        }
+        const nextView = shortcutView[event.key]
+        if (nextView) {
+          setView(nextView)
+          event.preventDefault()
+          return
+        }
+      }
 
       if (mode !== 'proxy' && selectedId) {
         const index = scenarios.findIndex((scenario) => scenario.id === selectedId)
@@ -453,13 +550,19 @@ function App() {
     if (!selectedScenario || selectedScenario.freshness === 'fresh') return
     if (invalidationById[selectedScenario.id] !== undefined) return
     let cancelled = false
-    void fetchScenarioDetail(selectedScenario.id).then((detail) => {
-      if (cancelled) return
-      setInvalidationById((prev) => ({
-        ...prev,
-        [selectedScenario.id]: detail?.latest_invalidation_signal ?? null,
-      }))
-    })
+    void fetchScenarioDetail(selectedScenario.id)
+      .then((detail) => {
+        if (cancelled) return
+        setInvalidationById((prev) => ({
+          ...prev,
+          [selectedScenario.id]: detail.latest_invalidation_signal ?? null,
+        }))
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setInvalidationById((prev) => ({ ...prev, [selectedScenario.id]: null }))
+        }
+      })
     return () => {
       cancelled = true
     }
@@ -501,6 +604,12 @@ function App() {
     const common: CommandItem[] = [
       { id: 'refresh', kind: 'action', label: 'Refresh cockpit data', hint: '↻', run: () => void refreshAll() },
       { id: 'settings', kind: 'action', label: 'Open settings', hint: '⌘,', run: () => setDrawerOpen(true) },
+      { id: 'view-prepared-work', kind: 'view', label: 'View Prepared Work', hint: '1', run: () => setView('prepared-work') },
+      { id: 'view-now', kind: 'view', label: 'View Now', hint: '2', run: () => setView('now') },
+      { id: 'view-scenario-map', kind: 'view', label: 'View Scenario Map', hint: '3', run: () => setView('scenario-map') },
+      { id: 'view-timeline', kind: 'view', label: 'View Timeline', hint: '4', run: () => setView('timeline') },
+      { id: 'view-board', kind: 'view', label: 'View Board', hint: '5', run: () => setView('board') },
+      { id: 'view-evidence', kind: 'view', label: 'View Evidence', hint: '6', run: () => setView('evidence') },
       {
         id: 'clear-events',
         kind: 'action',
@@ -554,6 +663,18 @@ function App() {
   const streamLive = mode === 'proxy' ? proxyStream.live : pipeline.live
 
   const showScenarioPane = mode !== 'proxy'
+  const scenarioHeading =
+    scenarioScope === 'all'
+      ? 'stored suggestions'
+      : scenarioScope === 'focus'
+        ? 'focus suggestions'
+        : 'session suggestions'
+  const scenarioEmptyHint =
+    scenarioScope === 'all'
+      ? 'No stored suggestions are available yet.'
+      : scenarioScope === 'focus'
+        ? 'No suggestions for the current Auto Focus workspace yet.'
+        : 'No suggestions have been created in this cockpit session yet. Switch to History to inspect older stored suggestions.'
 
   return (
     <div className="cockpit-root">
@@ -576,7 +697,6 @@ function App() {
         pinned={pinnedFacts}
         packageState={packageState}
         onUnpin={(id) => void handleUnpinFact(id)}
-        onSkillNudge={(name, delta) => void handleSkillNudge(name, delta)}
         scenarioCount={scenarios.length}
         impact={impact}
         header={
@@ -594,58 +714,96 @@ function App() {
         footer={mode === 'proxy' ? null : <LearningPanel />}
       />
 
-      {showScenarioPane && view === 'goals' ? (
-        <div
-          style={{
-            gridArea: 'graph',
-            background: 'var(--bg-0)',
-            overflow: 'auto',
-            padding: 20,
-          }}
-        >
-          <GoalsPanel />
-        </div>
-      ) : null}
-
-      {showScenarioPane && view === 'pipeline' ? (
-        <div style={{ gridArea: 'graph', position: 'relative', background: 'var(--bg-0)', overflow: 'hidden' }}>
-          <div
-            style={{
-              position: 'absolute',
-              top: 16,
-              right: 16,
-              display: 'flex',
-              gap: 10,
-              zIndex: 3,
-              padding: '6px 10px',
-              background: 'var(--bg-1)',
-              border: '1px solid var(--line-1)',
-              borderRadius: 'var(--r-2)',
-            }}
-          >
-            {Object.entries(KIND_COLOR).map(([kind, color]) => (
-              <span key={kind} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                <span style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
-                <span className="mono" style={{ fontSize: 9.5, color: 'var(--fg-3)', letterSpacing: 0.5, textTransform: 'uppercase' }}>
-                  {kind}
-                </span>
-              </span>
-            ))}
-          </div>
-          <PipelineCanvas
-            scenarios={scenarios}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            activePulses={activePulses}
-            pinnedIds={new Set(scenarios.filter((scenario) => scenario.pinned).map((scenario) => scenario.id))}
-            signals={pipeline.signals}
-            targets={pipeline.targets}
-            artefacts={pipeline.artefacts}
-            decisions={pipeline.decisions}
-            model={pipeline.model}
-            cycle={pipeline.cycle}
-            events={pipeline.events}
-          />
+      {showScenarioPane ? (
+        <div style={{ gridArea: 'graph', position: 'relative', background: 'var(--bg-0)', overflow: 'hidden', display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)' }}>
+          {view === 'scenario-map' ? (
+            <>
+              <ScenarioMapControls
+                scope={scenarioScope}
+                onScope={setScenarioScope}
+                focusMatches={focusMatches}
+              />
+              {scenarioResult.error ? (
+                <div role="alert" style={graphNoticeStyle}>
+                  Could not load scenarios: {scenarioResult.error}
+                </div>
+              ) : scenarioScope === 'focus' && !focusMatches ? (
+                <div role="status" style={graphNoticeStyle}>
+                  Auto Focus is working in another workspace.
+                </div>
+              ) : null}
+              <PipelineCanvas
+                scenarios={scenarios}
+                heading={scenarioHeading}
+                emptyHint={scenarioEmptyHint}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                activePulses={activePulses}
+                pinnedIds={new Set(scenarios.filter((scenario) => scenario.pinned).map((scenario) => scenario.id))}
+                signals={pipeline.signals}
+                targets={pipeline.targets}
+                artefacts={pipeline.artefacts}
+                decisions={pipeline.decisions}
+                model={pipeline.model}
+                cycle={pipeline.cycle}
+                events={pipeline.events}
+              />
+            </>
+          ) : (
+            <div style={{ minHeight: 0, overflow: 'hidden' }}>
+              {view === 'prepared-work' ? (
+                <PreparedWorkView
+                  cards={preparedCards}
+                  loading={preparedWork.loading}
+                  error={preparedWork.error}
+                  selectedId={selectedWorkId}
+                  onSelect={setSelectedWorkId}
+                  onCardsChange={preparedWork.setCards}
+                  onAction={(message) => showToast(message, message.startsWith('HTTP') || message.startsWith('Failed') ? 'var(--err)' : 'var(--accent)')}
+                />
+              ) : null}
+              {view === 'now' ? (
+                <NowView
+                  cards={preparedCards}
+                  scenarios={scenarios}
+                  selectedWorkId={selectedWorkId}
+                  selectedScenarioId={selectedId}
+                  onSelectWork={setSelectedWorkId}
+                  onSelectScenario={setSelectedId}
+                />
+              ) : null}
+              {view === 'timeline' ? (
+                <TimelineView
+                  events={pipeline.events}
+                  live={pipeline.live}
+                  pendingLlm={pipeline.model.pending.size}
+                  onSelect={setSelectedId}
+                />
+              ) : null}
+              {view === 'board' ? (
+                <BoardView
+                  cards={preparedCards}
+                  predictions={predictions}
+                  scenarios={scenarios}
+                  selectedWorkId={selectedWorkId}
+                  selectedScenarioId={selectedId}
+                  onSelectWork={setSelectedWorkId}
+                  onSelectScenario={setSelectedId}
+                />
+              ) : null}
+              {view === 'evidence' ? (
+                <EvidenceView
+                  cards={preparedCards}
+                  scenarios={scenarios}
+                  evidenceById={evidenceById}
+                  selectedWorkId={selectedWorkId}
+                  selectedScenarioId={selectedId}
+                  onSelectWork={setSelectedWorkId}
+                  onSelectScenario={setSelectedId}
+                />
+              ) : null}
+            </div>
+          )}
           {toast ? (
             <div
               style={{
@@ -719,13 +877,12 @@ function App() {
         style={{
           gridArea: 'stream',
           display: 'grid',
-          gridTemplateRows: 'minmax(150px, 0.75fr) 1fr 1fr',
+          gridTemplateRows: '1fr 1fr',
           gridTemplateColumns: '1fr',
           overflow: 'hidden',
           minHeight: 0,
         }}
       >
-        <PreparedWorkPanel onAction={(message) => showToast(message, message.startsWith('HTTP') || message.startsWith('Failed') ? 'var(--err)' : 'var(--accent)')} />
         <div style={{ minHeight: 0, overflow: 'hidden', borderBottom: '1px solid var(--line-1)', background: 'var(--bg-1)' }}>
           {showScenarioPane ? (
             <Inspector
@@ -798,6 +955,92 @@ function App() {
       {bundleMismatch ? <MismatchBanner onReload={() => window.location.reload()} /> : null}
     </div>
   )
+}
+
+function ScenarioMapControls({
+  scope,
+  onScope,
+  focusMatches,
+}: {
+  scope: ScenarioScope
+  onScope: (scope: ScenarioScope) => void
+  focusMatches: boolean
+}) {
+  const scopeOptions: Array<{ id: ScenarioScope; label: string }> = [
+    { id: 'session', label: 'Current session' },
+    { id: 'focus', label: 'Current focus' },
+    { id: 'all', label: 'History' },
+  ]
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 14,
+        padding: '8px 14px',
+        borderBottom: '1px solid var(--line-hair)',
+        background: 'var(--bg-1)',
+        minWidth: 0,
+      }}
+    >
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', minWidth: 0, overflow: 'hidden' }}>
+        <span className="mono" style={{ fontSize: 9.5, letterSpacing: 1.1, color: 'var(--fg-4)', flexShrink: 0 }}>
+          TYPES
+        </span>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 0, overflowX: 'auto' }}>
+          {Object.entries(KIND_COLOR).map(([kind, color]) => (
+            <span key={kind} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+              <span style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
+              <span className="mono" style={{ fontSize: 9.5, color: 'var(--fg-3)', letterSpacing: 0.5, textTransform: 'uppercase' }}>
+                {kind}
+              </span>
+            </span>
+          ))}
+        </div>
+      </div>
+      <div role="tablist" aria-label="Scenario data scope" style={{ display: 'flex', border: '1px solid var(--line-1)', borderRadius: 'var(--r-1)', flexShrink: 0 }}>
+        {scopeOptions.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            role="tab"
+            aria-selected={scope === option.id}
+            title={option.id === 'focus' && !focusMatches ? 'Auto Focus is currently reporting another workspace.' : undefined}
+            onClick={() => onScope(option.id)}
+            style={{
+              background: scope === option.id ? 'var(--bg-2)' : 'transparent',
+              border: 'none',
+              borderLeft: option.id === 'all' ? 'none' : '1px solid var(--line-1)',
+              color: scope === option.id ? 'var(--fg-1)' : 'var(--fg-3)',
+              padding: '5px 9px',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10.5,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const graphNoticeStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 54,
+  left: '50%',
+  transform: 'translateX(-50%)',
+  zIndex: 4,
+  padding: '8px 12px',
+  border: '1px solid var(--amber)',
+  borderRadius: 'var(--r-1)',
+  background: 'var(--bg-1)',
+  color: 'var(--fg-2)',
+  fontSize: 12,
+  boxShadow: '0 8px 24px rgba(0,0,0,.35)',
 }
 
 export default App

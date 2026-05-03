@@ -19,7 +19,16 @@ if platform.system().lower().startswith("win"):
     pytest.skip("daemon http TestClient is flaky on Windows runners", allow_module_level=True)
 
 
-def test_cockpit_root_serves_html_and_expected_endpoints(temp_repo) -> None:
+def test_cockpit_root_serves_html_and_expected_endpoints(temp_repo, monkeypatch) -> None:
+    cockpit_dist = temp_repo / "cockpit-dist"
+    (cockpit_dist / "assets").mkdir(parents=True)
+    (cockpit_dist / "brand").mkdir(parents=True)
+    (cockpit_dist / "brand" / "lockup-dark-animated.svg").write_text("<svg></svg>", encoding="utf-8")
+    (cockpit_dist / "index.html").write_text(
+        '<!doctype html><title>Vaner Cockpit</title><div id="root"></div><img src="/brand/lockup-dark-animated.svg"><script src="/assets/index.js"></script>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("vaner.daemon.http.cockpit_dist_dir", lambda: cockpit_dist)
     config = VanerConfig(
         repo_root=temp_repo,
         store_path=temp_repo / ".vaner" / "store.db",
@@ -28,17 +37,30 @@ def test_cockpit_root_serves_html_and_expected_endpoints(temp_repo) -> None:
     app = create_daemon_http_app(config)
     with TestClient(app) as client:
         response = client.get("/")
+        logo = client.get("/brand/lockup-dark-animated.svg")
     assert response.status_code == 200
+    assert logo.status_code == 200
+    assert logo.text == "<svg></svg>"
     assert response.headers["content-type"].startswith("text/html")
     assert "Vaner Cockpit" in response.text
-    if "/assets/" in response.text:
-        assert '<div id="root"></div>' in response.text
-    else:
-        assert 'data-mode="daemon"' in response.text
-        assert 'window.__VANER_MODE = "daemon"' in response.text
-        assert "/scenarios/stream" in response.text
-        assert "/compute/devices" in response.text
-        assert "/scenarios/" in response.text
+    assert '<div id="root"></div>' in response.text
+    assert 'data-mode="daemon"' not in response.text
+    assert "window.__VANER_MODE" not in response.text
+
+
+def test_cockpit_root_returns_503_when_assets_missing(temp_repo, monkeypatch) -> None:
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    monkeypatch.setattr("vaner.daemon.http.cockpit_dist_dir", lambda: None)
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        response = client.get("/")
+    assert response.status_code == 503
+    assert "assets are not built" in response.text
+    assert "legacy cockpit" in response.text
 
 
 def test_status_payload_includes_backend(temp_repo) -> None:

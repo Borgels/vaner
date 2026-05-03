@@ -12,6 +12,13 @@ export interface ScenarioEdge {
   kind: 'parent' | 'shared-path'
 }
 
+export function scenarioScoreScale(score: number): number {
+  if (score < 0.7) return 0.85
+  if (score < 0.85) return 1
+  if (score < 0.95) return 1.18
+  return 1.35
+}
+
 /**
  * Jaccard similarity between two sets of path strings. Used to derive
  * implicit edges between scenarios that touch the same files even when they
@@ -424,6 +431,21 @@ export function ScenarioCluster({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, scenarios])
 
+  useEffect(() => {
+    if (!selectedId) {
+      return
+    }
+    const position = posRef.current[selectedId]
+    if (!position) {
+      return
+    }
+    setView((current) => ({
+      ...current,
+      x: size.w / 2 - position.x * current.scale,
+      y: size.h / 2 - position.y * current.scale,
+    }))
+  }, [selectedId, size.h, size.w])
+
   const positions = posRef.current
 
   if (!scenarios.length) {
@@ -501,7 +523,7 @@ export function ScenarioCluster({
             return null
           }
           const color = KIND_COLOR[scenario.kind]
-          const radius = 8 + scenario.score * 14
+          const radius = 17 * scenarioScoreScale(scenario.score)
           const selected = selectedId === scenario.id
           const pulse = activePulses.has(scenario.id)
           const chosen = scenario.decisionState === 'chosen'
@@ -514,6 +536,7 @@ export function ScenarioCluster({
               key={scenario.id}
               data-cluster-node
               data-scenario-id={scenario.id}
+              title={scenario.title}
               onPointerDown={(event) => onNodePointerDown(event, scenario.id)}
               style={{
                 position: 'absolute',
@@ -525,9 +548,11 @@ export function ScenarioCluster({
                 cursor: 'pointer',
                 background: rejected ? 'transparent' : `color-mix(in oklch, ${color} 18%, transparent)`,
                 border: `1.5px solid ${color}`,
-                opacity: rejected ? 0.35 : dim ? 0.35 : 1,
+                opacity: rejected ? 0.25 : dim ? 0.12 : 1,
                 boxShadow: selected
                   ? `0 0 0 3px var(--bg-0), 0 0 0 5px ${color}, 0 0 26px ${color}80`
+                  : pinned
+                    ? `0 0 0 2px var(--bg-0), 0 0 0 4px var(--amber)`
                   : chosen
                     ? `0 0 18px ${color}80`
                     : 'none',
@@ -558,17 +583,21 @@ export function ScenarioCluster({
                   top: '110%',
                   left: '50%',
                   transform: 'translateX(-50%)',
-                  whiteSpace: 'nowrap',
+                  whiteSpace: 'normal',
                   fontSize: 9.5,
+                  lineHeight: 1.18,
                   color: selected ? 'var(--fg-1)' : 'var(--fg-3)',
                   marginTop: 4,
                   pointerEvents: 'none',
-                  maxWidth: 180,
+                  width: selected ? 260 : 210,
+                  textAlign: 'center',
                   overflow: 'hidden',
-                  textOverflow: 'ellipsis',
+                  display: '-webkit-box',
+                  WebkitLineClamp: selected ? 3 : 2,
+                  WebkitBoxOrient: 'vertical',
                 }}
               >
-                {scenario.title.length > 24 ? `${scenario.title.slice(0, 22)}…` : scenario.title}
+                {scenario.title}
               </div>
               <div
                 className="mono"
@@ -590,6 +619,27 @@ export function ScenarioCluster({
             </div>
           )
         })}
+      </div>
+
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 12,
+          left: 12,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          background: 'var(--bg-1)',
+          border: '1px solid var(--line-1)',
+          borderRadius: 'var(--r-2)',
+          padding: '7px 9px',
+          zIndex: 3,
+        }}
+      >
+        <span style={{ display: 'inline-flex', width: 10, height: 10, borderRadius: '50%', border: '1px solid var(--accent)', background: 'color-mix(in oklch, var(--accent) 18%, transparent)' }} />
+        <span className="mono" style={{ fontSize: 10.5, color: 'var(--fg-3)' }}>
+          Size = confidence/readiness
+        </span>
       </div>
 
       <div

@@ -20,16 +20,18 @@ interface LaneConfig {
 }
 
 const LANES: LaneConfig[] = [
-  { id: 'signals', label: 'SIGNALS', sub: 'ingest', accent: 'var(--fg-3)' },
-  { id: 'targets', label: 'TARGETS', sub: 'planner', accent: 'var(--accent-soft)' },
-  { id: 'model', label: 'MODEL', sub: 'llm', accent: 'var(--amber)' },
-  { id: 'artefacts', label: 'ARTEFACTS', sub: 'store', accent: 'var(--kind-refactor)' },
-  { id: 'scenarios', label: 'SCENARIOS', sub: 'frontier', accent: 'var(--accent)' },
-  { id: 'decisions', label: 'DECISIONS', sub: 'proxy', accent: 'var(--kind-research)' },
+  { id: 'signals', label: 'Activity', sub: 'workspace', accent: 'var(--fg-3)' },
+  { id: 'targets', label: 'Plan', sub: 'next work', accent: 'var(--accent-soft)' },
+  { id: 'model', label: 'Model', sub: 'requests', accent: 'var(--amber)' },
+  { id: 'artefacts', label: 'Generated Context', sub: 'outputs', accent: 'var(--kind-refactor)' },
+  { id: 'scenarios', label: 'Suggestions', sub: 'ready', accent: 'var(--accent)' },
+  { id: 'decisions', label: 'Context Packages', sub: 'selected', accent: 'var(--kind-research)' },
 ]
 
 export interface PipelineCanvasProps {
   scenarios: UIScenario[]
+  heading?: string
+  emptyHint?: string
   selectedId: string | null
   onSelect: (id: string) => void
   activePulses: Set<string>
@@ -58,6 +60,8 @@ export interface PipelineCanvasProps {
  */
 export function PipelineCanvas({
   scenarios,
+  heading = 'suggestions',
+  emptyHint = 'No scenarios are available from the daemon yet. They will appear here after Vaner observes useful workspace activity.',
   selectedId,
   onSelect,
   activePulses,
@@ -94,10 +98,10 @@ export function PipelineCanvas({
       <div style={{ position: 'relative', minHeight: 0 }}>
         <div style={{ position: 'absolute', top: 14, left: 20, zIndex: 3 }}>
           <div className="mono" style={{ fontSize: 10, letterSpacing: 1.2, color: 'var(--fg-4)' }}>
-            SCENARIO CLUSTER
+            SCENARIO MAP
           </div>
           <div style={{ fontSize: 15, color: 'var(--fg-1)', fontFamily: 'var(--font-display)', marginTop: 2 }}>
-            {scenarios.length} scenarios · shared-path edges · drag to reposition
+            {scenarios.length} {heading} · shared file links · drag to reposition
           </div>
         </div>
         <ScenarioCluster
@@ -106,7 +110,7 @@ export function PipelineCanvas({
           onSelect={onSelect}
           activePulses={activePulses}
           pinnedIds={pinnedIds}
-          emptyHint="Waiting for the daemon to produce scenarios. Trigger a cycle (Files change or run `vaner ponder once`) to see nodes appear here."
+          emptyHint={emptyHint}
         />
       </div>
     </div>
@@ -269,11 +273,11 @@ function laneContent(stage: PipelineStage, ctx: LaneContext): React.ReactNode {
     case 'signals': {
       const last = ctx.signals[0]
       if (!last) {
-        return <FaintLine text="awaiting signals" />
+        return <FaintLine text="No workspace activity yet" />
       }
       return (
         <div className="mono" style={{ fontSize: 10.5 }}>
-          <div>fs {last.fsScan} · git {last.gitChanged}</div>
+          <div>{last.fsScan} seen · {last.workspaceChanges} changed</div>
           <div style={{ color: 'var(--fg-4)' }}>{ctx.signals.length} bursts</div>
         </div>
       )
@@ -281,7 +285,7 @@ function laneContent(stage: PipelineStage, ctx: LaneContext): React.ReactNode {
     case 'targets': {
       const last = ctx.targets[0]
       if (!last) {
-        return <FaintLine text="no targets planned" />
+        return <FaintLine text="No plan yet" />
       }
       return (
         <div className="mono" style={{ fontSize: 10.5 }}>
@@ -304,7 +308,7 @@ function laneContent(stage: PipelineStage, ctx: LaneContext): React.ReactNode {
       }
       return (
         <div className="mono" style={{ fontSize: 10.5 }}>
-          <div>{ctx.model.lastLatencyMs ? `${ctx.model.lastLatencyMs.toFixed(0)}ms last` : 'standby'}</div>
+          <div>{ctx.model.lastLatencyMs ? `${ctx.model.lastLatencyMs.toFixed(0)}ms last` : 'Ready'}</div>
           <Truncated text={ctx.model.lastModel ?? '—'} muted />
         </div>
       )
@@ -312,7 +316,7 @@ function laneContent(stage: PipelineStage, ctx: LaneContext): React.ReactNode {
     case 'artefacts': {
       const last = ctx.artefacts[0]
       if (!last) {
-        return <FaintLine text="no artefacts yet" />
+        return <FaintLine text="No generated context yet" />
       }
       return (
         <div className="mono" style={{ fontSize: 10.5 }}>
@@ -324,7 +328,7 @@ function laneContent(stage: PipelineStage, ctx: LaneContext): React.ReactNode {
     case 'scenarios': {
       return (
         <div className="mono" style={{ fontSize: 10.5 }}>
-          <div>{ctx.scenarios.length} on frontier</div>
+          <div>{ctx.scenarios.length} suggestions</div>
           <div style={{ color: 'var(--fg-4)' }}>
             {ctx.scenarios.filter((scenario) => scenario.pinned).length} pinned
           </div>
@@ -334,7 +338,7 @@ function laneContent(stage: PipelineStage, ctx: LaneContext): React.ReactNode {
     case 'decisions': {
       const last = ctx.decisions[0]
       if (!last) {
-        return <FaintLine text="no proxy decisions" />
+        return <FaintLine text="No context packages yet" />
       }
       return (
         <div className="mono" style={{ fontSize: 10.5 }}>

@@ -84,6 +84,7 @@ export type PipelineStage =
   | 'artefacts'
   | 'scenarios'
   | 'decisions'
+  | 'predictions'
   | 'prediction'
   | 'calibration'
   | 'draft'
@@ -179,6 +180,8 @@ export interface BootstrapPayload {
   mode: UIMode
   version?: string
   cockpit_sha?: string
+  daemon_started_at?: number
+  workspace_id?: string
 }
 
 export interface StatusPayload {
@@ -196,6 +199,11 @@ export interface StatusPayload {
     total: number
   }
   top_scenario?: string | null
+  focus?: {
+    active_workspace_id?: string | null
+    status?: string
+    explanation?: string
+  }
   prediction_metrics?: {
     next_prompt_top1_rate?: number
     next_prompt_top3_rate?: number
@@ -273,6 +281,8 @@ export interface ScenarioApiPayload {
   }>
   prepared_context?: string
   coverage_gaps?: string[]
+  created_at?: number
+  last_refreshed_at?: number
   last_outcome?: string | null
   memory_state?: string
   pinned?: number | boolean
