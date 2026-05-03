@@ -186,8 +186,12 @@ def _now() -> float:
 
 def _safe_resolve(path: Path) -> Path:
     try:
+        # Workspace paths are used to identify local workspaces, not to read arbitrary files.
+        # codeql[py/path-injection]
         return path.expanduser().resolve()
     except Exception:
+        # Workspace paths are used to identify local workspaces, not to read arbitrary files.
+        # codeql[py/path-injection]
         return path.expanduser().absolute()
 
 

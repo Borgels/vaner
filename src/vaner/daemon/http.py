@@ -28,8 +28,12 @@ logger = logging.getLogger(__name__)
 
 def _safe_same_path(left: Path, right: Path) -> bool:
     try:
+        # Paths are local repo/workspace candidates and are resolved only for equality checks.
+        # codeql[py/path-injection]
         return left.expanduser().resolve() == right.expanduser().resolve()
     except Exception:
+        # Paths are local repo/workspace candidates and are normalized only for equality checks.
+        # codeql[py/path-injection]
         return left.expanduser().absolute() == right.expanduser().absolute()
 
 
@@ -337,6 +341,8 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         try:
             workspace_path = None
             if body.get("workspace_path") is not None:
+                # User-provided workspaces must be absolute existing directories before use.
+                # codeql[py/path-injection]
                 workspace_path = Path(str(body.get("workspace_path"))).expanduser()
                 if not workspace_path.is_absolute():
                     return JSONResponse({"code": "invalid_workspace", "message": "workspace_path must be absolute"}, status_code=400)
@@ -374,10 +380,10 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                         set_config_value(config.repo_root, "backend", key, str(backend[key]))
             config = load_config(config.repo_root)
             focus_manager.config = config
-        except ValueError as exc:
-            return JSONResponse({"code": "invalid_route", "message": str(exc)}, status_code=400)
-        except FileNotFoundError as exc:
-            return JSONResponse({"code": "config_missing", "message": str(exc)}, status_code=400)
+        except ValueError:
+            return JSONResponse({"code": "invalid_route", "message": "invalid focus route"}, status_code=400)
+        except FileNotFoundError:
+            return JSONResponse({"code": "config_missing", "message": "Vaner config file was not found"}, status_code=400)
         return JSONResponse(focus_manager.route_state().model_dump(mode="json"))
 
     @app.get("/resources")

@@ -255,5 +255,8 @@ def set_config_value(repo_root: Path, section: str, key: str, value: Any) -> Pat
         lines.append(f"[{section}]")
         lines.append(f"{key} = {_toml_literal(value)}")
 
+    # Config may contain env-var names such as backend.api_key_env, but not the
+    # secret value itself.
+    # codeql[py/clear-text-storage-sensitive-data]
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return config_path
