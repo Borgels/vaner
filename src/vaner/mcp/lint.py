@@ -21,7 +21,7 @@ class LintReport:
 
 
 async def run_lint(store: ScenarioStore, *, top_n: int = 50) -> LintReport:
-    scenarios = await store.list_top(limit=max(1, min(top_n, 50)))
+    scenarios = await store.list_top(limit=max(1, min(top_n, 50)), visibility="all")
     entity_map: dict[str, list[tuple[str, float, str, str | None]]] = {}
     coverage: set[str] = set()
     hot_counter: dict[str, int] = {}

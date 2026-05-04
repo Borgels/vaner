@@ -649,9 +649,7 @@ class ScenarioStore:
                 str(row["lifecycle_motion"] if "lifecycle_motion" in row.keys() else "stable"),
             ),
             last_reinforced_at=(
-                float(row["last_reinforced_at"])
-                if "last_reinforced_at" in row.keys() and row["last_reinforced_at"] is not None
-                else None
+                float(row["last_reinforced_at"]) if "last_reinforced_at" in row.keys() and row["last_reinforced_at"] is not None else None
             ),
             archived_at=(float(row["archived_at"]) if "archived_at" in row.keys() and row["archived_at"] is not None else None),
             visibility_reason=str(row["visibility_reason"] if "visibility_reason" in row.keys() else ""),
