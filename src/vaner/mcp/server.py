@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -51,6 +52,11 @@ except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency pat
 from vaner.api import aprecompute
 from vaner.cli.commands.config import load_config
 from vaner.cli.commands.init import init_repo
+from vaner.daemon.precompute_worker import request_precompute_wake
+from vaner.intent.assist_decision import (
+    build_assist_decision,
+    evaluate_prediction_relevance,
+)
 from vaner.intent.briefing import BriefingAssembler
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.mcp.contracts import (
@@ -85,6 +91,7 @@ BACKEND_NOT_CONFIGURED_MESSAGE = (
 )
 
 _SUGGESTION_CACHE_CAPACITY = 128
+_SUGGEST_PREDICTION_FETCH_TIMEOUT_SECONDS = 0.5
 _MANAGED_PATH_MARKERS = (
     ".cursor/mcp.json",
     ".cursor/skills/vaner/vaner-feedback/skill.md",
@@ -444,6 +451,46 @@ def _prediction_matches_query(row: dict[str, Any], query_tokens: set[str]) -> bo
     return overlap >= 2 or overlap / max(1, len(query_tokens | label_tokens)) >= 0.35
 
 
+def _assist_decision_action(decision: dict[str, Any], *, query: str, context: dict[str, Any]) -> dict[str, Any]:
+    action = str(decision.get("action") or "answer_normally")
+    reason = str(decision.get("reason") or "")
+    if action == "use_adopted_package":
+        return {
+            "action": action,
+            "tool": "use_adopted_package",
+            "reason": reason,
+            "arguments": {"package_id": decision.get("package_id")},
+            "priority": "preferred",
+        }
+    if action == "adopt_prediction":
+        return {
+            "action": action,
+            "tool": "vaner.predictions.adopt",
+            "reason": reason,
+            "arguments": {"prediction_id": decision.get("prediction_id")},
+            "priority": "preferred",
+        }
+    if action == "resolve_optional":
+        return {
+            "action": action,
+            "tool": "vaner.resolve",
+            "reason": reason,
+            "arguments": {"query": decision.get("query") or query, "context": context},
+            "priority": "optional",
+        }
+    return {
+        "action": "answer_normally",
+        "tool": "answer_normally",
+        "reason": reason or "No clearly relevant prepared context is ready for this turn.",
+        "arguments": {},
+        "priority": "preferred",
+    }
+
+
+async def _await_with_suggest_timeout(awaitable: Any) -> Any:
+    return await asyncio.wait_for(awaitable, timeout=_SUGGEST_PREDICTION_FETCH_TIMEOUT_SECONDS)
+
+
 def _scenario_penalty(scenario: Scenario, query_tokens: set[str], *, domain: str = "code") -> float:
     if domain != "code":
         return 0.0
@@ -473,9 +520,61 @@ def _serialize_prediction_for_mcp(prompt: Any, *, rank: int | None = None) -> di
     fields are always present (optional in the Rust contract mirror) so
     MCP Apps clients and text-fallback renderers share one shape.
     """
-    from vaner.intent.prediction_serialization import serialize_prediction_flat
+    from vaner.intent.prediction_serialization import serialize_prediction_compact
 
-    return serialize_prediction_flat(prompt, rank=rank)
+    return serialize_prediction_compact(prompt, rank=rank)
+
+
+def _compact_prediction_body_for_mcp(body: dict[str, Any]) -> dict[str, Any]:
+    from vaner.intent.prediction_serialization import compact_serialized_prediction
+
+    readiness_order = {
+        "ready": 0,
+        "drafting": 1,
+        "evidence_gathering": 2,
+        "grounding": 3,
+        "queued": 4,
+        "stale": 5,
+    }
+
+    def _source(row: dict[str, Any]) -> str:
+        spec = row.get("spec") if isinstance(row.get("spec"), dict) else {}
+        return str(spec.get("source") or row.get("source") or row.get("source_label") or "").lower()
+
+    def _readiness(row: dict[str, Any]) -> str:
+        run = row.get("run") if isinstance(row.get("run"), dict) else {}
+        return str(row.get("readiness") or run.get("readiness") or "queued")
+
+    def _rank(row: dict[str, Any]) -> tuple[int, int, float]:
+        readiness = _readiness(row)
+        source = _source(row)
+        horizon = "horizon" in source or "possible next work" in source
+        horizon_rank = 0 if horizon and readiness != "stale" else 1
+        confidence = row.get("confidence")
+        spec = row.get("spec") if isinstance(row.get("spec"), dict) else {}
+        if not isinstance(confidence, int | float):
+            confidence = spec.get("confidence") if isinstance(spec.get("confidence"), int | float) else 0.0
+        return (horizon_rank, readiness_order.get(readiness, len(readiness_order)), -float(confidence))
+
+    compact = dict(body)
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    for row in list(body.get("predictions") or []):
+        if isinstance(row, dict):
+            rows_by_id[str(row.get("id") or row.get("prediction_id") or len(rows_by_id))] = row
+    by_state = body.get("by_state")
+    if isinstance(by_state, dict):
+        for rows in by_state.values():
+            for row in list(rows or []):
+                if isinstance(row, dict):
+                    rows_by_id.setdefault(str(row.get("id") or row.get("prediction_id") or len(rows_by_id)), row)
+        compact["by_state"] = {
+            str(state): [compact_serialized_prediction(row) for row in list(rows or []) if isinstance(row, dict)]
+            for state, rows in by_state.items()
+        }
+    compact["predictions"] = [
+        compact_serialized_prediction(row, rank=index + 1) for index, row in enumerate(sorted(rows_by_id.values(), key=_rank))
+    ]
+    return compact
 
 
 def _composer_engagement_payload(prompt: Any) -> dict[str, Any] | None:
@@ -538,8 +637,8 @@ def _dashboard_fallback_text(cards: list[dict[str, Any]]) -> str:
     they want to.
     """
     if not cards:
-        return "Vaner is preparing likely next steps.\nNo adoptable predictions are ready yet."
-    lines: list[str] = [f"Vaner has {len(cards)} active prediction(s):", ""]
+        return "Vaner is preparing likely next work.\nNo prepared context is ready to use yet."
+    lines: list[str] = [f"Vaner has {len(cards)} prepared context item(s):", ""]
     for i, card in enumerate(cards, start=1):
         readiness = card.get("readiness_label") or card.get("readiness") or "Unknown"
         eta = card.get("eta_bucket_label")
@@ -550,7 +649,7 @@ def _dashboard_fallback_text(cards: list[dict[str, Any]]) -> str:
         if card.get("suppression_reason"):
             lines.append(f"   Not adoptable yet: {card['suppression_reason']}")
     lines.append("")
-    lines.append("Use vaner.predictions.adopt with a prediction id to adopt one.")
+    lines.append("Use vaner.suggest for the turn decision, then adopt at most one strong match.")
     return "\n".join(lines)
 
 
@@ -654,8 +753,34 @@ def build_server(
         VanerDaemonUnavailable,
     )
 
+    daemon_repo_validation_lock = asyncio.Lock()
+    daemon_repo_validated_until = 0.0
+    daemon_repo_validation_ttl = 15.0
+
     def _daemon() -> Any:
         return daemon_client if daemon_client is not None else VanerDaemonClient()
+
+    async def _daemon_for_repo() -> Any:
+        nonlocal daemon_repo_validated_until
+        client = _daemon()
+        if daemon_client is not None:
+            return client
+        now = time.monotonic()
+        if now < daemon_repo_validated_until:
+            return client
+        async with daemon_repo_validation_lock:
+            now = time.monotonic()
+            if now < daemon_repo_validated_until:
+                return client
+            try:
+                status_body = await client.get_status()
+            except (AttributeError, VanerDaemonUnavailable) as exc:
+                raise VanerDaemonUnavailable(str(exc)) from exc
+            daemon_repo = status_body.get("repo_root") if isinstance(status_body, dict) else None
+            if not daemon_repo or Path(str(daemon_repo)).expanduser().resolve() != repo_root.resolve():
+                raise VanerDaemonUnavailable("daemon is serving a different repository")
+            daemon_repo_validated_until = time.monotonic() + daemon_repo_validation_ttl
+        return client
 
     if not (repo_root / ".vaner" / "config.toml").exists():
         init_repo(repo_root)
@@ -733,7 +858,7 @@ def build_server(
             if engine is not None:
                 predictions = [_serialize_prediction_for_mcp(p) for p in engine.get_active_predictions()]
             else:
-                body = await _daemon().get_predictions_active()
+                body = await _get_predictions_active_body(await _daemon_for_repo(), include_all=True)
                 predictions = list(body.get("predictions", []))
         except VanerDaemonUnavailable:
             engine_unavailable = True
@@ -819,7 +944,7 @@ def build_server(
                 engine_available = True
                 source = "engine_no_registry"
             else:
-                daemon = _daemon()
+                daemon = await _daemon_for_repo()
                 try:
                     status_body = await daemon.get_status()
                 except (AttributeError, VanerDaemonUnavailable):
@@ -827,7 +952,7 @@ def build_server(
                 status_health = status_body.get("prediction_health") if isinstance(status_body, dict) else None
                 if isinstance(status_health, dict):
                     return status_health
-                body = await daemon.get_predictions_active()
+                body = await _get_predictions_active_body(daemon, include_all=True)
                 rows = list(body.get("predictions", []))
                 engine_available = True
                 total_count = len(rows)
@@ -854,6 +979,13 @@ def build_server(
             "diagnostic_status": diagnostic_status,
         }
 
+    async def _get_predictions_active_body(daemon: Any, *, include_all: bool = True) -> dict[str, Any]:
+        try:
+            body = await daemon.get_predictions_active(include_all=include_all)
+        except TypeError:
+            body = await daemon.get_predictions_active()
+        return body if isinstance(body, dict) else {"predictions": []}
+
     @server.list_tools()
     async def list_tools() -> ListToolsResult:
         _detect_and_record_tier()
@@ -865,8 +997,61 @@ def build_server(
                     inputSchema={"type": "object", "properties": {"scope": {"type": "object"}}},
                 ),
                 Tool(
+                    name="vaner.focus.status",
+                    description="Return daemon-owned Auto Focus state, including current workspace and why Vaner is or is not working.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.focus.work_here",
+                    description="Set the current MCP workspace as the temporary Auto Focus target.",
+                    inputSchema={"type": "object", "properties": {"ttl_seconds": {"type": "integer", "default": 1800}}},
+                ),
+                Tool(
+                    name="vaner.focus.pin_current_workspace",
+                    description="Pin the current MCP workspace as the proactive Auto Focus target.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.focus.pause_current_workspace",
+                    description="Pause proactive Vaner work for the current MCP workspace.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.focus.resume_current_workspace",
+                    description="Resume proactive Vaner work for the current MCP workspace.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.focus.set_mode",
+                    description="Set Auto Focus mode.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"mode": {"type": "string", "enum": ["auto", "manual-only", "paused"]}},
+                        "required": ["mode"],
+                    },
+                ),
+                Tool(
+                    name="vaner.resources.status",
+                    description="Return minimal read-only local runtime/device inventory.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.jobs.status",
+                    description="Return background job gate status and defer/cancel explanations.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                Tool(
+                    name="vaner.jobs.cancel",
+                    description="Cancel or skip a cancellable Vaner background job.",
+                    inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
+                ),
+                Tool(
                     name="vaner.suggest",
-                    description="Return lightweight intent suggestions before resolution.",
+                    description=(
+                        "Canonical turn-start Vaner decision API. Returns exactly one non-blocking decision: "
+                        "use_adopted_package, adopt_prediction, resolve_optional, or answer_normally. "
+                        "Use this snapshot-backed result instead of inferring adoption from raw prediction scores."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -880,12 +1065,11 @@ def build_server(
                 Tool(
                     name="vaner.resolve",
                     description=(
-                        "Build a context package for an explicit query when no prepared prediction matches. "
+                        "Optionally build a context package for a concrete, high-value explicit query. "
                         "Returns briefing + draft answer + ranked evidence with provenance. "
-                        "Call this when (a) you've checked vaner.predictions.active and no 'ready' prediction "
-                        "matches the user's actual intent, or (b) the user asked for something Vaner couldn't "
-                        "have anticipated. Do NOT call vaner.resolve in parallel with vaner.predictions.adopt "
-                        "for the same intent — adopt already returns a Resolution. If the conversation context "
+                        "Do NOT call this merely because no prepared prediction exists; the default fallback is "
+                        "answer_normally. Do NOT call vaner.resolve in parallel with vaner.predictions.adopt "
+                        "for the same intent; adopt already returns a Resolution. If the conversation context "
                         "already contains a fresh <VANER_ADOPTED_PACKAGE> block, answer from that block rather "
                         "than calling this tool."
                     ),
@@ -1000,14 +1184,11 @@ def build_server(
                 Tool(
                     name="vaner.predictions.active",
                     description=(
-                        "Return the predictions Vaner has already prepared for this workspace, ranked by readiness. "
+                        "Diagnostics API for prepared context Vaner already has for this workspace, ranked by readiness. "
                         "Each entry includes a label, readiness state (queued/grounding/evidence_gathering/drafting/ready/stale), "
-                        "confidence, compute_contract, and when populated — readiness_label, eta_bucket, adoptable, rank. "
-                        "Call this when (a) the user starts a new turn and intent is unclear, (b) the request is vague or "
-                        "implicit, or (c) you're about to call vaner.resolve and want to check for a fresher prepared package. "
-                        "Do NOT call mechanically — Vaner refreshes on its own cycle, so calling more than once per ~30s wastes "
-                        "budget. If a prediction is 'ready' and matches intent, prefer vaner.predictions.adopt over "
-                        "vaner.resolve to reuse cached compute."
+                        "display_label, match_state, match_reason, recommended_action, snapshot_freshness, and rank. "
+                        "Prefer vaner.suggest for turn-start behavior. Do NOT call mechanically or infer adoption from "
+                        "confidence alone; only adopt when the shared decision layer reports a strong current-turn match."
                     ),
                     inputSchema={"type": "object", "properties": {}},
                 ),
@@ -1015,11 +1196,11 @@ def build_server(
                     name="vaner.predictions.adopt",
                     description=(
                         "Adopt a specific prediction by id, marking it as the user's actual intent and returning the prepared "
-                        "Resolution (briefing + draft + evidence + adopted_from_prediction_id). Call this instead of "
-                        "vaner.resolve when vaner.predictions.active or the MCP Apps dashboard surfaced a 'ready'/'drafting' "
-                        "prediction whose label matches the user's request — adoption is faster (cached) and improves Vaner's "
-                        "future predictions via the adoption-outcome feedback loop. Adopt at most one prediction per user "
-                        "turn. If no prediction matches, fall through to vaner.resolve."
+                        "Resolution (briefing + draft + evidence + adopted_from_prediction_id). Call this only when "
+                        "vaner.suggest returns adopt_prediction or the shared relevance fields show a strong_match with "
+                        "ready/drafting material. Adoption is faster (cached) and improves Vaner's future predictions via "
+                        "the adoption-outcome feedback loop. Adopt at most one prediction per user turn. If no prediction "
+                        "strongly matches, answer normally or treat vaner.resolve as optional for concrete high-value queries."
                     ),
                     inputSchema={
                         "type": "object",
@@ -1762,10 +1943,79 @@ def build_server(
             await _record("ok")
             return _json_result(payload)
 
+        if name in {
+            "vaner.focus.status",
+            "vaner.focus.work_here",
+            "vaner.focus.pin_current_workspace",
+            "vaner.focus.pause_current_workspace",
+            "vaner.focus.resume_current_workspace",
+            "vaner.focus.set_mode",
+            "vaner.resources.status",
+            "vaner.jobs.status",
+            "vaner.jobs.cancel",
+        }:
+            from vaner.focus import FocusManager
+
+            manager = FocusManager(config)
+            try:
+                if name == "vaner.focus.status":
+                    body = await (await _daemon_for_repo()).get_focus()
+                elif name == "vaner.focus.work_here":
+                    body = await (await _daemon_for_repo()).focus_action(
+                        "work-here",
+                        path=str(active_repo_root),
+                        ttl_seconds=int(args.get("ttl_seconds") or 1800),
+                    )
+                elif name == "vaner.focus.pin_current_workspace":
+                    body = await (await _daemon_for_repo()).focus_action("pin", path=str(active_repo_root))
+                elif name == "vaner.focus.pause_current_workspace":
+                    body = await (await _daemon_for_repo()).focus_action("pause", path=str(active_repo_root))
+                elif name == "vaner.focus.resume_current_workspace":
+                    body = await (await _daemon_for_repo()).focus_action("resume", path=str(active_repo_root))
+                elif name == "vaner.focus.set_mode":
+                    body = await (await _daemon_for_repo()).focus_action("mode", mode=str(args.get("mode") or "auto"))
+                elif name == "vaner.resources.status":
+                    body = await (await _daemon_for_repo()).get_resources()
+                elif name == "vaner.jobs.status":
+                    body = await (await _daemon_for_repo()).get_jobs()
+                elif name == "vaner.jobs.cancel":
+                    body = await (await _daemon_for_repo()).cancel_job(str(args.get("job_id") or ""))
+                else:  # pragma: no cover - guarded by enclosing name set
+                    body = {}
+            except VanerDaemonUnavailable:
+                if name == "vaner.focus.status":
+                    body = manager.build_state().model_dump(mode="json")
+                elif name == "vaner.focus.work_here":
+                    body = manager.work_here(active_repo_root, ttl_seconds=int(args.get("ttl_seconds") or 1800)).model_dump(mode="json")
+                elif name == "vaner.focus.pin_current_workspace":
+                    body = manager.pin(active_repo_root).model_dump(mode="json")
+                elif name == "vaner.focus.pause_current_workspace":
+                    body = manager.pause(active_repo_root).model_dump(mode="json")
+                elif name == "vaner.focus.resume_current_workspace":
+                    body = manager.resume(active_repo_root).model_dump(mode="json")
+                elif name == "vaner.focus.set_mode":
+                    body = manager.set_mode(str(args.get("mode") or "auto")).model_dump(mode="json")  # type: ignore[arg-type]
+                elif name == "vaner.resources.status":
+                    body = manager.resources_state().model_dump(mode="json")
+                elif name == "vaner.jobs.status":
+                    body = manager.jobs_state()
+                else:
+                    body = {
+                        "ok": True,
+                        "job_id": str(args.get("job_id") or ""),
+                        "status": "cancelled",
+                        "reason_code": "local_fallback",
+                        "explanation": "Daemon was unavailable; matching cancellable jobs will be skipped by focus gates.",
+                    }
+                body["source"] = "local_fallback"
+            await _record("ok")
+            return _json_result(body)
+
         if name == "vaner.suggest":
             query = str(args.get("query", "")).strip()
             limit = max(1, int(args.get("limit", 5)))
-            context_domain = _context_domain(args.get("context"))
+            context_arg = args.get("context") if isinstance(args.get("context"), dict) else {}
+            context_domain = _context_domain(context_arg)
             if not query:
                 await _record("error")
                 return _json_result({"code": "invalid_input", "message": "query is required"}, is_error=True)
@@ -1790,6 +2040,7 @@ def build_server(
                     "id": suggestion_id,
                     "label": label.strip(),
                     "confidence": round(confidence, 4),
+                    "query_overlap": overlap,
                     "reason": "token/entity overlap with high-ranked scenario",
                     "scenario_id": scenario.id,
                 }
@@ -1805,71 +2056,51 @@ def build_server(
                 if engine is not None:
                     prediction_rows = [_serialize_prediction_for_mcp(p) for p in engine.get_active_predictions()]
                 else:
-                    prediction_rows = list((await _daemon().get_predictions_active()).get("predictions", []))
-            except VanerDaemonUnavailable:
+                    daemon = await _await_with_suggest_timeout(_daemon_for_repo())
+                    prediction_body = await _await_with_suggest_timeout(_get_predictions_active_body(daemon, include_all=True))
+                    prediction_rows = list(prediction_body.get("predictions", []))
+            except (VanerDaemonUnavailable, TimeoutError):
                 engine_unavailable = True
-            adoptable_predictions = [
-                row
-                for row in prediction_rows
-                if row.get("adoptable") is True
-                and row.get("trust_status") != "invalidated"
-                and _prediction_matches_query(row, query_tokens)
-            ]
-            actions: list[dict[str, Any]] = [
-                {
-                    "tool": "vaner.predictions.active",
-                    "reason": "inspect prepared predictions before spending resolve budget",
-                    "arguments": {},
-                    "priority": "first",
-                }
-            ]
-            if adoptable_predictions:
-                first = adoptable_predictions[0]
-                actions.append(
-                    {
-                        "tool": "vaner.predictions.adopt",
-                        "reason": "a fresh prepared prediction is adoptable",
-                        "arguments": {"prediction_id": first.get("id")},
-                        "priority": "preferred",
-                    }
+            evaluated_predictions: list[dict[str, Any]] = []
+            for row in prediction_rows:
+                if not isinstance(row, dict):
+                    continue
+                evaluated = dict(row)
+                relevance = evaluate_prediction_relevance(evaluated, query, context=context_arg)
+                evaluated["label"] = relevance.display_label
+                evaluated.update(relevance.as_dict())
+                evaluated_predictions.append(evaluated)
+            evaluated_predictions.sort(
+                key=lambda row: (
+                    0 if row.get("recommended_action") == "adopt" else 1,
+                    0 if row.get("match_state") == "strong_match" else 1,
+                    -float(row.get("confidence") or 0.0),
                 )
-            elif engine_unavailable or top_confidence < 0.4:
-                actions.append(
-                    {
-                        "tool": "vaner.resolve",
-                        "reason": "build an intent packet before final resolution",
-                        "arguments": {"query": query, "context": args.get("context") or {}, "intent_packet": True},
-                        "priority": "preferred",
-                    }
-                )
-            else:
-                actions.append(
-                    {
-                        "tool": "vaner.resolve",
-                        "reason": "no matching prepared prediction; resolve from stored evidence",
-                        "arguments": {"query": query, "context": args.get("context") or {}},
-                        "priority": "preferred",
-                    }
-                )
-            if picked:
-                actions.append(
-                    {
-                        "tool": "vaner.expand",
-                        "reason": "expand the highest-ranked stored scenario if more detail is needed",
-                        "arguments": {"target_id": picked[0]["scenario_id"]},
-                        "priority": "optional",
-                    }
-                )
+            )
+            decision = build_assist_decision(
+                query,
+                evaluated_predictions,
+                context=context_arg,
+                has_retrieval_candidate=any(
+                    int(item.get("query_overlap") or 0) > 0 and float(item.get("confidence") or 0.0) >= 0.4 for item in picked
+                ),
+                engine_unavailable=engine_unavailable,
+            ).as_dict()
+            recommended_action = _assist_decision_action(decision, query=query, context=context_arg)
+            actions: list[dict[str, Any]] = [recommended_action]
             payload = {
                 "suggestions": picked,
                 "needs_clarification": top_confidence < 0.4,
+                "decision": decision,
+                "prepared_context": evaluated_predictions[: min(5, limit)],
                 "guidance": {
-                    "recommended_action": actions[1] if len(actions) > 1 else actions[0],
+                    "recommended_action": recommended_action,
                     "actions": actions,
                     "guardrails": [
                         "adopt at most one prediction per turn",
-                        "do not call vaner.resolve when a fresh adopted package is already available",
-                        "prefer intent_packet=true when predictions are stale, unrelated, or the engine is unavailable",
+                        "use Vaner only when it already has clearly relevant, fresh, prepared context",
+                        "never wait for Vaner; answer normally when nothing clearly useful is ready",
+                        "never call vaner.resolve merely because no ready prediction exists",
                         "record vaner.feedback after using a returned Resolution",
                     ],
                     "engine_unavailable": engine_unavailable,
@@ -1962,7 +2193,7 @@ def build_server(
                         include_predicted_response=include_predicted_response,
                     )
                 else:
-                    resolution = await _daemon().resolve(
+                    resolution = await (await _daemon_for_repo()).resolve(
                         query,
                         context=context_arg if isinstance(context_arg, dict) else None,
                         include_briefing=include_briefing,
@@ -2099,7 +2330,11 @@ def build_server(
             if scenario is None:
                 await _record("error")
                 return _json_result({"code": "not_found", "message": f"target '{target_id}' not found"}, is_error=True)
-            await aprecompute(repo_root, config=config)
+            wake: dict[str, Any] | None = None
+            try:
+                wake = request_precompute_wake(repo_root, reason=f"expand:{scenario.id}")
+            except Exception:
+                logger.debug("vaner.expand could not request background precompute wake", exc_info=True)
             await scenario_store.record_expansion(scenario.id)
             refreshed = await scenario_store.get(scenario.id)
             if refreshed is not None:
@@ -2118,6 +2353,7 @@ def build_server(
                 ],
                 "new_confidence": float((refreshed or scenario).confidence),
                 "remaining_gaps": list((refreshed or scenario).coverage_gaps),
+                "background_refresh": wake,
             }
             append_log(
                 repo_root,
@@ -2346,7 +2582,6 @@ def build_server(
                 await _record("error")
                 return _backend_error(degradable=False)
             targets = list(args.get("targets") or [])
-            await aprecompute(repo_root, config=config)
             append_log(
                 repo_root,
                 tool=name,
@@ -2356,7 +2591,14 @@ def build_server(
                 memory_state=None,
             )
             await _record("ok")
-            return _json_result({"accepted_targets": targets, "queued": len(targets)})
+            return _json_result(
+                {
+                    "accepted_targets": targets,
+                    "queued": len(targets),
+                    "background": True,
+                    "message": "Warm hints accepted; the daemon prediction loop will pick them up without blocking this MCP session.",
+                }
+            )
 
         if name == "vaner.inspect":
             item_id = str(args.get("item_id", "")).strip()
@@ -2407,7 +2649,7 @@ def build_server(
             # When the daemon is up with `--with-engine`, this returns live
             # predictions from its background precompute task.
             try:
-                body = await _daemon().get_predictions_active()
+                body = await _get_predictions_active_body(await _daemon_for_repo(), include_all=True)
             except VanerDaemonUnavailable:
                 await _record("ok")
                 return _json_result(
@@ -2418,7 +2660,7 @@ def build_server(
                     }
                 )
             await _record("ok")
-            return _json_result(body)
+            return _json_result(_compact_prediction_body_for_mcp(body))
 
         if name == "vaner.predictions.dashboard":
             # 0.8.5 WS5: compact card-model + text fallback.
@@ -2447,13 +2689,14 @@ def build_server(
                 if engine is not None:
                     active_prompts = list(engine.get_active_predictions())
                 else:
-                    body = await _daemon().get_predictions_active()
+                    body = await _get_predictions_active_body(await _daemon_for_repo(), include_all=True)
                     # body["predictions"] is already serialized; we can't re-rank
                     # without the live prompt objects, so fall through to a
                     # direct payload return.
+                    compact_rows = _compact_prediction_body_for_mcp(body).get("predictions", [])[:limit]
                     dashboard_payload = {
-                        "predictions": body.get("predictions", [])[:limit],
-                        "fallback_text": _dashboard_fallback_text(body.get("predictions", [])[:limit]),
+                        "predictions": compact_rows,
+                        "fallback_text": _dashboard_fallback_text(compact_rows),
                         "ui_available": False,
                         "source": "daemon",
                     }
@@ -2476,6 +2719,9 @@ def build_server(
             ]
             ranked = rank_cards(filtered)[:limit]
             cards = [_serialize_prediction_for_mcp(p, rank=i + 1) for i, p in enumerate(ranked)]
+            if include_details:
+                for card, prompt in zip(cards, ranked, strict=False):
+                    card["description"] = str(prompt.spec.description)
             if not include_details:
                 for card in cards:
                     # Trim the heaviest fields from the payload — the iframe
@@ -2580,7 +2826,7 @@ def build_server(
                 return _json_result(resolution.model_dump(mode="json"))
             # Forward to daemon via the shared client.
             try:
-                resolution = await _daemon().adopt_prediction(prediction_id_arg)
+                resolution = await (await _daemon_for_repo()).adopt_prediction(prediction_id_arg)
             except VanerDaemonNotFound:
                 await _record("error")
                 return _json_result(
@@ -2651,7 +2897,7 @@ def build_server(
 
             if engine is None:
                 try:
-                    body = await _daemon().get_prepared_work(
+                    body = await (await _daemon_for_repo()).get_prepared_work(
                         limit=limit,
                         include_advisory=include_advisory,
                         include_diagnostics=include_diagnostics,
@@ -2719,7 +2965,7 @@ def build_server(
                 limit = int(args.get("limit", 50))
                 if engine is None:
                     try:
-                        body = await _daemon().list_work_products(
+                        body = await (await _daemon_for_repo()).list_work_products(
                             include_hidden=bool(args.get("include_hidden") or False),
                             include_terminal=bool(args.get("include_terminal") or False),
                             type=product_type.value if product_type is not None else None,
@@ -2749,16 +2995,16 @@ def build_server(
             if engine is None:
                 try:
                     if name == "vaner.work_products.inspect":
-                        body = await _daemon().inspect_work_product(product_id)
+                        body = await (await _daemon_for_repo()).inspect_work_product(product_id)
                     elif name == "vaner.work_products.export":
-                        body = await _daemon().export_work_product(product_id)
+                        body = await (await _daemon_for_repo()).export_work_product(product_id)
                     elif name == "vaner.work_products.dismiss":
-                        body = await _daemon().dismiss_work_product(product_id)
+                        body = await (await _daemon_for_repo()).dismiss_work_product(product_id)
                     elif name == "vaner.work_products.feedback":
                         raw_feedback = str(args.get("feedback_state", "")).strip()
                         if raw_feedback == "not-useful":
                             raw_feedback = "not_useful"
-                        body = await _daemon().feedback_work_product(product_id, raw_feedback)
+                        body = await (await _daemon_for_repo()).feedback_work_product(product_id, raw_feedback)
                     else:  # pragma: no cover - guarded by enclosing name set
                         body = {}
                     await _record("ok")

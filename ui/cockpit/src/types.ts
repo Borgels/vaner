@@ -1,5 +1,8 @@
 export type UIScenarioKind = 'research' | 'explain' | 'change' | 'debug' | 'refactor'
 export type UIFreshness = 'fresh' | 'recent' | 'stale'
+export type UIReadiness = 'unprepared' | 'warming' | 'ready' | 'cooling'
+export type UIVisibility = 'prominent' | 'warming' | 'cooling' | 'archived'
+export type UILifecycleMotion = 'rising' | 'stable' | 'falling' | 'fading'
 export type UIDecisionState = 'active' | 'chosen' | 'partial' | 'rejected' | 'pending' | 'idle'
 export type UIAccent = 'violet' | 'amber' | 'teal'
 export type UIMode = 'daemon' | 'proxy' | 'mcp'
@@ -9,7 +12,16 @@ export interface UIScenario {
   kind: UIScenarioKind
   title: string
   score: number
+  relevance: number
+  confidence: number
+  visiblePriority: number
   freshness: UIFreshness
+  readiness: UIReadiness
+  visibility: UIVisibility
+  lifecycleMotion: UILifecycleMotion
+  lastReinforcedAt: number | null
+  archivedAt: number | null
+  visibilityReason: string
   depth: number
   parent: string | null
   path: string
@@ -84,10 +96,12 @@ export type PipelineStage =
   | 'artefacts'
   | 'scenarios'
   | 'decisions'
+  | 'predictions'
   | 'prediction'
   | 'calibration'
   | 'draft'
   | 'budget'
+  | 'work'
   | 'system'
 
 export interface UIEvent {
@@ -179,6 +193,8 @@ export interface BootstrapPayload {
   mode: UIMode
   version?: string
   cockpit_sha?: string
+  daemon_started_at?: number
+  workspace_id?: string
 }
 
 export interface StatusPayload {
@@ -196,6 +212,7 @@ export interface StatusPayload {
     total: number
   }
   top_scenario?: string | null
+  focus?: FocusStatePayload
   prediction_metrics?: {
     next_prompt_top1_rate?: number
     next_prompt_top3_rate?: number
@@ -213,6 +230,221 @@ export interface StatusPayload {
     count: number
     accuracy: number
   }>
+}
+
+export interface FocusDetectedClient {
+  id: string
+  kind?: string
+  display_name?: string
+  source?: string
+  running?: boolean
+  foreground?: boolean
+  integration_state?: string
+  workspace_hints?: string[]
+  observed_at?: number
+  focus_confidence?: number
+  reason_code?: string
+  explanation?: string
+  selected?: boolean
+  preferred?: boolean
+  eligible?: boolean
+}
+
+export interface FocusWorkspace {
+  id: string
+  display_name?: string
+  canonical_path?: string
+  trust_state?: string
+  integration_state?: string
+  tier?: string
+  pinned?: boolean
+  paused?: boolean
+  selected?: boolean
+  eligible?: boolean
+  last_activity_at?: number
+  focus_confidence?: number
+  work_value_confidence?: number
+  eligibility_reasons?: string[]
+  blocked_reasons?: string[]
+}
+
+export interface FocusWhyNot {
+  reason_code?: string
+  message?: string
+  action?: string
+}
+
+export interface FocusStatePayload {
+  mode?: string
+  status?: string
+  resource_mode?: string
+  focus_epoch?: number
+  active_workspace_id?: string | null
+  active_client_id?: string | null
+  selected_by?: string
+  detected_clients?: FocusDetectedClient[]
+  workspaces?: FocusWorkspace[]
+  explanation?: string
+  why_not?: FocusWhyNot[]
+  proactive_allowed?: boolean
+}
+
+export interface FocusRoutePayload {
+  effective_route?: {
+    workspace?: FocusWorkspace
+    client?: FocusDetectedClient
+    workspace_policy?: string
+    automatic?: boolean
+    resource_mode?: string
+    device?: string
+    backend?: Partial<BackendSettings>
+    selected_by?: string
+    expires_at?: number | null
+  }
+  workspace_options?: FocusWorkspace[]
+  client_options?: FocusDetectedClient[]
+  hardware_options?: {
+    resource_modes?: Array<{ id: string; label?: string; explanation?: string }>
+    devices?: Array<{
+      id: string
+      kind?: string
+      name?: string
+      memory_display_gb?: number
+      allowed_for_background?: boolean
+      explanation?: string
+    }>
+    runtimes?: Array<{
+      id: string
+      kind?: string
+      endpoint?: string | null
+      healthy?: boolean
+      selected?: boolean
+      explanation?: string
+    }>
+    models?: Array<{
+      id: string
+      runtime_id?: string
+      name?: string
+      size_label?: string
+      local?: boolean
+    }>
+    current?: {
+      resource_mode?: string
+      device?: string
+      backend?: Partial<BackendSettings>
+    }
+  }
+  diagnostics?: {
+    focus?: FocusStatePayload
+    why_not?: FocusWhyNot[]
+    warnings?: string[]
+  }
+  explanation?: string
+}
+
+export interface FocusJob {
+  id: string
+  job_class: string
+  workspace_id?: string
+  focus_epoch?: number
+  priority?: string
+  cancellable?: boolean
+  status: string
+  defer_reason?: string
+  explanation?: string
+}
+
+export interface JobsStatusPayload {
+  jobs: FocusJob[]
+  focus_epoch?: number
+  worker?: {
+    state?: string
+    phase?: string
+    pid?: number
+    last_heartbeat_at?: number
+    cycle_id?: string | null
+    defer_reason?: string | null
+    explanation?: string | null
+  }
+  queue?: {
+    size?: number
+    max_size?: number
+    dropped?: number
+    coalesced?: number
+  }
+  profile?: Record<string, number>
+}
+
+export interface SourcesPermissionsPayload {
+  workspace: string
+  privacy_boundary: Record<string, string>
+  sources: Record<string, {
+    id: string
+    enabled: boolean
+    default?: boolean
+    privacy_zone?: string
+    selected_clients?: string[]
+    accepted_count?: number
+    skipped_count?: number
+    ingested_count?: number
+    accepted_examples?: Array<{ display_path?: string; path: string; client: string; status: string; reason: string; matched_by?: string | null }>
+    skipped_examples?: Array<{ display_path?: string; path: string; client: string; status: string; reason: string; matched_by?: string | null }>
+  }>
+  updated_at?: number
+}
+
+export interface SignalCapabilitiesPayload {
+  composer_adapters: Array<{
+    host_app: string
+    level: string
+    emits: string[]
+    official_pre_enter_available: boolean
+    reason: string
+  }>
+  privacy_boundary: Record<string, string>
+}
+
+export interface RecentActivityItem {
+  id: string
+  session_id: string
+  timestamp: number
+  query_text: string
+  selected_paths?: string[]
+  hit_precomputed?: boolean
+  token_used?: number
+  corpus_id?: string
+  source?: string | null
+  host_app?: string | null
+  source_event_id?: string | null
+  prompt_hash?: string | null
+  turn_id?: string | null
+  capture_policy?: string | null
+  prediction_id?: string | null
+}
+
+export interface RecentActivityPayload {
+  items: RecentActivityItem[]
+  count: number
+}
+
+export interface RecentEventPayload {
+  id?: string
+  ts?: number
+  stage?: PipelineStage
+  kind?: string
+  payload?: Record<string, unknown> | unknown[]
+  scn?: string | null
+  path?: string | null
+  cycle_id?: string | null
+  t?: string
+  tag?: string
+  color?: string
+  msg?: string
+}
+
+export interface RecentEventsPayload {
+  events: RecentEventPayload[]
+  count: number
 }
 
 export interface BucketBudgets {
@@ -261,7 +493,16 @@ export interface ScenarioApiPayload {
   id: string
   kind: UIScenarioKind
   score: number
+  confidence?: number
+  relevance?: number
+  visible_priority?: number
   freshness: UIFreshness
+  readiness?: UIReadiness
+  visibility?: UIVisibility
+  lifecycle_motion?: UILifecycleMotion
+  last_reinforced_at?: number | null
+  archived_at?: number | null
+  visibility_reason?: string
   entities: string[]
   evidence: Array<{
     key?: string
@@ -273,6 +514,8 @@ export interface ScenarioApiPayload {
   }>
   prepared_context?: string
   coverage_gaps?: string[]
+  created_at?: number
+  last_refreshed_at?: number
   last_outcome?: string | null
   memory_state?: string
   pinned?: number | boolean
@@ -284,6 +527,7 @@ export interface ScenarioApiPayload {
   decision_state?: UIDecisionState
   reason?: string
   score_components?: Array<{ label: string; value: number; description?: string }>
+  lifecycle_components?: Array<{ label: string; value: number; description?: string }>
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +612,8 @@ export type PredictionReadiness =
 export interface PredictionSummary {
   id: string
   prediction_id?: string
+  label?: string
+  display_label?: string
   title?: string
   prompt?: string
   readiness?: PredictionReadiness
@@ -375,11 +621,107 @@ export interface PredictionSummary {
   created_at?: number
   updated_at?: number
   invalidation_reason?: string | null
+  source_label?: string
+  ui_summary?: string
+  readiness_label?: string
+  evidence_targets?: string[]
+  watched_sources?: string[]
+  adoptable?: boolean
+  match_state?: 'strong_match' | 'weak_match' | 'unrelated' | 'stale' | string
+  match_reason?: string
+  recommended_action?: 'adopt' | 'inspect' | 'ignore' | string
+  snapshot_freshness?: 'ready' | 'warming' | 'stale' | 'cold' | string
+  freshness?: string
+  trust_status?: string
+  spec?: {
+    label?: string
+    description?: string
+    confidence?: number
+    source?: string
+    structured?: {
+      evidence_targets?: string[]
+      [key: string]: unknown
+    }
+  }
+  run?: {
+    readiness?: PredictionReadiness
+    updated_at?: number
+  }
 }
 
 export interface PredictionsByState {
   predictions: PredictionSummary[]
   by_state?: Record<PredictionReadiness, PredictionSummary[]>
+}
+
+export interface PlanDraftSummary {
+  id: string
+  title: string
+  summary: string
+  tasks: string[]
+  source_client: string
+  session_id: string
+  turn_id: string
+  workspace_id: string
+  source_event_id: string
+  status: string
+  accepted: boolean
+  created_at: number
+  updated_at: number
+  prep_dir: string
+}
+
+export interface ActiveWorkPayload {
+  summary: string
+  loop: 'ponder' | 'answer' | 'idle' | string
+  phase: string
+  worker?: Record<string, unknown>
+  queue?: Record<string, unknown>
+  jobs?: FocusJob[]
+  resources?: Record<string, unknown>
+  utilization?: {
+    cpu_load?: number
+    gpu?: Record<string, unknown>
+  }
+  plan_draft?: PlanDraftSummary | null
+  prediction_count: number
+  predictions: PredictionSummary[]
+  prepared_work_count: number
+  prepared_work: PreparedWorkCard[]
+  updated_at: number
+}
+
+export interface LiveWorkEvent {
+  event_id: string
+  ts: number
+  entity_type: 'prediction' | 'scenario' | 'work_product' | 'worker' | string
+  entity_id: string
+  stage: string
+  status: string
+  summary: string
+  cycle_id?: string | null
+  job_id?: string | null
+  scenario_id?: string | null
+  targets?: string[]
+  model?: string | null
+  latency_ms?: number | null
+  token_usage?: Record<string, unknown>
+  artifact_kind?: string | null
+  safe_preview?: string | null
+  metadata?: Record<string, unknown>
+}
+
+export interface LiveWorkSnapshot {
+  entity_type: string
+  entity_id: string
+  status: string
+  summary: string
+  active: boolean
+  updated_at?: number | null
+  events: LiveWorkEvent[]
+  prediction?: PredictionSummary | null
+  worker?: Record<string, unknown> | null
+  queue?: Record<string, unknown> | null
 }
 
 export interface WorkProductSelfEval {

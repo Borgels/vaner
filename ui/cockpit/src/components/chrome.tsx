@@ -27,7 +27,17 @@ export interface CommandItem {
   run: () => void
 }
 
-export type CockpitView = 'pipeline' | 'goals'
+export type CockpitView = 'focus' | 'prepared-work' | 'now' | 'scenario-map' | 'timeline' | 'board' | 'evidence'
+
+const COCKPIT_VIEW_OPTIONS: Array<{ id: CockpitView; label: string; shortcut: string }> = [
+  { id: 'focus', label: 'Focus', shortcut: '1' },
+  { id: 'prepared-work', label: 'Prepared Work', shortcut: '2' },
+  { id: 'now', label: 'Now', shortcut: '3' },
+  { id: 'scenario-map', label: 'Scenario Map', shortcut: '4' },
+  { id: 'timeline', label: 'Timeline', shortcut: '5' },
+  { id: 'board', label: 'Board', shortcut: '6' },
+  { id: 'evidence', label: 'Evidence', shortcut: '7' },
+]
 
 interface TopBarProps {
   running: boolean
@@ -38,11 +48,6 @@ interface TopBarProps {
   mode: UIMode
   query: string
   onQuery: (value: string) => void
-  /**
-   * Cockpit refresh: when present, render a small Pipeline/Goals toggle
-   * so advanced users can switch the main canvas to the goals destination
-   * without leaving the cockpit. Omitted on hosts that don't expose goals.
-   */
   view?: CockpitView
   onChangeView?: (view: CockpitView) => void
 }
@@ -77,16 +82,19 @@ export function TopBar({
         background: 'var(--bg-1)',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <svg width="22" height="22" viewBox="0 0 22 22">
-          <circle cx="11" cy="11" r="9" fill="none" stroke="var(--accent)" strokeWidth="1.4" />
-          <circle cx="11" cy="11" r="4" fill="var(--accent)" />
-          <circle cx="18" cy="6" r="1.6" fill="var(--amber)" />
-          <path d="M11 11 L18 6" stroke="var(--amber)" strokeWidth="0.9" />
-        </svg>
-        <span className="editorial" style={{ fontSize: 19, letterSpacing: -0.3 }}>
-          Vaner
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        <img
+          src="/brand/lockup-dark-animated.svg"
+          alt="Vaner"
+          width={96}
+          height={24}
+          style={{
+            display: 'block',
+            width: 96,
+            height: 24,
+            flex: '0 0 auto',
+          }}
+        />
         <span className="mono" style={{ fontSize: 10.5, color: 'var(--fg-4)', letterSpacing: 1, marginLeft: 2 }}>
           COCKPIT · {MODE_LABEL[mode]}
         </span>
@@ -113,7 +121,12 @@ export function TopBar({
         <input
           value={query}
           onChange={(event) => onQuery(event.target.value)}
-          placeholder="ask the cockpit..."
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              onOpenPalette()
+            }
+          }}
+          placeholder="search commands, work, and scenarios..."
           style={{
             flex: 1,
             background: 'transparent',
@@ -135,26 +148,24 @@ export function TopBar({
           <div
             role="tablist"
             aria-label="Cockpit view"
-            style={{ display: 'flex', border: '1px solid var(--line-1)', borderRadius: 'var(--r-1)' }}
+            style={{ display: 'flex', border: '1px solid var(--line-1)', borderRadius: 'var(--r-1)', overflow: 'hidden' }}
           >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={view === 'pipeline'}
-              onClick={() => onChangeView('pipeline')}
-              style={viewTabStyle(view === 'pipeline')}
-            >
-              Pipeline
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={view === 'goals'}
-              onClick={() => onChangeView('goals')}
-              style={viewTabStyle(view === 'goals')}
-            >
-              Goals
-            </button>
+            {COCKPIT_VIEW_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                role="tab"
+                aria-selected={view === option.id}
+                title={`${option.shortcut} · ${option.label}`}
+                onClick={() => onChangeView(option.id)}
+                style={viewTabStyle(view === option.id)}
+              >
+                <span className="mono" style={{ color: view === option.id ? 'var(--accent)' : 'var(--fg-4)', marginRight: 5 }}>
+                  {option.shortcut}
+                </span>
+                {option.label}
+              </button>
+            ))}
           </div>
         ) : null}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -237,11 +248,12 @@ function viewTabStyle(active: boolean): React.CSSProperties {
     background: active ? 'var(--bg-2)' : 'transparent',
     border: 'none',
     color: active ? 'var(--fg-1)' : 'var(--fg-3)',
-    padding: '5px 10px',
+    padding: '5px 8px',
     fontFamily: 'var(--font-mono)',
-    fontSize: 10.5,
+    fontSize: 10,
     letterSpacing: 0.4,
     cursor: 'pointer',
+    whiteSpace: 'nowrap',
   }
 }
 
@@ -251,7 +263,7 @@ interface LeftRailProps {
   pinned: UIPinnedFact[]
   packageState: UIPackageState | null
   onUnpin: (id: string) => void
-  onSkillNudge: (name: string, delta: number) => void
+  onSkillNudge?: (name: string, delta: number) => void
   scenarioCount: number
   impact?: ImpactSummary
   header?: React.ReactNode
@@ -288,7 +300,7 @@ export function LeftRail({
     >
       <div style={{ padding: '16px 16px 10px' }}>
         <div className="mono" style={{ fontSize: 9.5, letterSpacing: 1.2, color: 'var(--fg-4)', marginBottom: 10 }}>
-          {mode === 'proxy' ? 'PROXY' : 'FRONTIER'}
+          {mode === 'proxy' ? 'PROXY' : 'SUGGESTIONS'}
         </div>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
           <span style={{ fontFamily: 'var(--font-display)', fontSize: 28, color: 'var(--fg-1)', fontVariantNumeric: 'tabular-nums' }}>
@@ -349,22 +361,26 @@ export function LeftRail({
                     </span>
                   </div>
                 </div>
-                <button
-                  onClick={() => onSkillNudge(skill.name, -0.04)}
-                  style={skillNudgeBtn}
-                  title={`Nudge ${skill.name} down`}
-                  aria-label={`Nudge ${skill.name} down`}
-                >
-                  −
-                </button>
-                <button
-                  onClick={() => onSkillNudge(skill.name, 0.04)}
-                  style={skillNudgeBtn}
-                  title={`Nudge ${skill.name} up`}
-                  aria-label={`Nudge ${skill.name} up`}
-                >
-                  +
-                </button>
+                {onSkillNudge ? (
+                  <>
+                    <button
+                      onClick={() => onSkillNudge(skill.name, -0.04)}
+                      style={skillNudgeBtn}
+                      title={`Nudge ${skill.name} down`}
+                      aria-label={`Nudge ${skill.name} down`}
+                    >
+                      −
+                    </button>
+                    <button
+                      onClick={() => onSkillNudge(skill.name, 0.04)}
+                      style={skillNudgeBtn}
+                      title={`Nudge ${skill.name} up`}
+                      aria-label={`Nudge ${skill.name} up`}
+                    >
+                      +
+                    </button>
+                  </>
+                ) : null}
               </div>
             ))}
           </div>
@@ -416,7 +432,7 @@ export function LeftRail({
           ))}
           {!pinned.length ? (
             <div style={{ fontSize: 11.5, color: 'var(--fg-4)', padding: '6px 0', fontStyle: 'italic' }}>
-              No pinned facts. Pin scenarios or add notes to always include.
+              Nothing pinned yet. Pin useful scenarios to keep them available.
             </div>
           ) : null}
         </div>

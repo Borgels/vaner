@@ -17,6 +17,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from vaner.daemon.http import create_daemon_http_app
+from vaner.daemon.precompute_worker import read_worker_wake
+from vaner.engine import VanerEngine
+from vaner.intent.adapter import CodeRepoAdapter
 from vaner.models.config import VanerConfig
 from vaner.models.signal import KIND_COMPOSER_LIFECYCLE, SignalEvent
 
@@ -186,6 +189,51 @@ def test_validation_error_envelope_does_not_echo_input(temp_repo):
         assert "msg" in entry
         # Critically: no `input` field reflecting the raw value.
         assert "input" not in entry
+
+
+async def _stub_llm(_prompt: str) -> str:
+    return '{"ranked_files": [], "semantic_intent": "", "confidence": 0.0, "follow_on": []}'
+
+
+def test_codex_prompt_signal_records_query_history(temp_repo):
+    (temp_repo / "sample.py").write_text("print('hi')\n", encoding="utf-8")
+    config = _make_config(temp_repo)
+    engine = VanerEngine(adapter=CodeRepoAdapter(temp_repo), llm=_stub_llm)
+    engine.config.compute.idle_only = False
+    app = create_daemon_http_app(config, engine=engine)
+
+    payload = {
+        "host_app": "codex-cli",
+        "session_id": "codex-session",
+        "turn_id": "turn-1",
+        "prompt_hash": "a" * 64,
+        "prompt_text_redacted": "Implement the Codex plugin",
+        "length_chars": 27,
+        "capture_policy": "local_raw_redacted",
+        "source_event_id": "evt-codex-1",
+    }
+    with TestClient(app) as client:
+        response = client.post("/signals/codex/prompt", json=payload)
+
+    assert response.status_code == 200
+    wake = read_worker_wake(temp_repo)
+    assert wake is not None
+    assert wake["id"] == response.json()["wake_id"]
+    assert wake["reason"] == "intent_signal"
+    import asyncio
+
+    rows = asyncio.run(engine.store.list_query_history(limit=5))
+    assert len(rows) == 1
+    assert rows[0]["query_text"] == "Implement the Codex plugin"
+    assert rows[0]["host_app"] == "codex-cli"
+    assert rows[0]["turn_id"] == "turn-1"
+    assert rows[0]["source"] == "codex_prompt"
+
+    with TestClient(app) as client:
+        second = client.post("/signals/codex/prompt", json=payload)
+    assert second.status_code == 200
+    rows = asyncio.run(engine.store.list_query_history(limit=5))
+    assert len(rows) == 1
 
 
 def test_capability_emits_empty_rejected_at_validation(temp_repo):

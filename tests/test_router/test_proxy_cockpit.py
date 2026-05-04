@@ -9,7 +9,14 @@ from vaner.router.proxy import create_app
 from vaner.store.artefacts import ArtefactStore
 
 
-def test_proxy_cockpit_root_and_ui_redirect(temp_repo) -> None:
+def test_proxy_cockpit_root_and_ui_redirect(temp_repo, monkeypatch) -> None:
+    cockpit_dist = temp_repo / "cockpit-dist"
+    (cockpit_dist / "assets").mkdir(parents=True)
+    (cockpit_dist / "index.html").write_text(
+        '<!doctype html><title>Vaner Cockpit</title><div id="root"></div><script src="/assets/index.js"></script>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("vaner.router.proxy.cockpit_dist_dir", lambda: cockpit_dist)
     config = VanerConfig(
         repo_root=temp_repo,
         store_path=temp_repo / ".vaner" / "store.db",
@@ -22,6 +29,7 @@ def test_proxy_cockpit_root_and_ui_redirect(temp_repo) -> None:
         ui_redirect = client.get("/ui", follow_redirects=False)
     assert root.status_code == 200
     assert root.headers["content-type"].startswith("text/html")
-    assert 'data-mode="proxy"' in root.text
+    assert '<div id="root"></div>' in root.text
+    assert 'data-mode="proxy"' not in root.text
     assert ui_redirect.status_code == 307
     assert ui_redirect.headers["location"] == "/"

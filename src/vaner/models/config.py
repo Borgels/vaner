@@ -564,6 +564,19 @@ class GitHubIssuesSourceConfig(BaseModel):
     max_issues: int = 200
 
 
+class GlobalClientPlansSourceConfig(BaseModel):
+    """Opt-in workspace-matched plan files from global AI client stores."""
+
+    enabled: bool = False
+    selected_clients: list[str] = Field(default_factory=lambda: ["claude-code", "codex-cli"])
+    allowed_roots: list[str] = Field(default_factory=list)
+    workspace_match_policy: Literal["workspace_path_or_name"] = "workspace_path_or_name"
+    include_rollout_summaries: bool = False
+    max_file_bytes: int = 2 * 1024 * 1024
+    max_files: int = 500
+    excludelist: list[str] = Field(default_factory=list)
+
+
 class IntentArtefactsConfig(BaseModel):
     """``[sources.intent_artefacts]`` — 0.8.2 intent-bearing artefact
     ingestion (spec §12).
@@ -576,6 +589,7 @@ class IntentArtefactsConfig(BaseModel):
     enabled: bool = True
     tiers: IntentArtefactTiersConfig = Field(default_factory=IntentArtefactTiersConfig)
     local_plan: LocalPlanSourceConfig = Field(default_factory=LocalPlanSourceConfig)
+    global_client_plans: GlobalClientPlansSourceConfig = Field(default_factory=GlobalClientPlansSourceConfig)
     markdown_outline: MarkdownOutlineSourceConfig = Field(default_factory=MarkdownOutlineSourceConfig)
     github_issues: GitHubIssuesSourceConfig = Field(default_factory=GitHubIssuesSourceConfig)
 

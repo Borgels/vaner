@@ -79,6 +79,6 @@ describe('SystemVitals', () => {
       />,
     )
     expect(screen.getByText('3')).toBeInTheDocument()
-    expect(screen.getByText(/llm errors/)).toBeInTheDocument()
+    expect(screen.getByText(/Model errors/)).toBeInTheDocument()
   })
 })

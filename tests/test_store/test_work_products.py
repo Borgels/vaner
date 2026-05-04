@@ -110,6 +110,7 @@ async def test_expired_work_products_are_hidden_and_not_exportable(tmp_path: Pat
     product = _product(product_id="expired")
     product.expires_at = time.time() - 1
     await store.upsert_work_product(product)
+    await store.expire_due_work_products()
 
     assert await store.list_work_products() == []
     expired = await store.get_work_product("expired")

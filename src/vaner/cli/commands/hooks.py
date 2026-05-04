@@ -33,8 +33,8 @@ Out of scope here
   (``plugins/vaner/hooks/hooks.json`` and ``cursor-plugins/vaner/hooks.json``
   respectively). Those bundles are atomic install units; this module
   doesn't duplicate them.
-* **Codex CLI** has hooks behind a ``codex_hooks = true`` flag —
-  defer until GA.
+* **Codex CLI** installs hooks through the ``plugins/vaner-codex`` bundle,
+  so this per-repo hook writer does not duplicate that surface.
 * **VS Code Copilot** exposes only ``resolveMcpServerDefinition`` to
   third-party extensions; no general session-lifecycle hook surface.
 * **Continue / Zed / Roo / Claude Desktop** have no hook system.

@@ -21,8 +21,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from vaner.api import aquery
 from vaner.broker.prompting import build_evidence_bound_context_prompt
 from vaner.cli.commands.config import load_config, set_compute_value
-from vaner.daemon.cockpit_html import build_cockpit_html
+from vaner.daemon.cockpit_assets import cockpit_dist_dir, cockpit_response, mount_cockpit_assets
 from vaner.events.bus import build_stage_payloads
+from vaner.focus import FocusManager
 from vaner.intent.arcs import derive_prompt_macro
 from vaner.models.config import VanerConfig
 from vaner.models.cost import CostLedgerEntry, ModelPricing, TurnCostSummary, estimate_cost, usage_from_openai_payload
@@ -181,6 +182,8 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
     validate_backend_config(config)
 
     metrics_store = MetricsStore(_metrics_db_path(config.repo_root))
+    focus_manager = FocusManager(config)
+    proxy_started_at = time.time()
     prom = _PrometheusCounters()
 
     # Track in-flight requests for graceful shutdown
@@ -218,6 +221,8 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
             pass
 
     app = FastAPI(title="Vaner Proxy", version="0.2.0", lifespan=lifespan)
+    cockpit_dist = cockpit_dist_dir()
+    mount_cockpit_assets(app, cockpit_dist)
     limiter = _RateLimiter(config.proxy.max_requests_per_minute)
     required_token = (config.proxy.proxy_token or "").strip()
     shadow_rate = max(0.0, min(config.gateway.shadow_rate, 1.0))
@@ -228,6 +233,16 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
     async def health() -> dict[str, str]:
         """Liveness probe -- always returns 200 when the server is running."""
         return {"status": "ok"}
+
+    @app.get("/bootstrap")
+    async def bootstrap() -> dict[str, Any]:
+        return {
+            "mode": "proxy",
+            "version": app.version,
+            "cockpit_sha": "",
+            "daemon_started_at": proxy_started_at,
+            "workspace_id": focus_manager.current_workspace_id,
+        }
 
     @app.get("/ready")
     async def ready() -> dict[str, str]:
@@ -325,8 +340,8 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
         return JSONResponse({"ok": True, "gateway_enabled": gateway_enabled})
 
     @app.get("/", response_class=HTMLResponse)
-    async def cockpit() -> str:
-        return build_cockpit_html("proxy")
+    async def cockpit() -> HTMLResponse:
+        return cockpit_response(cockpit_dist)
 
     @app.get("/ui")
     async def cockpit_ui() -> RedirectResponse:

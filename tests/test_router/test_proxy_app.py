@@ -154,6 +154,13 @@ def test_proxy_injects_evidence_bound_context_prompt(temp_repo, monkeypatch):
 
 
 def test_cockpit_endpoints(temp_repo, monkeypatch):
+    cockpit_dist = temp_repo / "cockpit-dist"
+    (cockpit_dist / "assets").mkdir(parents=True)
+    (cockpit_dist / "index.html").write_text(
+        '<!doctype html><title>Vaner Cockpit</title><div id="root"></div><script src="/assets/index.js"></script>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(proxy_module, "cockpit_dist_dir", lambda: cockpit_dist)
     vaner_dir = temp_repo / ".vaner"
     vaner_dir.mkdir(parents=True, exist_ok=True)
     (vaner_dir / "config.toml").write_text(
@@ -190,7 +197,8 @@ model = "test-model"
     html = client.get("/")
     assert html.status_code == 200
     assert "Vaner Cockpit" in html.text
-    assert 'data-mode="proxy"' in html.text
+    assert '<div id="root"></div>' in html.text
+    assert 'data-mode="proxy"' not in html.text
     redirect = client.get("/ui", follow_redirects=False)
     assert redirect.status_code == 307
     assert redirect.headers["location"] == "/"

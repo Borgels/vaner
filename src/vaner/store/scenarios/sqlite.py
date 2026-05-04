@@ -9,6 +9,7 @@ from typing import cast
 
 import aiosqlite
 
+from vaner.intent.scenario_lifecycle import apply_scenario_lifecycle
 from vaner.intent.scenario_scorer import scenario_score
 from vaner.mcp.contracts import MemoryMeta, MemorySection, MemoryState
 from vaner.memory.policy import InvalidationContext, decide_invalidation, validate_transition
@@ -18,7 +19,10 @@ from vaner.models.scenario import (
     ScenarioCost,
     ScenarioFreshness,
     ScenarioKind,
+    ScenarioLifecycleMotion,
     ScenarioOutcome,
+    ScenarioReadiness,
+    ScenarioVisibility,
 )
 
 
@@ -86,7 +90,20 @@ class ScenarioStore:
             await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN prior_successes INTEGER NOT NULL DEFAULT 0")
             await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN contradiction_signal REAL NOT NULL DEFAULT 0.0")
             await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN relevance REAL NOT NULL DEFAULT 0.0")
+            await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN visible_priority REAL NOT NULL DEFAULT 0.0")
+            await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN readiness TEXT NOT NULL DEFAULT 'unprepared'")
+            await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN visibility TEXT NOT NULL DEFAULT 'warming'")
+            await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN lifecycle_motion TEXT NOT NULL DEFAULT 'stable'")
+            await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN last_reinforced_at REAL")
+            await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN archived_at REAL")
+            await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN visibility_reason TEXT NOT NULL DEFAULT ''")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_memory_state ON scenarios(memory_state)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_visibility ON scenarios(visibility)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_relevance ON scenarios(relevance DESC)")
+            await db.execute("UPDATE scenarios SET last_reinforced_at = COALESCE(last_reinforced_at, last_refreshed_at)")
+            await db.execute("UPDATE scenarios SET relevance = score WHERE relevance = 0.0 AND score > 0.0")
+            await db.execute("UPDATE scenarios SET visible_priority = relevance WHERE visible_priority = 0.0 AND relevance > 0.0")
             await db.commit()
 
     async def upsert_prompt_macro_cluster(
@@ -129,6 +146,7 @@ class ScenarioStore:
         return [dict(row) for row in rows]
 
     async def upsert(self, scenario: Scenario) -> None:
+        scenario = apply_scenario_lifecycle(scenario)
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -137,9 +155,11 @@ class ScenarioStore:
                     coverage_gaps_json, freshness, cost_to_expand, created_at,
                     expanded_at, last_refreshed_at, last_outcome, context_envelope_json,
                     memory_state, memory_confidence, memory_last_validated_at, memory_evidence_hashes_json,
-                    prior_successes, contradiction_signal, pinned
+                    prior_successes, contradiction_signal, pinned, relevance, visible_priority,
+                    readiness, visibility, lifecycle_motion, last_reinforced_at, archived_at,
+                    visibility_reason
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     kind=excluded.kind,
                     score=excluded.score,
@@ -160,7 +180,15 @@ class ScenarioStore:
                     memory_evidence_hashes_json=excluded.memory_evidence_hashes_json,
                     prior_successes=excluded.prior_successes,
                     contradiction_signal=excluded.contradiction_signal,
-                    pinned=excluded.pinned
+                    pinned=MAX(scenarios.pinned, excluded.pinned),
+                    relevance=excluded.relevance,
+                    visible_priority=excluded.visible_priority,
+                    readiness=excluded.readiness,
+                    visibility=excluded.visibility,
+                    lifecycle_motion=excluded.lifecycle_motion,
+                    last_reinforced_at=excluded.last_reinforced_at,
+                    archived_at=excluded.archived_at,
+                    visibility_reason=excluded.visibility_reason
                 """,
                 (
                     scenario.id,
@@ -184,6 +212,14 @@ class ScenarioStore:
                     scenario.prior_successes,
                     scenario.contradiction_signal,
                     int(scenario.pinned),
+                    scenario.relevance,
+                    scenario.visible_priority,
+                    scenario.readiness,
+                    scenario.visibility,
+                    scenario.lifecycle_motion,
+                    scenario.last_reinforced_at,
+                    scenario.archived_at,
+                    scenario.visibility_reason,
                 ),
             )
             await db.execute("DELETE FROM scenario_evidence WHERE scenario_id = ?", (scenario.id,))
@@ -195,15 +231,26 @@ class ScenarioStore:
                     """,
                     (scenario.id, evidence.key, evidence.source_path, evidence.excerpt, evidence.weight),
                 )
+            await self._refresh_lifecycle_for_ids(db, [scenario.id])
             await db.commit()
 
-    async def list_top(self, *, kind: str | None = None, limit: int = 10) -> list[Scenario]:
+    async def list_top(self, *, kind: str | None = None, limit: int = 10, visibility: str = "live") -> list[Scenario]:
+        await self.mark_stale()
         query = "SELECT * FROM scenarios"
         params: list[object] = []
+        predicates: list[str] = []
         if kind:
-            query += " WHERE kind = ?"
+            predicates.append("kind = ?")
             params.append(kind)
-        query += " ORDER BY score DESC, last_refreshed_at DESC LIMIT ?"
+        if visibility == "live":
+            predicates.append("(visibility != 'archived' OR pinned = 1)")
+        elif visibility == "history":
+            predicates.append("visibility = 'archived' AND pinned = 0")
+        elif visibility != "all":
+            predicates.append("(visibility != 'archived' OR pinned = 1)")
+        if predicates:
+            query += " WHERE " + " AND ".join(predicates)
+        query += " ORDER BY visible_priority DESC, relevance DESC, last_reinforced_at DESC, last_refreshed_at DESC LIMIT ?"
         params.append(max(1, limit))
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -226,20 +273,45 @@ class ScenarioStore:
         now = time.time()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "UPDATE scenarios SET freshness = 'fresh', expanded_at = ?, last_refreshed_at = ? WHERE id = ?",
-                (now, now, scenario_id),
+                """
+                UPDATE scenarios
+                SET freshness = 'fresh', expanded_at = ?, last_refreshed_at = ?,
+                    last_reinforced_at = ?, archived_at = NULL
+                WHERE id = ?
+                """,
+                (now, now, now, scenario_id),
             )
+            await self._refresh_lifecycle_for_ids(db, [scenario_id], now=now)
             await db.commit()
 
-    async def record_outcome(self, scenario_id: str, outcome: str) -> None:
+    async def record_outcome(self, scenario_id: str, outcome: str, **_: object) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            now = time.time()
             await db.execute("UPDATE scenarios SET last_outcome = ? WHERE id = ?", (outcome, scenario_id))
             if outcome == "useful":
-                await db.execute("UPDATE scenarios SET prior_successes = prior_successes + 1 WHERE id = ?", (scenario_id,))
+                await db.execute(
+                    """
+                    UPDATE scenarios
+                    SET prior_successes = prior_successes + 1, freshness = 'fresh',
+                        last_reinforced_at = ?, archived_at = NULL
+                    WHERE id = ?
+                    """,
+                    (now, scenario_id),
+                )
+            if outcome == "partial":
+                await db.execute(
+                    "UPDATE scenarios SET freshness = 'fresh', last_reinforced_at = ?, archived_at = NULL WHERE id = ?",
+                    (now, scenario_id),
+                )
+            if outcome == "irrelevant":
+                await db.execute(
+                    "UPDATE scenarios SET contradiction_signal = MIN(1.0, contradiction_signal + 0.12), freshness = 'stale' WHERE id = ?",
+                    (scenario_id,),
+                )
             if outcome == "wrong":
                 await db.execute(
-                    "UPDATE scenarios SET contradiction_signal = MIN(1.0, contradiction_signal + 0.25) WHERE id = ?",
+                    "UPDATE scenarios SET contradiction_signal = MIN(1.0, contradiction_signal + 0.25), freshness = 'stale' WHERE id = ?",
                     (scenario_id,),
                 )
             row_cur = await db.execute("SELECT * FROM scenarios WHERE id = ?", (scenario_id,))
@@ -249,6 +321,7 @@ class ScenarioStore:
                 scenario = self._row_to_scenario(row, evidence_map.get(scenario_id, []))
                 score = scenario_score(scenario)
                 await db.execute("UPDATE scenarios SET score = ? WHERE id = ?", (score, scenario_id))
+            await self._refresh_lifecycle_for_ids(db, [scenario_id], now=now)
             await db.commit()
 
     async def mark_stale(self) -> None:
@@ -258,6 +331,7 @@ class ScenarioStore:
                 """
                 UPDATE scenarios
                 SET freshness = CASE
+                    WHEN freshness = 'stale' THEN 'stale'
                     WHEN ? - last_refreshed_at > 1800 THEN 'stale'
                     WHEN ? - last_refreshed_at > 300 THEN 'recent'
                     ELSE freshness
@@ -265,6 +339,43 @@ class ScenarioStore:
                 """,
                 (now, now),
             )
+            cur = await db.execute("SELECT id FROM scenarios")
+            rows = await cur.fetchall()
+            await self._refresh_lifecycle_for_ids(db, [str(row[0]) for row in rows], now=now)
+            await db.commit()
+
+    async def mark_absent_stale(self, active_ids: set[str]) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            if not active_ids:
+                await db.execute("UPDATE scenarios SET freshness = 'stale' WHERE pinned = 0")
+                cur = await db.execute("SELECT id FROM scenarios WHERE pinned = 0")
+            else:
+                placeholders = ", ".join("?" for _ in active_ids)
+                await db.execute(
+                    f"UPDATE scenarios SET freshness = 'stale' WHERE pinned = 0 AND id NOT IN ({placeholders})",
+                    tuple(sorted(active_ids)),
+                )
+                cur = await db.execute(
+                    f"SELECT id FROM scenarios WHERE pinned = 0 AND id NOT IN ({placeholders})",
+                    tuple(sorted(active_ids)),
+                )
+            rows = await cur.fetchall()
+            await self._refresh_lifecycle_for_ids(db, [str(row[0]) for row in rows])
+            await db.commit()
+
+    async def set_pinned(self, scenario_id: str, pinned: bool) -> None:
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE scenarios
+                SET pinned = ?, archived_at = CASE WHEN ? = 1 THEN NULL ELSE archived_at END,
+                    last_reinforced_at = CASE WHEN ? = 1 THEN COALESCE(last_reinforced_at, last_refreshed_at, ?) ELSE last_reinforced_at END
+                WHERE id = ?
+                """,
+                (1 if pinned else 0, 1 if pinned else 0, 1 if pinned else 0, now, scenario_id),
+            )
+            await self._refresh_lifecycle_for_ids(db, [scenario_id], now=now)
             await db.commit()
 
     async def freshness_counts(self) -> dict[str, int]:
@@ -326,7 +437,8 @@ class ScenarioStore:
                 """
                 UPDATE scenarios
                 SET memory_state = ?, memory_confidence = ?, memory_last_validated_at = ?,
-                    memory_evidence_hashes_json = ?, pinned = ?, freshness='fresh', last_refreshed_at=?
+                    memory_evidence_hashes_json = ?, pinned = ?, freshness='fresh',
+                    last_refreshed_at=?, last_reinforced_at=?, archived_at=NULL
                 WHERE id = ?
                 """,
                 (
@@ -336,9 +448,11 @@ class ScenarioStore:
                     json.dumps(evidence_hashes),
                     pinned,
                     at,
+                    at,
                     scenario_id,
                 ),
             )
+            await self._refresh_lifecycle_for_ids(db, [scenario_id], now=at)
             await db.commit()
 
     async def demote_scenario(
@@ -359,11 +473,13 @@ class ScenarioStore:
                 UPDATE scenarios
                 SET memory_state = ?, pinned = CASE WHEN ? = 'trusted' THEN 1 ELSE 0 END,
                     score = MAX(0.0, score - ?),
-                    contradiction_signal = MIN(1.0, contradiction_signal + ?)
+                    contradiction_signal = MIN(1.0, contradiction_signal + ?),
+                    freshness = 'stale'
                 WHERE id = ?
                 """,
                 (new_state, new_state, score_penalty, contradiction_delta, scenario_id),
             )
+            await self._refresh_lifecycle_for_ids(db, [scenario_id])
             await db.commit()
 
     async def mark_stale_by_evidence(self, scenario_id: str, *, evidence_hashes_now: list[str] | None = None) -> None:
@@ -387,6 +503,7 @@ class ScenarioStore:
                 "UPDATE scenarios SET memory_state = ?, pinned = CASE WHEN ?='trusted' THEN 1 ELSE 0 END WHERE id = ?",
                 (decision.to_state, decision.to_state, scenario_id),
             )
+            await self._refresh_lifecycle_for_ids(db, [scenario_id])
             await db.commit()
 
     async def merge_memory_section(
@@ -523,7 +640,52 @@ class ScenarioStore:
             prior_successes=int(row["prior_successes"] if "prior_successes" in row.keys() else 0),
             contradiction_signal=float(row["contradiction_signal"] if "contradiction_signal" in row.keys() else 0.0),
             pinned=int(row["pinned"] if "pinned" in row.keys() else 0),
+            relevance=float(row["relevance"] if "relevance" in row.keys() else row["score"]),
+            visible_priority=float(row["visible_priority"] if "visible_priority" in row.keys() else row["score"]),
+            readiness=cast(ScenarioReadiness, str(row["readiness"] if "readiness" in row.keys() else "unprepared")),
+            visibility=cast(ScenarioVisibility, str(row["visibility"] if "visibility" in row.keys() else "warming")),
+            lifecycle_motion=cast(
+                ScenarioLifecycleMotion,
+                str(row["lifecycle_motion"] if "lifecycle_motion" in row.keys() else "stable"),
+            ),
+            last_reinforced_at=(
+                float(row["last_reinforced_at"]) if "last_reinforced_at" in row.keys() and row["last_reinforced_at"] is not None else None
+            ),
+            archived_at=(float(row["archived_at"]) if "archived_at" in row.keys() and row["archived_at"] is not None else None),
+            visibility_reason=str(row["visibility_reason"] if "visibility_reason" in row.keys() else ""),
         )
+
+    async def _refresh_lifecycle_for_ids(self, db: aiosqlite.Connection, scenario_ids: list[str], *, now: float | None = None) -> None:
+        if not scenario_ids:
+            return
+        placeholders = ", ".join("?" for _ in scenario_ids)
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(f"SELECT * FROM scenarios WHERE id IN ({placeholders})", scenario_ids)
+        rows = await cur.fetchall()
+        evidence_map = await self._load_evidence_for_scenarios(db, [str(row["id"]) for row in rows])
+        for row in rows:
+            scenario = self._row_to_scenario(row, evidence_map.get(str(row["id"]), []))
+            refreshed = apply_scenario_lifecycle(scenario, now=now)
+            await db.execute(
+                """
+                UPDATE scenarios
+                SET relevance = ?, visible_priority = ?, readiness = ?, visibility = ?,
+                    lifecycle_motion = ?, last_reinforced_at = ?, archived_at = ?,
+                    visibility_reason = ?
+                WHERE id = ?
+                """,
+                (
+                    refreshed.relevance,
+                    refreshed.visible_priority,
+                    refreshed.readiness,
+                    refreshed.visibility,
+                    refreshed.lifecycle_motion,
+                    refreshed.last_reinforced_at,
+                    refreshed.archived_at,
+                    refreshed.visibility_reason,
+                    refreshed.id,
+                ),
+            )
 
     async def _add_column_if_missing(self, db: aiosqlite.Connection, ddl: str) -> None:
         try:

@@ -11,6 +11,7 @@ call.
 Default allowlist — the spec §12 ``local_plan`` defaults:
 
 - ``.claude/plans/``
+- ``.codex/plans/``
 - ``.cursor/plans/``
 - ``docs/plans/``
 - ``docs/roadmap*`` (prefix glob)
@@ -56,6 +57,7 @@ _MAX_FILE_BYTES = 2 * 1024 * 1024  # 2 MiB
 
 DEFAULT_ALLOWLIST: tuple[str, ...] = (
     ".claude/plans",
+    ".codex/plans",
     ".cursor/plans",
     "docs/plans",
     "docs/roadmap*",

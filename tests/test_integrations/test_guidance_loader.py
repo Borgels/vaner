@@ -15,6 +15,7 @@ def test_canonical_loads_with_expected_frontmatter() -> None:
     assert doc.version == 2
     assert doc.minimum_vaner_version == "0.8.5"
     # Canonical must list the core tools agents are expected to call.
+    assert "vaner.suggest" in doc.recommended_tools
     assert "vaner.predictions.active" in doc.recommended_tools
     assert "vaner.predictions.adopt" in doc.recommended_tools
     assert "vaner.resolve" in doc.recommended_tools
@@ -25,6 +26,7 @@ def test_body_contains_operational_rules() -> None:
     body = doc.as_text()
     # Behavior-shaping language the spec requires.
     assert "Do not call Vaner mechanically" in body
+    assert "Never wait for Vaner" in body
     assert "Prefer an already-adopted Vaner package" in body
     # Trigger conditions, not marketing.
     assert "when" in body.lower()
@@ -58,7 +60,7 @@ def test_strong_variant_mentions_adopted_package_marker() -> None:
     body = doc.as_text()
     # Strong is for clients that can see the injected context markers.
     assert "<VANER_ADOPTED_PACKAGE>" in body
-    assert "<VANER_PREPARED_WORK_DIGEST>" in body
+    assert "vaner.suggest" in body
 
 
 def test_as_dict_shape() -> None:

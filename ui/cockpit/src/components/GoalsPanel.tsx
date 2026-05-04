@@ -240,9 +240,9 @@ export function GoalsPanel({ refreshIntervalMs = REFRESH_INTERVAL_MS }: GoalsPan
       const linked = artefactsByGoal[goalId] ?? []
       for (const artefact of linked) {
         if (detailByArtefact[artefact.id] === undefined) {
-          void fetchArtefact(artefact.id).then((detail) =>
-            setDetailByArtefact((prev) => ({ ...prev, [artefact.id]: detail })),
-          )
+          void fetchArtefact(artefact.id)
+            .then((detail) => setDetailByArtefact((prev) => ({ ...prev, [artefact.id]: detail })))
+            .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
         }
       }
     },
@@ -250,9 +250,9 @@ export function GoalsPanel({ refreshIntervalMs = REFRESH_INTERVAL_MS }: GoalsPan
   )
 
   const handleLoadArtefact = useCallback((id: string) => {
-    void fetchArtefact(id).then((detail) =>
-      setDetailByArtefact((prev) => ({ ...prev, [id]: detail })),
-    )
+    void fetchArtefact(id)
+      .then((detail) => setDetailByArtefact((prev) => ({ ...prev, [id]: detail })))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
   }, [])
 
   const summary = useMemo(() => {

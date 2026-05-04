@@ -304,12 +304,11 @@ def _fit_status(model: RecommendedModel, effective_memory_gb: float) -> Literal[
 
     The registry's ``recommended_effective_memory_gb`` is derived from
     the family's *max* context window — qwen3.6 with its 262K ceiling
-    needs ~56 GB to be "recommended" by that yardstick. That's
-    accurate but punitive: a 32 GB card can comfortably run qwen3.6
-    with a 32K-or-65K context, which is what
-    :func:`compute_effective_context_window` ends up picking at
-    runtime. So we relax the "recommended" tier to "min × 1.3"
-    (weights + ~30% KV headroom — enough for a sensible context) so
+    needs much more memory to be "recommended" by that yardstick. That's
+    accurate but punitive: a 32 GB card can comfortably run qwen3.6 27B
+    with a hardware-selected long context, which is what
+    :func:`compute_effective_context_window` picks at runtime. So we
+    relax the "recommended" tier to weights plus a practical KV budget so
     the picker doesn't always default to a much smaller model on
     hardware that can clearly run the larger one. The strict
     "recommended" tier remains the upper bound.
@@ -466,7 +465,10 @@ def compute_effective_context_window(
         return chosen
 
     # Headroom available for KV / activations after the weights load.
-    headroom_gb = max(0.0, effective_memory_gb - weights_gb - 1.5)
+    # Effective memory already reserves room for the desktop/runtime; this
+    # extra reserve keeps long-context defaults from pinning VRAM at the edge.
+    runtime_reserve_gb = 3.0
+    headroom_gb = max(0.0, effective_memory_gb - weights_gb - runtime_reserve_gb)
     # Cost of KV at the family's 32K reference. 0.18 is the rough Q4+GQA
     # constant; flash-attn / paged-attention runtimes get more headroom
     # implicitly because they pack the cache more tightly.

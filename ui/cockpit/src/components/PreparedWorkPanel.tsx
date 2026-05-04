@@ -14,6 +14,13 @@ export interface PreparedWorkPanelProps {
   includeAdvisory?: boolean
   fetcher?: typeof fetch
   onAction?: (message: string) => void
+  cards?: PreparedWorkCard[]
+  loading?: boolean
+  error?: string | null
+  selectedId?: string | null
+  onSelect?: (id: string) => void
+  onCardsChange?: (cards: PreparedWorkCard[]) => void
+  variant?: 'rail' | 'main'
 }
 
 function actionLabel(action: PreparedWorkAction): string {
@@ -32,6 +39,13 @@ export function PreparedWorkPanel({
   includeAdvisory = false,
   fetcher,
   onAction,
+  cards: controlledCards,
+  loading: controlledLoading,
+  error: controlledError,
+  selectedId,
+  onSelect,
+  onCardsChange,
+  variant = 'rail',
 }: PreparedWorkPanelProps) {
   const [cards, setCards] = useState<PreparedWorkCard[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -52,7 +66,24 @@ export function PreparedWorkPanel({
     return `${baseUrl}/prepared-work?${query.toString()}`
   }, [baseUrl, includeAdvisory, limit])
 
+  const displayCards = controlledCards ?? cards
+  const displayError = controlledError ?? error
+  const displayLoading = controlledLoading ?? loading
+  const setDisplayCards = useCallback(
+    (next: PreparedWorkCard[]) => {
+      if (controlledCards !== undefined) {
+        onCardsChange?.(next)
+      } else {
+        setCards(next)
+      }
+    },
+    [controlledCards, onCardsChange],
+  )
+
   const refresh = useCallback(async () => {
+    if (controlledCards !== undefined) {
+      return
+    }
     try {
       if (fetcher) {
         const response = await fetcher(endpoint)
@@ -69,7 +100,7 @@ export function PreparedWorkPanel({
     } finally {
       setLoading(false)
     }
-  }, [endpoint, fetcher, includeAdvisory, limit])
+  }, [controlledCards, endpoint, fetcher, includeAdvisory, limit])
 
   useEffect(() => {
     let cancelled = false
@@ -89,7 +120,7 @@ export function PreparedWorkPanel({
   // /work-products/{id}/inspect endpoint, so we skip them.
   useEffect(() => {
     let cancelled = false
-    const targets = cards.filter(
+    const targets = displayCards.filter(
       (card) => card.source_type === 'work_product' && inspectionsBySource[card.source_id] === undefined,
     )
     if (targets.length === 0) return
@@ -110,7 +141,7 @@ export function PreparedWorkPanel({
     return () => {
       cancelled = true
     }
-  }, [cards, inspectionsBySource])
+  }, [displayCards, inspectionsBySource])
 
   const runAction = useCallback(
     async (card: PreparedWorkCard, action: PreparedWorkAction) => {
@@ -141,46 +172,49 @@ export function PreparedWorkPanel({
           setDetailFallback(JSON.stringify(result, null, 2))
         }
         if (action.kind === 'dismiss') {
-          setCards((current) => current.filter((item) => item.id !== card.id))
+          setDisplayCards(displayCards.filter((item) => item.id !== card.id))
         }
         onAction?.(`${action.label} complete`)
       } catch (err) {
         onAction?.(err instanceof Error ? err.message : `Failed to ${action.label.toLowerCase()}`)
       }
     },
-    [baseUrl, fetcher, onAction],
+    [baseUrl, displayCards, fetcher, onAction, setDisplayCards],
   )
 
-  if (loading && cards.length === 0) {
+  if (displayLoading && displayCards.length === 0) {
     return (
-      <section aria-label="Prepared work" style={panelStyle}>
-        <PanelHeader />
+      <section aria-label="Prepared work" style={panelStyleForVariant(variant)}>
+        <PanelHeader variant={variant} />
         <p style={emptyStyle}>Loading…</p>
       </section>
     )
   }
 
-  if (error) {
+  if (displayError) {
     return (
-      <section aria-label="Prepared work" style={panelStyle}>
-        <PanelHeader />
-        <p role="alert" style={emptyStyle}>Error: {error}</p>
+      <section aria-label="Prepared work" style={panelStyleForVariant(variant)}>
+        <PanelHeader variant={variant} />
+        <p role="alert" style={emptyStyle}>Error: {displayError}</p>
       </section>
     )
   }
 
   return (
-    <section aria-label="Prepared work" style={panelStyle}>
-      <PanelHeader count={cards.length} />
-      <div className="scroll" style={{ overflow: 'auto', minHeight: 0, padding: '0 12px 12px' }}>
-        {cards.length === 0 ? <p style={emptyStyle}>No prepared work is ready.</p> : null}
-        {cards.map((card) => (
+    <section aria-label="Prepared work" style={panelStyleForVariant(variant)}>
+      <PanelHeader count={displayCards.length} variant={variant} />
+      <div className="scroll" style={{ overflow: 'auto', minHeight: 0, padding: variant === 'main' ? '0 18px 18px' : '0 12px 12px' }}>
+        {displayCards.length === 0 ? <p style={emptyStyle}>No prepared work is ready.</p> : null}
+        {displayCards.map((card) => (
           <PreparedWorkItem
             key={card.id}
             card={card}
+            selected={selectedId === card.id}
+            variant={variant}
             inspection={
               card.source_type === 'work_product' ? inspectionsBySource[card.source_id] ?? null : null
             }
+            onSelect={onSelect}
             onAction={runAction}
           />
         ))}
@@ -203,23 +237,35 @@ export function PreparedWorkPanel({
 function PreparedWorkItem({
   card,
   inspection,
+  selected,
+  variant,
+  onSelect,
   onAction,
 }: {
   card: PreparedWorkCard
   inspection: WorkProductInspection | null
+  selected: boolean
+  variant: 'rail' | 'main'
+  onSelect?: (id: string) => void
   onAction: (card: PreparedWorkCard, action: PreparedWorkAction) => Promise<void>
 }) {
   const primary = canRenderAction(card.primary_action) ? card.primary_action : null
+  const typeLabel = preparedKindLabel(card.kind)
   return (
-    <article style={cardStyle}>
+    <article
+      style={cardStyleForVariant(variant, selected)}
+      onClick={() => onSelect?.(card.id)}
+      data-selected={selected ? 'true' : undefined}
+    >
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
         <div style={{ minWidth: 0 }}>
           <div style={titleStyle}>{card.title}</div>
           <div style={summaryStyle}>{card.summary}</div>
         </div>
-        <span style={badgeStyle}>{card.badge}</span>
+        <span style={badgeStyle}>{typeLabel}</span>
       </div>
       <div style={factsStyle}>
+        <span>{card.badge}</span>
         <span>{card.confidence_label}</span>
         <span>{card.freshness_label}</span>
         <span>{card.target_label}</span>
@@ -426,21 +472,45 @@ function PreparedWorkInspectionDetail({
   )
 }
 
-function PanelHeader({ count }: { count?: number }) {
+export function preparedKindLabel(kind: PreparedWorkCard['kind']): string {
+  switch (kind) {
+    case 'review':
+      return 'review note'
+    case 'bug':
+      return 'bug hypothesis'
+    case 'docs':
+      return 'docs drift'
+    case 'diff':
+      return 'virtual diff'
+    case 'brief':
+      return 'research brief'
+    case 'draft':
+      return 'suggested change'
+    case 'prediction':
+      return 'research brief'
+    default:
+      return String(kind)
+  }
+}
+
+function PanelHeader({ count, variant }: { count?: number; variant: 'rail' | 'main' }) {
   return (
     <header style={headerStyle}>
-      <span>PREPARED WORK</span>
+      <span>{variant === 'main' ? 'What Vaner prepared' : 'PREPARED WORK'}</span>
       <span style={{ color: 'var(--fg-4)' }}>{typeof count === 'number' ? count : ''}</span>
     </header>
   )
 }
 
-const panelStyle: CSSProperties = {
-  minHeight: 0,
-  display: 'flex',
-  flexDirection: 'column',
-  background: 'var(--bg-1)',
-  borderBottom: '1px solid var(--line-1)',
+function panelStyleForVariant(variant: 'rail' | 'main'): CSSProperties {
+  return {
+    minHeight: 0,
+    height: '100%',
+    display: 'flex',
+    flexDirection: 'column',
+    background: 'var(--bg-1)',
+    borderBottom: variant === 'rail' ? '1px solid var(--line-1)' : 'none',
+  }
 }
 
 const headerStyle: CSSProperties = {
@@ -461,12 +531,15 @@ const emptyStyle: CSSProperties = {
   fontSize: 12,
 }
 
-const cardStyle: CSSProperties = {
-  border: '1px solid var(--line-hair)',
-  borderRadius: 'var(--r-2)',
-  background: 'var(--bg-inset)',
-  padding: 10,
-  marginBottom: 8,
+function cardStyleForVariant(variant: 'rail' | 'main', selected: boolean): CSSProperties {
+  return {
+    border: selected ? '1px solid var(--accent)' : '1px solid var(--line-hair)',
+    borderRadius: 'var(--r-2)',
+    background: selected ? 'color-mix(in oklch, var(--accent) 8%, var(--bg-inset))' : 'var(--bg-inset)',
+    padding: variant === 'main' ? 14 : 10,
+    marginBottom: variant === 'main' ? 10 : 8,
+    cursor: 'pointer',
+  }
 }
 
 const titleStyle: CSSProperties = {

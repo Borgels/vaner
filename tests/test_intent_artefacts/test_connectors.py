@@ -27,6 +27,8 @@ async def test_local_plan_discovers_configured_folders_only() -> None:
         ws = Path(td)
         (ws / ".claude" / "plans").mkdir(parents=True)
         (ws / ".claude" / "plans" / "release.md").write_text("# Plan\n\n- [ ] x\n")
+        (ws / ".codex" / "plans").mkdir(parents=True)
+        (ws / ".codex" / "plans" / "focus.md").write_text("# Codex Plan\n\n- [ ] wire focus\n")
         (ws / "docs" / "plans").mkdir(parents=True)
         (ws / "docs" / "plans" / "roadmap.md").write_text("# Road\n\n- [ ] y\n")
         # Outside the allowlist — must be ignored.
@@ -38,6 +40,7 @@ async def test_local_plan_discovers_configured_folders_only() -> None:
         rel_paths = {c.metadata["workspace_rel_path"] for c in candidates}
         assert rel_paths == {
             ".claude/plans/release.md",
+            ".codex/plans/focus.md",
             "docs/plans/roadmap.md",
         }
 

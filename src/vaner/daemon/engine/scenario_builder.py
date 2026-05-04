@@ -64,9 +64,9 @@ def build_scenarios(
         entities = [path]
         coverage_gaps: list[str] = []
         if path not in changed_paths:
-            coverage_gaps.append("Not recently touched in git diff")
+            coverage_gaps.append("Not part of the current workspace changes")
         if not any(item.kind.value == "diff_summary" for item in items):
-            coverage_gaps.append("No fresh diff summary yet")
+            coverage_gaps.append("No fresh change summary yet")
         evidence = [
             EvidenceRef(
                 key=item.key,

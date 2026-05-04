@@ -130,7 +130,7 @@ export function SystemVitals({
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div className="mono" style={{ fontSize: 9.5, letterSpacing: 1.2, color: 'var(--fg-4)' }}>
-          SYSTEM VITALS
+          DAEMON STATUS
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span
@@ -150,9 +150,9 @@ export function SystemVitals({
         </div>
       </div>
 
-      <VitalRow label="mode" value={mode} />
+      <VitalRow label="Mode" value={mode} />
       <VitalRow
-        label="cycle"
+        label="Cycle"
         emphasize={running}
         value={
           running ? (
@@ -169,7 +169,7 @@ export function SystemVitals({
         }
       />
       <VitalRow
-        label="model"
+        label="Model"
         emphasize={pendingLlm > 0}
         value={
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -193,26 +193,26 @@ export function SystemVitals({
           </span>
         }
       />
-      <VitalRow label="last latency" value={formatDuration(model.lastLatencyMs)} />
-      <VitalRow label="ema latency" value={formatDuration(avgLatency || null)} />
-      <VitalRow label="model id" value={model.lastModel ?? '—'} mono title={model.lastModel ?? undefined} />
-      <VitalRow label="cycles" value={`${cycle.totalCycles}`} />
-      <VitalRow label="artefacts" value={`${cycle.artefactsWritten}`} />
-      <VitalRow label="scenarios" value={`${scenarioCount}`} />
+      <VitalRow label="Last response" value={formatDuration(model.lastLatencyMs)} />
+      <VitalRow label="Avg response" value={formatDuration(avgLatency || null)} />
+      <VitalRow label="Model name" value={model.lastModel ?? '—'} mono title={model.lastModel ?? undefined} />
+      <VitalRow label="Cycles" value={`${cycle.totalCycles}`} />
+      <VitalRow label="Generated context" value={`${cycle.artefactsWritten}`} />
+      <VitalRow label="Scenarios" value={`${scenarioCount}`} />
       <VitalRow
-        label="pred top1"
+        label="Top match accuracy"
         value={predictionMetrics?.next_prompt_top1_rate != null ? `${(predictionMetrics.next_prompt_top1_rate * 100).toFixed(1)}%` : '—'}
       />
       <VitalRow
-        label="pred top3"
+        label="Top 3 accuracy"
         value={predictionMetrics?.next_prompt_top3_rate != null ? `${(predictionMetrics.next_prompt_top3_rate * 100).toFixed(1)}%` : '—'}
       />
       <VitalRow
-        label="calib brier"
+        label="Calibration score"
         value={predictionMetrics?.next_prompt_brier != null ? predictionMetrics.next_prompt_brier.toFixed(3) : '—'}
       />
-      <VitalRow label="calib ece" value={calibrationEce != null ? calibrationEce.toFixed(3) : '—'} />
-      <VitalRow label="reliability" value={reliabilityMini ?? '—'} mono />
+      <VitalRow label="Calibration error" value={calibrationEce != null ? calibrationEce.toFixed(3) : '—'} />
+      <VitalRow label="Reliability" value={reliabilityMini ?? '—'} mono />
       {predictionCalibration && predictionCalibration.length ? (
         <ReliabilityChart rows={predictionCalibration} />
       ) : null}
@@ -220,19 +220,19 @@ export function SystemVitals({
         <BucketBudgetPanel bucketBudgets={predictionMetrics.bucket_budgets} />
       ) : null}
       <VitalRow
-        label="pred logloss"
+        label="Prediction loss"
         value={predictionMetrics?.next_prompt_logloss != null ? predictionMetrics.next_prompt_logloss.toFixed(3) : '—'}
       />
       <VitalRow
-        label="draft useful"
+        label="Draft usefulness"
         value={predictionMetrics?.draft_usefulness_rate != null ? `${(predictionMetrics.draft_usefulness_rate * 100).toFixed(1)}%` : '—'}
       />
       <VitalRow
-        label="budget util"
+        label="Budget used"
         value={predictionMetrics?.budget_utilization != null ? `${(predictionMetrics.budget_utilization * 100).toFixed(1)}%` : '—'}
       />
       <VitalRow
-        label="lead time"
+        label="Lead time"
         value={
           predictionMetrics?.predictive_lead_seconds_avg != null
             ? `${predictionMetrics.predictive_lead_seconds_avg.toFixed(1)}s`
@@ -240,7 +240,7 @@ export function SystemVitals({
         }
       />
       <VitalRow
-        label="conf utility"
+        label="Confidence utility"
         value={
           predictionMetrics?.confidence_conditioned_utility != null
             ? predictionMetrics.confidence_conditioned_utility.toFixed(3)
@@ -249,7 +249,7 @@ export function SystemVitals({
       />
       {model.totalErrors > 0 ? (
         <VitalRow
-          label="llm errors"
+          label="Model errors"
           value={<span style={{ color: 'var(--err)' }}>{model.totalErrors}</span>}
         />
       ) : null}

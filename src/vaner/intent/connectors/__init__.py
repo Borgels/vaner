@@ -24,11 +24,13 @@ network surface beyond WS1's reviewable scope.
 """
 
 from vaner.intent.connectors.github_issues import GitHubIssuesAdapter
+from vaner.intent.connectors.global_client_plans import GlobalClientPlansAdapter
 from vaner.intent.connectors.local_plan import LocalPlanAdapter
 from vaner.intent.connectors.markdown_outline import MarkdownOutlineAdapter
 
 __all__ = [
     "GitHubIssuesAdapter",
+    "GlobalClientPlansAdapter",
     "LocalPlanAdapter",
     "MarkdownOutlineAdapter",
 ]

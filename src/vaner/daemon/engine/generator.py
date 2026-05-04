@@ -18,7 +18,7 @@ from vaner.policy.privacy import redact_text
 
 logger = logging.getLogger(__name__)
 
-FILE_SUMMARY_PROMPT = """You are generating a precise implementation reference for a developer context system.
+FILE_SUMMARY_PROMPT = """You are generating a precise implementation reference for a context system.
 A model will later use this summary to answer exact questions about this file.
 Your summary MUST enable correct answers — not just plausible ones.
 
@@ -43,7 +43,7 @@ File: {path}
 ---
 Implementation reference:"""
 
-DIFF_SUMMARY_PROMPT = """Summarize the following git diff for a developer context system.
+DIFF_SUMMARY_PROMPT = """Summarize the following workspace change for a context system.
 State clearly what changed, which modules/functions were affected, and likely intent.
 Call out exact limits/guards/conditionals when visible.
 Be concise.

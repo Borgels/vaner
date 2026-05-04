@@ -26,6 +26,8 @@ release-preflight:
 	ruff format --check scripts/release tests/test_release_preflight.py
 	pytest tests/test_release_preflight.py tests/test_internal_boundary_guard.py -q
 	python -m pip install --require-hashes -r requirements/release.txt
+	npm --prefix ui/cockpit ci
+	npm --prefix ui/cockpit run build
 	rm -rf dist build *.egg-info sbom.json sbom.json.sigstore.json
 	SOURCE_DATE_EPOCH="$$(git log -1 --pretty=%ct)" python -m build
 	cyclonedx-py requirements requirements/release.txt --output-format json --output-file sbom.json

@@ -103,10 +103,10 @@ def test_build_entry_online_uses_manifest_size() -> None:
         family,
         quant="Q4_K_M",
         online=True,
-        manifest_fetcher=lambda _f: _fake_manifest(fake_bytes),
+        manifest_fetcher=lambda _f, *, tag="latest": _fake_manifest(fake_bytes),
     )
     assert entry is not None
-    assert entry["id"].endswith(":latest")
+    assert entry["id"] == f"{family.ollama_family}:{family.ollama_tag}"
     assert entry["params_b"] > 0
     assert entry["min_effective_memory_gb"] > 0
     assert entry["recommended_effective_memory_gb"] >= entry["min_effective_memory_gb"]
@@ -125,7 +125,7 @@ def test_build_entry_online_skips_when_manifest_missing() -> None:
         families[0],
         quant="Q4_K_M",
         online=True,
-        manifest_fetcher=lambda _f: None,
+        manifest_fetcher=lambda _f, *, tag="latest": None,
     )
     assert entry is None
 
@@ -198,8 +198,8 @@ def test_build_registry_online_skips_unreachable_families() -> None:
     families = families_from_seed(seed)
     target = families[0].ollama_family
 
-    def fake_fetcher(family_name: str):
-        if family_name == target:
+    def fake_fetcher(family_name: str, *, tag: str = "latest"):
+        if family_name == target and tag == families[0].ollama_tag:
             return _fake_manifest(int(8 * 1024**3))
         return None
 
@@ -209,7 +209,8 @@ def test_build_registry_online_skips_unreachable_families() -> None:
     skipped = payload.get("skipped", [])
     assert len(skipped) == len(families) - 1
     for entry in skipped:
-        assert entry["reason"] == "ollama_latest_not_found"
+        assert entry["reason"] == "ollama_tag_not_found"
+        assert entry["tag"]
 
 
 def test_split_parameters_separates_sampling_and_runtime() -> None:

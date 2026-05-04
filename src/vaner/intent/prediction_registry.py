@@ -109,6 +109,11 @@ class PredictionRegistry:
         # around sequences that must be atomic (e.g. rebalance).
         self.lock = asyncio.Lock()
 
+    def set_listener(self, listener: EventListener | None) -> None:
+        """Replace the best-effort event listener used by external surfaces."""
+
+        self._listener = listener
+
     # -----------------------------------------------------------------------
     # Enrolment
     # -----------------------------------------------------------------------

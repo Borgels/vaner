@@ -33,7 +33,7 @@ function cycle(overrides: Partial<CycleState> = {}): CycleState {
 }
 
 const SIGNALS: SignalRow[] = [
-  { cycleId: 'c1', ts: 0, fsScan: 5, gitChanged: 2, msg: 'scan' },
+  { cycleId: 'c1', ts: 0, fsScan: 5, workspaceChanges: 2, msg: 'scan' },
 ]
 const TARGETS: TargetRow[] = [
   { cycleId: 'c1', ts: 0, count: 4, paths: ['src/api.py', 'src/util.py'] },
@@ -65,7 +65,7 @@ describe('PipelineCanvas', () => {
       />,
     )
 
-    for (const label of ['SIGNALS', 'TARGETS', 'MODEL', 'ARTEFACTS', 'SCENARIOS', 'DECISIONS']) {
+    for (const label of ['Activity', 'Plan', 'Model', 'Generated Context', 'Suggestions', 'Context Packages']) {
       expect(screen.getByText(label)).toBeInTheDocument()
     }
   })
@@ -110,7 +110,7 @@ describe('PipelineCanvas', () => {
       />,
     )
 
-    expect(screen.getByText(/Waiting for the daemon/)).toBeInTheDocument()
+    expect(screen.getByText(/No scenarios are available from the daemon yet/)).toBeInTheDocument()
   })
 
   it('flashes the model lane with a spinner while LLM requests are pending', () => {

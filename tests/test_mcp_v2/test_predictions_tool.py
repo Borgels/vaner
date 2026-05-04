@@ -23,11 +23,16 @@ class _StubEngine:
         return self.prediction_registry.active()
 
 
-def _enroll(reg: PredictionRegistry, *, label: str = "Write the next test") -> str:
+def _enroll(
+    reg: PredictionRegistry,
+    *,
+    label: str = "Write the next test",
+    description: str = "Predicted follow-up",
+) -> str:
     spec = PredictionSpec(
         id=prediction_id("arc", "anchor", label),
         label=label,
-        description="Predicted follow-up",
+        description=description,
         source="arc",
         anchor="anchor",
         confidence=0.7,
@@ -91,6 +96,35 @@ def test_predictions_active_with_engine_returns_live_rows(temp_repo):
     assert row["source"] == "arc"
     assert row["readiness"] == "queued"
     assert row["has_draft"] is False
+    assert "description" not in row
+    assert "structured" not in row
+    assert row["display_label"] == "Write the next test"
+    assert row["match_state"] in {"unrelated", "weak_match"}
+    assert row["recommended_action"] in {"ignore", "inspect"}
+    assert row["snapshot_freshness"] in {"warming", "cold"}
+
+
+def test_predictions_active_omits_raw_history_fields(temp_repo):
+    registry = PredictionRegistry(cycle_token_pool=1_000)
+    _enroll(
+        registry,
+        label="Goal: Privacy",
+        description="Recent queries clustered by shared domain vocabulary:\n- private query sample?\n- another private query sample?",
+    )
+    engine = _StubEngine(prediction_registry=registry)
+    server = _make_server(temp_repo, engine=engine)
+
+    result = call_tool(server, "vaner.predictions.active")
+    body = parse_content(result)
+
+    payload = str(body).lower()
+    assert "private query" not in payload
+    assert "recent queries clustered" not in payload
+    row = body["predictions"][0]
+    assert "description" not in row
+    assert "structured" not in row
+    assert not row["label"].startswith("Goal:")
+    assert row["display_label"] == row["label"]
 
 
 def test_predictions_active_excludes_stale(temp_repo):
@@ -206,9 +240,13 @@ def test_mcp_forwards_to_injected_daemon_client_for_predictions_active(temp_repo
 
     def _handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/predictions/active"
+        assert request.url.params.get("include_all") == "true"
         return httpx.Response(
             200,
-            json={"predictions": [{"id": "mock-pid", "spec": {"label": "Mock prediction"}}]},
+            json={
+                "predictions": [{"id": "mock-pid", "spec": {"label": "Mock prediction"}}],
+                "by_state": {"queued": [{"id": "queued-pid", "spec": {"source": "horizon", "label": "Run static checks"}}]},
+            },
         )
 
     transport = httpx.MockTransport(_handler)
@@ -218,7 +256,8 @@ def test_mcp_forwards_to_injected_daemon_client_for_predictions_active(temp_repo
 
     result = call_tool(server, "vaner.predictions.active")
     body = parse_content(result)
-    assert body["predictions"][0]["id"] == "mock-pid"
+    assert [row["id"] for row in body["predictions"]] == ["queued-pid", "mock-pid"]
+    assert body["by_state"]["queued"][0]["id"] == "queued-pid"
 
 
 def test_mcp_forwards_adopt_via_injected_daemon_client(temp_repo):

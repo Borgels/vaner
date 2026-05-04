@@ -16,6 +16,7 @@ from vaner.daemon.runner import VanerDaemon
 
 DAEMON_PROCESS = "daemon"
 COCKPIT_PROCESS = "cockpit"
+WORKER_PROCESS = "precompute-worker"
 
 
 def runtime_dir(repo_root: Path) -> Path:

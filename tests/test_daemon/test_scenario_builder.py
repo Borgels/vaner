@@ -33,10 +33,10 @@ def test_build_scenarios_sets_kind_cost_and_coverage() -> None:
     assert code.kind == "change"
     assert code.cost_to_expand == "medium"
     assert code.freshness == "fresh"
-    assert "No fresh diff summary yet" not in code.coverage_gaps
+    assert "No fresh change summary yet" not in code.coverage_gaps
     assert docs.kind == "explain"
     assert docs.cost_to_expand == "low"
-    assert "Not recently touched in git diff" in docs.coverage_gaps
+    assert "Not part of the current workspace changes" in docs.coverage_gaps
 
 
 def test_build_scenarios_applies_max_scenarios_cap() -> None:

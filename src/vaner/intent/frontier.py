@@ -153,7 +153,9 @@ class ExplorationFrontier:
         "graph": 1.0,
         "arc": 1.0,
         "pattern": 1.2,  # validated patterns get a slight head start
+        "seed_prior": 0.35,
         "llm_branch": 0.9,
+        "horizon": 1.0,
         "skill": 1.1,
         "core_architecture": 1.0,
         # 0.8.7 WS5 — composer-anchored predictions enter at the

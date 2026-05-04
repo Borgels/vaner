@@ -35,7 +35,11 @@ Source = Literal[
     "llm_branch",
     "macro",
     "history",
+    "seed_prior",
     "goal",
+    # Generic, domain-aware next-prompt horizon generated from workflow stage,
+    # recent intent, active goals, and evidence targets.
+    "horizon",
     # 0.8.2 WS2 — a prediction anchored to a specific
     # :class:`IntentArtefactItem` (rather than a whole goal). ``anchor``
     # carries the item id; ``_merge_prediction_specs`` iterates items of

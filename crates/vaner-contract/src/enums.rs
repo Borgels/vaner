@@ -24,10 +24,13 @@ pub enum PredictionSource {
     Pattern,
     LlmBranch,
     Macro,
+    SeedPrior,
     #[default]
     History,
     /// 0.8.0 WS7: prediction anchored to a `WorkspaceGoal`.
     Goal,
+    /// 0.9.0: domain-neutral likely next-turn horizon.
+    Horizon,
     /// 0.8.7 WS8: prediction anchored to a live composer session via
     /// the ComposerAdapter. `PredictionSpec.anchor` carries the
     /// composer `session_id`.
@@ -158,8 +161,10 @@ mod tests {
             (r#""pattern""#, PredictionSource::Pattern),
             (r#""llm_branch""#, PredictionSource::LlmBranch),
             (r#""macro""#, PredictionSource::Macro),
+            (r#""seed_prior""#, PredictionSource::SeedPrior),
             (r#""history""#, PredictionSource::History),
             (r#""goal""#, PredictionSource::Goal),
+            (r#""horizon""#, PredictionSource::Horizon),
             // 0.8.7 WS8: composer_intent variant
             (r#""composer_intent""#, PredictionSource::ComposerIntent),
         ];

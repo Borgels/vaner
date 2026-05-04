@@ -1,0 +1,45 @@
+{
+  "name": "vaner-codex",
+  "version": "0.9.0",
+  "description": "Vaner predictive context for Codex: MCP tools, feedback skill, and lifecycle hooks for local prompt-intent learning.",
+  "author": {
+    "name": "Borgels Olsen Holding ApS",
+    "email": "support@vaner.ai",
+    "url": "https://vaner.ai"
+  },
+  "homepage": "https://vaner.ai",
+  "repository": "https://github.com/Borgels/Vaner",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "context",
+    "retrieval",
+    "codex",
+    "vaner"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks.json",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Vaner",
+    "shortDescription": "Predictive local context for Codex",
+    "longDescription": "Vaner prepares likely next context for Codex using local repository evidence and local prompt/session signals. Prompt text is redacted before it is stored locally and is not sent to cloud services by this plugin.",
+    "developerName": "Borgels Olsen Holding ApS",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://vaner.ai",
+    "privacyPolicyURL": "https://vaner.ai/privacy",
+    "termsOfServiceURL": "https://vaner.ai/terms",
+    "defaultPrompt": [
+      "Ask vaner.suggest what, if anything, Vaner should contribute",
+      "Adopt at most one strong matching prepared context package",
+      "Answer normally when Vaner has nothing clearly relevant"
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
+}

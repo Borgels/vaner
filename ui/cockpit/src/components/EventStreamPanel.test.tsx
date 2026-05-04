@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { EventStreamPanel } from './EventStreamPanel'
-import type { PipelineEvent } from '../api/usePipelineEvents'
+import { adaptLegacyEvent, type PipelineEvent } from '../api/usePipelineEvents'
 
 function event(partial: Partial<PipelineEvent> & { id: string; kind: string; stage: PipelineEvent['stage'] }): PipelineEvent {
   return {
@@ -101,5 +101,21 @@ describe('EventStreamPanel', () => {
     // Spinner is an unlabelled span; just assert the waiting marker didn't
     // replace it.
     expect(container.textContent).not.toContain('waiting')
+  })
+
+  it('renders snapshot events without undefined labels', () => {
+    const snapshot = adaptLegacyEvent({ stage: 'predictions', payload: [] })
+    render(
+      <EventStreamPanel
+        title="EVENT STREAM"
+        subtitle="Live"
+        events={[snapshot]}
+        onSelect={() => undefined}
+        live
+      />,
+    )
+
+    expect(screen.getByText('0 prepared context items')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('undefined')
   })
 })

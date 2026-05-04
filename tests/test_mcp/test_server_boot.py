@@ -25,9 +25,19 @@ def test_server_boot_initialize_lists_tools_and_status(temp_repo) -> None:
             # 0.8.6 WS7 adds 5 vaner.setup.* / vaner.policy.show tools → 32.
             # 0.8.6 WS9 adds vaner.deep_run.defaults → 33.
             # 0.8.8 adds Prepared Work dashboard + 5 WorkProduct tools → 39.
+            # 0.9.0 adds 9 Auto Focus / resources / jobs tools → 48.
             # Exact set is asserted in test_protocol_roundtrip.
-            assert len(names) == 39
+            assert len(names) == 48
             assert "vaner.status" in names
+            assert "vaner.focus.status" in names
+            assert "vaner.focus.work_here" in names
+            assert "vaner.focus.pin_current_workspace" in names
+            assert "vaner.focus.pause_current_workspace" in names
+            assert "vaner.focus.resume_current_workspace" in names
+            assert "vaner.focus.set_mode" in names
+            assert "vaner.resources.status" in names
+            assert "vaner.jobs.status" in names
+            assert "vaner.jobs.cancel" in names
             assert "vaner.predictions.active" in names
             assert "vaner.predictions.adopt" in names
             assert "vaner.predictions.dashboard" in names

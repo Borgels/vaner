@@ -74,9 +74,16 @@ def persist_runtime_recommendation(repo_root: Path, recommendation: dict[str, An
     model_id = str(selected.get("model_id") or selected.get("id") or "")
     base_url = str(selected.get("base_url") or "http://127.0.0.1:11434/v1")
     params = selected.get("params") if isinstance(selected.get("params"), dict) else {}
+    capability = selected.get("capability") if isinstance(selected.get("capability"), dict) else {}
+    runtime_params = selected.get("runtime_params") if isinstance(selected.get("runtime_params"), dict) else {}
     reasoning_mode = str(params.get("reasoning_mode") or "allowed")
     max_response_tokens = int(params.get("max_response_tokens") or 3072)
     reasoning_token_budget = int(params.get("reasoning_token_budget") or 4096)
+    context_window = int(capability.get("context_window") or runtime_params.get("num_ctx") or params.get("context_window") or 32768)
+    # Keep Vaner's own evidence package large enough to use long-context
+    # models, while leaving most of the window for the user's prompt,
+    # generated answer, reasoning budget, and runtime overhead.
+    max_context_tokens = min(65536, max(8192, context_window // 4))
     hardware = recommendation.get("hardware", {})
     memory_source = hardware.get("memory_source") if isinstance(hardware, dict) else None
     accelerator_type = hardware.get("accelerator_type") if isinstance(hardware, dict) else None
@@ -106,17 +113,25 @@ def persist_runtime_recommendation(repo_root: Path, recommendation: dict[str, An
         text,
         "exploration",
         {
-            "exploration_endpoint": base_url.removesuffix("/v1") if runtime == "ollama" else base_url,
-            "exploration_model": model_id,
-            "exploration_backend": "ollama" if runtime == "ollama" else "openai",
+            "endpoint": base_url.removesuffix("/v1") if runtime == "ollama" else base_url,
+            "model": model_id,
+            "backend": "ollama" if runtime == "ollama" else "openai",
         },
     )
+    text = remove_toml_keys(text, "exploration", {"exploration_endpoint", "exploration_model", "exploration_backend"})
     text = update_toml_section(
         text,
         "compute",
         {
             "device": device,
             "embedding_device": device if device in {"cuda", "mps"} else "cpu",
+        },
+    )
+    text = update_toml_section(
+        text,
+        "limits",
+        {
+            "max_context_tokens": max_context_tokens,
         },
     )
     _atomic_write_text(config_path, text)
@@ -185,6 +200,41 @@ def update_toml_section(text: str, section: str, values: dict[str, object]) -> s
             lines.insert(insert_at, f"{key} = {toml_literal(val)}")
             insert_at += 1
     out = "\n".join(lines)
+    return out + ("\n" if not out.endswith("\n") else "")
+
+
+def remove_toml_keys(text: str, section: str, keys: set[str]) -> str:
+    """Remove obsolete top-level keys from one TOML section."""
+
+    if not keys:
+        return text
+    lines = text.splitlines()
+    header = f"[{section}]"
+    start: int | None = None
+    for idx, line in enumerate(lines):
+        if line.strip() == header:
+            start = idx
+            break
+    if start is None:
+        return text
+
+    end = len(lines)
+    for idx in range(start + 1, len(lines)):
+        stripped = lines[idx].strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            end = idx
+            break
+
+    kept: list[str] = []
+    for idx, line in enumerate(lines):
+        if start < idx < end:
+            stripped = line.lstrip()
+            if stripped and not stripped.startswith("#"):
+                key = stripped.split("=", 1)[0].strip()
+                if key in keys:
+                    continue
+        kept.append(line)
+    out = "\n".join(kept)
     return out + ("\n" if not out.endswith("\n") else "")
 
 

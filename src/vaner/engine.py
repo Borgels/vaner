@@ -69,6 +69,7 @@ from vaner.intent.invalidation import (
     build_file_change_signal,
 )
 from vaner.intent.maturity import MaturityTracker
+from vaner.intent.next_horizon import build_next_horizon_specs
 from vaner.intent.prediction import (
     HypothesisType,
     PredictedPrompt,
@@ -76,7 +77,7 @@ from vaner.intent.prediction import (
     Specificity,
     prediction_id,
 )
-from vaner.intent.prediction_registry import PredictionRegistry
+from vaner.intent.prediction_registry import PredictionEvent, PredictionRegistry
 from vaner.intent.prediction_v2 import (
     StructuredPrediction,
     compatibility_for_query,
@@ -110,6 +111,7 @@ from vaner.models.context import ContextPackage
 from vaner.models.cost import CostLedgerEntry, ModelPricing, estimate_cost, estimate_usage
 from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor
 from vaner.models.signal import KIND_COMPOSER_LIFECYCLE, SignalEvent
+from vaner.plan_drafts import TERMINAL_PLAN_DRAFT_STATUSES, list_plan_drafts
 from vaner.setup.apply import AppliedPolicy, apply_policy_bundle
 from vaner.setup.catalog import bundle_by_id
 from vaner.signals.composer import ComposerSignalPump, DraftIntentSnapshot
@@ -485,6 +487,8 @@ class VanerEngine:
         # created on the first ``precompute_cycle``; thereafter reused and
         # updated in place via ``merge()`` + ``apply_invalidation_signals()``.
         self._prediction_registry: PredictionRegistry | None = None
+        self._prediction_event_listener: Callable[[PredictionEvent], None] | None = None
+        self._live_work_event_listener: Callable[[dict[str, Any]], None] | None = None
         # 0.8.4 hardening (BLOCK-1): staled prediction ids from the most
         # recent ``_apply_cycle_invalidation`` pass — consumed by the
         # async caller in ``precompute_cycle`` to flip pending adoption
@@ -790,8 +794,92 @@ class VanerEngine:
         if self._prediction_registry is None:
             ecfg = self.config.exploration
             cycle_token_pool = max(512, int(ecfg.frontier_max_size) * 32)
-            self._prediction_registry = PredictionRegistry(cycle_token_pool=cycle_token_pool)
+            self._prediction_registry = PredictionRegistry(
+                cycle_token_pool=cycle_token_pool,
+                listener=self._prediction_event_listener,
+            )
         return self._prediction_registry
+
+    def set_prediction_event_listener(self, listener: Callable[[PredictionEvent], None] | None) -> None:
+        self._prediction_event_listener = listener
+        if self._prediction_registry is not None:
+            self._prediction_registry.set_listener(listener)
+
+    def set_live_work_event_listener(self, listener: Callable[[dict[str, Any]], None] | None) -> None:
+        self._live_work_event_listener = listener
+
+    def _emit_live_work_event(self, payload: dict[str, Any]) -> None:
+        if self._live_work_event_listener is None:
+            return
+        try:
+            self._live_work_event_listener(payload)
+        except Exception:
+            logger.debug("live work event listener failed", exc_info=True)
+
+    async def record_intent_observation(
+        self,
+        *,
+        query_text: str,
+        session_id: str | None = None,
+        selected_paths: list[str] | None = None,
+        hit_precomputed: bool = False,
+        token_used: int | None = 0,
+        source: str = "query",
+        host_app: str | None = None,
+        source_event_id: str | None = None,
+        prompt_hash: str | None = None,
+        turn_id: str | None = None,
+        capture_policy: str | None = None,
+        prediction_id: str | None = None,
+        timestamp: float | None = None,
+    ) -> str | None:
+        """Persist one user-intent observation into behavioral history.
+
+        Codex hook events and predictive resolve hits both need to train the
+        same durable sequence model. Keeping the write path here ensures those
+        observations update query_history, arc/macro memory, and timing.
+        """
+        text = query_text.strip()
+        if not text:
+            return None
+        await self.initialize()
+        ts = float(timestamp) if timestamp is not None else time.time()
+        observation = self._arc_model.observe_detail(text)
+        await self._persist_behavioral_observation(observation, session_id=session_id)
+        self._timing_model.record_prompt(ts)
+        query_id = await self.store.insert_query_history(
+            session_id=session_id or self._session_id(),
+            query_text=text,
+            selected_paths=selected_paths or [],
+            hit_precomputed=hit_precomputed,
+            token_used=token_used,
+            corpus_id=getattr(self.adapter, "corpus_id", "default"),
+            timestamp=ts,
+            source=source,
+            host_app=host_app,
+            source_event_id=source_event_id,
+            prompt_hash=prompt_hash,
+            turn_id=turn_id,
+            capture_policy=capture_policy,
+            prediction_id=prediction_id,
+        )
+        await self.store.insert_signal_event(
+            SignalEvent(
+                id=str(uuid.uuid4()),
+                source=source,
+                kind="intent_observed",
+                timestamp=ts,
+                payload={
+                    "category": observation.category,
+                    "corpus_id": getattr(self.adapter, "corpus_id", "default"),
+                    "privacy_zone": getattr(self.adapter, "privacy_zone", "local"),
+                    "host_app": host_app,
+                    "source_event_id": source_event_id,
+                    "prediction_id": prediction_id,
+                },
+            )
+        )
+        return query_id
 
     async def _on_composer_snapshot(self, snapshot: DraftIntentSnapshot, *, composer_event_id: str = "") -> None:
         """Turn metadata-only composer lifecycle signals into v2 predictions."""
@@ -1475,7 +1563,12 @@ class VanerEngine:
             injected += 1
         return injected
 
-    async def precompute_cycle(self, governor: PredictionGovernor | None = None) -> int:
+    async def precompute_cycle(
+        self,
+        governor: PredictionGovernor | None = None,
+        *,
+        registry_ready_callback: Callable[[Any], None] | None = None,
+    ) -> int:
         """Run one precompute cycle as a continuous best-first exploration loop.
 
         The frontier unifies all scenario sources (graph, arc, validated patterns,
@@ -1663,10 +1756,38 @@ class VanerEngine:
         if isinstance(c, set):
             covered_paths = c
 
+        try:
+            from vaner.intent.source_refresh import refresh_intent_artefacts_from_sources
+
+            await refresh_intent_artefacts_from_sources(self.config, self.store)
+        except Exception:
+            # Best-effort: source refresh must not block prediction work.
+            pass
+
         recent_queries = await self.store.list_query_history(limit=10)
         recent_query_text = [str(entry["query_text"]) for entry in reversed(recent_queries)]
         prompt_macros = await self.store.list_prompt_macros(limit=25)
         patterns = await self.store.list_validated_patterns(limit=50)
+        try:
+            git_state_for_horizon = read_git_state(self.config.repo_root)
+            changed_paths_for_horizon = [
+                line.strip()
+                for line in (
+                    str(git_state_for_horizon.get("recent_diff", "")) + "\n" + str(git_state_for_horizon.get("staged", ""))
+                ).splitlines()
+                if line.strip()
+            ]
+            changed_paths_for_horizon = filter_evidence_paths(changed_paths_for_horizon)[:20]
+        except Exception:
+            changed_paths_for_horizon = []
+        try:
+            completed_plan_titles = [
+                draft.title
+                for draft in list_plan_drafts(self.config.repo_root, limit=10, include_inactive=True)
+                if str(draft.status).strip().lower() in TERMINAL_PLAN_DRAFT_STATUSES
+            ]
+        except Exception:
+            completed_plan_titles = []
 
         # WS6 invalidation sweep — run BEFORE merge so staled predictions
         # don't get their state accidentally refreshed. The sweep compares
@@ -1738,7 +1859,15 @@ class VanerEngine:
             recent_query_text=recent_query_text,
             prompt_macros=prompt_macros,
             patterns=patterns,
+            available_paths=available_paths,
+            changed_paths=changed_paths_for_horizon,
+            completed_plan_titles=completed_plan_titles,
         )
+        if registry_ready_callback is not None:
+            try:
+                registry_ready_callback(self)
+            except Exception:
+                logger.debug("prediction registry-ready callback failed", exc_info=True)
 
         # 0.8.2 WS2 — configure the artefact_alignment scoring term
         # before seeding. Collect the union of file paths referenced by
@@ -1764,6 +1893,11 @@ class VanerEngine:
 
         # Collect artefacts once for package building (avoid repeated DB reads)
         artefacts_by_key = {a.key: a for a in await self.store.list(limit=2000)}
+
+        # Fresh submitted prompts are the highest-value signal Vaner has. Prime
+        # the concrete history-query prediction before broad periodic work so a
+        # newly observed user turn can surface as prepared context immediately.
+        await self._prime_latest_history_query_prediction(recent_query_text)
 
         # Order matters: Jaccard-dedup is first-admitted-wins, and
         # structured v2 predictions carry the most concrete evidence targets.
@@ -2868,6 +3002,13 @@ class VanerEngine:
                 )
                 if result.compatible:
                     candidates.append((result.score, prompt, result.reason))
+                elif result.reason == "related":
+                    alternatives.append(
+                        Alternative(
+                            source=prompt.spec.source,
+                            reason_rejected=(f"related but not compatible (score={result.score:.2f}): {prompt.spec.label}"),
+                        )
+                    )
             candidates.sort(key=lambda pair: pair[0], reverse=True)
             if candidates:
                 matched_prediction = candidates[0][1]
@@ -2894,6 +3035,14 @@ class VanerEngine:
                 matched_prediction.artifacts.draft_answer
                 if include_predicted_response and structured.readiness_mode == "draft_ready"
                 else None
+            )
+            await self.record_intent_observation(
+                query_text=query,
+                selected_paths=list(structured.evidence_targets),
+                hit_precomputed=True,
+                token_used=briefing.token_count,
+                source="vaner.resolve",
+                prediction_id=matched_prediction.spec.id,
             )
             evidence = [
                 EvidenceItem(
@@ -3506,6 +3655,9 @@ class VanerEngine:
         recent_query_text: list[str],
         prompt_macros: list[dict[str, object]],
         patterns: list[dict[str, object]],
+        available_paths: list[str] | None = None,
+        changed_paths: list[str] | None = None,
+        completed_plan_titles: list[str] | None = None,
     ) -> tuple[PredictionRegistry, dict[str, str], dict[str, str]]:
         """Build this cycle's spec batch and merge it into the persistent registry.
 
@@ -3578,31 +3730,40 @@ class VanerEngine:
             if not macro_key:
                 continue
             use_count = int(macro.get("use_count", 0))
-            confidence = min(1.0, float(macro.get("confidence", 0.0)) or (use_count / 10.0))
+            raw_confidence = min(1.0, float(macro.get("confidence", 0.0)) or (use_count / 10.0))
+            is_seed_prior = use_count <= 0
+            confidence = min(raw_confidence, 0.25) if is_seed_prior else raw_confidence
             category = str(macro.get("category", "understanding"))
-            label = f"Recurring: {macro_key[:60]}"
-            pid = prediction_id("pattern", macro_key, label)
+            source = "seed_prior" if is_seed_prior else "pattern"
+            label = f"Seed prior: {macro_key[:60]}" if is_seed_prior else f"Recurring: {macro_key[:60]}"
+            pid = prediction_id(source, macro_key, label)
+            description = (
+                f"Default prompt prior '{macro_key}' in category {category}"
+                if is_seed_prior
+                else f"Prompt macro '{macro_key}' ({use_count}x) in category {category}"
+            )
             specs.append(
                 PredictionSpec(
                     id=pid,
                     label=label,
-                    description=f"Prompt macro '{macro_key}' ({use_count}x) in category {category}",
-                    source="pattern",
+                    description=description,
+                    source=source,  # type: ignore[arg-type]
                     anchor=macro_key,
                     confidence=confidence,
-                    hypothesis_type="likely_next" if confidence >= 0.6 else "possible_branch",
+                    hypothesis_type="long_tail" if is_seed_prior else ("likely_next" if confidence >= 0.6 else "possible_branch"),
                     specificity="concrete",
                     structured=structured_from_prediction_fields(
                         label=label,
-                        description=f"Prompt macro '{macro_key}' ({use_count}x) in category {category}",
+                        description=description,
                         anchor=macro_key,
                         readiness_mode="evidence_ready",
                         confidence=confidence,
-                        reason_codes=("pattern", category),
+                        reason_codes=(source, category),
                     ),
                 )
             )
-            macro_to_pid.setdefault(macro_key, pid)
+            if not is_seed_prior:
+                macro_to_pid.setdefault(macro_key, pid)
 
         # History source — the last observed category as a continuation hint.
         if recent_query_text:
@@ -3642,29 +3803,54 @@ class VanerEngine:
                         description=f"Likely follow-up to the most recent user question: {last_query}",
                         source="history",
                         anchor=last_query,
-                        confidence=0.55,
-                        hypothesis_type="possible_branch",
+                        confidence=0.85,
+                        hypothesis_type="likely_next",
                         specificity="concrete",
                         structured=structured_from_prediction_fields(
                             label=concrete_label,
                             description=f"Likely follow-up to the most recent user question: {last_query}",
                             anchor=last_query,
                             readiness_mode="evidence_ready",
-                            confidence=0.55,
+                            confidence=0.85,
                             reason_codes=("history_query", last_category),
                         ),
                     )
                 )
+
+        try:
+            goal_rows = self._active_goals_cache
+        except AttributeError:
+            goal_rows = []
+
+        # Horizon source — a generic, domain-aware set of likely next-turn
+        # families. This keeps Vaner exploring "what might the user ask next?"
+        # after a plan lands, without hard-coding developer-only workflows.
+        try:
+            phase_summary = self._arc_model.summarize_workflow_phase(recent_query_text)
+            specs.extend(
+                build_next_horizon_specs(
+                    recent_queries=recent_query_text,
+                    available_paths=available_paths or [],
+                    changed_paths=changed_paths or [],
+                    active_goals=goal_rows,
+                    completed_plan_titles=completed_plan_titles or [],
+                    horizon_priors=(
+                        self._defaults_bundle.behavior.horizon_priors.model_dump(mode="python")
+                        if self._defaults_bundle.behavior.horizon_priors is not None
+                        else None
+                    ),
+                    workflow_phase=phase_summary.phase,
+                    max_specs=8,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to build next-horizon prediction specs")
 
         # WS7: goal source — active workspace goals seed predictions with
         # long-horizon anchors. Each goal becomes a prediction whose
         # scenarios can accumulate across many cycles (WS6 persistence
         # makes this pay off). Goals are fetched best-effort — a missing
         # table on legacy DBs falls back to the pre-WS7 behaviour.
-        try:
-            goal_rows = self._active_goals_cache
-        except AttributeError:
-            goal_rows = []
         for row in goal_rows:
             title = str(row.get("title", "")).strip()
             if not title:
@@ -3721,6 +3907,70 @@ class VanerEngine:
             # enrolled via the standard weight formula.
             registry.merge(unique_specs, cycle_n=self._precompute_cycles)
         return registry, category_to_pid, macro_to_pid
+
+    async def _prime_latest_history_query_prediction(self, recent_query_text: list[str]) -> bool:
+        if not recent_query_text or self._prediction_registry is None:
+            return False
+        latest_query = recent_query_text[-1].strip()
+        if not latest_query:
+            return False
+
+        candidates = [
+            prompt
+            for prompt in self._prediction_registry.active()
+            if prompt.spec.source == "history" and prompt.spec.anchor == latest_query and prompt.spec.specificity == "concrete"
+        ]
+        if not candidates:
+            return False
+        prompt = candidates[0]
+        if prompt.run.readiness == "ready" and prompt.artifacts.prepared_briefing:
+            return False
+
+        try:
+            _package, selected, _decision_record = await self._build_package_for_prompt(
+                latest_query,
+                top_n=8,
+                include_working_set_preferences=True,
+            )
+        except Exception:
+            return False
+        paths = filter_evidence_paths([str(getattr(item, "source_path", "") or "") for item in selected])
+        if not paths:
+            return False
+
+        pid = prompt.id
+        scenario_id = f"latest-query:{pid}"
+        try:
+            self._prediction_registry.attach_scenario(pid, scenario_id)
+            self._prediction_registry.record_evidence(pid, delta_score=max(0.65, min(1.5, len(paths) / 4.0)))
+            current = self._prediction_registry.get(pid)
+            if current is not None and current.run.readiness == "grounding":
+                self._prediction_registry.transition(pid, "evidence_gathering", reason="fresh prompt evidence selected")
+            self._prediction_registry.complete_scenario(pid, scenario_id)
+            current = self._prediction_registry.get(pid)
+            if current is not None and current.run.readiness == "evidence_gathering":
+                self._prediction_registry.transition(pid, "drafting", reason="fresh prompt briefing primed")
+            briefing = self._briefing_assembler.from_paths(
+                label=prompt.spec.label,
+                description=prompt.spec.description,
+                paths=paths,
+                source=prompt.spec.source,
+                anchor=prompt.spec.anchor,
+                confidence=prompt.spec.confidence,
+                scenarios_complete=max(1, prompt.run.scenarios_complete),
+                evidence_score=max(0.65, prompt.artifacts.evidence_score),
+            ).text
+            try:
+                hashes_now = read_content_hashes(self.config.repo_root, paths)
+            except Exception:
+                hashes_now = {}
+            self._prediction_registry.attach_artifact(pid, briefing=briefing, file_content_hashes=hashes_now or None)
+            current = self._prediction_registry.get(pid)
+            if current is not None and current.run.readiness == "drafting":
+                self._prediction_registry.transition(pid, "ready", reason="fresh prompt briefing available")
+        except Exception:
+            return False
+        return True
 
     @staticmethod
     def _compute_effective_concurrency(ecfg: ExplorationConfig, compute: ComputeConfig) -> int:
@@ -3911,12 +4161,27 @@ class VanerEngine:
         captured_thinking: str = ""
         usage_event: CostLedgerEntry | None = None
         llm_started = time.monotonic()
+        model_name_for_event = self.config.exploration.exploration_model or self.config.backend.model or "unknown"
+        if parent_pid:
+            self._emit_live_work_event(
+                {
+                    "entity_type": "prediction",
+                    "entity_id": parent_pid,
+                    "stage": "model",
+                    "status": "running",
+                    "summary": "Model request started for prediction exploration.",
+                    "scenario_id": scenario.id,
+                    "cycle_id": str(self._precompute_cycles),
+                    "model": model_name_for_event,
+                    "targets": candidate_paths[:8],
+                }
+            )
         try:
             if self.structured_llm is not None:
                 response: LLMResponse = await self.structured_llm(prompt, max_tokens=prediction_max_tokens)
                 llm_output = response.content
                 captured_thinking = response.thinking
-                model_name = self.config.exploration.exploration_model or self.config.backend.model or "unknown"
+                model_name = model_name_for_event
                 endpoint = self.config.exploration.exploration_endpoint or self.config.backend.base_url or ""
                 provider = self.config.exploration.exploration_backend
                 local_or_cloud = "local" if ("127.0.0.1" in endpoint or "localhost" in endpoint or not endpoint) else "cloud"
@@ -3950,8 +4215,48 @@ class VanerEngine:
                     cost=estimate_cost(usage, None),
                     latency_ms=(time.monotonic() - llm_started) * 1000.0,
                 )
-        except Exception:
+        except Exception as exc:
+            if parent_pid:
+                self._emit_live_work_event(
+                    {
+                        "entity_type": "prediction",
+                        "entity_id": parent_pid,
+                        "stage": "model",
+                        "status": "failed",
+                        "summary": "Model request failed during prediction exploration.",
+                        "scenario_id": scenario.id,
+                        "cycle_id": str(self._precompute_cycles),
+                        "model": model_name_for_event,
+                        "latency_ms": (time.monotonic() - llm_started) * 1000.0,
+                        "metadata": {"error_type": type(exc).__name__},
+                    }
+                )
             return [], [], "", 0.0
+        if parent_pid:
+            usage_payload: dict[str, object] = {}
+            if usage_event is not None:
+                usage = usage_event.usage
+                usage_payload = {
+                    "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                    "completion_tokens": getattr(usage, "completion_tokens", 0),
+                    "thinking_tokens": getattr(usage, "thinking_tokens", 0),
+                    "total_tokens": getattr(usage, "total_tokens", 0),
+                    "usage_estimated": getattr(usage, "usage_estimated", False),
+                }
+            self._emit_live_work_event(
+                {
+                    "entity_type": "prediction",
+                    "entity_id": parent_pid,
+                    "stage": "model",
+                    "status": "completed",
+                    "summary": "Model request completed for prediction exploration.",
+                    "scenario_id": scenario.id,
+                    "cycle_id": str(self._precompute_cycles),
+                    "model": model_name_for_event,
+                    "latency_ms": (time.monotonic() - llm_started) * 1000.0,
+                    "token_usage": usage_payload,
+                }
+            )
 
         if usage_event is not None:
             try:

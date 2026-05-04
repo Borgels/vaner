@@ -41,15 +41,15 @@ def _card(
 
 def test_empty_cards_render_empty_state() -> None:
     text = _dashboard_fallback_text([])
-    assert "preparing likely next steps" in text
-    assert "No adoptable predictions" in text
+    assert "preparing likely next work" in text
+    assert "No prepared context" in text
 
 
 def test_ready_card_renders_adoptable_marker() -> None:
     text = _dashboard_fallback_text([_card(label="Draft the project update")])
     assert '"Draft the project update"' in text
-    assert text.startswith("Vaner has 1 active prediction(s):")
-    assert "Use vaner.predictions.adopt" in text
+    assert text.startswith("Vaner has 1 prepared context item(s):")
+    assert "Use vaner.suggest" in text
 
 
 def test_non_adoptable_card_shows_suppression_reason() -> None:

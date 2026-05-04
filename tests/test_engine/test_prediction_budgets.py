@@ -81,7 +81,7 @@ async def test_precompute_cycle_builds_registry_with_multiple_sources(temp_repo:
 
 
 @pytest.mark.asyncio
-async def test_active_predictions_start_in_queued_state(temp_repo: Path):
+async def test_active_predictions_start_with_preparation_states(temp_repo: Path):
     async def _llm(_prompt: str) -> str:
         return '{"ranked_paths":[],"follow_on_categories":[],"semantic_intent":"","confidence":0.0}'
 
@@ -99,9 +99,11 @@ async def test_active_predictions_start_in_queued_state(temp_repo: Path):
 
     active = engine.get_active_predictions()
     assert active
-    # Without a scenario attached, newly enrolled predictions stay queued.
-    # (Phase A.2 wires enrolment only; scenario attachment comes later.)
-    assert all(p.run.readiness == "queued" for p in active)
+    # Current cycles can immediately prepare evidence-backed history
+    # predictions when workspace files are available, while background horizon
+    # candidates remain queued until workers mature them.
+    assert any(p.run.readiness == "queued" for p in active)
+    assert all(p.run.readiness in {"queued", "grounding", "evidence_gathering", "drafting", "ready"} for p in active)
 
 
 @pytest.mark.asyncio

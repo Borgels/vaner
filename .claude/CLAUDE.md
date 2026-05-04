@@ -1,4 +1,4 @@
-<!-- vaner-primer:start v=0.6.2 -->
+<!-- vaner-primer:start v=0.9.0 -->
 # Using Vaner
 
 Vaner is a local-first predictive context engine available to you as an MCP server. It prepares evidence-backed context packages in the background and exposes them through the `vaner.*` tool family (`vaner.resolve`, `vaner.search`, `vaner.expand`, `vaner.suggest`, `vaner.feedback`, `vaner.status`, `vaner.explain`, `vaner.warm`, `vaner.inspect`, `vaner.debug.trace`).
@@ -7,9 +7,11 @@ Use Vaner when it can reduce uncertainty, prepare likely context, or continue an
 
 Operational patterns:
 
-1. **Prepared context early.** Before spelunking the codebase, call `vaner.resolve` with a short description of the task. It returns a ranked package with evidence and provenance. Keep the returned `resolution_id`.
+1. **Prepare context early.** Before spelunking the codebase, call `vaner.resolve` with a short description of the task. It returns a ranked package with evidence and provenance. Keep the returned `resolution_id`.
 2. **Fallback and branches.** Use `vaner.search` when `vaner.resolve` confidence is weak or the task requires a retrieval style it did not cover. Use `vaner.expand` to explore adjacent scenarios without recomputing everything.
 3. **Feedback at the end.** When the task is done (or abandoned), call `vaner.feedback` with the `resolution_id` and one of `useful` / `partial` / `wrong` / `irrelevant`, optionally with `correction`, `preferred_items`, `rejected_items`, and the `skill` label. This reinforces Vaner's scenario ranking for future work.
 
 Treat Vaner as a supplement, not a replacement for reading code. Skip it entirely for one-line changes, pure reformatting, or questions already answered in the open conversation.
+
+Your MCP client may prefix these tool names. For example, Claude Code exposes plugin MCP tools as `mcp__plugin_<plugin>_<server>__<tool>` — so `vaner.resolve` appears as `mcp__plugin_vaner_vaner__vaner.resolve`. The conceptual names in this document map directly to whatever prefix your client uses; no translation is needed when you reason about them, only when you call them.
 <!-- vaner-primer:end -->

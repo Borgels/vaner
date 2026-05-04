@@ -245,9 +245,12 @@ def compatibility_for_query(
             and evidence_score >= 0.9
         )
     else:
-        compatible = score >= 0.38 and freshness_score >= 0.9
+        generic_source = bool(set(structured.reason_codes) & {"goal", "horizon", "pattern", "seed_prior", "macro"})
+        threshold = 0.62 if generic_source else 0.52
+        semantic_alignment = action_score >= 0.9 or answer_shape_score >= 0.9 or (not generic_source and target_score >= 0.80)
+        compatible = score >= threshold and freshness_score >= 0.9 and evidence_score >= 0.9 and target_score >= 0.40 and semantic_alignment
 
-    reason = "compatible" if compatible else "incompatible"
+    reason = "compatible" if compatible else ("related" if score >= 0.38 and freshness_score >= 0.9 else "incompatible")
     return CompatibilityResult(
         compatible=compatible,
         score=score,

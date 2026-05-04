@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { computeEdges, initialLayout, jaccard, scenarioPaths, tickForces } from './ScenarioCluster'
+import { computeEdges, initialLayout, jaccard, scenarioPaths, scenarioScoreScale, tickForces } from './ScenarioCluster'
 import type { UIScenario } from '../types'
 
 function scenario(overrides: Partial<UIScenario>): UIScenario {
@@ -9,7 +9,16 @@ function scenario(overrides: Partial<UIScenario>): UIScenario {
     kind: 'research',
     title: 'x',
     score: 0.5,
+    relevance: 0.5,
+    confidence: 0.5,
+    visiblePriority: 0.5,
     freshness: 'fresh',
+    readiness: 'warming',
+    visibility: 'warming',
+    lifecycleMotion: 'stable',
+    lastReinforcedAt: null,
+    archivedAt: null,
+    visibilityReason: '',
     depth: 0,
     parent: null,
     path: 'x.py',
@@ -46,6 +55,15 @@ describe('scenarioPaths', () => {
       scenario({ id: 'a', path: 'src/main.py', entities: ['src/util.py', 'README.md'] }),
     )
     expect(paths).toEqual(new Set(['src/main.py', 'src/util.py', 'README.md']))
+  })
+})
+
+describe('scenarioScoreScale', () => {
+  it('keeps score sizing inside a subtle bounded range', () => {
+    expect(scenarioScoreScale(0.5)).toBe(0.85)
+    expect(scenarioScoreScale(0.75)).toBe(1)
+    expect(scenarioScoreScale(0.9)).toBe(1.18)
+    expect(scenarioScoreScale(0.98)).toBe(1.35)
   })
 })
 
@@ -111,18 +129,14 @@ describe('initialLayout', () => {
     }
   })
 
-  it('buckets scenarios of the same kind into the same angular sector', () => {
+  it('keeps higher relevance scenarios above cooling scenarios', () => {
     const scenarios = [
-      scenario({ id: 'a', kind: 'research', score: 0.6 }),
-      scenario({ id: 'b', kind: 'research', score: 0.7 }),
-      scenario({ id: 'c', kind: 'debug', score: 0.8 }),
+      scenario({ id: 'a', kind: 'research', relevance: 0.9, visiblePriority: 0.9 }),
+      scenario({ id: 'b', kind: 'research', relevance: 0.45, visiblePriority: 0.45 }),
+      scenario({ id: 'c', kind: 'debug', relevance: 0.8, visiblePriority: 0.8 }),
     ]
     const positions = initialLayout(scenarios, 800, 600)
-    const angle = (id: string) =>
-      Math.atan2(positions[id].y - 300, positions[id].x - 400)
-    const researchGap = Math.abs(angle('a') - angle('b'))
-    const crossKindGap = Math.abs(angle('a') - angle('c'))
-    expect(researchGap).toBeLessThan(crossKindGap)
+    expect(positions.a.y).toBeLessThan(positions.b.y)
   })
 })
 

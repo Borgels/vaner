@@ -131,6 +131,22 @@ class PhaseClassifierModel(BaseModel):
     phase_affinity: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
+class HorizonPriorsModel(BaseModel):
+    """Optional trained priors for generic next-prompt horizon generation.
+
+    The public runtime consumes only numeric weights. Private training corpora,
+    labeled examples, and learned feature pipelines stay outside this repo; a
+    defaults bundle can ship the resulting aggregate weights when available.
+    """
+
+    schema_version: str | None = None
+    future_compat: dict[str, str] = Field(default_factory=dict, alias="__future_compat__")
+    family_weights: dict[str, float] = Field(default_factory=dict)
+    domain_family_boosts: dict[str, dict[str, float]] = Field(default_factory=dict)
+    stage_family_boosts: dict[str, dict[str, float]] = Field(default_factory=dict)
+    post_plan_boosts: dict[str, float] = Field(default_factory=dict)
+
+
 class IntentScorerMetaModel(BaseModel):
     future_compat: dict[str, str] = Field(default_factory=dict, alias="__future_compat__")
     has_model: bool = False
@@ -160,6 +176,7 @@ class PolicyDefaultsModel(BaseModel):
 class BehaviorPriors:
     arc_transitions: ArcTransitionsModel | None
     phase_classifier: PhaseClassifierModel | None
+    horizon_priors: HorizonPriorsModel | None
     category_centroids: dict[str, Any]
     prompt_macros_seed: list[dict[str, Any]]
     habit_transitions_seed: list[dict[str, Any]]
@@ -256,6 +273,7 @@ def load_defaults_bundle() -> DefaultsBundle:
     skill_path_priors_path = _resolve_from_manifest("search_priors", "skill_path_priors", fallback="../skill_path_priors.json")
     macro_seed_path = _resolve_from_manifest("behavior_priors", "prompt_macros_seed", fallback="../prompt_macros_seed.json")
     habit_seed_path = _resolve_from_manifest("behavior_priors", "habit_transitions_seed", fallback="../habit_transitions_seed.json")
+    horizon_priors_path = _resolve_from_manifest("behavior_priors", "horizon_priors", fallback="../horizon_priors.json")
 
     arc_raw = _read_json(arc_path)
     phase_raw = _read_json(phase_path)
@@ -266,9 +284,11 @@ def load_defaults_bundle() -> DefaultsBundle:
     skill_path_priors_raw = _read_json(skill_path_priors_path)
     macro_seed_raw = _read_json(macro_seed_path)
     habit_seed_raw = _read_json(habit_seed_path)
+    horizon_priors_raw = _read_json(horizon_priors_path)
 
     arc = ArcTransitionsModel.model_validate(arc_raw) if arc_raw else None
     phase = PhaseClassifierModel.model_validate(phase_raw) if phase_raw else None
+    horizon_priors = HorizonPriorsModel.model_validate(horizon_priors_raw) if horizon_priors_raw else None
     scorer_meta = IntentScorerMetaModel.model_validate(scorer_meta_raw) if scorer_meta_raw else None
     policy_defaults = PolicyDefaultsModel.model_validate(policy_raw) if policy_raw else None
     prompt_macros_seed: list[dict[str, Any]] = []
@@ -317,6 +337,7 @@ def load_defaults_bundle() -> DefaultsBundle:
         behavior=BehaviorPriors(
             arc_transitions=arc,
             phase_classifier=phase,
+            horizon_priors=horizon_priors,
             category_centroids=category_centroids_raw or {},
             prompt_macros_seed=prompt_macros_seed,
             habit_transitions_seed=habit_transitions_seed,

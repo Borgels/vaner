@@ -107,8 +107,10 @@ def test_predictions_active_envelope_shape():
             "pattern",
             "llm_branch",
             "macro",
+            "seed_prior",
             "history",
             "goal",
+            "horizon",
             "artefact_item",
             "composer_intent",
         }
@@ -261,6 +263,9 @@ def test_every_fixture_is_registered():
         # 0.8.7 WS8 — composer_intent + composer_engagement fixtures.
         "predictions_active_composer_sample.json",
         "adopt_response_composer.json",
+        # 0.9.0 — Auto Focus + Compute Routing V0.5 fixtures.
+        "focus_sample.json",
+        "resources_sample.json",
     }
     found = {str(p.relative_to(FIXTURES)) for p in FIXTURES.rglob("*.json")}
     orphans = found - known

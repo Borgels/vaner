@@ -73,6 +73,11 @@ async def test_resolve_query_returns_predictive_hit_when_prediction_matches(temp
     # Token accounting is honest — non-zero and budget >= used.
     assert resolution.briefing_token_used > 0
     assert resolution.briefing_token_budget >= resolution.briefing_token_used
+    history = await engine.store.list_query_history(limit=5)
+    assert history[0]["query_text"] == "add parser tests"
+    assert history[0]["hit_precomputed"] is True
+    assert history[0]["source"] == "vaner.resolve"
+    assert history[0]["prediction_id"] == spec.id
 
 
 @pytest.mark.asyncio

@@ -96,6 +96,16 @@ def test_mcp_tools_list_and_scenario_flow(temp_repo, monkeypatch):
             "vaner.work_products.export",
             "vaner.work_products.dismiss",
             "vaner.work_products.feedback",
+            # 0.9.0: Auto Focus + minimal compute routing surfaces.
+            "vaner.focus.status",
+            "vaner.focus.work_here",
+            "vaner.focus.pin_current_workspace",
+            "vaner.focus.pause_current_workspace",
+            "vaner.focus.resume_current_workspace",
+            "vaner.focus.set_mode",
+            "vaner.resources.status",
+            "vaner.jobs.status",
+            "vaner.jobs.cancel",
         }
 
         monkeypatch.setattr("vaner.mcp.server.aprecompute", lambda *args, **kwargs: asyncio.sleep(0, result=1))

@@ -13,7 +13,7 @@ from vaner.setup.config_io import (
     persist_setup_and_policy,
 )
 from vaner.setup.hardware import GPUDevice, HardwareProfile
-from vaner.setup.model_recommendation import load_model_registry, recommend_local_model
+from vaner.setup.model_recommendation import compute_effective_context_window, load_model_registry, recommend_local_model
 
 runner = CliRunner()
 
@@ -77,13 +77,48 @@ def test_recommendation_user_layer_hides_diagnostics() -> None:
 
 
 def test_recommendation_prefers_installed_compatible_model() -> None:
-    # The refresher now emits one :latest tag per family; pick whichever
-    # of the bundled families has a compatible installed match.
+    # Pick whichever bundled model has a compatible installed match.
     payload = recommend_local_model(
         hardware=_profile(detected_models=(("ollama", "qwen3.5:latest", "10GB"),)),
     )
     assert payload["selected"]["model_id"] == "qwen3.5:latest"
     assert payload["user"]["needs_model_download"] is False
+
+
+def test_recommendation_prefers_qwen36_27b_on_32gb_vram_over_installed_35b() -> None:
+    payload = recommend_local_model(
+        answers=_answers("coding", "research"),
+        hardware=_profile(
+            gpu_vram_gb=32,
+            gpu_devices=(
+                GPUDevice(
+                    name="NVIDIA GeForce RTX 5090",
+                    vendor="nvidia",
+                    kind="nvidia",
+                    memory_total_bytes=32 * 1024**3,
+                    memory_display_gb=32,
+                    memory_kind="vram",
+                ),
+            ),
+            detected_models=(("ollama", "qwen3.5:35b", "22.2GB"),),
+        ),
+    )
+    selected = payload["selected"]
+    assert selected["model_id"] == "qwen3.6:27b"
+    assert selected["capability"]["context_window"] == 131072
+    assert selected["runtime_params"]["num_ctx"] == 131072
+    assert payload["user"]["needs_model_download"] is True
+
+
+def test_qwen36_27b_context_keeps_headroom_on_32gb_vram() -> None:
+    chosen = compute_effective_context_window(
+        max_context_window=262144,
+        weights_gb=14.9,
+        effective_memory_gb=30.0,
+        work_styles=("coding", "research"),
+        runtime="ollama",
+    )
+    assert chosen == 131072
 
 
 def test_persist_runtime_recommendation_writes_backend(tmp_path: Path) -> None:
@@ -96,8 +131,10 @@ def test_persist_runtime_recommendation_writes_backend(tmp_path: Path) -> None:
     parsed = tomllib.loads((repo / ".vaner" / "config.toml").read_text(encoding="utf-8"))
     assert parsed["backend"]["name"] == "ollama"
     assert parsed["backend"]["model"] == payload["selected"]["model_id"]
-    assert parsed["exploration"]["exploration_model"] == payload["selected"]["model_id"]
+    assert parsed["exploration"]["model"] == payload["selected"]["model_id"]
+    assert "exploration_model" not in parsed["exploration"]
     assert parsed["compute"]["device"] == "cuda"
+    assert parsed["limits"]["max_context_tokens"] == payload["selected"]["capability"]["context_window"] // 4
 
 
 def test_models_recommended_cli(monkeypatch) -> None:

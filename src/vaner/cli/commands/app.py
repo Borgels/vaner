@@ -30,7 +30,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from vaner import __version__, api
+from vaner import VERSION, api
 from vaner.broker.prompting import build_evidence_bound_context_prompt
 from vaner.cli.commands import mcp_clients
 from vaner.cli.commands.clients import clients_app
@@ -50,6 +50,7 @@ from vaner.cli.commands.daemon import (
 from vaner.cli.commands.deep_run import deep_run_app
 from vaner.cli.commands.distill import distill_skill_file
 from vaner.cli.commands.explain import render_human, render_json
+from vaner.cli.commands.focus import focus_app, jobs_app, resources_app
 from vaner.cli.commands.guidance import guidance_app
 from vaner.cli.commands.hooks import HOOK_SURFACES, write_hooks
 from vaner.cli.commands.init import (
@@ -71,6 +72,7 @@ from vaner.cli.commands.profile import export_pins, import_pins, pin_fact, profi
 from vaner.cli.commands.runtime_snapshot import runtime_snapshot
 from vaner.cli.commands.setup import setup_app
 from vaner.cli.commands.skills import SKILL_SURFACES, write_skills
+from vaner.cli.commands.sources import sources_app
 from vaner.cli.commands.supervisor import run_down, run_up
 from vaner.daemon.http import create_daemon_http_app
 from vaner.daemon.preflight import check_repo_root
@@ -455,7 +457,7 @@ def app_callback(
     version: bool = typer.Option(False, "--version", help="Show installed Vaner version and exit.", is_eager=True),
 ) -> None:
     if version:
-        typer.echo(f"vaner {__version__}")
+        typer.echo(f"vaner {VERSION}")
         raise typer.Exit()
     global _VERBOSE
     _VERBOSE = verbose
@@ -868,19 +870,29 @@ def daemon_run_forever(
     run_daemon_forever(_repo_root(path), interval_seconds=interval_seconds)
 
 
+@daemon_app.command("precompute-worker", hidden=True)
+def daemon_precompute_worker(
+    path: str | None = typer.Option(None, help="Repository root"),
+    interval_seconds: float = typer.Option(45.0, "--interval-seconds", help="Worker loop interval"),
+    startup_delay_seconds: float = typer.Option(10.0, "--startup-delay-seconds", help="Delay first cycle after process start"),
+) -> None:
+    from vaner.daemon.precompute_worker import run_precompute_worker
+
+    run_precompute_worker(_repo_root(path), interval_seconds=interval_seconds, startup_delay_seconds=startup_delay_seconds)
+
+
 @daemon_app.command("serve-http")
 def daemon_serve_http(
     path: str | None = typer.Option(None, help="Repository root"),
     host: str = typer.Option("127.0.0.1", "--host", help="Cockpit host"),
     port: int = typer.Option(8473, "--port", help="Cockpit port"),
     with_engine: bool = typer.Option(
-        True,
+        False,
         "--with-engine/--no-engine",
         help=(
-            "Instantiate a live VanerEngine in the daemon process and run "
-            "periodic precompute cycles. Required for the /predictions/* "
-            "surface and the vaner.predictions.* MCP tools. Disable with "
-            "--no-engine if you only need the static cockpit endpoints."
+            "Instantiate a live VanerEngine in the daemon process for direct "
+            "prediction inspection. Periodic precompute is owned by the "
+            "separate precompute-worker process."
         ),
     ),
 ) -> None:
@@ -2418,6 +2430,10 @@ app.add_typer(config_app, name="config", rich_help_panel="Configure")
 app.add_typer(profile_app, name="profile", rich_help_panel="Background and local")
 app.add_typer(scenarios_app, name="scenarios", rich_help_panel="Use with an agent")
 app.add_typer(deep_run_app, name="deep-run", rich_help_panel="Background and local")
+app.add_typer(focus_app, name="focus", rich_help_panel="Background and local")
+app.add_typer(resources_app, name="resources", rich_help_panel="Background and local")
+app.add_typer(jobs_app, name="jobs", rich_help_panel="Background and local")
+app.add_typer(sources_app, name="sources", rich_help_panel="Background and local")
 app.add_typer(guidance_app, name="guidance", rich_help_panel="Use with an agent")
 app.add_typer(integrations_app, name="integrations", rich_help_panel="Inspect and debug")
 app.add_typer(clients_app, name="clients", rich_help_panel="Connect MCP clients")

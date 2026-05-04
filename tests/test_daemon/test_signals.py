@@ -8,6 +8,7 @@ from vaner.daemon.signals.fs_watcher import scan_repo_files
 from vaner.daemon.signals.git_reader import (
     read_commit_subjects,
     read_content_hashes,
+    read_git_diff,
     read_git_state,
     read_head_sha,
 )
@@ -37,6 +38,26 @@ def test_read_git_state_handles_missing_git(monkeypatch, tmp_path):
     state = read_git_state(tmp_path)
 
     assert state == {"branch": "", "recent_diff": "", "staged": ""}
+
+
+def test_read_git_state_reports_current_worktree_diff(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo, check=True)
+    (repo / "app.py").write_text("VERSION = '0.1.0'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True, text=True)
+
+    (repo / "app.py").write_text("VERSION = '0.2.0'\n", encoding="utf-8")
+    state = read_git_state(repo)
+    diff = read_git_diff(repo, "app.py")
+
+    assert state["recent_diff"] == "app.py"
+    assert "-VERSION = '0.1.0'" in diff
+    assert "+VERSION = '0.2.0'" in diff
 
 
 def test_read_content_hashes_uses_sha256_fallback_when_git_unavailable(monkeypatch, tmp_path):

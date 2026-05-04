@@ -117,6 +117,7 @@ def launch_client(
 
     from vaner.cli.commands import mcp_clients
     from vaner.cli.commands.hooks import HOOK_SURFACES, write_hook_for_client
+    from vaner.cli.commands.plugins import PLUGIN_SURFACES, write_plugin_for_client
     from vaner.cli.commands.primer import PRIMER_SURFACES, write_primer_for_client
     from vaner.cli.commands.skills import SKILL_SURFACES, write_skill_for_client
 
@@ -211,18 +212,26 @@ def launch_client(
         )
 
     # ---- Layer 4: Hook / plugin --------------------------------------------
-    # Vaner installs hooks for cline + windsurf via this module; Claude
-    # Code and Cursor get hooks via their atomic plugin bundles in
-    # plugins/vaner and cursor-plugins/vaner, which users install
-    # separately through each client's marketplace. So this layer is
-    # only "applicable from `vaner launch`" for clients HOOK_SURFACES
-    # knows about.
-    if "hook" in skip_layers or client_id not in HOOK_SURFACES:
+    # Vaner installs Claude Code's atomic plugin bundle directly, and
+    # prompt-submit hooks for Cline + Windsurf via the hooks module.
+    supports_layer = client_id in PLUGIN_SURFACES or client_id in HOOK_SURFACES
+    if "hook" in skip_layers or not supports_layer:
         layers.append(
             LayerOutcome(
                 layer="hook",
-                applicable=client_id in HOOK_SURFACES,
+                applicable=supports_layer,
                 action="skipped" if "hook" in skip_layers else "not-applicable",
+            )
+        )
+    elif client_id in PLUGIN_SURFACES:
+        plugin = write_plugin_for_client(client_id, dry_run=dry_run, force=force)
+        layers.append(
+            LayerOutcome(
+                layer="hook",
+                applicable=True,
+                action=plugin.action,
+                path=plugin.path,
+                error=plugin.error,
             )
         )
     else:

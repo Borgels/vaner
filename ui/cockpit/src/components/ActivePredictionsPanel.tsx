@@ -22,7 +22,21 @@ export type HypothesisType = 'likely_next' | 'possible_branch' | 'long_tail'
 
 export interface PredictionRow {
   id: string
-  spec: {
+  label?: string
+  display_label?: string
+  source_label?: string
+  readiness?: ReadinessState
+  readiness_label?: string
+  adoptable?: boolean
+  match_state?: 'strong_match' | 'weak_match' | 'unrelated' | 'stale' | string
+  match_reason?: string
+  recommended_action?: 'adopt' | 'inspect' | 'ignore' | string
+  snapshot_freshness?: 'ready' | 'warming' | 'stale' | 'cold' | string
+  confidence?: number
+  token_budget?: number
+  tokens_used?: number
+  ui_summary?: string
+  spec?: {
     label: string
     description: string
     source: string
@@ -31,7 +45,7 @@ export interface PredictionRow {
     hypothesis_type: HypothesisType
     specificity: 'concrete' | 'category' | 'anchor'
   }
-  run: {
+  run?: {
     weight: number
     token_budget: number
     tokens_used: number
@@ -40,7 +54,7 @@ export interface PredictionRow {
     scenarios_complete: number
     readiness: ReadinessState
   }
-  artifacts: {
+  artifacts?: {
     evidence_score: number
     has_draft: boolean
     has_briefing: boolean
@@ -81,12 +95,30 @@ const HYPOTHESIS_PREFIX: Record<HypothesisType, string> = {
 }
 
 function renderLabel(row: PredictionRow): string {
-  const prefix = HYPOTHESIS_PREFIX[row.spec.hypothesis_type] ?? ''
-  return prefix ? `${prefix} ${row.spec.label}` : row.spec.label
+  if (row.display_label || row.label) return row.display_label ?? row.label ?? row.id
+  const prefix = HYPOTHESIS_PREFIX[row.spec?.hypothesis_type ?? 'likely_next'] ?? ''
+  const label = row.spec?.label ?? row.id
+  return prefix ? `${prefix} ${label}` : label
 }
 
-function isAdoptable(state: ReadinessState): boolean {
+function rowReadiness(row: PredictionRow): ReadinessState {
+  return (row.readiness ?? row.run?.readiness ?? 'queued') as ReadinessState
+}
+
+function isAdoptable(row: PredictionRow): boolean {
+  if (row.recommended_action === 'adopt') return true
+  if (row.recommended_action === 'ignore') return false
+  if (row.adoptable === false) return false
+  const state = rowReadiness(row)
   return state === 'ready' || state === 'drafting'
+}
+
+function tokenBudget(row: PredictionRow): number {
+  return row.token_budget ?? row.run?.token_budget ?? 0
+}
+
+function tokensUsed(row: PredictionRow): number {
+  return row.tokens_used ?? row.run?.tokens_used ?? 0
 }
 
 const PIPELINE_LANES: ReadinessState[] = [
@@ -149,8 +181,8 @@ export function ActivePredictionsPanel({
 
   if (loading && rows.length === 0) {
     return (
-      <section aria-label="Active predictions" className="active-predictions">
-        <header>Active predictions</header>
+      <section aria-label="Prepared context" className="active-predictions">
+        <header>Prepared context</header>
         <p>Loading…</p>
       </section>
     )
@@ -158,8 +190,8 @@ export function ActivePredictionsPanel({
 
   if (error) {
     return (
-      <section aria-label="Active predictions" className="active-predictions">
-        <header>Active predictions</header>
+      <section aria-label="Prepared context" className="active-predictions">
+        <header>Prepared context</header>
         <p role="alert">Error: {error}</p>
       </section>
     )
@@ -172,17 +204,17 @@ export function ActivePredictionsPanel({
 
   if (rows.length === 0 && totalGrouped === 0) {
     return (
-      <section aria-label="Active predictions" className="active-predictions">
-        <header>Active predictions</header>
-        <p>No active predictions yet — Vaner hasn't enrolled any for this cycle.</p>
+      <section aria-label="Prepared context" className="active-predictions">
+        <header>Prepared context</header>
+        <p>No prepared context is ready for this turn yet.</p>
       </section>
     )
   }
 
   if (hasGrouped) {
     return (
-      <section aria-label="Active predictions" className="active-predictions">
-        <header>Predictions pipeline</header>
+      <section aria-label="Prepared context pipeline" className="active-predictions">
+        <header>Prepared context pipeline</header>
         <div className="pipeline-lanes" role="list">
           {PIPELINE_LANES.map((state) => {
             const items = byState[state] ?? []
@@ -206,7 +238,7 @@ export function ActivePredictionsPanel({
                 </div>
                 <ul style={{ margin: '4px 0 0', padding: 0, listStyle: 'none' }}>
                   {items.slice(0, 3).map((row) => {
-                    const adoptable = isAdoptable(row.run.readiness)
+                    const adoptable = isAdoptable(row)
                     return (
                       <li
                         key={row.id}
@@ -217,7 +249,7 @@ export function ActivePredictionsPanel({
                           type="button"
                           disabled={!adoptable}
                           onClick={() => onAdopt?.(row.id)}
-                          aria-label={`Adopt ${row.spec.label}`}
+                          aria-label={`Use ${renderLabel(row)}`}
                           style={{
                             all: 'unset',
                             cursor: adoptable ? 'pointer' : 'default',
@@ -246,34 +278,33 @@ export function ActivePredictionsPanel({
   }
 
   return (
-    <section aria-label="Active predictions" className="active-predictions">
-      <header>Active predictions</header>
+    <section aria-label="Prepared context" className="active-predictions">
+      <header>Prepared context</header>
       <ul>
         {rows.map((row) => {
-          const pct =
-            row.run.token_budget > 0
-              ? Math.min(100, Math.round((row.run.tokens_used / row.run.token_budget) * 100))
-              : 0
-          const readinessColor = READINESS_COLORS[row.run.readiness] ?? 'var(--fg-3)'
-          const adoptable = isAdoptable(row.run.readiness)
+          const budget = tokenBudget(row)
+          const pct = budget > 0 ? Math.min(100, Math.round((tokensUsed(row) / budget) * 100)) : 0
+          const readiness = rowReadiness(row)
+          const readinessColor = READINESS_COLORS[readiness] ?? 'var(--fg-3)'
+          const adoptable = isAdoptable(row)
           return (
-            <li key={row.id} data-prediction-id={row.id} data-readiness={row.run.readiness}>
+            <li key={row.id} data-prediction-id={row.id} data-readiness={readiness}>
               <button
                 type="button"
                 disabled={!adoptable}
                 onClick={() => onAdopt?.(row.id)}
-                aria-label={`Adopt ${row.spec.label}`}
+                aria-label={`Use ${renderLabel(row)}`}
               >
                 <span className="label">{renderLabel(row)}</span>
                 <span className="readiness" style={{ color: readinessColor }}>
-                  {row.run.readiness}
+                  {row.snapshot_freshness ?? row.readiness_label ?? readiness}
                 </span>
-                <span className="source">{row.spec.source}</span>
+                <span className="source">{row.source_label ?? row.spec?.source ?? 'prepared context'}</span>
                 <span className="progress" aria-label={`${pct}% of token budget used`}>
                   {pct}%
                 </span>
               </button>
-              <div className="description">{row.spec.description}</div>
+              <div className="description">{row.match_reason ?? row.spec?.description ?? row.ui_summary ?? ''}</div>
             </li>
           )
         })}

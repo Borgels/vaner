@@ -36,7 +36,7 @@ import httpx
 from vaner.mcp.contracts import Resolution
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8473"
-DEFAULT_TIMEOUT = 5.0
+DEFAULT_TIMEOUT = 10.0
 DAEMON_STATUS_PATH = "/status"
 DAEMON_PROBE_TIMEOUT = 1.0
 RESOLVE_INCLUDE_BRIEFING_DEFAULT = True
@@ -114,7 +114,151 @@ class VanerDaemonClient:
             response.raise_for_status()
             return response.json()
 
-    async def get_predictions_active(self) -> dict[str, Any]:
+    async def get_focus(self) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/focus")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonUnavailable(f"daemon at {self._base} does not expose /focus")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def get_focus_route(self) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/focus/route")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonUnavailable(f"daemon at {self._base} does not expose /focus/route")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def set_focus_route(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/focus/route", json=payload)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonUnavailable(f"daemon at {self._base} does not expose /focus/route")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def focus_action(
+        self,
+        action: str,
+        *,
+        workspace_id: str = "current",
+        path: str | None = None,
+        mode: str | None = None,
+        resource_mode: str | None = None,
+        ttl_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        if action == "pause-all":
+            endpoint = "/focus/pause-all"
+            payload: dict[str, Any] = {}
+        elif action == "mode":
+            endpoint = "/focus/mode"
+            payload = {"mode": mode}
+            if resource_mode is not None:
+                payload["resource_mode"] = resource_mode
+        else:
+            endpoint = f"/focus/workspaces/{workspace_id}/{action}"
+            payload = {}
+            if path is not None:
+                payload["path"] = path
+            if ttl_seconds is not None:
+                payload["ttl_seconds"] = ttl_seconds
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}{endpoint}", json=payload)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def get_resources(self) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/resources")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonUnavailable(f"daemon at {self._base} does not expose /resources")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def get_sources_permissions(self) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/sources/permissions")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def update_sources_permissions(self, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/sources/permissions", json=payload)
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def refresh_sources(self) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/sources/refresh")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def get_jobs(self) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.get(f"{self._base}/jobs")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code == 404:
+                raise VanerDaemonUnavailable(f"daemon at {self._base} does not expose /jobs")
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def cancel_job(self, job_id: str) -> dict[str, Any]:
+        async with self._session() as client:
+            try:
+                response = await client.post(f"{self._base}/jobs/{job_id}/cancel")
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
+            if response.status_code >= 500:
+                raise VanerDaemonUnavailable(f"daemon returned {response.status_code}")
+            response.raise_for_status()
+            return response.json()
+
+    async def get_predictions_active(self, *, include_all: bool = False) -> dict[str, Any]:
         """GET /predictions/active — snapshot of currently-active PredictedPrompts.
 
         Returns the daemon's response body verbatim: ``{"predictions": [...]}``.
@@ -126,7 +270,10 @@ class VanerDaemonClient:
         """
         async with self._session() as client:
             try:
-                response = await client.get(f"{self._base}/predictions/active")
+                response = await client.get(
+                    f"{self._base}/predictions/active",
+                    params={"include_all": "true"} if include_all else None,
+                )
             except (httpx.TransportError, httpx.TimeoutException) as exc:
                 raise VanerDaemonUnavailable(f"daemon unreachable at {self._base}: {exc}") from exc
             if response.status_code == 404:

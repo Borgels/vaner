@@ -12,6 +12,57 @@ export interface ScenarioEdge {
   kind: 'parent' | 'shared-path'
 }
 
+export function scenarioScoreScale(score: number): number {
+  if (score < 0.65) return 0.85
+  if (score < 0.85) return 1
+  if (score < 0.95) return 1.18
+  return 1.35
+}
+
+export function scenarioReadinessScale(scenario: UIScenario): number {
+  const readinessBase = {
+    ready: 1.28,
+    warming: 1.05,
+    cooling: 0.88,
+    unprepared: 0.78,
+  }[scenario.readiness] ?? 0.9
+  return Math.max(0.72, Math.min(1.38, readinessBase + (scenario.visiblePriority - 0.65) * 0.22))
+}
+
+export function scenarioTargetY(scenario: UIScenario, height: number): number {
+  const top = 82
+  const bottom = Math.max(top + 80, height - 72)
+  const relevance = Math.max(0, Math.min(1, scenario.relevance))
+  if (scenario.visibility === 'archived') {
+    return bottom
+  }
+  return top + (1 - relevance) * (bottom - top)
+}
+
+export function scenarioFreshnessOpacity(scenario: UIScenario): number {
+  if (scenario.decisionState === 'rejected') return 0.25
+  if (scenario.lifecycleMotion === 'fading') return 0.28
+  if (scenario.freshness === 'stale') return 0.48
+  if (scenario.freshness === 'recent') return 0.72
+  return 1
+}
+
+function isPlanScenario(scenario: UIScenario): boolean {
+  return scenario.id.startsWith('plan_') || scenario.path.includes('/prep/plan_') || scenario.path.includes('plan draft')
+}
+
+function isPredictionScenario(scenario: UIScenario): boolean {
+  return scenario.id.startsWith('prediction:')
+}
+
+function scenarioNodeBadge(scenario: UIScenario): string {
+  if (isPlanScenario(scenario)) return 'plan'
+  if (isPredictionScenario(scenario)) return 'prep'
+  if (scenario.visibility === 'archived') return 'history'
+  if (scenario.readiness === 'ready') return 'ready'
+  return `${Math.round(scenario.relevance * 100)}%`
+}
+
 /**
  * Jaccard similarity between two sets of path strings. Used to derive
  * implicit edges between scenarios that touch the same files even when they
@@ -140,16 +191,16 @@ export function initialLayout(
 
   kinds.forEach((kind, kindIndex) => {
     const bucket = byKind.get(kind) ?? []
-    const sorted = [...bucket].sort((a, b) => b.score - a.score)
-    const kindAngle = (kindIndex / kinds.length) * Math.PI * 2
+    const sorted = [...bucket].sort((a, b) => b.relevance - a.relevance)
+    const columnX = centerX + ((kindIndex - (kinds.length - 1) / 2) / Math.max(1, kinds.length)) * width * 0.72
     sorted.forEach((scenario, index) => {
-      const localRadius = radius * (0.25 + 0.75 * (1 - scenario.score))
+      const localRadius = radius * 0.08 * (index % 3)
       const jitter = ((scenario.id.charCodeAt(0) % 7) - 3) * 0.04
-      const spread = sorted.length > 1 ? ((index / (sorted.length - 1)) - 0.5) * 0.7 : 0
-      const angle = kindAngle + spread + jitter
+      const spread = sorted.length > 1 ? ((index / (sorted.length - 1)) - 0.5) * 64 : 0
+      const y = scenarioTargetY(scenario, height) + spread
       positions[scenario.id] = {
-        x: centerX + localRadius * Math.cos(angle),
-        y: centerY + localRadius * Math.sin(angle),
+        x: Math.max(40, Math.min(width - 40, columnX + localRadius * Math.cos(jitter * Math.PI * 2))),
+        y: Math.max(56, Math.min(height - 56, y + localRadius * Math.sin(jitter * Math.PI * 2))),
         vx: 0,
         vy: 0,
       }
@@ -173,7 +224,7 @@ export function initialLayout(
 export function tickForces(
   positions: Record<string, ClusterPosition>,
   edges: ScenarioEdge[],
-  options: { width: number; height: number; dt?: number },
+  options: { width: number; height: number; dt?: number; gravityTargets?: Record<string, number> },
 ) {
   const dt = options.dt ?? 0.6
   const centerX = options.width / 2
@@ -239,8 +290,9 @@ export function tickForces(
     if (position._manual) {
       continue
     }
-    position.vx = (position.vx ?? 0) + (centerX - position.x) * 0.0008
-    position.vy = (position.vy ?? 0) + (centerY - position.y) * 0.0008
+    const targetY = options.gravityTargets?.[id] ?? centerY
+    position.vx = (position.vx ?? 0) + (centerX - position.x) * 0.0005
+    position.vy = (position.vy ?? 0) + (targetY - position.y) * 0.004
     position.x += (position.vx ?? 0) * dt
     position.y += (position.vy ?? 0) * dt
   }
@@ -299,19 +351,24 @@ export function ScenarioCluster({
     forceTick((value) => value + 1)
   }, [scenarios, size.h, size.w])
 
+  const gravityTargets = useMemo(
+    () => Object.fromEntries(scenarios.map((scenario) => [scenario.id, scenarioTargetY(scenario, size.h || 520)])),
+    [scenarios, size.h],
+  )
+
   useEffect(() => {
     let frame = 0
     let last = performance.now()
     const tick = (time: number) => {
       const dt = Math.min(0.05, (time - last) / 1000)
       last = time
-      tickForces(posRef.current, edgesRef.current, { width: size.w, height: size.h, dt: dt * 60 })
+      tickForces(posRef.current, edgesRef.current, { width: size.w, height: size.h, dt: dt * 60, gravityTargets })
       forceTick((value) => value + 1)
       frame = requestAnimationFrame(tick)
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [size.h, size.w])
+  }, [gravityTargets, size.h, size.w])
 
   useEffect(() => {
     const element = wrapRef.current
@@ -424,6 +481,21 @@ export function ScenarioCluster({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, scenarios])
 
+  useEffect(() => {
+    if (!selectedId) {
+      return
+    }
+    const position = posRef.current[selectedId]
+    if (!position) {
+      return
+    }
+    setView((current) => ({
+      ...current,
+      x: size.w / 2 - position.x * current.scale,
+      y: size.h / 2 - position.y * current.scale,
+    }))
+  }, [selectedId, size.h, size.w])
+
   const positions = posRef.current
 
   if (!scenarios.length) {
@@ -500,20 +572,26 @@ export function ScenarioCluster({
           if (!position) {
             return null
           }
-          const color = KIND_COLOR[scenario.kind]
-          const radius = 8 + scenario.score * 14
+          const plan = isPlanScenario(scenario)
+          const prediction = isPredictionScenario(scenario)
+          const color = plan ? 'var(--accent)' : KIND_COLOR[scenario.kind]
+          const radius = 17 * scenarioReadinessScale(scenario)
           const selected = selectedId === scenario.id
           const pulse = activePulses.has(scenario.id)
           const chosen = scenario.decisionState === 'chosen'
           const rejected = scenario.decisionState === 'rejected'
-          const pinned = pinnedIds.has(scenario.id)
+          const pinned = pinnedIds.has(scenario.id) || plan
           const dim = Boolean(selectedId && !highlight.has(scenario.id))
+          const freshnessOpacity = scenarioFreshnessOpacity(scenario)
+          const borderWidth = plan || prediction ? 2 : 1 + Math.max(0.4, scenario.confidence) * 1.4
+          const stalePinned = pinned && (scenario.freshness === 'stale' || scenario.relevance < 0.65)
 
           return (
             <div
               key={scenario.id}
               data-cluster-node
               data-scenario-id={scenario.id}
+              title={`${scenario.title}\nRelevance ${Math.round(scenario.relevance * 100)}% · ${scenario.readiness} · ${scenario.visibilityReason || scenario.freshness}`}
               onPointerDown={(event) => onNodePointerDown(event, scenario.id)}
               style={{
                 position: 'absolute',
@@ -521,13 +599,17 @@ export function ScenarioCluster({
                 top: position.y - radius,
                 width: radius * 2,
                 height: radius * 2,
-                borderRadius: '50%',
+                borderRadius: plan ? '28%' : '50%',
                 cursor: 'pointer',
-                background: rejected ? 'transparent' : `color-mix(in oklch, ${color} 18%, transparent)`,
-                border: `1.5px solid ${color}`,
-                opacity: rejected ? 0.35 : dim ? 0.35 : 1,
+                background: rejected ? 'transparent' : `color-mix(in oklch, ${color} ${plan || prediction || scenario.readiness === 'ready' ? 30 : 18}%, transparent)`,
+                border: `${borderWidth}px solid ${color}`,
+                opacity: rejected ? 0.25 : dim ? 0.42 : freshnessOpacity,
                 boxShadow: selected
                   ? `0 0 0 3px var(--bg-0), 0 0 0 5px ${color}, 0 0 26px ${color}80`
+                  : pinned
+                    ? `0 0 0 2px var(--bg-0), 0 0 0 4px var(--amber)`
+                  : prediction
+                    ? `0 0 18px ${color}55`
                   : chosen
                     ? `0 0 18px ${color}80`
                     : 'none',
@@ -538,7 +620,7 @@ export function ScenarioCluster({
               {chosen ? <div style={{ position: 'absolute', inset: '30%', borderRadius: '50%', background: color }} /> : null}
               {pinned ? (
                 <div
-                  aria-label="pinned"
+                  aria-label={stalePinned ? 'pinned stale' : 'pinned'}
                   style={{
                     position: 'absolute',
                     top: -8,
@@ -546,8 +628,9 @@ export function ScenarioCluster({
                     width: 12,
                     height: 12,
                     borderRadius: '50%',
-                    background: 'var(--amber)',
+                    background: stalePinned ? 'var(--bg-2)' : 'var(--amber)',
                     border: '2px solid var(--bg-0)',
+                    boxShadow: stalePinned ? 'inset 0 0 0 2px var(--amber)' : 'none',
                   }}
                 />
               ) : null}
@@ -558,17 +641,21 @@ export function ScenarioCluster({
                   top: '110%',
                   left: '50%',
                   transform: 'translateX(-50%)',
-                  whiteSpace: 'nowrap',
+                  whiteSpace: 'normal',
                   fontSize: 9.5,
-                  color: selected ? 'var(--fg-1)' : 'var(--fg-3)',
+                  lineHeight: 1.18,
+                  color: selected || prediction ? 'var(--fg-1)' : 'var(--fg-3)',
                   marginTop: 4,
                   pointerEvents: 'none',
-                  maxWidth: 180,
+                  width: selected ? 260 : 210,
+                  textAlign: 'center',
                   overflow: 'hidden',
-                  textOverflow: 'ellipsis',
+                  display: '-webkit-box',
+                  WebkitLineClamp: selected ? 3 : 2,
+                  WebkitBoxOrient: 'vertical',
                 }}
               >
-                {scenario.title.length > 24 ? `${scenario.title.slice(0, 22)}…` : scenario.title}
+                {scenario.title}
               </div>
               <div
                 className="mono"
@@ -585,11 +672,49 @@ export function ScenarioCluster({
                   fontWeight: 500,
                 }}
               >
-                {scenario.score.toFixed(3)}
+                {scenarioNodeBadge(scenario)}
               </div>
+              <div
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  left: '50%',
+                  top: scenario.lifecycleMotion === 'rising' ? -14 : 'auto',
+                  bottom: scenario.lifecycleMotion === 'falling' || scenario.lifecycleMotion === 'fading' ? -14 : 'auto',
+                  transform: 'translateX(-50%)',
+                  width: 0,
+                  height: 0,
+                  borderLeft: '4px solid transparent',
+                  borderRight: '4px solid transparent',
+                  borderBottom: scenario.lifecycleMotion === 'rising' ? `6px solid ${color}` : undefined,
+                  borderTop: scenario.lifecycleMotion === 'falling' || scenario.lifecycleMotion === 'fading' ? `6px solid ${color}` : undefined,
+                  opacity: scenario.lifecycleMotion === 'stable' ? 0 : 0.75,
+                }}
+              />
             </div>
           )
         })}
+      </div>
+
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 12,
+          left: 12,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          background: 'var(--bg-1)',
+          border: '1px solid var(--line-1)',
+          borderRadius: 'var(--r-2)',
+          padding: '7px 9px',
+          zIndex: 3,
+        }}
+      >
+        <span style={{ display: 'inline-flex', width: 10, height: 10, borderRadius: '50%', border: '1px solid var(--accent)', background: 'color-mix(in oklch, var(--accent) 18%, transparent)' }} />
+        <span className="mono" style={{ fontSize: 10.5, color: 'var(--fg-3)' }}>
+          Top = relevant now · size = readiness · opacity = freshness · border = confidence
+        </span>
       </div>
 
       <div

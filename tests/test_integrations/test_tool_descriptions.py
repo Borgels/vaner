@@ -56,11 +56,12 @@ def _tool_descriptions() -> dict[str, str]:
     return out
 
 
-def test_predictions_active_mentions_mechanical_and_adopt_preference() -> None:
+def test_predictions_active_mentions_mechanical_and_suggest_preference() -> None:
     descs = _tool_descriptions()
     d = descs["vaner.predictions.active"]
     assert "Do NOT call mechanically" in d
-    assert "prefer vaner.predictions.adopt" in d
+    assert "Prefer vaner.suggest" in d
+    assert "confidence alone" in d
 
 
 def test_predictions_active_lists_readiness_states() -> None:
@@ -72,6 +73,7 @@ def test_predictions_active_lists_readiness_states() -> None:
 def test_resolve_mentions_adopted_package_block() -> None:
     d = _tool_descriptions()["vaner.resolve"]
     assert "<VANER_ADOPTED_PACKAGE>" in d
+    assert "Do NOT call this merely because no prepared prediction exists" in d
     assert "Do NOT call vaner.resolve in parallel with vaner.predictions.adopt" in d
 
 
@@ -79,4 +81,12 @@ def test_adopt_mentions_one_per_turn_cap() -> None:
     d = _tool_descriptions()["vaner.predictions.adopt"]
     assert "Adopt at most one prediction per user turn" in d
     assert "adopted_from_prediction_id" in d
+    assert "strong_match" in d
     assert "feedback loop" in d.lower()
+
+
+def test_suggest_is_canonical_turn_start_api() -> None:
+    d = _tool_descriptions()["vaner.suggest"]
+    assert "Canonical turn-start Vaner decision API" in d
+    for action in ("use_adopted_package", "adopt_prediction", "resolve_optional", "answer_normally"):
+        assert action in d
