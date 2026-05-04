@@ -221,7 +221,11 @@ jobs:
           python scripts/release/preflight.py primary-artifacts --dist-dir dist-assets/dist --sbom dist-assets/sbom.json > /tmp/primary-artifacts.txt
           while IFS= read -r artifact; do
             [ -n "$artifact" ] || continue
-            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
+            if [[ "$artifact" == dist-assets/dist/* ]]; then
+              gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
+            else
+              echo "Skipping GitHub artifact attestation for $artifact; SBOM is verified by Sigstore bundle and SLSA subject."
+            fi
             bundle="${artifact}.sigstore.json"
             cosign verify-blob \
               --bundle "$bundle" \
