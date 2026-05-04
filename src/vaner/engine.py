@@ -3844,7 +3844,7 @@ class VanerEngine:
                 )
             )
         except Exception:
-            pass
+            logger.exception("Failed to build next-horizon prediction specs")
 
         # WS7: goal source — active workspace goals seed predictions with
         # long-horizon anchors. Each goal becomes a prediction whose

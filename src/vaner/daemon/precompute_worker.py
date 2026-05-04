@@ -61,6 +61,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         try:
             os.unlink(tmp_name)
         except FileNotFoundError:
+            # os.replace already moved the temp file into place.
             pass
 
 
@@ -291,7 +292,7 @@ class PrecomputeWorker:
             try:
                 self._queue.task_done()
             except ValueError:
-                pass
+                logger.debug("queue task accounting was already balanced during drain", exc_info=True)
         self._status["queue"]["size"] = self._queue.qsize()
         return drained
 
@@ -599,7 +600,8 @@ class PrecomputeWorker:
         try:
             os.nice(8)
         except OSError:
-            pass
+            # Restricted environments may deny priority changes; continue with default priority.
+            logger.debug("failed to lower native thread priority", exc_info=True)
 
 
 def _snapshot_has_prediction_rows(snapshot: dict[str, Any] | None) -> bool:
