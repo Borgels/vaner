@@ -4,7 +4,7 @@ import { adaptScenario } from './adapt'
 import type { PipelineEvent } from './usePipelineEvents'
 import type { ScenarioApiPayload, UIScenario } from '../types'
 
-export function useScenarios(topK: number, events: PipelineEvent[]) {
+export function useScenarios(topK: number, events: PipelineEvent[], visibility: 'live' | 'history' | 'all' = 'live') {
   const [scenarioMap, setScenarioMap] = useState<Record<string, ScenarioApiPayload>>({})
   const [scenarios, setScenarios] = useState<UIScenario[]>([])
   const [loading, setLoading] = useState(true)
@@ -13,7 +13,7 @@ export function useScenarios(topK: number, events: PipelineEvent[]) {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    fetch(`/scenarios?limit=${encodeURIComponent(String(topK))}`)
+    fetch(`/scenarios?limit=${encodeURIComponent(String(topK))}&visibility=${encodeURIComponent(visibility)}`)
       .then(async (response) => {
         if (!response.ok) {
           throw new Error((await response.text().catch(() => '')) || `HTTP ${response.status}`)
@@ -36,7 +36,7 @@ export function useScenarios(topK: number, events: PipelineEvent[]) {
     return () => {
       cancelled = true
     }
-  }, [topK, events.length])
+  }, [topK, events.length, visibility])
 
   return useMemo(
     () => ({ scenarios, setScenarios, scenarioMap, setScenarioMap, loading, error }),

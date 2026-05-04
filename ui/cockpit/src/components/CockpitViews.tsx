@@ -447,12 +447,12 @@ export function BoardView({
   const readyPredictions = predictions.filter((prediction) =>
     ['ready', 'drafting'].includes(String(prediction.readiness ?? prediction.run?.readiness ?? '')) && prediction.trust_status !== 'invalidated',
   )
-  const readyScenarios = scenarios.filter((scenario) => scenario.freshness === 'fresh').slice(0, 8)
+  const readyScenarios = scenarios.filter((scenario) => scenario.readiness === 'ready' || scenario.visibility === 'prominent').slice(0, 8)
   const adoptedOrDismissed = cards.filter((card) =>
     card.secondary_actions.some((action) => action.kind === 'dismiss') && card.badge.toLowerCase().includes('dismiss'),
   )
   const prepared = cards.filter((card) => !adoptedOrDismissed.includes(card))
-  const newItems = scenarios.filter((scenario) => scenario.freshness !== 'fresh').slice(0, 8)
+  const newItems = scenarios.filter((scenario) => scenario.visibility === 'warming' || scenario.lifecycleMotion === 'rising').slice(0, 8)
 
   return (
     <ViewShell eyebrow="Board" title="Lifecycle at a glance">
@@ -537,8 +537,8 @@ export function EvidenceView({
                 <tr key={scenario.id} onClick={() => onSelectScenario(scenario.id)} style={rowStyle(selectedScenarioId === scenario.id)}>
                   <td style={tdStyle}>{scenario.title}<Meta>{scenario.kind}</Meta></td>
                   <td style={tdStyle}>{scenario.entities.slice(0, 2).join(', ') || scenario.path || 'none'}<Meta>{evidence.length} evidence refs</Meta></td>
-                  <td style={tdStyle}>{scenario.freshness}</td>
-                  <td style={tdStyle}>{scenario.score.toFixed(3)}</td>
+                  <td style={tdStyle}>{scenario.freshness}<Meta>{scenario.lifecycleMotion}</Meta></td>
+                  <td style={tdStyle}>{Math.round(scenario.relevance * 100)}%<Meta>confidence {Math.round(scenario.confidence * 100)}%</Meta></td>
                   <td style={tdStyle}>{scenario.reason}</td>
                   <td style={tdStyle}>{scenario.pinned ? 'pinned' : 'open'}</td>
                 </tr>
@@ -658,8 +658,8 @@ function ScenarioOpportunityCard({ scenario, selected, primary = false, onClick 
       selected={selected}
       title={scenario.title}
       type={scenario.kind}
-      confidence={scenario.score.toFixed(3)}
-      freshness={scenario.freshness}
+      confidence={`${Math.round(scenario.relevance * 100)}% relevant`}
+      freshness={`${scenario.readiness} · ${scenario.freshness}`}
       evidence={`${scenario.entities.length || (scenario.path ? 1 : 0)} areas`}
       target={scenario.entities.slice(0, 2).join(', ') || scenario.path || 'workspace'}
       reason={scenario.reason}
@@ -776,7 +776,7 @@ function BoardPreparedCard({ card, selected, onClick }: { card: PreparedWorkCard
 }
 
 function BoardScenarioCard({ scenario, selected, onClick }: { scenario: UIScenario; selected: boolean; onClick: () => void }) {
-  return <MiniCard selected={selected} title={scenario.title} meta={`${scenario.kind} · ${scenario.score.toFixed(3)} · ${scenario.freshness}`} onClick={onClick} />
+  return <MiniCard selected={selected} title={scenario.title} meta={`${scenario.kind} · ${Math.round(scenario.relevance * 100)}% relevant · ${scenario.readiness}`} onClick={onClick} />
 }
 
 function PredictionMiniCard({ prediction, onSelect }: { prediction: PredictionSummary; onSelect?: (id: string) => void }) {

@@ -9,7 +9,16 @@ function scenario(overrides: Partial<UIScenario>): UIScenario {
     kind: 'research',
     title: 'x',
     score: 0.5,
+    relevance: 0.5,
+    confidence: 0.5,
+    visiblePriority: 0.5,
     freshness: 'fresh',
+    readiness: 'warming',
+    visibility: 'warming',
+    lifecycleMotion: 'stable',
+    lastReinforcedAt: null,
+    archivedAt: null,
+    visibilityReason: '',
     depth: 0,
     parent: null,
     path: 'x.py',
@@ -120,18 +129,14 @@ describe('initialLayout', () => {
     }
   })
 
-  it('buckets scenarios of the same kind into the same angular sector', () => {
+  it('keeps higher relevance scenarios above cooling scenarios', () => {
     const scenarios = [
-      scenario({ id: 'a', kind: 'research', score: 0.6 }),
-      scenario({ id: 'b', kind: 'research', score: 0.7 }),
-      scenario({ id: 'c', kind: 'debug', score: 0.8 }),
+      scenario({ id: 'a', kind: 'research', relevance: 0.9, visiblePriority: 0.9 }),
+      scenario({ id: 'b', kind: 'research', relevance: 0.45, visiblePriority: 0.45 }),
+      scenario({ id: 'c', kind: 'debug', relevance: 0.8, visiblePriority: 0.8 }),
     ]
     const positions = initialLayout(scenarios, 800, 600)
-    const angle = (id: string) =>
-      Math.atan2(positions[id].y - 300, positions[id].x - 400)
-    const researchGap = Math.abs(angle('a') - angle('b'))
-    const crossKindGap = Math.abs(angle('a') - angle('c'))
-    expect(researchGap).toBeLessThan(crossKindGap)
+    expect(positions.a.y).toBeLessThan(positions.b.y)
   })
 })
 

@@ -116,4 +116,29 @@ describe('scenarioDisplayTitle', () => {
     expect(adapted.reason).toContain('Based on 2 change summaries')
     expect(adapted.reason).toContain('CHANGELOG.md and pyproject.toml')
   })
+
+  it('maps lifecycle fields for the live scenario map', () => {
+    const adapted = adaptScenario(
+      payload({
+        score: 0.8,
+        confidence: 0.72,
+        relevance: 0.91,
+        visible_priority: 0.89,
+        readiness: 'ready',
+        visibility: 'prominent',
+        lifecycle_motion: 'rising',
+        last_reinforced_at: 12,
+        archived_at: null,
+        visibility_reason: 'prepared context is ready',
+      }),
+    )
+
+    expect(adapted.relevance).toBe(0.91)
+    expect(adapted.confidence).toBe(0.72)
+    expect(adapted.visiblePriority).toBe(0.89)
+    expect(adapted.readiness).toBe('ready')
+    expect(adapted.visibility).toBe('prominent')
+    expect(adapted.lifecycleMotion).toBe('rising')
+    expect(adapted.visibilityReason).toBe('prepared context is ready')
+  })
 })

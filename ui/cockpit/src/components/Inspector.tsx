@@ -67,8 +67,13 @@ export function Inspector({
           </div>
           <div style={{ fontFamily: 'var(--font-display)', fontSize: 18, color: 'var(--fg-1)' }}>{scenario.title}</div>
           <div className="mono" style={{ fontSize: 10.5, color: 'var(--fg-4)', marginTop: 6 }}>
-            {livePreparation ? 'live preparation' : scenario.id} · {scenario.kind} · score {scenario.score.toFixed(3)} · {scenario.freshness}
+            {livePreparation ? 'live preparation' : scenario.id} · {scenario.kind} · relevance {Math.round(scenario.relevance * 100)}% · {scenario.readiness} · {scenario.freshness}
           </div>
+          {scenario.visibilityReason ? (
+            <div className="mono" style={{ fontSize: 10.5, color: 'var(--fg-4)', marginTop: 4 }}>
+              {scenario.lifecycleMotion}: {scenario.visibilityReason}
+            </div>
+          ) : null}
           {invalidation ? (
             <div
               className="mono"
@@ -109,7 +114,7 @@ export function Inspector({
       </div>
 
       <div style={{ marginTop: 16 }}>
-        <div className="mono" style={sectionTitle}>SCORE</div>
+        <div className="mono" style={sectionTitle}>RELEVANCE</div>
         {scores.length ? (
           <>
             <ScoreFactorBar scores={scores} />
@@ -120,7 +125,11 @@ export function Inspector({
               </div>
             ))}
           </>
-        ) : <div style={emptyStyle}>No score breakdown.</div>}
+        ) : (
+          <div style={emptyStyle}>
+            Relevance {Math.round(scenario.relevance * 100)}%, confidence {Math.round(scenario.confidence * 100)}%, {scenario.visibility}.
+          </div>
+        )}
       </div>
 
       {prepared ? (
@@ -196,8 +205,8 @@ function ScoreFactorBar({ scores }: { scores: ScoreComponent[] }) {
   return (
     <div
       role="img"
-      aria-label="Score factor attribution"
-      data-testid="inspector-score-bar"
+      aria-label="Relevance factor attribution"
+      data-testid="inspector-relevance-bar"
       style={{
         display: 'flex',
         height: 6,

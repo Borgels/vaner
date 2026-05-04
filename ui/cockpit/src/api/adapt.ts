@@ -176,12 +176,24 @@ export function scenarioDisplayTitle(payload: ScenarioApiPayload): string {
 
 export function adaptScenario(payload: ScenarioApiPayload): UIScenario {
   const title = scenarioDisplayTitle(payload)
+  const score = Number(payload.score ?? 0)
+  const relevance = Number(payload.relevance ?? payload.visible_priority ?? score)
+  const confidence = Number(payload.confidence ?? score)
   return {
     id: payload.id,
     kind: payload.kind ?? 'research',
     title,
-    score: Number(payload.score ?? 0),
+    score,
+    relevance,
+    confidence,
+    visiblePriority: Number(payload.visible_priority ?? relevance),
     freshness: payload.freshness ?? 'recent',
+    readiness: payload.readiness ?? (payload.prepared_context ? 'ready' : payload.evidence?.length ? 'warming' : 'unprepared'),
+    visibility: payload.visibility ?? 'warming',
+    lifecycleMotion: payload.lifecycle_motion ?? 'stable',
+    lastReinforcedAt: payload.last_reinforced_at ?? payload.last_refreshed_at ?? null,
+    archivedAt: payload.archived_at ?? null,
+    visibilityReason: payload.visibility_reason ?? '',
     depth: Number(payload.depth ?? 0),
     parent: payload.parent ?? null,
     path: payload.path ?? payload.evidence?.[0]?.source_path ?? '',

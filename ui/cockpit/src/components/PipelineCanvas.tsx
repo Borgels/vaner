@@ -106,7 +106,7 @@ export function PipelineCanvas({
             {scenarios.length} {heading} · shared file links · drag to reposition
           </div>
           <div className="mono" style={{ marginTop: 6, color: 'var(--fg-4)', fontSize: 10, maxWidth: 520, lineHeight: 1.4 }}>
-            Node size = readiness score. Solid links = parent/child. Dashed links = shared files or plan tasks.
+            Higher bubbles are relevant now. Size = readiness, opacity = freshness, border = confidence.
           </div>
         </div>
         {activePlan ? (

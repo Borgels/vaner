@@ -140,7 +140,7 @@ export function expandScenario(id: string): Promise<{ scenario: ScenarioApiPaylo
 }
 
 export function togglePin(id: string, pinned: boolean): Promise<{ scenario: ScenarioApiPayload | null }> {
-  return request(`/scenarios/${encodeURIComponent(id)}/outcome`, {
+  return request(`/scenarios/${encodeURIComponent(id)}/pin`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ pinned }),

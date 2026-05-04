@@ -9,6 +9,9 @@ ScenarioKind = Literal["debug", "explain", "change", "research"]
 ScenarioFreshness = Literal["fresh", "recent", "stale"]
 ScenarioCost = Literal["low", "medium", "high"]
 ScenarioOutcome = Literal["useful", "irrelevant", "partial", "wrong"]
+ScenarioReadiness = Literal["unprepared", "warming", "ready", "cooling"]
+ScenarioVisibility = Literal["prominent", "warming", "cooling", "archived"]
+ScenarioLifecycleMotion = Literal["rising", "stable", "falling", "fading"]
 MemoryState = Literal["candidate", "trusted", "stale", "demoted"]
 
 
@@ -42,3 +45,11 @@ class Scenario(BaseModel):
     prior_successes: int = 0
     contradiction_signal: float = 0.0
     pinned: int = 0
+    relevance: float = 0.0
+    visible_priority: float = 0.0
+    readiness: ScenarioReadiness = "unprepared"
+    visibility: ScenarioVisibility = "warming"
+    lifecycle_motion: ScenarioLifecycleMotion = "stable"
+    last_reinforced_at: float | None = None
+    archived_at: float | None = None
+    visibility_reason: str = ""

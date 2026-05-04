@@ -83,7 +83,7 @@ import { fetchScenarioDetail } from './api/client'
 
 const COCKPIT_BUILD_SHA = (import.meta as unknown as { env?: { VITE_COCKPIT_SHA?: string } }).env?.VITE_COCKPIT_SHA ?? ''
 
-type ScenarioScope = 'all' | 'session' | 'focus'
+type ScenarioScope = 'live' | 'session' | 'focus' | 'history'
 
 const PREDICTION_STATE_ORDER = ['ready', 'drafting', 'evidence_gathering', 'grounding', 'queued', 'stale']
 
@@ -171,12 +171,23 @@ function predictionReason(prediction: PredictionSummary): string {
 function scenarioFromPrediction(prediction: PredictionSummary): UIScenario {
   const targets = predictionTargets(prediction)
   const readiness = predictionReadiness(prediction)
+  const confidence = prediction.confidence ?? prediction.spec?.confidence ?? 0.55
+  const ready = readiness === 'ready' || readiness === 'drafting'
   return {
     id: `prediction:${prediction.id || prediction.prediction_id}`,
     kind: predictionKind(prediction),
     title: predictionTitle(prediction),
-    score: prediction.confidence ?? prediction.spec?.confidence ?? 0.55,
-    freshness: readiness === 'stale' ? 'stale' : readiness === 'ready' || readiness === 'drafting' ? 'fresh' : 'recent',
+    score: confidence,
+    relevance: ready ? Math.max(0.82, confidence) : Math.max(0.58, confidence * 0.9),
+    confidence,
+    visiblePriority: ready ? Math.max(0.82, confidence) : Math.max(0.58, confidence * 0.9),
+    freshness: readiness === 'stale' ? 'stale' : ready ? 'fresh' : 'recent',
+    readiness: ready ? 'ready' : readiness === 'stale' ? 'cooling' : 'warming',
+    visibility: ready ? 'prominent' : readiness === 'stale' ? 'cooling' : 'warming',
+    lifecycleMotion: ready ? 'rising' : readiness === 'stale' ? 'falling' : 'stable',
+    lastReinforcedAt: prediction.updated_at ?? prediction.created_at ?? null,
+    archivedAt: null,
+    visibilityReason: ready ? 'prepared prediction is ready' : 'background prediction is warming',
     depth: 0,
     parent: null,
     path: targets[0] ?? 'background preparation',
@@ -232,9 +243,9 @@ function App() {
   const focusRuntime = useFocusRuntime(3500)
   const [cockpit, setCockpit] = useState<CockpitSettings>(DEFAULT_COCKPIT_SETTINGS)
   const [query, setQuery] = useState('')
-  const scenarioResult = useScenarios(cockpit.topK, pipeline.events)
+  const [scenarioScope, setScenarioScope] = useState<ScenarioScope>('live')
+  const scenarioResult = useScenarios(cockpit.topK, pipeline.events, scenarioScope === 'history' ? 'history' : 'live')
   const { setScenarios, scenarioMap, setScenarioMap } = scenarioResult
-  const [scenarioScope, setScenarioScope] = useState<ScenarioScope>('all')
   const [backend, setBackend] = useState<BackendSettings | null>(null)
   const [compute, setCompute] = useState<ComputeSettings | null>(null)
   const [mcp, setMcp] = useState<MCPSettings | null>(null)
@@ -285,7 +296,16 @@ function App() {
       kind: 'change',
       title: draft.title,
       score: 0.99,
+      relevance: 0.99,
+      confidence: 0.96,
+      visiblePriority: 0.99,
       freshness: 'fresh',
+      readiness: 'ready',
+      visibility: 'prominent',
+      lifecycleMotion: 'rising',
+      lastReinforcedAt: Date.now() / 1000,
+      archivedAt: null,
+      visibilityReason: 'active draft plan',
       depth: 0,
       parent: null,
       path: draft.prep_dir || 'plan draft',
@@ -310,6 +330,9 @@ function App() {
 
   const scenarios = useMemo(() => {
     const withLive = (rows: UIScenario[]) => {
+      if (scenarioScope === 'history') {
+        return rows
+      }
       const combined = [...predictionScenarios, ...rows.filter((row) => !predictionScenarios.some((prediction) => prediction.id === row.id))]
       return livePlanScenario ? [livePlanScenario, ...combined.filter((row) => row.id !== livePlanScenario.id)] : combined
     }
@@ -777,7 +800,7 @@ function App() {
       Object.fromEntries(
         Object.entries(scenarioMap).map(([id, payload]) => [
           id,
-          (payload.score_components ?? []) as ScoreComponent[],
+          (payload.lifecycle_components ?? payload.score_components ?? []) as ScoreComponent[],
         ]),
       ),
     [scenarioMap],
@@ -832,7 +855,7 @@ function App() {
           kindColor: KIND_COLOR[scenario.kind],
           label: scenario.title,
           keywords: `${scenario.path} ${scenario.id}`,
-          hint: scenario.score.toFixed(3),
+          hint: `${Math.round(scenario.relevance * 100)}% relevant`,
           run: () => selectScenario(scenario.id),
         })),
       ]
@@ -860,16 +883,20 @@ function App() {
 
   const showScenarioPane = mode !== 'proxy'
   const scenarioHeading =
-    scenarioScope === 'all'
+    scenarioScope === 'live'
       ? 'live suggestions'
       : scenarioScope === 'focus'
         ? 'focus suggestions'
+        : scenarioScope === 'history'
+          ? 'archived suggestions'
         : 'session suggestions'
   const scenarioEmptyHint =
-    scenarioScope === 'all'
+    scenarioScope === 'live'
       ? 'No suggestions or live preparation nodes are available yet.'
       : scenarioScope === 'focus'
         ? 'No suggestions or live preparation nodes for the current Auto Focus workspace yet.'
+        : scenarioScope === 'history'
+          ? 'No archived suggestions yet. Cooling scenarios will move here instead of staying on the live map.'
         : 'No suggestions have been created in this cockpit session yet. Switch to History to inspect older suggestions.'
 
   return (
@@ -1198,9 +1225,10 @@ function ScenarioMapControls({
   focusMatches: boolean
 }) {
   const scopeOptions: Array<{ id: ScenarioScope; label: string }> = [
-    { id: 'session', label: 'Current session' },
-    { id: 'focus', label: 'Current focus' },
-    { id: 'all', label: 'History' },
+    { id: 'live', label: 'Live' },
+    { id: 'session', label: 'Session' },
+    { id: 'focus', label: 'Focus' },
+    { id: 'history', label: 'History' },
   ]
   return (
     <div
@@ -1242,7 +1270,7 @@ function ScenarioMapControls({
             style={{
               background: scope === option.id ? 'var(--bg-2)' : 'transparent',
               border: 'none',
-              borderLeft: option.id === 'all' ? 'none' : '1px solid var(--line-1)',
+              borderLeft: option.id === 'live' ? 'none' : '1px solid var(--line-1)',
               color: scope === option.id ? 'var(--fg-1)' : 'var(--fg-3)',
               padding: '5px 9px',
               fontFamily: 'var(--font-mono)',

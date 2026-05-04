@@ -144,6 +144,46 @@ def test_cockpit_support_endpoints_return_payloads(temp_repo) -> None:
     assert pinned.json()["facts"] == [{"id": "scn_pinned_1", "text": "Pinned context"}]
 
 
+def test_scenarios_endpoint_separates_live_and_history(temp_repo) -> None:
+    old = time.time() - 7_200
+
+    async def _seed() -> None:
+        store = ScenarioStore(temp_repo / ".vaner" / "scenarios.db")
+        await store.initialize()
+        await store.upsert(Scenario(id="scn_live", kind="debug", score=0.8, confidence=0.8, freshness="fresh"))
+        await store.upsert(
+            Scenario(
+                id="scn_archived",
+                kind="research",
+                score=0.9,
+                confidence=0.9,
+                freshness="stale",
+                created_at=old,
+                last_refreshed_at=old,
+                last_reinforced_at=old,
+            )
+        )
+
+    asyncio.run(_seed())
+
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        live = client.get("/scenarios?visibility=live")
+        history = client.get("/scenarios?visibility=history")
+
+    assert live.status_code == 200
+    assert [item["id"] for item in live.json()["scenarios"]] == ["scn_live"]
+    assert live.json()["scenarios"][0]["relevance"] >= 0.4
+    assert history.status_code == 200
+    assert [item["id"] for item in history.json()["scenarios"]] == ["scn_archived"]
+    assert history.json()["scenarios"][0]["visibility"] == "archived"
+
+
 def test_scenario_stream_route_not_shadowed_by_id_route(temp_repo) -> None:
     config = VanerConfig(
         repo_root=temp_repo,

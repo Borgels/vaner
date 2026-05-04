@@ -1,5 +1,8 @@
 export type UIScenarioKind = 'research' | 'explain' | 'change' | 'debug' | 'refactor'
 export type UIFreshness = 'fresh' | 'recent' | 'stale'
+export type UIReadiness = 'unprepared' | 'warming' | 'ready' | 'cooling'
+export type UIVisibility = 'prominent' | 'warming' | 'cooling' | 'archived'
+export type UILifecycleMotion = 'rising' | 'stable' | 'falling' | 'fading'
 export type UIDecisionState = 'active' | 'chosen' | 'partial' | 'rejected' | 'pending' | 'idle'
 export type UIAccent = 'violet' | 'amber' | 'teal'
 export type UIMode = 'daemon' | 'proxy' | 'mcp'
@@ -9,7 +12,16 @@ export interface UIScenario {
   kind: UIScenarioKind
   title: string
   score: number
+  relevance: number
+  confidence: number
+  visiblePriority: number
   freshness: UIFreshness
+  readiness: UIReadiness
+  visibility: UIVisibility
+  lifecycleMotion: UILifecycleMotion
+  lastReinforcedAt: number | null
+  archivedAt: number | null
+  visibilityReason: string
   depth: number
   parent: string | null
   path: string
@@ -481,7 +493,16 @@ export interface ScenarioApiPayload {
   id: string
   kind: UIScenarioKind
   score: number
+  confidence?: number
+  relevance?: number
+  visible_priority?: number
   freshness: UIFreshness
+  readiness?: UIReadiness
+  visibility?: UIVisibility
+  lifecycle_motion?: UILifecycleMotion
+  last_reinforced_at?: number | null
+  archived_at?: number | null
+  visibility_reason?: string
   entities: string[]
   evidence: Array<{
     key?: string
@@ -506,6 +527,7 @@ export interface ScenarioApiPayload {
   decision_state?: UIDecisionState
   reason?: string
   score_components?: Array<{ label: string; value: number; description?: string }>
+  lifecycle_components?: Array<{ label: string; value: number; description?: string }>
 }
 
 // ---------------------------------------------------------------------------

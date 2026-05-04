@@ -1412,20 +1412,21 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         return JSONResponse({"ok": True, "compute": config.compute.model_dump(mode="json")})
 
     @app.get("/scenarios")
-    async def list_items(kind: str | None = None, limit: int = 10) -> JSONResponse:
+    async def list_items(kind: str | None = None, limit: int = 10, visibility: str = "live") -> JSONResponse:
+        visibility_mode = visibility if visibility in {"live", "history", "all"} else "live"
         rows = await _best_effort(
-            scenario_store.list_top(kind=kind, limit=max(1, min(limit, 100))),
+            scenario_store.list_top(kind=kind, limit=max(1, min(limit, 100)), visibility=visibility_mode),
             [],
             label="scenario list",
         )
-        return JSONResponse({"count": len(rows), "scenarios": [row.model_dump(mode="json") for row in rows]})
+        return JSONResponse({"count": len(rows), "visibility": visibility_mode, "scenarios": [_scenario_payload(row) for row in rows]})
 
     @app.get("/scenarios/{scenario_id}")
     async def fetch_item(scenario_id: str) -> JSONResponse:
         row = await scenario_store.get(scenario_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Scenario not found")
-        body = row.model_dump(mode="json")
+        body = _scenario_payload(row)
         # Surface the most recent invalidation signal so the Inspector can
         # render a 'stale because' line. Only attached when the scenario
         # is not fresh — fresh rows do not need a justification.
@@ -1450,6 +1451,32 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                 pass
         return JSONResponse(body)
 
+    def _scenario_payload(row: Any) -> dict[str, Any]:
+        body = row.model_dump(mode="json")
+        body["lifecycle_components"] = [
+            {
+                "label": "relevance",
+                "value": float(body.get("relevance") or 0.0),
+                "description": "Current usefulness for the live workspace context.",
+            },
+            {
+                "label": "confidence",
+                "value": float(body.get("confidence") or 0.0),
+                "description": "Belief that this scenario is valid.",
+            },
+            {
+                "label": "freshness",
+                "value": {"fresh": 1.0, "recent": 0.62, "stale": 0.18}.get(str(body.get("freshness") or ""), 0.0),
+                "description": "How recently new signals reinforced this scenario.",
+            },
+            {
+                "label": "readiness",
+                "value": {"ready": 1.0, "warming": 0.68, "cooling": 0.35, "unprepared": 0.2}.get(str(body.get("readiness") or ""), 0.0),
+                "description": "Whether Vaner has enough evidence or prepared context to act.",
+            },
+        ]
+        return body
+
     @app.post("/scenarios/{scenario_id}/expand")
     async def expand_item(scenario_id: str) -> JSONResponse:
         row = await scenario_store.get(scenario_id)
@@ -1459,21 +1486,34 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         refreshed = await scenario_store.get(scenario_id)
         if refreshed is None:
             raise HTTPException(status_code=404, detail="Scenario not found")
-        return JSONResponse({"ok": True, "scenario": refreshed.model_dump(mode="json")})
+        return JSONResponse({"ok": True, "scenario": _scenario_payload(refreshed)})
 
     @app.post("/scenarios/{scenario_id}/outcome")
     async def record_feedback(scenario_id: str, payload: dict[str, Any]) -> JSONResponse:
         row = await scenario_store.get(scenario_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Scenario not found")
-        result = str(payload.get("result", "")).strip()
+        if "pinned" in payload:
+            await scenario_store.set_pinned(scenario_id, bool(payload.get("pinned")))
+            refreshed_pin = await scenario_store.get(scenario_id)
+            return JSONResponse({"ok": True, "scenario": _scenario_payload(refreshed_pin) if refreshed_pin else None})
+        result = str(payload.get("result", payload.get("outcome", ""))).strip()
         note = str(payload.get("note", "")).strip()
         if result not in {"useful", "partial", "irrelevant"}:
             raise HTTPException(status_code=400, detail="result must be one of useful|partial|irrelevant")
         await scenario_store.record_outcome(scenario_id, result)
         await metrics_store.record_scenario_outcome(scenario_id=scenario_id, result=result, note=note)
         refreshed = await scenario_store.get(scenario_id)
-        return JSONResponse({"ok": True, "scenario": refreshed.model_dump(mode="json") if refreshed else None})
+        return JSONResponse({"ok": True, "scenario": _scenario_payload(refreshed) if refreshed else None})
+
+    @app.post("/scenarios/{scenario_id}/pin")
+    async def pin_scenario(scenario_id: str, payload: dict[str, Any]) -> JSONResponse:
+        row = await scenario_store.get(scenario_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+        await scenario_store.set_pinned(scenario_id, bool(payload.get("pinned", True)))
+        refreshed = await scenario_store.get(scenario_id)
+        return JSONResponse({"ok": True, "scenario": _scenario_payload(refreshed) if refreshed else None})
 
     # ------------------------------------------------------------------
     # Phase 4 / Phase C: predictions surface
@@ -2980,16 +3020,20 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             last_keepalive = 0.0
             sent = 0
             while True:
-                rows = await scenario_store.list_top(limit=10)
+                rows = await scenario_store.list_top(limit=10, visibility="live")
                 if rows:
                     fingerprint = json.dumps(
                         [
                             {
                                 "id": row.id,
-                                "score": row.score,
+                                "relevance": row.relevance,
+                                "visible_priority": row.visible_priority,
+                                "readiness": row.readiness,
+                                "visibility": row.visibility,
+                                "lifecycle_motion": row.lifecycle_motion,
                                 "freshness": row.freshness,
                                 "last_outcome": row.last_outcome,
-                                "last_refreshed_at": row.last_refreshed_at,
+                                "last_reinforced_at": row.last_reinforced_at,
                             }
                             for row in rows
                         ],
@@ -2997,7 +3041,7 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                     )
                     if fingerprint != last_fingerprint:
                         counts = await scenario_store.freshness_counts()
-                        top = rows[0].model_dump(mode="json")
+                        top = _scenario_payload(rows[0])
                         payload = json.dumps(
                             {
                                 **top,
@@ -3011,7 +3055,11 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
                                     {
                                         "id": row.id,
                                         "kind": row.kind,
-                                        "score": row.score,
+                                        "relevance": row.relevance,
+                                        "confidence": row.confidence,
+                                        "readiness": row.readiness,
+                                        "visibility": row.visibility,
+                                        "lifecycle_motion": row.lifecycle_motion,
                                         "freshness": row.freshness,
                                     }
                                     for row in rows
@@ -3047,12 +3095,16 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             sent = 0
             while True:
                 if "scenarios" in selected:
-                    rows = await scenario_store.list_top(limit=10)
+                    rows = await scenario_store.list_top(limit=10, visibility="live")
                     scenario_payload = json.dumps(
                         [
                             {
                                 "id": row.id,
-                                "score": row.score,
+                                "relevance": row.relevance,
+                                "confidence": row.confidence,
+                                "readiness": row.readiness,
+                                "visibility": row.visibility,
+                                "lifecycle_motion": row.lifecycle_motion,
                                 "freshness": row.freshness,
                                 "kind": row.kind,
                             }
