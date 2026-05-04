@@ -57,7 +57,7 @@ that need the lean legacy shape can pass either include flag as `false`.
 
 ## Full v1 tool surface
 
-The complete `vaner.*` MCP tool family at v1.0 (see [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp) for full schemas):
+The complete `vaner.*` MCP tool family at v1.0 (see [docs.vaner.ai/integrations/mcp](https://docs.vaner.ai/integrations/mcp) for full schemas):
 
 - `vaner.status` — engine health, model, compute config, prediction metrics.
 - `vaner.suggest` — intent-priming suggestions for a draft prompt.

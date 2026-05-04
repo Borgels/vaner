@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="92" viewBox="0 0 360 92" role="img" aria-label="Vaner">
+  <style>
+    .wordmark {
+      fill: #1a1620;
+      font: 600 48px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      letter-spacing: 0;
+    }
+    .cursor {
+      fill: #b27a2e;
+      animation: blink 1.25s steps(1, end) infinite;
+    }
+    @keyframes blink {
+      50% { opacity: 0.18; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .cursor { animation: none; }
+    }
+  </style>
+  <g transform="translate(18 24)">
+    <circle cx="22" cy="22" r="18" fill="none" stroke="#6d4f9a" stroke-width="2.8" />
+    <circle cx="22" cy="22" r="8" fill="#6d4f9a" />
+    <path d="M22 22 L36 12" stroke="#b27a2e" stroke-width="1.8" stroke-linecap="round" />
+    <circle cx="36" cy="12" r="3.2" fill="#b27a2e" />
+  </g>
+  <text x="84" y="61" class="wordmark">vaner<tspan class="cursor">_</tspan></text>
+</svg>
