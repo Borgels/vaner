@@ -54,7 +54,7 @@ rm -rf ~/.claude/skills/vaner
 
 `vaner init` still works and still writes a managed feedback skill to `~/.claude/skills/vaner/vaner-feedback/SKILL.md` plus a per-repo `.cursor/mcp.json`. For Claude Code users the plugin supersedes both — the plugin-shipped skill resolves as `/vaner:vaner-feedback` (namespaced), and the plugin's `.mcp.json` registers the MCP server at the user scope. The standalone skill can coexist harmlessly (contents are byte-identical and CI-enforced) or be removed.
 
-For Cursor, Codex CLI, and other clients that don't support Claude Code plugins, continue using `vaner init` / the per-client instructions at [docs.vaner.ai/mcp](https://docs.vaner.ai/mcp).
+For Cursor, Codex CLI, and other clients that don't support Claude Code plugins, continue using `vaner init` / the per-client instructions at [docs.vaner.ai/integrations/mcp](https://docs.vaner.ai/integrations/mcp).
 
 ## Running in scripted / non-interactive mode
 
