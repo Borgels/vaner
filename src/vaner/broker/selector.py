@@ -29,6 +29,19 @@ def _recency_bonus(artefact: Artefact, decay_half_life_seconds: int = 1800) -> f
     return 0.1 + (0.9 * decay)
 
 
+def _source_rank_prior(artefact: Artefact) -> float:
+    """Bounded prior from an upstream context source ranking, when present."""
+
+    raw_rank = artefact.metadata.get("retrieval_rank") or artefact.metadata.get("source_rank")
+    try:
+        rank = int(raw_rank)
+    except (TypeError, ValueError):
+        return 0.0
+    if rank <= 0:
+        return 0.0
+    return min(15.0, 15.0 / math.sqrt(rank))
+
+
 _COMMON_WORDS = frozenset(
     "the and are for but not that with this from have been will can its also more"
     " use used using used using using into they their there when than then what"
@@ -885,6 +898,16 @@ def select_artefacts(
                 )
             )
             score += constraint_bonus
+        source_prior = _source_rank_prior(artefact)
+        if source_prior:
+            factors.append(
+                ScoreFactor(
+                    name="source_rank_prior",
+                    contribution=source_prior,
+                    detail="trusted upstream context source ranked this artefact highly",
+                )
+            )
+            score += source_prior
         if capture_factors is not None:
             capture_factors[artefact.key] = factors
         scored_rows.append((score, artefact))
@@ -895,6 +918,8 @@ def select_artefacts(
     threshold_multiplier = competitive_threshold_multiplier(context_need)
     min_competitive_score = ranked[0][0] * threshold_multiplier if ranked else 0.0
     selected_buckets: set[str] = set()
+    deferred_for_diversity: list[Artefact] = []
+    diversity_floor = max(1, top_n // 2)
     for score, artefact in ranked:
         if score < min_competitive_score:
             if capture_drop_reasons is not None:
@@ -905,8 +930,9 @@ def select_artefacts(
         if (
             context_need in {"multi_source_synthesis", "conflict_resolution", "research_mapping", "decision_support"}
             and bucket in selected_buckets
-            and len(selected) < max(1, top_n // 2)
+            and len(selected) < diversity_floor
         ):
+            deferred_for_diversity.append(artefact)
             if capture_drop_reasons is not None:
                 capture_drop_reasons[artefact.key] = "deferred_for_context_diversity"
             continue
@@ -918,6 +944,14 @@ def select_artefacts(
             selected.append(artefact)
             seen_corpora.add(corpus_id)
             selected_buckets.add(bucket)
+        if len(selected) >= diversity_floor:
+            while deferred_for_diversity and len(selected) < top_n:
+                deferred = deferred_for_diversity.pop(0)
+                if deferred in selected:
+                    continue
+                selected.append(deferred)
+                seen_corpora.add(str(deferred.metadata.get("corpus_id", "default")))
+                selected_buckets.add(_diversity_bucket(deferred, context_need))
         if len(selected) >= top_n:
             break
     if capture_drop_reasons is not None:

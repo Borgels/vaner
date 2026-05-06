@@ -65,6 +65,92 @@ def test_select_artefacts_prefers_git_and_working_set_matches():
     assert selected[0].key == "file_summary:b.py"
 
 
+def test_select_artefacts_uses_bounded_source_rank_prior():
+    now = time.time()
+    artefacts = [
+        Artefact(
+            key="file_summary:late.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="late.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="tenant cutover latency threshold escalation sustained",
+            metadata={"retrieval_rank": 12},
+        ),
+        Artefact(
+            key="file_summary:early.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="early.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="tenant cutover latency threshold escalation sustained",
+            metadata={"retrieval_rank": 1},
+        ),
+    ]
+    factors: dict[str, list] = {}
+
+    selected = select_artefacts(
+        "tenant cutover latency threshold escalation sustained",
+        artefacts,
+        top_n=1,
+        capture_factors=factors,
+    )
+
+    assert selected[0].key == "file_summary:early.md"
+    assert any(factor.name == "source_rank_prior" for factor in factors["file_summary:early.md"])
+
+
+def test_select_artefacts_backfills_deferred_diversity_candidates():
+    now = time.time()
+    artefacts = [
+        Artefact(
+            key=f"file_summary:strong-{index}.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path=f"docs/shared/strong-{index}.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="rollback rollback rollback conflict current updated baseline score",
+        )
+        for index in range(4)
+    ]
+    artefacts.extend(
+        [
+            Artefact(
+                key="file_summary:coverage-a.md",
+                kind=ArtefactKind.FILE_SUMMARY,
+                source_path="docs/coverage-a/source.md",
+                source_mtime=now,
+                generated_at=now,
+                model="test",
+                content="baseline score",
+            ),
+            Artefact(
+                key="file_summary:coverage-b.md",
+                kind=ArtefactKind.FILE_SUMMARY,
+                source_path="docs/coverage-b/source.md",
+                source_mtime=now,
+                generated_at=now,
+                model="test",
+                content="updated score",
+            ),
+        ]
+    )
+
+    selected = select_artefacts(
+        "compare current updated rollback conflict baseline score",
+        artefacts,
+        top_n=4,
+        context_need="conflict_resolution",
+    )
+
+    selected_keys = {artefact.key for artefact in selected}
+    assert "file_summary:strong-1.md" in selected_keys
+    assert "file_summary:strong-2.md" in selected_keys
+
+
 def test_select_artefacts_origin_rerank_prefers_definition_files():
     artefacts = [
         Artefact(
