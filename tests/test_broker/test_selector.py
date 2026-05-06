@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from vaner.broker.context_preparation import infer_context_preparation_profile
 from vaner.broker.selector import select_artefacts
 from vaner.models.artefact import Artefact, ArtefactKind
 
@@ -379,6 +380,210 @@ def test_select_artefacts_prioritizes_llm_exploration_flow_files():
     ]
 
 
+def test_select_artefacts_resolves_rollout_rehearsal_paraphrase():
+    artefacts = [
+        Artefact(
+            key="file_summary:src/runtime/release_notes.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/runtime/release_notes.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="Release notes formatter for changelog entries and deployment announcements.",
+        ),
+        Artefact(
+            key="file_summary:src/runtime/traffic_escrow.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/runtime/traffic_escrow.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content=(
+                "TrafficEscrow controller coordinates rehearse_proxy replay runs, "
+                "smoke policy checks, and staged promote gates."
+            ),
+        ),
+    ]
+
+    selected = select_artefacts(
+        "What prevents a candidate release from getting full traffic until replay and smoke checks pass?",
+        artefacts,
+        top_n=1,
+    )
+
+    assert selected[0].source_path == "src/runtime/traffic_escrow.py"
+
+
+def test_select_artefacts_resolves_vectorization_region_paraphrase():
+    artefacts = [
+        Artefact(
+            key="file_summary:src/incidents/general_latency.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/incidents/general_latency.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="Generic latency incident notes for customer-facing status updates.",
+        ),
+        Artefact(
+            key="file_summary:src/incidents/eu_apac_embedding_egress.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/incidents/eu_apac_embedding_egress.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content=(
+                "Embedding batch incident: eu-west residency stamp lag caused "
+                "ap-southeast edge fallback and cross-region egress."
+            ),
+        ),
+    ]
+
+    selected = select_artefacts(
+        "Why did a Western Europe tenant get routed to a Southeast Asia edge during a vectorization spike?",
+        artefacts,
+        top_n=1,
+    )
+
+    assert selected[0].source_path == "src/incidents/eu_apac_embedding_egress.py"
+
+
+def test_select_artefacts_resolves_low_precision_numeric_mode_paraphrase():
+    artefacts = [
+        Artefact(
+            key="file_summary:src/runtime/model_limits.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/runtime/model_limits.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="Model admission limits and request queue accounting.",
+        ),
+        Artefact(
+            key="file_summary:src/runtime/precision_annealing.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/runtime/precision_annealing.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="kernel_stability_threshold precision annealing pass rate checks before stepping from fp32 to int8.",
+        ),
+    ]
+
+    selected = select_artefacts(
+        "What default pass rate is required before stepping down from the safest numeric mode in low bit inference?",
+        artefacts,
+        top_n=1,
+    )
+
+    assert selected[0].source_path == "src/runtime/precision_annealing.py"
+
+
+def test_select_artefacts_prefers_reward_computation_source_over_generic_policy():
+    artefacts = [
+        Artefact(
+            key="file_summary:src/vaner/intent/scoring_policy.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/vaner/intent/scoring_policy.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="score weights priority scenario policy multiplicative nudges",
+        ),
+        Artefact(
+            key="file_summary:src/vaner/learning/reward.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/vaner/learning/reward.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="compute_reward RewardInput cache_tier similarity quality_lift host_outcome judge_score reward_total reward_components",
+        ),
+    ]
+
+    selected = select_artefacts(
+        "How does the reward computation work? What signals does it combine to produce the final reward value?",
+        artefacts,
+        top_n=1,
+    )
+
+    assert selected[0].source_path == "src/vaner/learning/reward.py"
+
+
+def test_select_artefacts_keeps_intent_scorer_and_features_together():
+    artefacts = [
+        Artefact(
+            key="file_summary:src/vaner/intent/scorer.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/vaner/intent/scorer.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="class IntentScorer HistGradientBoosting model score predict feature vector",
+        ),
+        Artefact(
+            key="file_summary:src/vaner/intent/features.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/vaner/intent/features.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content=(
+                "extract_hybrid_features feature_vector_for_artefact active signal flags replay priority "
+                "reward target component weights"
+            ),
+        ),
+        Artefact(
+            key="file_summary:src/vaner/router/proxy.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/vaner/router/proxy.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="proxy routing request response",
+        ),
+    ]
+
+    selected = select_artefacts(
+        "How does the IntentScorer use GBDT models? What features does it extract and how are they combined?",
+        artefacts,
+        top_n=2,
+    )
+
+    assert {item.source_path for item in selected} == {"src/vaner/intent/scorer.py", "src/vaner/intent/features.py"}
+
+
+def test_select_artefacts_prefers_artefact_store_schema_over_package_metadata():
+    artefacts = [
+        Artefact(
+            key="file_summary:src/vaner/store/artefacts.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="src/vaner/store/artefacts.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="class ArtefactStore CREATE TABLE artefacts SELECT key INSERT INTO artefacts context packages persist retrieve schema",
+        ),
+        Artefact(
+            key="file_summary:ui/cockpit/package.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="ui/cockpit/package.json",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="package scripts dependencies",
+        ),
+    ]
+
+    selected = select_artefacts(
+        "How does the ArtefactStore persist and retrieve context packages? What database schema does it use?",
+        artefacts,
+        top_n=1,
+    )
+
+    assert selected[0].source_path == "src/vaner/store/artefacts.py"
+
+
 def test_select_artefacts_custom_scorer_changes_ranking():
     artefacts = [
         Artefact(
@@ -535,3 +740,53 @@ def test_select_artefacts_applies_competitive_score_gate_on_fill_branch():
 
     selected = select_artefacts("anything", artefacts, top_n=2, scorer=custom_scorer)
     assert [a.key for a in selected] == ["file_summary:top.py"]
+
+
+def test_context_profile_infers_multi_source_synthesis_without_benchmark_labels():
+    profile = infer_context_preparation_profile(
+        "List every customer escalation across Slack and Jira after March 2026 and summarize the common risk."
+    )
+
+    assert profile.need == "multi_source_synthesis"
+    assert profile.archetype in {"general", "operator"}
+    assert "slack" in profile.source_hints
+    assert "jira" in profile.source_hints
+    assert any(constraint.kind == "restrictive_language" and constraint.value == "after" for constraint in profile.constraints)
+
+
+def test_select_artefacts_disables_global_gate_for_multi_source_context_need():
+    artefacts = [
+        Artefact(
+            key="file_summary:top.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="top.py",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="top result",
+            metadata={"corpus_id": "repo"},
+        ),
+        Artefact(
+            key="file_summary:low_notes.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="low_notes.md",
+            source_mtime=time.time(),
+            generated_at=time.time(),
+            model="test",
+            content="low result",
+            metadata={"corpus_id": "notes"},
+        ),
+    ]
+
+    def custom_scorer(_: str, artefact: Artefact) -> float:
+        return 10.0 if artefact.key.endswith("top.py") else 2.0
+
+    selected = select_artefacts(
+        "summarize all related evidence",
+        artefacts,
+        top_n=2,
+        scorer=custom_scorer,
+        context_need="multi_source_synthesis",
+    )
+
+    assert [a.key for a in selected] == ["file_summary:top.py", "file_summary:low_notes.md"]

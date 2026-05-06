@@ -87,3 +87,50 @@ def test_generic_lowercase_methods_do_not_outrank_component_paths(tmp_path: Path
     )
 
     assert paths[0] == "src/vaner/intent/cache.py"
+
+
+def test_exact_path_ranking_prefers_reward_module_over_generic_signal_paths(tmp_path: Path) -> None:
+    (tmp_path / "src" / "vaner" / "learning").mkdir(parents=True)
+    (tmp_path / "src" / "vaner" / "signals").mkdir(parents=True)
+    (tmp_path / "src" / "vaner" / "learning" / "reward.py").write_text(
+        "class RewardInput:\n    pass\n\n"
+        "def compute_reward(inputs):\n"
+        "    return {'reward_total': 0.0, 'reward_components': {}}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "vaner" / "signals" / "schema.py").write_text(
+        "class SignalEvent:\n    pass\n",
+        encoding="utf-8",
+    )
+
+    paths = rank_exact_paths(
+        tmp_path,
+        "How does the reward computation work? What signals does it combine to produce the final reward value?",
+        max_paths=3,
+    )
+
+    assert paths[0] == "src/vaner/learning/reward.py"
+
+
+def test_exact_path_ranking_prefers_public_store_definition_over_private_factory(tmp_path: Path) -> None:
+    (tmp_path / "src" / "vaner" / "store").mkdir(parents=True)
+    (tmp_path / "src" / "vaner" / "daemon").mkdir(parents=True)
+    (tmp_path / "src" / "vaner" / "store" / "artefacts.py").write_text(
+        "class ArtefactStore:\n"
+        "    def persist(self):\n"
+        "        return 'CREATE TABLE artefacts SELECT key INSERT INTO artefacts'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "vaner" / "daemon" / "http.py").write_text(
+        "def _artefact_store():\n"
+        "    return 'factory for context package database schema route'\n",
+        encoding="utf-8",
+    )
+
+    paths = rank_exact_paths(
+        tmp_path,
+        "How does the ArtefactStore persist and retrieve context packages? What database schema does it use?",
+        max_paths=3,
+    )
+
+    assert paths[0] == "src/vaner/store/artefacts.py"

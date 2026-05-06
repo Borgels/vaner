@@ -787,25 +787,73 @@ class ArtefactStore:
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
 
-        artefacts: list[Artefact] = []
+        return [self._artefact_from_row(row) for row in rows]
+
+    async def list_by_keys(self, keys: set[str] | list[str] | tuple[str, ...], *, limit: int = 200) -> list[Artefact]:
+        ordered = list(dict.fromkeys(str(key) for key in keys if str(key)))
+        if not ordered:
+            return []
+        capped = ordered[: max(1, int(limit))]
+        placeholders = ",".join("?" for _ in capped)
+        query = (
+            "SELECT key, kind, source_path, source_mtime, generated_at, model, content, "
+            "metadata_json, relevance_score, access_count, last_accessed, signal_id "
+            f"FROM artefacts WHERE key IN ({placeholders})"
+        )
+        async with self._connect() as db:
+            cursor = await db.execute(query, tuple(capped))
+            rows = await cursor.fetchall()
+        by_key = {row[0]: self._artefact_from_row(row) for row in rows}
+        return [by_key[key] for key in capped if key in by_key]
+
+    async def list_by_source_paths(self, paths: set[str] | list[str] | tuple[str, ...], *, limit: int = 200) -> list[Artefact]:
+        ordered = list(dict.fromkeys(str(path) for path in paths if str(path)))
+        if not ordered:
+            return []
+        capped = ordered[: max(1, int(limit))]
+        placeholders = ",".join("?" for _ in capped)
+        query = (
+            "SELECT key, kind, source_path, source_mtime, generated_at, model, content, "
+            "metadata_json, relevance_score, access_count, last_accessed, signal_id "
+            f"FROM artefacts WHERE source_path IN ({placeholders})"
+        )
+        async with self._connect() as db:
+            cursor = await db.execute(query, tuple(capped))
+            rows = await cursor.fetchall()
+        by_path: dict[str, list[Artefact]] = {}
         for row in rows:
-            artefacts.append(
-                Artefact(
-                    key=row[0],
-                    kind=ArtefactKind(row[1]),
-                    source_path=row[2],
-                    source_mtime=row[3],
-                    generated_at=row[4],
-                    model=row[5],
-                    content=row[6],
-                    metadata=json.loads(row[7]),
-                    relevance_score=row[8],
-                    access_count=row[9],
-                    last_accessed=row[10],
-                    signal_id=row[11],
-                )
-            )
+            artefact = self._artefact_from_row(row)
+            by_path.setdefault(artefact.source_path, []).append(artefact)
+        artefacts: list[Artefact] = []
+        for path in capped:
+            artefacts.extend(by_path.get(path, []))
         return artefacts
+
+    async def list_source_paths(self, *, limit: int = 2000) -> list[str]:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT DISTINCT source_path FROM artefacts WHERE source_path != '' ORDER BY source_path LIMIT ?",
+                (max(1, int(limit)),),
+            )
+            rows = await cursor.fetchall()
+        return [str(row[0]) for row in rows if row[0]]
+
+    @staticmethod
+    def _artefact_from_row(row: tuple[object, ...]) -> Artefact:
+        return Artefact(
+            key=row[0],
+            kind=ArtefactKind(row[1]),
+            source_path=row[2],
+            source_mtime=row[3],
+            generated_at=row[4],
+            model=row[5],
+            content=row[6],
+            metadata=json.loads(row[7]),
+            relevance_score=row[8],
+            access_count=row[9],
+            last_accessed=row[10],
+            signal_id=row[11],
+        )
 
     async def mark_accessed(self, key: str) -> None:
         async with self._connect() as db:

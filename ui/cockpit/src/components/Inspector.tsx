@@ -101,6 +101,22 @@ export function Inspector({
       )}
 
       <Section title="Reason">{scenario.reason || 'No reason recorded.'}</Section>
+      <div style={{ marginTop: 16 }}>
+        <div className="mono" style={sectionTitle}>LIFECYCLE</div>
+        <div style={lifecycleGridStyle}>
+          <LifecycleField label="Created" value={formatLifecycleTimestamp(scenario.createdAt)} />
+          <LifecycleField label="Last touched" value={formatLifecycleTimestamp(scenario.lastRefreshedAt)} />
+          <LifecycleField label="Last deemed relevant" value={formatLifecycleTimestamp(scenario.lastReinforcedAt)} />
+          <LifecycleField label="Archived" value={formatLifecycleTimestamp(scenario.archivedAt)} />
+          <LifecycleField label="Freshness" value={scenario.freshness} />
+          <LifecycleField label="Visibility" value={`${scenario.visibility} · ${scenario.lifecycleMotion}`} />
+        </div>
+        {scenario.visibilityReason ? (
+          <div style={{ ...cardStyle, marginTop: 8, color: 'var(--fg-3)', fontSize: 12 }}>
+            {scenario.visibilityReason}
+          </div>
+        ) : null}
+      </div>
       <Section title="Path">{scenario.path || 'No path recorded.'}</Section>
 
       <div style={{ marginTop: 16 }}>
@@ -160,6 +176,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
+function LifecycleField({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={cardStyle}>
+      <div className="mono" style={{ color: 'var(--fg-4)', fontSize: 10 }}>{label}</div>
+      <div style={{ color: 'var(--fg-1)', fontSize: 12.5, marginTop: 4, overflowWrap: 'anywhere' }}>{value}</div>
+    </div>
+  )
+}
+
 const sectionTitle: React.CSSProperties = { fontSize: 10, letterSpacing: 1.1, color: 'var(--fg-4)', marginBottom: 8 }
 const buttonStyle: React.CSSProperties = {
   border: '1px solid var(--line-1)',
@@ -178,6 +203,11 @@ const cardStyle: React.CSSProperties = {
 }
 const preStyle: React.CSSProperties = { ...cardStyle, color: 'var(--fg-2)', whiteSpace: 'pre-wrap', overflow: 'auto', fontSize: 11 }
 const emptyStyle: React.CSSProperties = { color: 'var(--fg-4)', fontSize: 12 }
+const lifecycleGridStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(128px, 1fr))',
+  gap: 8,
+}
 
 function formatTimestamp(epoch: number): string {
   if (!epoch) return 'unknown'
@@ -186,6 +216,17 @@ function formatTimestamp(epoch: number): string {
   if (dt < 3600) return `${Math.round(dt / 60)}m ago`
   if (dt < 86400) return `${Math.round(dt / 3600)}h ago`
   return `${Math.round(dt / 86400)}d ago`
+}
+
+function formatLifecycleTimestamp(epoch: number | null): string {
+  if (!epoch) return 'unknown'
+  const date = new Date(epoch * 1000)
+  return `${formatTimestamp(epoch)} · ${date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`
 }
 
 const FACTOR_PALETTE = [

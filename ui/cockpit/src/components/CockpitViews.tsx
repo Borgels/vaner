@@ -89,6 +89,13 @@ export function FocusView({
   const proactiveTone = typeof focusState?.proactive_allowed === 'boolean' ? (focusState.proactive_allowed ? 'ok' : 'warn') : 'muted'
   const worker = jobs?.worker
   const queue = jobs?.queue
+  const profile = jobs?.profile ?? {}
+  const continuationRounds = numberFromProfile(profile.continuation_rounds)
+  const continuationAdmitted = numberFromProfile(profile.continuation_admitted)
+  const produced = numberFromProfile(profile.produced)
+  const precomputeMs = numberFromProfile(profile.precompute_ms)
+  const totalMs = numberFromProfile(profile.total_ms)
+  const noScenarioReason = stringFromProfile(profile.no_scenario_reason)
   const codexCapability = capabilities?.composer_adapters?.find((adapter) => adapter.host_app === 'codex-cli')
   const globalPlans = sources?.sources?.global_client_plans
   const directionPredictions = predictions
@@ -171,6 +178,16 @@ export function FocusView({
                   <span className="mono" style={{ color: worker.state === 'running' ? 'var(--ok)' : 'var(--fg-4)', fontSize: 10 }}>{worker.state ?? 'unknown'}</span>
                 </div>
                 <Meta>{[worker.phase, worker.defer_reason, queue ? `queue ${queue.size ?? 0}/${queue.max_size ?? 0}` : null].filter(Boolean).join(' · ')}</Meta>
+                {Object.keys(profile).length ? (
+                  <div style={focusProfileGridStyle}>
+                    <FocusField label="Continued" value={`${formatCount(continuationRounds)} rounds`} tone={continuationRounds > 0 ? 'ok' : 'muted'} />
+                    <FocusField label="Admitted" value={`${formatCount(continuationAdmitted)} chunks`} tone={continuationAdmitted > 0 ? 'ok' : 'muted'} />
+                    <FocusField label="Produced" value={formatCount(produced)} />
+                    <FocusField label="Cycle" value={formatDurationMs(totalMs)} />
+                    <FocusField label="Precompute" value={formatDurationMs(precomputeMs)} />
+                    {noScenarioReason ? <FocusField label="Stopped" value={noScenarioReason} tone="muted" /> : null}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {focusJobs.length ? (
@@ -832,6 +849,33 @@ function relativeAge(epoch: number): string {
   return `${Math.round(delta / 86400)}d ago`
 }
 
+function numberFromProfile(value: number | string | undefined): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return 0
+}
+
+function stringFromProfile(value: number | string | undefined): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function formatCount(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  return `${Math.round(value)}`
+}
+
+function formatDurationMs(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0s'
+  if (value < 1000) return `${Math.round(value)}ms`
+  if (value < 60_000) return `${(value / 1000).toFixed(1)}s`
+  const minutes = Math.floor(value / 60_000)
+  const seconds = Math.round((value % 60_000) / 1000)
+  return `${minutes}m ${seconds}s`
+}
+
 const viewScrollStyle: React.CSSProperties = {
   height: '100%',
   overflow: 'auto',
@@ -877,6 +921,14 @@ const focusJobStyle: React.CSSProperties = {
   background: 'var(--bg-inset)',
   padding: 10,
   minWidth: 0,
+}
+
+const focusProfileGridStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 6,
+  marginTop: 10,
+  paddingTop: 10,
+  borderTop: '1px solid var(--line-hair)',
 }
 
 const signalStyle: React.CSSProperties = {

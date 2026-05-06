@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 
 import { PipelineCanvas } from './PipelineCanvas'
 import type {
@@ -111,6 +111,32 @@ describe('PipelineCanvas', () => {
     )
 
     expect(screen.getByText(/No scenarios are available from the daemon yet/)).toBeInTheDocument()
+  })
+
+  it('renders the scenario auto-focus toggle', () => {
+    const onAutoFocusChange = vi.fn()
+    render(
+      <PipelineCanvas
+        scenarios={[]}
+        selectedId={null}
+        onSelect={() => undefined}
+        autoFocusEnabled={false}
+        autoFocusTargetLabel="Working prediction"
+        onAutoFocusChange={onAutoFocusChange}
+        activePulses={new Set()}
+        pinnedIds={new Set()}
+        signals={[]}
+        targets={[]}
+        artefacts={[]}
+        decisions={[]}
+        model={model()}
+        cycle={cycle()}
+        events={EVENTS}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('switch', { name: /auto-focus/i }))
+    expect(onAutoFocusChange).toHaveBeenCalledWith(true)
   })
 
   it('flashes the model lane with a spinner while LLM requests are pending', () => {

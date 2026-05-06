@@ -4,6 +4,7 @@ import json
 import re
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -24,6 +25,28 @@ from vaner.models.scenario import (
     ScenarioReadiness,
     ScenarioVisibility,
 )
+
+SCENARIO_SAMPLE_MIN_INTERVAL_SECONDS = 15.0
+SCENARIO_SAMPLE_KEEP_ROWS = 50_000
+
+
+@dataclass(frozen=True)
+class ScenarioSample:
+    ts: float
+    scenario_id: str
+    relevance: float
+    readiness: str
+    confidence: float
+    freshness: str
+    visible_priority: float
+    visibility: str
+    lifecycle_motion: str
+    status: str
+    pinned: bool
+    active: bool
+    cycle_id: str | None = None
+    job_id: str | None = None
+    source_event_id: str | None = None
 
 
 class ScenarioStore:
@@ -77,11 +100,36 @@ class ScenarioStore:
                 )
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scenario_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts REAL NOT NULL,
+                    scenario_id TEXT NOT NULL,
+                    relevance REAL NOT NULL,
+                    readiness TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    freshness TEXT NOT NULL,
+                    visible_priority REAL NOT NULL,
+                    visibility TEXT NOT NULL,
+                    lifecycle_motion TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    pinned INTEGER NOT NULL DEFAULT 0,
+                    active INTEGER NOT NULL DEFAULT 0,
+                    cycle_id TEXT,
+                    job_id TEXT,
+                    source_event_id TEXT,
+                    FOREIGN KEY (scenario_id) REFERENCES scenarios(id) ON DELETE CASCADE
+                )
+                """
+            )
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_kind ON scenarios(kind)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_score ON scenarios(score DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenarios_freshness ON scenarios(freshness)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scenario_evidence_sid ON scenario_evidence(scenario_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_macro_clusters_centroid ON prompt_macro_clusters(centroid_label)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_scenario_samples_sid_ts ON scenario_samples(scenario_id, ts)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_scenario_samples_ts ON scenario_samples(ts)")
             await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN context_envelope_json TEXT NOT NULL DEFAULT '{}'")
             await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN memory_state TEXT NOT NULL DEFAULT 'candidate'")
             await self._add_column_if_missing(db, "ALTER TABLE scenarios ADD COLUMN memory_confidence REAL NOT NULL DEFAULT 0.0")
@@ -258,6 +306,37 @@ class ScenarioStore:
             rows = await cur.fetchall()
             evidence_map = await self._load_evidence_for_scenarios(db, [str(row["id"]) for row in rows])
         return [self._row_to_scenario(row, evidence_map.get(str(row["id"]), [])) for row in rows]
+
+    async def list_samples(
+        self,
+        *,
+        scenario_ids: list[str] | None = None,
+        start_ts: float | None = None,
+        end_ts: float | None = None,
+        limit: int = 20_000,
+    ) -> list[ScenarioSample]:
+        query = "SELECT * FROM scenario_samples"
+        predicates: list[str] = []
+        params: list[object] = []
+        if scenario_ids:
+            placeholders = ", ".join("?" for _ in scenario_ids)
+            predicates.append(f"scenario_id IN ({placeholders})")
+            params.extend(scenario_ids)
+        if start_ts is not None:
+            predicates.append("ts >= ?")
+            params.append(float(start_ts))
+        if end_ts is not None:
+            predicates.append("ts <= ?")
+            params.append(float(end_ts))
+        if predicates:
+            query += " WHERE " + " AND ".join(predicates)
+        query += " ORDER BY ts ASC LIMIT ?"
+        params.append(max(1, min(100_000, int(limit))))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(query, params)
+            rows = await cur.fetchall()
+        return [self._sample_from_row(row) for row in rows]
 
     async def get(self, scenario_id: str) -> Scenario | None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -658,6 +737,7 @@ class ScenarioStore:
     async def _refresh_lifecycle_for_ids(self, db: aiosqlite.Connection, scenario_ids: list[str], *, now: float | None = None) -> None:
         if not scenario_ids:
             return
+        sample_ts = time.time() if now is None else now
         placeholders = ", ".join("?" for _ in scenario_ids)
         db.row_factory = aiosqlite.Row
         cur = await db.execute(f"SELECT * FROM scenarios WHERE id IN ({placeholders})", scenario_ids)
@@ -686,6 +766,98 @@ class ScenarioStore:
                     refreshed.id,
                 ),
             )
+            await self._record_sample_if_changed(db, refreshed, ts=sample_ts)
+
+    async def _record_sample_if_changed(self, db: aiosqlite.Connection, scenario: Scenario, *, ts: float) -> None:
+        cur = await db.execute(
+            """
+            SELECT ts, relevance, readiness, confidence, freshness, visible_priority,
+                   visibility, lifecycle_motion, status, pinned, active
+            FROM scenario_samples
+            WHERE scenario_id = ?
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (scenario.id,),
+        )
+        latest = await cur.fetchone()
+        status = _scenario_status(scenario)
+        active = 1 if status == "active" else 0
+        pinned = 1 if int(scenario.pinned) else 0
+        if latest is not None:
+            age = ts - float(latest[0])
+            numeric_delta = max(
+                abs(float(latest[1]) - float(scenario.relevance)),
+                abs(float(latest[3]) - float(scenario.confidence)),
+                abs(float(latest[5]) - float(scenario.visible_priority)),
+            )
+            categorical_same = (
+                str(latest[2]) == scenario.readiness
+                and str(latest[4]) == scenario.freshness
+                and str(latest[6]) == scenario.visibility
+                and str(latest[7]) == scenario.lifecycle_motion
+                and str(latest[8]) == status
+                and int(latest[9]) == pinned
+                and int(latest[10]) == active
+            )
+            if categorical_same and age < SCENARIO_SAMPLE_MIN_INTERVAL_SECONDS:
+                return
+            if categorical_same and numeric_delta < 0.002 and age < 300:
+                return
+        await db.execute(
+            """
+            INSERT INTO scenario_samples (
+                ts, scenario_id, relevance, readiness, confidence, freshness,
+                visible_priority, visibility, lifecycle_motion, status, pinned,
+                active, cycle_id, job_id, source_event_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+            """,
+            (
+                float(ts),
+                scenario.id,
+                float(scenario.relevance),
+                scenario.readiness,
+                float(scenario.confidence),
+                scenario.freshness,
+                float(scenario.visible_priority),
+                scenario.visibility,
+                scenario.lifecycle_motion,
+                status,
+                pinned,
+                active,
+            ),
+        )
+        await db.execute(
+            """
+            DELETE FROM scenario_samples
+            WHERE id IN (
+                SELECT id FROM scenario_samples
+                ORDER BY ts DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (SCENARIO_SAMPLE_KEEP_ROWS,),
+        )
+
+    def _sample_from_row(self, row: aiosqlite.Row) -> ScenarioSample:
+        return ScenarioSample(
+            ts=float(row["ts"]),
+            scenario_id=str(row["scenario_id"]),
+            relevance=float(row["relevance"]),
+            readiness=str(row["readiness"]),
+            confidence=float(row["confidence"]),
+            freshness=str(row["freshness"]),
+            visible_priority=float(row["visible_priority"]),
+            visibility=str(row["visibility"]),
+            lifecycle_motion=str(row["lifecycle_motion"]),
+            status=str(row["status"]),
+            pinned=bool(row["pinned"]),
+            active=bool(row["active"]),
+            cycle_id=str(row["cycle_id"]) if row["cycle_id"] is not None else None,
+            job_id=str(row["job_id"]) if row["job_id"] is not None else None,
+            source_event_id=str(row["source_event_id"]) if row["source_event_id"] is not None else None,
+        )
 
     async def _add_column_if_missing(self, db: aiosqlite.Connection, ddl: str) -> None:
         try:
@@ -693,3 +865,17 @@ class ScenarioStore:
         except aiosqlite.OperationalError as exc:
             if "duplicate column" not in str(exc).lower():
                 raise
+
+
+def _scenario_status(scenario: Scenario) -> str:
+    if scenario.last_outcome == "useful":
+        return "completed"
+    if scenario.last_outcome in {"irrelevant", "wrong"}:
+        return "rejected"
+    if scenario.visibility == "archived" or scenario.freshness == "stale":
+        return "stale"
+    if scenario.readiness == "ready":
+        return "ready"
+    if scenario.readiness == "cooling":
+        return "cooling"
+    return "prep"

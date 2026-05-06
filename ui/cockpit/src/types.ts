@@ -19,6 +19,8 @@ export interface UIScenario {
   readiness: UIReadiness
   visibility: UIVisibility
   lifecycleMotion: UILifecycleMotion
+  createdAt: number | null
+  lastRefreshedAt: number | null
   lastReinforcedAt: number | null
   archivedAt: number | null
   visibilityReason: string
@@ -372,7 +374,7 @@ export interface JobsStatusPayload {
     dropped?: number
     coalesced?: number
   }
-  profile?: Record<string, number>
+  profile?: Record<string, number | string>
 }
 
 export interface SourcesPermissionsPayload {
@@ -528,6 +530,41 @@ export interface ScenarioApiPayload {
   reason?: string
   score_components?: Array<{ label: string; value: number; description?: string }>
   lifecycle_components?: Array<{ label: string; value: number; description?: string }>
+}
+
+export interface ScenarioHeatmapSample {
+  ts: number
+  scenario_id: string
+  relevance: number
+  readiness: string
+  confidence: number
+  freshness: string
+  visible_priority: number
+  visibility: string
+  lifecycle_motion: string
+  status: string
+  pinned: boolean
+  active: boolean
+  cycle_id?: string | null
+  job_id?: string | null
+  source_event_id?: string | null
+}
+
+export interface HeatmapReplayPayload {
+  from_ts: number
+  to_ts: number
+  scenarios: ScenarioApiPayload[]
+  samples: ScenarioHeatmapSample[]
+  events: LiveWorkEvent[]
+  metadata?: {
+    sample_source?: string
+    event_source?: string
+    synthetic?: boolean
+    sample_count?: number
+    event_count?: number
+    scenario_count?: number
+    complete?: boolean
+  }
 }
 
 // ---------------------------------------------------------------------------

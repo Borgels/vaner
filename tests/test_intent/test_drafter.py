@@ -155,6 +155,10 @@ def test_draft_for_prediction_runs_both_stages_otherwise():
     )
     assert result is not None
     assert len(calls) == 2  # rewrite + draft
+    assert "Vaner internal LLM policy" in calls[0]
+    assert "Prediction policy" in calls[0]
+    assert "Draft policy" in calls[1]
+    assert "Use tentative wording when source evidence is incomplete" in calls[1]
     assert result.predicted_prompt == "canonicalised prompt"
     assert result.draft_answer == "draft body"
 

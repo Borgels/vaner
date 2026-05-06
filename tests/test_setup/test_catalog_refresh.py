@@ -14,6 +14,7 @@ from vaner.setup.catalog_refresh import (
     build_registry_entry_for_family,
     estimate_memory_budget,
     families_from_seed,
+    fetch_ollama_library_details,
     load_catalog_seed,
     manifest_weights_bytes,
     quantization_bytes_per_param,
@@ -37,6 +38,10 @@ def _fake_manifest(weight_bytes: int) -> dict[str, Any]:
     }
 
 
+def _first_ollama_family():
+    return next(f for f in families_from_seed(_seed()) if f.runtime == "ollama")
+
+
 def test_seed_loads_with_family_metadata() -> None:
     seed = _seed()
     assert "quantization_profiles" in seed
@@ -44,7 +49,10 @@ def test_seed_loads_with_family_metadata() -> None:
     families = seed.get("families", [])
     assert families, "seed must list at least one family"
     for family in families:
-        assert family.get("ollama_family"), f"family {family['id']} missing ollama_family"
+        if family.get("runtime", "ollama") == "ollama":
+            assert family.get("ollama_family"), f"family {family['id']} missing ollama_family"
+        else:
+            assert family.get("default_download_size_gb", 0) > 0, f"family {family['id']} missing non-Ollama sizing"
         params = family["parameters"]
         assert "context_window" in params
         assert "temperature" in params, f"family {family['id']} missing sampling defaults"
@@ -73,6 +81,9 @@ def test_estimate_memory_budget_recommended_exceeds_min() -> None:
     _, rec_short = estimate_memory_budget(7.0, 0.55, 8192)
     _, rec_long = estimate_memory_budget(7.0, 0.55, 131072)
     assert rec_long > rec_short
+    _, moe_rec = estimate_memory_budget(284.0, 0.55, 1048576, active_params_b=13.0, architecture="moe")
+    _, dense_rec = estimate_memory_budget(284.0, 0.55, 1048576)
+    assert moe_rec < dense_rec
 
 
 def test_manifest_weights_bytes_sums_model_layers() -> None:
@@ -93,8 +104,7 @@ def test_manifest_weights_bytes_zero_when_no_model_layer() -> None:
 
 def test_build_entry_online_uses_manifest_size() -> None:
     seed = _seed()
-    families = families_from_seed(seed)
-    family = families[0]
+    family = _first_ollama_family()
 
     # ~24 GB on disk → at Q4_K_M (0.55 GB/B) ≈ 43.6 B params.
     fake_bytes = int(24 * 1024**3)
@@ -119,15 +129,49 @@ def test_build_entry_online_uses_manifest_size() -> None:
 
 def test_build_entry_online_skips_when_manifest_missing() -> None:
     seed = _seed()
-    families = families_from_seed(seed)
     entry = build_registry_entry_for_family(
         seed,
-        families[0],
+        _first_ollama_family(),
         quant="Q4_K_M",
         online=True,
         manifest_fetcher=lambda _f, *, tag="latest": None,
+        library_fetcher=lambda _f, *, tag="latest": None,
     )
     assert entry is None
+
+
+def test_build_entry_online_can_use_ollama_library_page_when_manifest_missing() -> None:
+    seed = _seed()
+    family = _first_ollama_family()
+    entry = build_registry_entry_for_family(
+        seed,
+        family,
+        quant="Q4_K_M",
+        online=True,
+        manifest_fetcher=lambda _f, *, tag="latest": None,
+        library_fetcher=lambda _f, *, tag="latest": {"download_size_gb": 22.0, "source": "https://ollama.com/library/example"},
+    )
+    assert entry is not None
+    assert entry["id"] == f"{family.ollama_family}:{family.ollama_tag}"
+    assert entry["download_size_gb"] == 22.0
+    assert entry["params_b"] == family.default_params_b
+
+
+def test_ollama_library_details_require_run_command_and_size(monkeypatch) -> None:
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            return b"ollama run qwen3.6:35b-a3b-coding-nvfp4 cd2692a833e6 22GB"
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda _req, timeout=0: _Response())
+    details = fetch_ollama_library_details("qwen3.6", tag="35b-a3b-coding-nvfp4")
+    assert details is not None
+    assert details["download_size_gb"] == 22.0
 
 
 def test_build_registry_offline_emits_one_per_family() -> None:
@@ -203,7 +247,7 @@ def test_build_registry_online_skips_unreachable_families() -> None:
             return _fake_manifest(int(8 * 1024**3))
         return None
 
-    payload = build_registry(online=True, seed=seed, manifest_fetcher=fake_fetcher)
+    payload = build_registry(online=True, seed=seed, manifest_fetcher=fake_fetcher, library_fetcher=lambda _f, *, tag="latest": None)
     assert len(payload["models"]) == 1
     assert payload["models"][0]["family_id"] == families[0].id
     skipped = payload.get("skipped", [])

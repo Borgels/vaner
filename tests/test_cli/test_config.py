@@ -274,7 +274,7 @@ max_context_tokens = { bad = "shape" }
     assert config.policy.bundle_overrides == {}
     assert config.integrations.guidance_variant == "canonical"
     assert config.max_age_seconds == 3600
-    assert config.max_context_tokens == 4096
+    assert config.max_context_tokens == 8192
     assert "Ignoring invalid Vaner config section [setup]" in caplog.text
     assert "Ignoring invalid Vaner config section [policy]" in caplog.text
     assert "Ignoring invalid Vaner config section [integrations]" in caplog.text

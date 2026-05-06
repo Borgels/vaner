@@ -29,6 +29,12 @@ class RecommendedModel:
     min_effective_memory_gb: float
     recommended_effective_memory_gb: float
     parameters: dict[str, Any]
+    family_id: str = ""
+    params_b: float = 0.0
+    active_params_b: float = 0.0
+    architecture: str = "dense"
+    quantization: str = ""
+    accelerator_tags: tuple[str, ...] = ()
 
     @classmethod
     def from_raw(cls, raw: dict[str, Any]) -> RecommendedModel:
@@ -44,6 +50,12 @@ class RecommendedModel:
             min_effective_memory_gb=float(raw.get("min_effective_memory_gb", 0)),
             recommended_effective_memory_gb=float(raw.get("recommended_effective_memory_gb", raw.get("min_effective_memory_gb", 0))),
             parameters=dict(raw.get("parameters", {})),
+            family_id=str(raw.get("family_id", raw.get("id", ""))),
+            params_b=float(raw.get("params_b", 0) or 0),
+            active_params_b=float(raw.get("active_params_b", 0) or 0),
+            architecture=str(raw.get("architecture", "dense") or "dense"),
+            quantization=str(raw.get("quantization", "") or ""),
+            accelerator_tags=tuple(str(v) for v in raw.get("accelerator_tags", []) if isinstance(v, str)),
         )
 
 
@@ -112,6 +124,10 @@ def _fallback_registry(warning: str) -> ModelRegistry:
                     "max_response_tokens": 2048,
                     "reasoning_token_budget": 2048,
                 },
+                family_id="qwen3",
+                params_b=4.0,
+                architecture="dense",
+                quantization="Q4_K_M",
             ),
         ),
     )
@@ -137,7 +153,19 @@ def recommend_local_model(
     for model in reg.models:
         fit = _fit_status(model, effective_memory_gb)
         installed_match = (model.runtime, model.id) in installed
+        disk_status = _disk_status(model, hw)
+        if disk_status["status"] == "insufficient" and not installed_match:
+            rejected.append(
+                {
+                    "model_id": model.id,
+                    "runtime": model.runtime,
+                    "reason": "insufficient_disk",
+                    **disk_status,
+                }
+            )
+            continue
         runtime_available = model.runtime in available_runtimes
+        runtime_installable = _runtime_installable(model.runtime, hw)
         if fit == "too_large":
             rejected.append(
                 {
@@ -149,10 +177,20 @@ def recommend_local_model(
                 }
             )
             continue
-        if model.runtime != "ollama" and not runtime_available:
+        if not runtime_available and not runtime_installable:
             rejected.append({"model_id": model.id, "runtime": model.runtime, "reason": "runtime_unavailable"})
             continue
-        score = _score_model(model, workload_tags, installed_match, runtime_available, fit)
+        score = _score_model(
+            model,
+            workload_tags,
+            installed_match,
+            runtime_available,
+            fit,
+            effective_memory_gb=effective_memory_gb,
+            answers=answers,
+            hardware=hw,
+            disk_status=disk_status["status"],
+        )
         candidates.append(
             (
                 score,
@@ -161,12 +199,14 @@ def recommend_local_model(
                     "fit": fit,
                     "already_installed": installed_match,
                     "runtime_available": runtime_available,
+                    "runtime_installable": runtime_installable,
+                    "disk": disk_status,
                 },
             )
         )
 
     if not candidates:
-        fallback = min(reg.models, key=lambda m: m.min_effective_memory_gb)
+        fallback = min(reg.models, key=lambda m: (m.download_size_gb or 0.0, m.min_effective_memory_gb))
         candidates.append(
             (
                 0,
@@ -175,6 +215,7 @@ def recommend_local_model(
                     "fit": "fallback_cpu",
                     "already_installed": (fallback.runtime, fallback.id) in installed,
                     "runtime_available": fallback.runtime in available_runtimes,
+                    "disk": _disk_status(fallback, hw),
                 },
             )
         )
@@ -183,10 +224,10 @@ def recommend_local_model(
     score, selected, selected_diag = candidates[0]
     runtime_available = selected.runtime in available_runtimes
     already_installed = (selected.runtime, selected.id) in installed
-    needs_runtime_install = selected.runtime == "ollama" and not runtime_available
+    needs_runtime_install = not runtime_available
     needs_model_download = not already_installed
     user_explanation = _plain_explanation(hw, selected, effective_memory_gb, memory_source, already_installed)
-    install_plan = _install_plan(selected, needs_runtime_install, needs_model_download)
+    install_plan = _install_plan(selected, needs_runtime_install, needs_model_download, disk_status=selected_diag.get("disk"))
     runtime = _runtime_payload(selected.runtime)
     work_styles_tuple: tuple[str, ...] = tuple(answers.work_styles) if answers else ()
     selected_payload = _selected_payload(
@@ -222,6 +263,9 @@ def recommend_local_model(
             "accelerator_label": _accelerator_label(hw),
             "effective_gb_q4": effective_memory_gb,
             "memory_source": memory_source,
+            "disk_free_gb": hw.disk_free_gb,
+            "gpu_count": _gpu_count(hw),
+            "gpu_total_memory_gb": _gpu_total_memory_gb(hw),
             "notes": [],
         },
         "selected": selected_payload,
@@ -251,6 +295,7 @@ def recommend_local_model(
             "raw_hardware": {
                 "memory_total_bytes": hw.memory_total_bytes,
                 "memory_is_unified": hw.memory_is_unified,
+                "disk_free_gb": hw.disk_free_gb,
                 "gpu_devices": [
                     {
                         "name": d.name,
@@ -266,8 +311,11 @@ def recommend_local_model(
     }
 
 
-def _effective_memory_gb(hw: HardwareProfile) -> tuple[float, Literal["vram", "unified", "system", "cpu"]]:
-    if hw.memory_is_unified and hw.memory_display_gb:
+def _effective_memory_gb(hw: HardwareProfile) -> tuple[float, Literal["vram", "unified", "inferred_gpu", "system", "cpu"]]:
+    if _looks_like_nvidia_unified_memory(hw) and hw.memory_display_gb:
+        reserve = 8 if hw.memory_display_gb >= 24 else 4
+        return max(2.0, float(hw.memory_display_gb - reserve)), "unified"
+    if hw.memory_is_unified and hw.gpu == "apple_silicon" and hw.memory_display_gb:
         reserve = 8 if hw.memory_display_gb >= 24 else 4
         return max(2.0, float(hw.memory_display_gb - reserve)), "unified"
     gpu_memories = [d.memory_display_gb for d in hw.gpu_devices if d.memory_kind == "vram" and d.memory_display_gb]
@@ -276,15 +324,41 @@ def _effective_memory_gb(hw: HardwareProfile) -> tuple[float, Literal["vram", "u
         return max(2.0, float(max(gpu_memories) - 2)), "vram"
     if hw.gpu_vram_gb:
         return max(2.0, float(hw.gpu_vram_gb - 2)), "vram"
+    if hw.gpu == "nvidia" and hw.memory_display_gb >= 96:
+        # NVIDIA + large host memory + missing VRAM telemetry is common on
+        # new developer-class systems where NVML/nvidia-smi reporting may be
+        # incomplete or unified-memory platforms are not named clearly. Do
+        # not treat host RAM as fully usable GPU memory, but do avoid a tiny
+        # CPU-class default.
+        return 30.0, "inferred_gpu"
     if hw.gpu in {"nvidia", "amd"}:
-        # A discrete GPU without readable VRAM is not enough evidence for
-        # a large-model recommendation. Stay conservative until diagnostics
-        # can read the actual accelerator memory.
-        return min(8.0, max(2.0, float((hw.memory_display_gb or hw.ram_gb) - 8))), "system"
+        # A discrete GPU without readable VRAM is not enough evidence for a
+        # large local-model recommendation. System RAM is useful for the OS
+        # and caches, not for fast Vaner inference.
+        return 2.0, "system"
     if hw.memory_display_gb:
-        reserve = 6 if hw.memory_display_gb >= 16 else 3
-        return max(2.0, float(hw.memory_display_gb - reserve)), "system"
+        return 2.0, "system"
     return 2.0, "cpu"
+
+
+def _looks_like_nvidia_unified_memory(hw: HardwareProfile) -> bool:
+    if hw.gpu != "nvidia":
+        return False
+    if hw.memory_is_unified:
+        return True
+    names = " ".join(device.name.lower() for device in hw.gpu_devices)
+    return any(marker in names for marker in ("dgx spark", "gb10", "grace blackwell"))
+
+
+def _gpu_count(hw: HardwareProfile) -> int:
+    return len([d for d in hw.gpu_devices if d.kind not in {"cpu", "integrated"}]) or (1 if hw.gpu in {"nvidia", "amd"} else 0)
+
+
+def _gpu_total_memory_gb(hw: HardwareProfile) -> int:
+    values = [int(d.memory_display_gb or 0) for d in hw.gpu_devices if d.memory_display_gb and d.memory_kind in {"vram", "unified"}]
+    if values:
+        return sum(values)
+    return int(hw.gpu_vram_gb or 0)
 
 
 def _workload_tags(answers: SetupAnswers | None) -> set[str]:
@@ -313,15 +387,37 @@ def _fit_status(model: RecommendedModel, effective_memory_gb: float) -> Literal[
     hardware that can clearly run the larger one. The strict
     "recommended" tier remains the upper bound.
     """
-    # `min + 4` GB ≈ weights + a sensible 32K-ish KV-cache budget, which
-    # is what `compute_effective_context_window` actually picks at
-    # runtime on a card sized at the model's `min_effective_memory_gb`.
-    relaxed_recommended = model.min_effective_memory_gb + 4.0
+    # The registry budgets are calculated against the model's architectural
+    # max context. Setup picks a runtime-effective context later, so fit
+    # should test the practical floor-context load too: weights + runtime
+    # reserve + one 32K KV slice. This is especially important for current
+    # MoE models where active params make context cheaper than total params
+    # imply, while weights still need to fit.
+    kv_reference_gb = _kv_reference_gb(model) or model.download_size_gb
+    practical_min = (model.download_size_gb or 0.0) + 3.0 + max(0.5, kv_reference_gb * 0.16)
+    relaxed_recommended = max(practical_min + 4.0, model.min_effective_memory_gb)
     if effective_memory_gb >= min(model.recommended_effective_memory_gb, relaxed_recommended):
         return "recommended"
-    if effective_memory_gb >= model.min_effective_memory_gb:
+    if effective_memory_gb >= min(model.min_effective_memory_gb, practical_min):
         return "fits"
     return "too_large"
+
+
+def _disk_status(model: RecommendedModel, hw: HardwareProfile) -> dict[str, Any]:
+    free_gb = int(getattr(hw, "disk_free_gb", 0) or 0)
+    download_gb = max(0.0, float(model.download_size_gb or 0.0))
+    # Keep room for the compressed download, expanded cache/metadata, and a
+    # little operational headroom. Installed models still report a need here;
+    # `already_installed` gets scored separately and the install plan can skip
+    # the download step.
+    required_gb = round(download_gb * 1.15 + 8.0, 1) if download_gb > 0 else 0.0
+    if free_gb <= 0 or required_gb <= 0:
+        return {"status": "unknown", "free_gb": free_gb, "required_gb": required_gb}
+    if free_gb < required_gb:
+        return {"status": "insufficient", "free_gb": free_gb, "required_gb": required_gb}
+    if free_gb < required_gb + 25.0:
+        return {"status": "tight", "free_gb": free_gb, "required_gb": required_gb}
+    return {"status": "enough", "free_gb": free_gb, "required_gb": required_gb}
 
 
 def _score_model(
@@ -330,6 +426,11 @@ def _score_model(
     installed_match: bool,
     runtime_available: bool,
     fit: str,
+    *,
+    effective_memory_gb: float,
+    answers: SetupAnswers | None,
+    hardware: HardwareProfile,
+    disk_status: str = "unknown",
 ) -> float:
     """Score a candidate against the user's hardware + workload tags.
 
@@ -347,6 +448,12 @@ def _score_model(
     score += tag_overlap * 35.0
     score += max(0.0, 30.0 - model.download_size_gb) * 0.5
     score += model.recency_rank * 1.0
+    score += _context_score(model)
+    score += _hardware_utilization_score(model, effective_memory_gb, answers)
+    score += _runtime_affinity_score(model, hardware, runtime_available)
+    score += _architecture_score(model, hardware)
+    if model.recency_rank < 80:
+        score -= (80 - model.recency_rank) * 8.0
     if fit == "recommended":
         score += 75
     elif fit == "fits":
@@ -355,6 +462,111 @@ def _score_model(
         score += 120
     elif runtime_available:
         score += 30
+    if disk_status == "tight":
+        score -= 50
+    if answers is not None:
+        if answers.priority in {"speed", "low_resource"} or answers.compute_posture == "light":
+            score -= max(0.0, model.download_size_gb - 30.0) * 2.1
+        if answers.priority == "quality":
+            score += model.quality_rank * 0.35
+        if answers.compute_posture == "available_power":
+            score += min(90.0, model.recommended_effective_memory_gb * 0.35)
+        if answers.background_posture == "deep_run_aggressive":
+            score += min(80.0, _max_context_window(model) / 131072.0 * 10.0)
+    return score
+
+
+def _runtime_installable(runtime: Runtime, hw: HardwareProfile) -> bool:
+    if runtime == "ollama":
+        return True
+    if runtime == "mlx":
+        return hw.os == "darwin" and hw.gpu == "apple_silicon"
+    if runtime == "vllm":
+        return hw.os == "linux" and hw.gpu == "nvidia"
+    return False
+
+
+def _max_context_window(model: RecommendedModel) -> int:
+    try:
+        return int(model.parameters.get("context_window", _CONTEXT_WINDOW_FLOOR))
+    except (TypeError, ValueError):
+        return _CONTEXT_WINDOW_FLOOR
+
+
+def _context_score(model: RecommendedModel) -> float:
+    # Reward native long-context models without letting context alone beat
+    # model quality. 32K => 0, 262K => about 45, 1M => about 75.
+    window = max(_CONTEXT_WINDOW_FLOOR, _max_context_window(model))
+    multiples = max(1.0, window / _CONTEXT_WINDOW_FLOOR)
+    import math
+
+    return min(90.0, math.log2(multiples) * 15.0)
+
+
+def _hardware_utilization_score(model: RecommendedModel, effective_memory_gb: float, answers: SetupAnswers | None) -> float:
+    if effective_memory_gb <= 0 or model.recommended_effective_memory_gb <= 0:
+        return 0.0
+    usage = min(1.0, model.recommended_effective_memory_gb / effective_memory_gb)
+    # Balanced users on very large boxes should not get a tiny-model default.
+    # Speed / low-resource explicitly opts back toward smaller models.
+    if answers and (answers.priority in {"speed", "low_resource"} or answers.compute_posture == "light"):
+        return -40.0 * usage
+    return min(160.0, 180.0 * (usage**0.5))
+
+
+def _runtime_affinity_score(model: RecommendedModel, hw: HardwareProfile, runtime_available: bool) -> float:
+    score = 0.0
+    tags = set(model.accelerator_tags)
+    if hw.gpu == "apple_silicon":
+        if model.runtime == "mlx":
+            score += 125.0
+        elif model.runtime == "ollama":
+            score += 20.0
+        if "apple_silicon" in tags or "unified_memory" in tags:
+            score += 35.0
+        if model.quantization.upper() in {"MXFP8", "MLX"} or "mlx" in tags:
+            score += 55.0
+        if "blackwell" in tags or model.quantization.upper() == "NVFP4":
+            score -= 70.0
+    elif hw.gpu == "nvidia":
+        if model.runtime == "vllm":
+            score += 90.0
+        elif model.runtime == "ollama":
+            score += 35.0
+        if "cuda" in tags or "nvidia" in tags:
+            score += 30.0
+        if _looks_like_nvidia_unified_memory(hw):
+            if "dgx_spark" in tags or "unified_memory" in tags:
+                score += 90.0
+        elif "dgx_spark" in tags:
+            score -= 55.0
+        if "blackwell" in tags and _has_blackwell_gpu(hw):
+            score += 65.0
+        if model.quantization.upper() in {"MXFP8", "MLX"}:
+            score -= 35.0
+    elif model.runtime == "ollama":
+        score += 25.0
+    if not runtime_available and model.runtime != "ollama":
+        score -= 25.0
+    return score
+
+
+def _has_blackwell_gpu(hw: HardwareProfile) -> bool:
+    names = " ".join(device.name.lower() for device in hw.gpu_devices)
+    return any(marker in names for marker in ("rtx 50", "5090", "5080", "5070", "5060", "blackwell", "pro 6000", "dgx spark", "gb10"))
+
+
+def _architecture_score(model: RecommendedModel, hw: HardwareProfile) -> float:
+    if model.architecture.lower() != "moe":
+        return 0.0
+    active = model.active_params_b or model.params_b
+    total = model.params_b or active
+    if active <= 0 or total <= 0:
+        return 25.0
+    sparse_ratio = max(0.0, min(1.0, 1.0 - (active / total)))
+    score = 35.0 + sparse_ratio * 45.0
+    if (hw.memory_is_unified or _looks_like_nvidia_unified_memory(hw)) and hw.memory_display_gb >= 128:
+        score += 30.0
     return score
 
 
@@ -365,6 +577,22 @@ def _runtime_payload(runtime: Runtime) -> dict[str, Any]:
             "label": "Ollama",
             "base_url": OLLAMA_BASE_URL,
             "native_endpoint": OLLAMA_NATIVE_ENDPOINT,
+            "install_managed": True,
+        }
+    if runtime == "mlx":
+        return {
+            "id": "mlx",
+            "label": "MLX",
+            "base_url": "http://127.0.0.1:8080/v1",
+            "native_endpoint": "http://127.0.0.1:8080",
+            "install_managed": True,
+        }
+    if runtime == "vllm":
+        return {
+            "id": "vllm",
+            "label": "vLLM",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "native_endpoint": "http://127.0.0.1:8000",
             "install_managed": True,
         }
     return {"id": runtime, "label": runtime, "base_url": "", "install_managed": False}
@@ -430,6 +658,7 @@ def compute_effective_context_window(
     effective_memory_gb: float,
     work_styles: tuple[str, ...] = (),
     runtime: str = "ollama",
+    kv_reference_gb: float | None = None,
 ) -> int:
     """Pick a runtime-effective context window.
 
@@ -441,14 +670,14 @@ def compute_effective_context_window(
         from the hardware probe.
       - ``work_styles``: the wizard's archetype answers (coding,
         research, …) — long-context archetypes get a higher target.
-      - ``runtime``: today only ``ollama`` is wired; left as an input so
-        future runtimes (vLLM, llama.cpp w/ flash-attn) can override.
+      - ``runtime``: runtime family identifier; local runtimes can tune
+        context/KV behavior as support evolves.
 
     Returns the chosen window, clamped to [floor, max].
 
     Heuristic — KV-cache scales roughly linearly with both context
     length and weight size; for Q4 + GQA models a 32K context costs
-    around 18% of weight memory. We turn that around: pick the largest
+    around 16% of weight memory. We turn that around: pick the largest
     multiple of 32K that fits in the headroom we have after weights and
     a small safety reserve.
     """
@@ -469,10 +698,11 @@ def compute_effective_context_window(
     # extra reserve keeps long-context defaults from pinning VRAM at the edge.
     runtime_reserve_gb = 3.0
     headroom_gb = max(0.0, effective_memory_gb - weights_gb - runtime_reserve_gb)
-    # Cost of KV at the family's 32K reference. 0.18 is the rough Q4+GQA
+    # Cost of KV at the family's 32K reference. 0.16 is the rough Q4+GQA
     # constant; flash-attn / paged-attention runtimes get more headroom
     # implicitly because they pack the cache more tightly.
-    cost_per_32k = max(0.5, weights_gb * 0.18)
+    kv_gb = kv_reference_gb if kv_reference_gb and kv_reference_gb > 0 else weights_gb
+    cost_per_32k = max(0.5, kv_gb * 0.16)
     if cost_per_32k <= 0:
         return min(cap, max(floor, target))
 
@@ -483,9 +713,45 @@ def compute_effective_context_window(
         return min(cap, floor)
     affordable = floor * max(1, multiples)
     chosen = min(cap, max(target, affordable))
+    chosen = min(chosen, _default_context_tier_cap(effective_memory_gb, weights_gb, runtime))
     # Round down to the nearest multiple of 8K so num_ctx is friendly.
     chosen = (chosen // 8192) * 8192
     return min(cap, max(floor, chosen))
+
+
+def _default_context_tier_cap(effective_memory_gb: float, weights_gb: float, runtime: str) -> int:
+    """Cap first-run context by memory tier.
+
+    This is intentionally more conservative than "what might fit". Vaner's
+    default runner is Ollama, and onboarding must avoid accidental CPU
+    offload / KV pressure. Larger windows remain available through advanced
+    or custom profiles; this function chooses the safe first-run default.
+    """
+
+    if effective_memory_gb <= 0:
+        return _CONTEXT_WINDOW_FLOOR
+    if effective_memory_gb < 12:
+        return 32768
+    if effective_memory_gb < 18:
+        return 65536
+    if effective_memory_gb < 28:
+        return 131072
+    if effective_memory_gb < 44:
+        return 65536 if weights_gb >= 20 else 131072
+    if effective_memory_gb < 96:
+        return 262144
+    if runtime == "ollama":
+        return 262144
+    return 524288
+
+
+def _kv_reference_gb(model: RecommendedModel) -> float:
+    if model.architecture.lower() == "moe" and model.active_params_b > 0:
+        # MoE models load all weights, but the active expert set gives a
+        # better default proxy for KV/context scaling than total parameters.
+        active_weight_gb = model.active_params_b * 0.55
+        return max(active_weight_gb, model.download_size_gb * 0.08)
+    return model.download_size_gb or 0.0
 
 
 def _split_parameters(parameters: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -539,6 +805,7 @@ def _selected_payload(
         effective_memory_gb=float(effective_memory_gb or 0.0),
         work_styles=work_styles,
         runtime=model.runtime,
+        kv_reference_gb=_kv_reference_gb(model),
     )
     capability["context_window"] = effective_ctx
     capability["max_context_window"] = max_ctx
@@ -557,8 +824,15 @@ def _selected_payload(
         "download_size_gb": model.download_size_gb,
         "min_effective_memory_gb": model.min_effective_memory_gb,
         "recommended_effective_memory_gb": model.recommended_effective_memory_gb,
+        "family_id": model.family_id,
+        "params_b": model.params_b,
+        "active_params_b": model.active_params_b,
+        "architecture": model.architecture,
+        "quantization": model.quantization,
+        "accelerator_tags": list(model.accelerator_tags),
         "already_installed": bool(diag.get("already_installed")),
         "fit": diag.get("fit", "unknown"),
+        "disk": diag.get("disk", {"status": "unknown"}),
         "params": combined,
         "runtime_params": runtime_params,
         "model_params": combined,
@@ -567,19 +841,59 @@ def _selected_payload(
     }
 
 
-def _install_plan(model: RecommendedModel, needs_runtime_install: bool, needs_model_download: bool) -> list[dict[str, Any]]:
+def _install_plan(
+    model: RecommendedModel,
+    needs_runtime_install: bool,
+    needs_model_download: bool,
+    *,
+    disk_status: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     steps = [{"id": "save_config", "label": "Save Vaner settings", "required": True}]
+    if disk_status and disk_status.get("status") in {"tight", "insufficient"}:
+        steps.append(
+            {
+                "id": "confirm_disk_space",
+                "label": "Free disk space" if disk_status.get("status") == "insufficient" else "Confirm disk space",
+                "required": True,
+                "free_gb": disk_status.get("free_gb"),
+                "required_gb": disk_status.get("required_gb"),
+            }
+        )
     if needs_runtime_install:
-        steps.append({"id": "install_runtime", "label": "Install Ollama", "required": True})
+        if model.runtime == "mlx":
+            steps.append(
+                {
+                    "id": "install_runtime",
+                    "label": "Install MLX",
+                    "required": True,
+                    "command": ["python", "-m", "pip", "install", "mlx-lm"],
+                }
+            )
+        elif model.runtime == "vllm":
+            steps.append(
+                {
+                    "id": "install_runtime",
+                    "label": "Install vLLM",
+                    "required": True,
+                    "command": ["python", "-m", "pip", "install", "vllm"],
+                }
+            )
+        else:
+            steps.append({"id": "install_runtime", "label": "Install Ollama", "required": True})
     else:
         steps.append({"id": "check_runtime", "label": "Check local model runner", "required": True})
     if needs_model_download:
+        command: list[str] = []
+        if model.runtime == "ollama":
+            command = ["ollama", "pull", model.id]
+        elif model.runtime == "mlx":
+            command = ["mlx_lm.server", "--model", model.id, "--port", "8080"]
         steps.append(
             {
                 "id": "download_model",
                 "label": f"Download {model.display_name}",
                 "required": True,
-                "command": ["ollama", "pull", model.id] if model.runtime == "ollama" else [],
+                "command": command,
             }
         )
     else:
@@ -632,7 +946,12 @@ def _plain_explanation(
     if memory_source == "vram":
         return f"Vaner found enough GPU memory for {model.display_name} with headroom for normal desktop use.{installed}"
     if memory_source == "unified":
-        return f"Vaner found unified memory and chose {model.display_name} with safe headroom for macOS and the model runner.{installed}"
+        return f"Vaner found unified accelerator memory and chose {model.display_name} with safe headroom for the desktop and model runner.{installed}"
+    if memory_source == "inferred_gpu":
+        return (
+            f"Vaner found an NVIDIA GPU but could not read exact GPU memory, so it chose {model.display_name} "
+            f"as a cautious GPU-class default instead of a tiny CPU model.{installed}"
+        )
     if hw.gpu == "none":
         return (
             f"Vaner did not find a dedicated GPU, so it chose {model.display_name} as a safer local setup. "
@@ -647,8 +966,11 @@ def _hardware_summary(hw: HardwareProfile, effective_memory_gb: float, memory_so
         "accelerator_type": hw.gpu,
         "effective_memory_gb": effective_memory_gb,
         "memory_source": memory_source,
+        "gpu_count": _gpu_count(hw),
+        "gpu_total_memory_gb": _gpu_total_memory_gb(hw),
         "system_memory_gb": hw.memory_display_gb or hw.ram_gb,
-        "is_unified_memory": hw.memory_is_unified,
+        "is_unified_memory": hw.memory_is_unified or _looks_like_nvidia_unified_memory(hw),
+        "disk_free_gb": hw.disk_free_gb,
         "tier": hw.tier,
     }
 

@@ -81,6 +81,11 @@ class BackendConfig(BaseModel):
     reasoning_token_budget: int = 8192
     # Try response_format={"type":"json_object"} before tolerant parsing.
     prefer_structured_output: bool = True
+    # Provider/runtime knobs for local model calls. For Ollama these are
+    # forwarded under request ``options`` (for example num_ctx, keep_alive,
+    # temperature, top_p, top_k, min_p, repeat_penalty).
+    runtime_options: dict[str, Any] = Field(default_factory=dict)
+    sampling_options: dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerationConfig(BaseModel):
@@ -123,6 +128,18 @@ class EvidenceAssemblyConfig(BaseModel):
     allow_metadata_compaction: bool = True
     allow_low_confidence_demote: bool = True
     allow_semantic_compression: bool = False
+
+
+class ContextPreparationConfig(BaseModel):
+    mode: Literal["legacy", "balanced", "coverage_plus"] = "balanced"
+    max_query_variants: int = 6
+    max_candidate_keys: int = 640
+    max_expansion_passes: int = 1
+    model_expansion: Literal["off", "local_first", "cloud_allowed"] = "local_first"
+    semantic_memory_enabled: bool = False
+    coverage_floor_enabled: bool = True
+    hard_constraint_validation_enabled: bool = True
+    prepared_briefing_injection_enabled: bool = True
 
 
 class GatewayConfig(BaseModel):
@@ -248,6 +265,8 @@ class ExplorationEndpoint(BaseModel):
 
     latency_p50_ms: float = 800.0
     context_window: int = 8192
+    runtime_options: dict[str, Any] = Field(default_factory=dict)
+    sampling_options: dict[str, Any] = Field(default_factory=dict)
     reasoning_depth_hint: Literal["low", "medium", "high"] = "medium"
     structured_output_reliability: float = 0.7
     cost_per_1k_tokens: float = 0.0
@@ -376,6 +395,14 @@ class ExplorationConfig(BaseModel):
     vLLM which requires a non-empty but unauthenticated token.  Leave empty
     to read from the ``VANER_EXPLORATION_API_KEY`` environment variable or
     fall back to ``"EMPTY"`` for local endpoints.
+    """
+
+    runtime_options: dict[str, Any] = Field(default_factory=dict)
+    sampling_options: dict[str, Any] = Field(default_factory=dict)
+    """Provider/runtime options forwarded to the single exploration endpoint.
+
+    Multi-endpoint routing uses the per-endpoint fields on
+    ``ExplorationEndpoint`` instead.
     """
 
     endpoints: list[ExplorationEndpoint] = Field(default_factory=list)
@@ -735,7 +762,7 @@ class VanerConfig(BaseModel):
     store_path: Path
     telemetry_path: Path
     max_age_seconds: int = 3600
-    max_context_tokens: int = 4096
+    max_context_tokens: int = 8192
     backend: BackendConfig = Field(default_factory=BackendConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
@@ -752,3 +779,4 @@ class VanerConfig(BaseModel):
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     cost: CostConfig = Field(default_factory=CostConfig)
     evidence_assembly: EvidenceAssemblyConfig = Field(default_factory=EvidenceAssemblyConfig)
+    context_preparation: ContextPreparationConfig = Field(default_factory=ContextPreparationConfig)

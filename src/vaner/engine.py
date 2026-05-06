@@ -112,6 +112,7 @@ from vaner.models.cost import CostLedgerEntry, ModelPricing, estimate_cost, esti
 from vaner.models.decision import DecisionRecord, PredictionLink, ScoreFactor
 from vaner.models.signal import KIND_COMPOSER_LIFECYCLE, SignalEvent
 from vaner.plan_drafts import TERMINAL_PLAN_DRAFT_STATUSES, list_plan_drafts
+from vaner.policy.internal_llm import JSON_CONTRACT_POLICY, PREDICTION_POLICY, internal_llm_policy
 from vaner.setup.apply import AppliedPolicy, apply_policy_bundle
 from vaner.setup.catalog import bundle_by_id
 from vaner.signals.composer import ComposerSignalPump, DraftIntentSnapshot
@@ -334,9 +335,36 @@ _CORE_ARCHITECTURE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+_CONTINUATION_AGENDAS: tuple[tuple[str, tuple[str, ...], float], ...] = (
+    (
+        "normal continuation: review quality, risks, policy, and failure modes",
+        ("review", "risk", "policy", "contract", "error", "failure", "fallback", "timeout", "security"),
+        0.78,
+    ),
+    (
+        "normal continuation: validate behavior, tests, fixtures, and benchmark evidence",
+        ("test", "spec", "fixture", "benchmark", "eval", "ci", "verify", "check"),
+        0.76,
+    ),
+    (
+        "normal continuation: harden persistence, cache, config, and schema paths",
+        ("store", "cache", "config", "schema", "sql", "db", "toml", "yaml", "settings"),
+        0.74,
+    ),
+    (
+        "normal continuation: inspect daemon, worker, queue, signal, and event lifecycle",
+        ("daemon", "worker", "runner", "queue", "signal", "event", "watch", "stream", "background"),
+        0.72,
+    ),
+    (
+        "normal continuation: prepare documentation, handoff, release, and report context",
+        ("readme", "docs", "guide", "changelog", "release", "report", "handoff", "setup"),
+        0.70,
+    ),
+)
 
 
-def _merge_llm_ranked_with_seed_paths(ranked_files: list[str], seed_paths: list[str]) -> list[str]:
+def _merge_llm_ranked_with_seed_paths(ranked_files: list[str], seed_paths: list[str], *, max_paths: int = 8) -> list[str]:
     """Keep deterministic seed evidence when an LLM rerank is incomplete.
 
     The LLM is useful for reordering and adding adjacent files, but it should
@@ -345,7 +373,12 @@ def _merge_llm_ranked_with_seed_paths(ranked_files: list[str], seed_paths: list[
     paths are appended as a backstop and then filtered/deduped.
     """
 
-    return list(dict.fromkeys(filter_evidence_paths([*ranked_files, *seed_paths])))[:8]
+    filtered_ranked = filter_evidence_paths(ranked_files)
+    filtered_seeds = list(dict.fromkeys(filter_evidence_paths(seed_paths)))
+    seed_set = set(filtered_seeds)
+    ranked_without_seeds = [path for path in filtered_ranked if path not in seed_set]
+    ranked_slots = max(0, int(max_paths) - len(filtered_seeds))
+    return list(dict.fromkeys([*ranked_without_seeds[:ranked_slots], *filtered_seeds]))[:max_paths]
 
 
 def _core_group_matches_recent_query(reason: str, recent_queries: list[str]) -> bool:
@@ -361,6 +394,24 @@ def _core_group_matches_recent_query(reason: str, recent_queries: list[str]) -> 
     # Require at least two overlapping group terms so broad words like "flow"
     # do not pull an architecture group into unrelated turns.
     return len(reason_terms & query_terms) >= 2
+
+
+def _core_group_paths_for_query(query: str, available_paths: list[str], *, max_paths: int = 12) -> list[str]:
+    """Return core architecture files whose group labels directly match a query."""
+
+    if not query:
+        return []
+    available_path_set = set(available_paths)
+    matched: list[str] = []
+    for reason, candidate_paths in _CORE_ARCHITECTURE_GROUPS:
+        if not _core_group_matches_recent_query(reason, [query]):
+            continue
+        for path in candidate_paths:
+            if path in available_path_set and path not in matched:
+                matched.append(path)
+                if len(matched) >= max_paths:
+                    return matched
+    return matched
 
 
 # Phase 4 / WS2: richer LLM callable that returns a structured
@@ -639,6 +690,9 @@ class VanerEngine:
             "hedge_ratio": 0.20,
             "invest_ratio": 0.10,
             "no_regret_ratio": 0.20,
+            "continuation_agenda_cursor": 0.0,
+            "continuation_rounds_last_cycle": 0.0,
+            "continuation_admitted_last_cycle": 0.0,
         }
 
     def _refresh_work_style_adjustments(self) -> None:
@@ -1066,6 +1120,8 @@ class VanerEngine:
     async def query(self, prompt: str, *, max_tokens: int | None = None, top_n: int = 8) -> ContextPackage:
         await self.initialize()
         started_at = time.time()
+        context_budget = _effective_context_budget(self.config, requested=max_tokens)
+        selection_top_n = _adaptive_selection_top_n(prompt, requested=top_n, max_context_tokens=context_budget)
         self._notify_user_request_start()
         # Fold the freshly-arrived prompt into the timing model so
         # subsequent precompute cycles size their budgets against the
@@ -1084,18 +1140,18 @@ class VanerEngine:
                         prior_prediction_probs = {
                             item.category: max(0.0, float(item.confidence)) / total_conf for item in prior_predictions
                         }
-            _quick_artefacts = await self.store.list(limit=2000)
-            _available_quick_paths = sorted({artefact.source_path for artefact in _quick_artefacts if artefact.source_path})
+            _available_quick_paths = await self.store.list_source_paths(limit=5000)
+            _quick_selected = await select_artefacts_fts(
+                prompt,
+                self.store,
+                top_n=selection_top_n,
+                exclude_private=self.config.privacy.exclude_private,
+                path_bonuses=self._pinned_focus_paths,
+                path_excludes=self._pinned_avoid_paths,
+            )
             _quick_paths = {
                 artefact.source_path
-                for artefact in select_artefacts(
-                    prompt,
-                    _quick_artefacts,
-                    top_n=8,
-                    exclude_private=self.config.privacy.exclude_private,
-                    path_bonuses=self._pinned_focus_paths,
-                    path_excludes=self._pinned_avoid_paths,
-                )
+                for artefact in _quick_selected
                 if artefact.source_path
             }
             exact_symbol_paths = set(
@@ -1103,7 +1159,7 @@ class VanerEngine:
                     self.config.repo_root,
                     prompt,
                     available_paths=_available_quick_paths,
-                    max_paths=8,
+                    max_paths=min(16, max(8, selection_top_n)),
                 )
             )
             _quick_paths |= exact_symbol_paths
@@ -1111,7 +1167,7 @@ class VanerEngine:
             # scoring even when the heuristic selector disagrees. Without this
             # union, the bench finds 96% of precompute entries never get consumed
             # because their anchor_units don't overlap with the heuristic's picks.
-            _quick_paths = _quick_paths | await self._cache.candidate_anchor_units(prompt, top_k=3)
+            _quick_paths = _quick_paths | await self._cache.candidate_anchor_units(prompt, top_k=max(3, min(8, selection_top_n // 2)))
             cache_result = await self._cache.match(prompt, relevant_paths=_quick_paths)
             observation = self._arc_model.observe_detail(prompt)
             category = observation.category
@@ -1246,28 +1302,33 @@ class VanerEngine:
                 # Use the LLM-curated files from the precomputed package as primary selection,
                 # then fill remaining top_n slots from the heuristic selector.
                 cache_keys = {s.artefact_key for s in cache_result.package.selections}
-                all_artefacts = await self.store.list(limit=2000)
-                artefacts_by_key = {a.key: a for a in all_artefacts}
-                selected = [artefacts_by_key[k] for k in cache_keys if k in artefacts_by_key]
+                selected = await self.store.list_by_keys(cache_keys, limit=max(selection_top_n, len(cache_keys)))
                 factor_map: dict[str, list[ScoreFactor]] = {}
                 drop_reasons: dict[str, str] = {}
-                if len(selected) < top_n:
-                    heuristic_picks = select_artefacts(
+                prepared_context_diagnostics = []
+                if len(selected) < selection_top_n:
+                    heuristic_picks = await select_artefacts_fts(
                         prompt,
-                        all_artefacts,
-                        top_n=top_n,
+                        self.store,
+                        top_n=selection_top_n,
                         exclude_private=self.config.privacy.exclude_private,
                         path_bonuses=self._pinned_focus_paths,
                         path_excludes=self._pinned_avoid_paths,
                         capture_factors=factor_map,
                         capture_drop_reasons=drop_reasons,
+                        context_preparation_mode=self.config.context_preparation.mode,
+                        max_query_variants=self.config.context_preparation.max_query_variants,
+                        max_candidate_keys=self.config.context_preparation.max_candidate_keys,
+                        coverage_floor_enabled=self.config.context_preparation.coverage_floor_enabled,
+                        max_expansion_passes=self.config.context_preparation.max_expansion_passes,
+                        capture_prepared_context_diagnostics=prepared_context_diagnostics,
                     )
                     seen = {a.key for a in selected}
                     for pick in heuristic_picks:
                         if pick.key not in seen:
                             selected.append(pick)
                             seen.add(pick.key)
-                            if len(selected) >= top_n:
+                            if len(selected) >= selection_top_n:
                                 break
                 source_key = selected[0].key if selected else None
                 features = await extract_hybrid_features(self.store, prompt=prompt, source_key=source_key)
@@ -1281,7 +1342,7 @@ class VanerEngine:
                 package, decision_record = assemble_context_package(
                     prompt,
                     selected,
-                    max_tokens if max_tokens is not None else self.config.max_context_tokens,
+                    context_budget,
                     repo_root=self.config.repo_root,
                     max_age_seconds=self.config.max_age_seconds,
                     score_map=score_map,
@@ -1290,6 +1351,7 @@ class VanerEngine:
                     evidence_assembly_mode=self.config.evidence_assembly.mode,
                     evidence_assembly_quality_bias=self.config.evidence_assembly.quality_bias,
                     evidence_assembly_cost_sensitivity=self.config.evidence_assembly.cost_sensitivity,
+                    prepared_context_diagnostics=prepared_context_diagnostics[-1] if prepared_context_diagnostics else None,
                     return_decision=True,
                 )
             else:
@@ -1332,8 +1394,8 @@ class VanerEngine:
                     preferred_keys |= set(str(key) for key in cache_result.enrichment.get("relevant_keys", []))
                 package, selected, decision_record = await self._build_package_for_prompt(
                     prompt,
-                    max_tokens=max_tokens,
-                    top_n=top_n,
+                    max_tokens=context_budget,
+                    top_n=selection_top_n,
                     preferred_keys=preferred_keys,
                     include_working_set_preferences=not cold_start_prompt,
                 )
@@ -1899,6 +1961,41 @@ class VanerEngine:
         # newly observed user turn can surface as prepared context immediately.
         await self._prime_latest_history_query_prediction(recent_query_text)
 
+        # Latest-query anchors are stronger than broad periodic coverage. Seed
+        # deterministic exact-symbol paths and matching core groups before the
+        # heuristic, graph, arc, and rotating-core seeders can crowd them out.
+        latest_query_anchor_paths: list[str] = []
+        if recent_query_text:
+            latest_query = recent_query_text[-1]
+            latest_query_anchor_paths.extend(
+                rank_exact_paths(
+                    self.config.repo_root,
+                    latest_query,
+                    available_paths=available_paths,
+                    max_paths=12,
+                )
+            )
+            latest_query_anchor_paths.extend(
+                _core_group_paths_for_query(
+                    latest_query,
+                    available_paths,
+                    max_paths=12,
+                )
+            )
+        latest_query_anchor_paths = list(dict.fromkeys(filter_evidence_paths(latest_query_anchor_paths)))
+        if latest_query_anchor_paths:
+            frontier.seed_from_focus_paths(
+                self._rank_paths_for_recent_intent(
+                    latest_query_anchor_paths,
+                    recent_query_text,
+                    focused_paths=set(latest_query_anchor_paths),
+                ),
+                available_paths,
+                reason="latest query exact symbol/core anchor focus",
+                priority_floor=1.18,
+                source="structured_direct",
+            )
+
         # Order matters: Jaccard-dedup is first-admitted-wins, and
         # structured v2 predictions carry the most concrete evidence targets.
         # Seed them before heuristic/core/arc scenarios so direct evidence
@@ -2406,7 +2503,149 @@ class VanerEngine:
         # frontier empties we still drain in-flight tasks in case LLM branches
         # push new work back onto the queue.
         max_inflight = max(2, effective_concurrency * 2)
-        while governor.should_continue() and not frontier.is_saturated():
+        continuation_rounds = 0
+        continuation_admitted = 0
+        continuation_chunk_limit = max(1, math.ceil(len(available_paths) / 8))
+        if self._active_deep_run_session is not None:
+            continuation_chunk_limit *= 2
+        # This is a duplicate/finite-work guard, not a short-run policy cap.
+        # Normal background prep should spend the cycle budget when useful work
+        # exists; it just must not spin forever on repeated equivalent chunks.
+        continuation_chunk_limit = max(len(_CONTINUATION_AGENDAS), min(256, continuation_chunk_limit))
+        continuation_cursor = int(self._cycle_policy_state.get("continuation_agenda_cursor", 0.0))
+
+        def _cycle_has_budget_for_continuation() -> bool:
+            if not governor.should_continue():
+                return False
+            if cycle_deadline is None:
+                return True
+            # Keep enough tail room for persistence, cleanup, and snapshot writes.
+            return (cycle_deadline - time.monotonic()) > 2.0
+
+        def _rank_continuation_paths(paths: list[str], keywords: tuple[str, ...]) -> list[str]:
+            changed_set = set(changed_paths) | set(changed_paths_for_horizon)
+            keyword_set = {kw.lower() for kw in keywords}
+
+            def score(path: str) -> tuple[int, str]:
+                lower_path = path.lower()
+                basename = lower_path.rsplit("/", 1)[-1]
+                value = 0
+                if path in changed_set:
+                    value += 40
+                if path not in covered_paths:
+                    value += 18
+                if lower_path.endswith(_SOURCE_EXTENSIONS):
+                    value += 8
+                if lower_path.startswith(("src/", "lib/", "app/", "packages/")):
+                    value += 6
+                if lower_path.startswith(("tests/", "test/")):
+                    value += 5
+                for keyword in keyword_set:
+                    if keyword in basename:
+                        value += 12
+                    elif keyword in lower_path:
+                        value += 5
+                if lower_path.startswith(("docs/", "README".lower())):
+                    value += 2
+                return value, path
+
+            return sorted(dict.fromkeys(paths), key=lambda p: (-score(p)[0], score(p)[1]))
+
+        def _seed_continuation_agenda() -> int:
+            nonlocal continuation_rounds, continuation_admitted, continuation_cursor
+            if continuation_rounds >= continuation_chunk_limit or not _cycle_has_budget_for_continuation():
+                return 0
+
+            agenda_count = len(_CONTINUATION_AGENDAS)
+            available_set = set(available_paths)
+            fallback_paths = [
+                path
+                for path in [*core_source_paths, *sorted(core_group_paths), *latest_query_anchor_paths]
+                if path in available_set
+            ]
+            attempts = 0
+            while attempts < agenda_count:
+                agenda_index = (continuation_cursor + attempts) % agenda_count
+                reason, keywords, priority_floor = _CONTINUATION_AGENDAS[agenda_index]
+                matched = [
+                    path
+                    for path in available_paths
+                    if path in available_set and any(keyword in path.lower() for keyword in keywords)
+                ]
+                if not matched:
+                    attempts += 1
+                    continue
+                ranked = _rank_continuation_paths(matched, keywords)
+                uncovered = [path for path in ranked if path not in covered_paths]
+                candidates = uncovered or ranked
+                stride = 8
+                round_offset = (continuation_rounds // max(1, agenda_count)) * stride
+                if candidates:
+                    offset = round_offset % max(1, len(candidates))
+                    candidates = [*candidates[offset:], *candidates[:offset]]
+                admitted = frontier.seed_from_focus_paths(
+                    candidates[:stride],
+                    available_paths,
+                    reason=reason,
+                    priority_floor=priority_floor,
+                    source="horizon",
+                )
+                continuation_cursor = (agenda_index + 1) % agenda_count
+                if admitted:
+                    continuation_rounds += 1
+                    continuation_admitted += admitted
+                    self._emit_live_work_event(
+                        {
+                            "entity_type": "worker",
+                            "entity_id": "precompute-cycle",
+                            "stage": "continuation",
+                            "status": "queued",
+                            "summary": reason,
+                            "cycle_id": str(self._precompute_cycles),
+                            "targets": candidates[:stride],
+                            "metadata": {
+                                "round": continuation_rounds,
+                                "normal_background": self._active_deep_run_session is None,
+                            },
+                        }
+                    )
+                    return admitted
+                attempts += 1
+
+            # If named agendas are exhausted by dedup/coverage, keep a small
+            # architecture slice moving so normal background prep still broadens
+            # without requiring a declared Deep-Run session.
+            fallback_ranked = [path for path in _rank_continuation_paths(fallback_paths, ()) if path not in covered_paths]
+            if fallback_ranked:
+                admitted = frontier.seed_from_focus_paths(
+                    fallback_ranked[:8],
+                    available_paths,
+                    reason="normal continuation: broaden uncovered architecture context",
+                    priority_floor=0.68,
+                    source="core_architecture",
+                )
+                if admitted:
+                    continuation_rounds += 1
+                    continuation_admitted += admitted
+                    self._emit_live_work_event(
+                        {
+                            "entity_type": "worker",
+                            "entity_id": "precompute-cycle",
+                            "stage": "continuation",
+                            "status": "queued",
+                            "summary": "normal continuation: broaden uncovered architecture context",
+                            "cycle_id": str(self._precompute_cycles),
+                            "targets": fallback_ranked[:8],
+                            "metadata": {
+                                "round": continuation_rounds,
+                                "normal_background": self._active_deep_run_session is None,
+                            },
+                        }
+                    )
+                    return admitted
+            return 0
+
+        while governor.should_continue():
             if cycle_deadline is not None and time.monotonic() >= cycle_deadline and self._last_explored_scenarios:
                 break
 
@@ -2416,8 +2655,11 @@ class VanerEngine:
             if scenario is None:
                 # No pending work right now. If tasks are in flight they may
                 # push follow-ons on completion, so wait for one to finish and
-                # check again. Otherwise we're done.
+                # check again. Otherwise refill from normal continuation
+                # agendas before ending the cycle.
                 if not in_flight:
+                    if _seed_continuation_agenda():
+                        continue
                     break
                 done, pending = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
                 in_flight = [t for t in pending]
@@ -2459,7 +2701,8 @@ class VanerEngine:
             "arc": 4,
             "pattern": 5,
             "skill": 6,
-            "llm_branch": 7,
+            "horizon": 7,
+            "llm_branch": 8,
         }
         self._last_explored_scenarios.sort(
             key=lambda item: (
@@ -2558,6 +2801,9 @@ class VanerEngine:
             used_ms=allocation.no_regret_ms * allocation_scale,
             bucket="no_regret",
         )
+        self._cycle_policy_state["continuation_agenda_cursor"] = float(continuation_cursor)
+        self._cycle_policy_state["continuation_rounds_last_cycle"] = float(continuation_rounds)
+        self._cycle_policy_state["continuation_admitted_last_cycle"] = float(continuation_admitted)
         _record_idle_usage_seconds(self.config, cycle_elapsed_s)
         if not self._last_explored_scenarios and not self._last_no_scenario_reason:
             if cycle_deadline is not None and time.monotonic() >= cycle_deadline:
@@ -2575,6 +2821,15 @@ class VanerEngine:
     def get_last_no_scenario_reason(self) -> str:
         """Return the latest best-effort reason a cycle explored no scenarios."""
         return self._last_no_scenario_reason
+
+    def get_last_cycle_profile(self) -> dict[str, float | str]:
+        """Return compact, non-persistent telemetry for the most recent cycle."""
+        return {
+            "continuation_rounds": float(self._cycle_policy_state.get("continuation_rounds_last_cycle", 0.0)),
+            "continuation_admitted": float(self._cycle_policy_state.get("continuation_admitted_last_cycle", 0.0)),
+            "continuation_agenda_cursor": float(self._cycle_policy_state.get("continuation_agenda_cursor", 0.0)),
+            "no_scenario_reason": self._last_no_scenario_reason,
+        }
 
     def get_active_predictions(self) -> list[PredictedPrompt]:
         """Return non-terminal PredictedPrompts for the active cycle.
@@ -4121,6 +4376,7 @@ class VanerEngine:
             priority_tag = ""
 
         prompt = (
+            f"{internal_llm_policy(JSON_CONTRACT_POLICY, PREDICTION_POLICY)}\n\n"
             f"You are a code-context exploration engine.{priority_tag} Evaluate this scenario and decide "
             "which files are most relevant and what adjacent scenarios are worth exploring next.\n\n"
             f"Developer context:\n"
@@ -4143,7 +4399,7 @@ class VanerEngine:
             "   need this scenario addresses (e.g. 'authentication middleware, JWT validation').\n"
             "   This is used for matching future queries to this cached context.\n"
             "4. Set confidence (0.0-1.0): how likely is this area to be needed next?\n\n"
-            "Return JSON only (no markdown fences):\n"
+            "Return JSON only (no markdown fences, no extra keys):\n"
             "{\n"
             '  "ranked_files": ["path/a.py", "path/b.py"],\n'
             '  "semantic_intent": "...",\n'
@@ -5347,6 +5603,7 @@ class VanerEngine:
             # LLM focuses purely on the long-tail predictions they can't make.
             graph_covered = "\n".join(sorted(covered_paths)[:20]) or "none"
             prompt = (
+                f"{internal_llm_policy(JSON_CONTRACT_POLICY, PREDICTION_POLICY)}\n\n"
                 "You are Vaner's speculative prediction engine — the long-tail layer.\n"
                 "The system has ALREADY pre-built context packages for:\n"
                 "  • Dependency-graph neighborhoods (structural, high-confidence)\n"
@@ -5356,7 +5613,8 @@ class VanerEngine:
                 "  – Config or infra files triggered by a specific code change\n"
                 "  – Third-party API surfaces the developer will need to read\n"
                 "  – Novel debugging paths not implied by recent errors\n\n"
-                "Return a JSON array with fields: question, file_paths, confidence, rationale.\n"
+                "Return a JSON array only, with fields: question, file_paths, confidence, rationale.\n"
+                "Keep rationale as a short observed-signal evidence note.\n"
                 "Limit to 3-5 predictions.\n\n"
                 f"Recent queries:\n{recent_hint or 'none'}\n\n"
                 f"Feedback summary:\n{feedback_summary}\n\n"
@@ -5495,7 +5753,7 @@ class VanerEngine:
         package, _decision_record = assemble_context_package(
             question,
             selected[:8],
-            self.config.max_context_tokens,
+            _effective_context_budget(self.config),
             repo_root=self.config.repo_root,
             max_age_seconds=self.config.max_age_seconds,
             score_map=score_map,
@@ -5759,6 +6017,7 @@ class VanerEngine:
             "draft_evidence_threshold",
             "draft_volatility_ceiling",
             "draft_budget_min_ms",
+            "continuation_agenda_cursor",
         }
         cycle_state_to_persist = {k: v for k, v in self._cycle_policy_state.items() if k in persistent_cycle_keys}
         await self.store.upsert_learning_state(
@@ -5778,10 +6037,10 @@ class VanerEngine:
         preferred_keys: set[str] | None = None,
         include_working_set_preferences: bool = True,
     ) -> tuple[ContextPackage, list, DecisionRecord]:
-        artefacts = await self.store.list(limit=2000)
-        if not artefacts:
+        context_budget = _effective_context_budget(self.config, requested=max_tokens)
+        top_n = _adaptive_selection_top_n(prompt, requested=top_n, max_context_tokens=context_budget)
+        if not await self.store.list(limit=1):
             await self.prepare()
-            artefacts = await self.store.list(limit=2000)
 
         repo_root = self.config.repo_root
         git_state = read_git_state(repo_root)
@@ -5801,6 +6060,7 @@ class VanerEngine:
 
         factor_map: dict[str, list[ScoreFactor]] = {}
         drop_reasons: dict[str, str] = {}
+        prepared_context_diagnostics = []
         selected = await select_artefacts_fts(
             prompt,
             self.store,
@@ -5813,6 +6073,12 @@ class VanerEngine:
             path_excludes=self._pinned_avoid_paths,
             capture_factors=factor_map,
             capture_drop_reasons=drop_reasons,
+            context_preparation_mode=self.config.context_preparation.mode,
+            max_query_variants=self.config.context_preparation.max_query_variants,
+            max_candidate_keys=self.config.context_preparation.max_candidate_keys,
+            coverage_floor_enabled=self.config.context_preparation.coverage_floor_enabled,
+            max_expansion_passes=self.config.context_preparation.max_expansion_passes,
+            capture_prepared_context_diagnostics=prepared_context_diagnostics,
         )
         if source_key is None and selected:
             source_key = selected[0].key
@@ -5833,12 +6099,18 @@ class VanerEngine:
                 path_excludes=self._pinned_avoid_paths,
                 capture_factors=factor_map,
                 capture_drop_reasons=drop_reasons,
+                context_preparation_mode=self.config.context_preparation.mode,
+                max_query_variants=self.config.context_preparation.max_query_variants,
+                max_candidate_keys=self.config.context_preparation.max_candidate_keys,
+                coverage_floor_enabled=self.config.context_preparation.coverage_floor_enabled,
+                max_expansion_passes=self.config.context_preparation.max_expansion_passes,
+                capture_prepared_context_diagnostics=prepared_context_diagnostics,
             )
         score_map = {artefact.key: self._intent_scorer.score(prompt, artefact, features=features) for artefact in selected}
         package, decision_record = assemble_context_package(
             prompt,
             selected,
-            max_tokens if max_tokens is not None else self.config.max_context_tokens,
+            context_budget,
             repo_root=self.config.repo_root,
             max_age_seconds=self.config.max_age_seconds,
             score_map=score_map,
@@ -5847,6 +6119,7 @@ class VanerEngine:
             evidence_assembly_mode=self.config.evidence_assembly.mode,
             evidence_assembly_quality_bias=self.config.evidence_assembly.quality_bias,
             evidence_assembly_cost_sensitivity=self.config.evidence_assembly.cost_sensitivity,
+            prepared_context_diagnostics=prepared_context_diagnostics[-1] if prepared_context_diagnostics else None,
             return_decision=True,
         )
         return package, selected, decision_record
@@ -5869,6 +6142,7 @@ class VanerEngine:
             partial_similarity=partial_similarity,
             token_budget=package.token_budget,
             token_used=package.token_used,
+            prepared_context_diagnostics=package.prepared_context_diagnostics,
             selections=[
                 {
                     "artefact_key": selection.artefact_key,
@@ -5929,7 +6203,16 @@ class VanerEngine:
             model = llm.split(":", 1)[1]
             if not model:
                 return None
-            return ollama_llm(model=model, timeout=float(self.config.backend.request_timeout_seconds))
+            return ollama_llm(
+                model=model,
+                timeout=float(self.config.backend.request_timeout_seconds),
+                max_tokens=int(self.config.backend.max_response_tokens),
+                extra_body=_ollama_options_extra_body(
+                    self.config.backend.runtime_options,
+                    self.config.backend.sampling_options,
+                ),
+                reasoning_mode=self.config.backend.reasoning_mode,
+            )
         if llm.startswith("vllm:"):
             # vllm:<model>  or  vllm:<model>@<host>:<port>
             from vaner.clients.openai import openai_llm
@@ -5993,6 +6276,11 @@ class VanerEngine:
                 model=model,
                 timeout=timeout,
                 response_format=response_format,
+                max_tokens=int(self.config.backend.max_response_tokens),
+                extra_body=_ollama_options_extra_body(
+                    self.config.backend.runtime_options,
+                    self.config.backend.sampling_options,
+                ),
                 reasoning_mode=reasoning_mode,
             )
         return None
@@ -6452,6 +6740,81 @@ def _probe_ollama_endpoint(base_url: str, timeout: float = 2.0) -> tuple[bool, l
         return False, []
 
 
+def _ollama_options_extra_body(runtime_options: dict[str, Any] | None, sampling_options: dict[str, Any] | None) -> dict[str, Any] | None:
+    options = {
+        str(key): value
+        for source in (runtime_options or {}, sampling_options or {})
+        for key, value in source.items()
+        if value is not None and value != ""
+    }
+    return {"options": options} if options else None
+
+
+def _adaptive_selection_top_n(prompt: str, *, requested: int, max_context_tokens: int) -> int:
+    """Expand retrieval breadth for multi-facet questions when context allows."""
+
+    base = max(1, int(requested))
+    if max_context_tokens < 4096:
+        return base
+    lowered = prompt.lower()
+    facet_count = prompt.count("?") + len(re.findall(r"\b(?:and|what|how|when|which|where)\b", lowered))
+    identifier_count = len(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b", prompt))
+    extra = 0
+    if facet_count >= 3:
+        extra += 2
+    if identifier_count >= 8:
+        extra += 2
+    if any(term in lowered for term in ("schema", "pipeline", "flow", "walk me through", "how does")):
+        extra += 2
+    capacity_cap = 16 if max_context_tokens >= 16384 else 12
+    return min(capacity_cap, base + extra)
+
+
+def _configured_context_windows(config: VanerConfig) -> list[int]:
+    windows: list[int] = []
+    for source in (
+        getattr(config.backend, "runtime_options", {}) or {},
+        getattr(config.exploration, "runtime_options", {}) or {},
+    ):
+        if not isinstance(source, dict):
+            continue
+        for key in ("num_ctx", "context_window", "max_context_tokens"):
+            try:
+                value = int(source.get(key) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                windows.append(value)
+    for endpoint in getattr(config.exploration, "endpoints", []) or []:
+        try:
+            value = int(getattr(endpoint, "context_window", 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            windows.append(value)
+    return windows
+
+
+def _effective_context_budget(config: VanerConfig, *, requested: int | None = None) -> int:
+    """Return Vaner's evidence-package budget for the current runtime.
+
+    Explicit per-call budgets stay authoritative. Otherwise use the configured
+    package budget as a floor, then expand when the local runtime advertises a
+    large context window. Vaner leaves most of the model window for the user's
+    prompt, final answer, and reasoning overhead.
+    """
+
+    if requested is not None:
+        return max(1, int(requested))
+    configured = max(1, int(getattr(config, "max_context_tokens", 8192) or 8192))
+    windows = _configured_context_windows(config)
+    if not windows:
+        return max(8192, configured)
+    largest_window = max(windows)
+    adaptive = min(262_144, max(16_384, largest_window // 3))
+    return max(configured, adaptive)
+
+
 def _build_exploration_llm(ecfg: ExplorationConfig) -> LLMCallable | None:
     """Resolve the exploration LLM from ExplorationConfig, probing endpoints as needed."""
     import logging as _logging
@@ -6516,7 +6879,11 @@ def _build_exploration_llm(ecfg: ExplorationConfig) -> LLMCallable | None:
         from vaner.clients.ollama import ollama_llm
 
         _log.info("Vaner exploration LLM: Ollama at %s model=%s", base_url, m)
-        return ollama_llm(model=m, base_url=base_url)
+        return ollama_llm(
+            model=m,
+            base_url=base_url,
+            extra_body=_ollama_options_extra_body(ecfg.runtime_options, ecfg.sampling_options),
+        )
 
     # ------------------------------------------------------------------
     # Explicit endpoint given: probe or trust based on backend hint

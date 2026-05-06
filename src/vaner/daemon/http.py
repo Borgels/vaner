@@ -1421,6 +1421,92 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
         )
         return JSONResponse({"count": len(rows), "visibility": visibility_mode, "scenarios": [_scenario_payload(row) for row in rows]})
 
+    async def _heatmap_replay_payload(
+        *,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        range_seconds: float | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        end_ts = float(to_ts or time.time())
+        default_range = float(range_seconds or 15 * 60)
+        start_ts = float(from_ts if from_ts is not None else end_ts - default_range)
+        if start_ts > end_ts:
+            start_ts, end_ts = end_ts, start_ts
+        capped_limit = max(1, min(int(limit), 200))
+        rows = await _best_effort(
+            scenario_store.list_top(limit=capped_limit, visibility="all"),
+            [],
+            label="heatmap scenarios",
+            timeout=2.0,
+        )
+        scenario_ids = [str(row.id) for row in rows]
+        samples = await _best_effort(
+            scenario_store.list_samples(scenario_ids=scenario_ids, start_ts=start_ts, end_ts=end_ts, limit=50_000),
+            [],
+            label="heatmap samples",
+            timeout=2.0,
+        )
+        live_events = [
+            row
+            for row in read_live_work_events(config.repo_root, limit=1000)
+            if start_ts <= float(row.get("ts") or 0.0) <= end_ts
+        ]
+        return {
+            "from_ts": start_ts,
+            "to_ts": end_ts,
+            "scenarios": [_scenario_payload(row) for row in rows],
+            "samples": [sample.__dict__ for sample in samples],
+            "events": live_events,
+            "metadata": {
+                "sample_source": "scenario_samples",
+                "event_source": "live_work_events",
+                "synthetic": False,
+                "sample_count": len(samples),
+                "event_count": len(live_events),
+                "scenario_count": len(rows),
+                "complete": bool(samples),
+            },
+        }
+
+    @app.get("/heatmap/replay/stream")
+    async def heatmap_replay_stream(
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        range_seconds: float | None = None,
+        limit: int = 100,
+    ) -> StreamingResponse:
+        async def event_gen() -> AsyncIterator[str]:
+            last_fingerprint = ""
+            last_keepalive = time.monotonic()
+            sent = 0
+            while True:
+                payload = await _heatmap_replay_payload(
+                    from_ts=from_ts if to_ts is not None else None,
+                    to_ts=to_ts,
+                    range_seconds=range_seconds,
+                    limit=limit,
+                )
+                serialized = json.dumps(payload, sort_keys=True, default=str)
+                if serialized != last_fingerprint:
+                    yield f"event: replay_snapshot\ndata: {serialized}\n\n"
+                    last_fingerprint = serialized
+                    last_keepalive = time.monotonic()
+                    sent += 1
+                    if limit is not None and sent >= max(1, int(limit)):
+                        return
+                now = time.monotonic()
+                if now - last_keepalive >= 10.0:
+                    yield ": keepalive\n\n"
+                    last_keepalive = now
+                await asyncio.sleep(1.0)
+
+        return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+    @app.get("/heatmap/replay")
+    async def heatmap_replay(from_ts: float | None = None, to_ts: float | None = None, limit: int = 100) -> JSONResponse:
+        return JSONResponse(await _heatmap_replay_payload(from_ts=from_ts, to_ts=to_ts, limit=limit))
+
     @app.get("/scenarios/{scenario_id}")
     async def fetch_item(scenario_id: str) -> JSONResponse:
         row = await scenario_store.get(scenario_id)

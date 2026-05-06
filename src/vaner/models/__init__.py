@@ -12,6 +12,12 @@ from vaner.models.answerable import (
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.models.config import VanerConfig
 from vaner.models.context import ContextPackage, ContextSelection
+from vaner.models.context_preparation import (
+    ContextCoverageReport,
+    ContextFacet,
+    ContextPreparationProfile,
+    PreparedContextDiagnostics,
+)
 from vaner.models.cost import (
     CostEstimate,
     CostLedgerEntry,
@@ -38,11 +44,15 @@ __all__ = [
     "EvidenceAssemblyDecision",
     "EvidenceAssemblyMetadata",
     "ContextPackage",
+    "ContextCoverageReport",
+    "ContextFacet",
+    "ContextPreparationProfile",
     "ContextSelection",
     "CostEstimate",
     "CostLedgerEntry",
     "DecisionRecord",
     "PredictionLink",
+    "PreparedContextDiagnostics",
     "Scenario",
     "ScoreFactor",
     "SelectionDecision",

@@ -367,6 +367,11 @@ class PrecomputeWorker:
             profile["precompute_ms"] = (time.monotonic() - precompute_start) * 1000.0
             profile["total_ms"] = (time.monotonic() - started) * 1000.0
             profile["produced"] = float(produced or 0)
+            if hasattr(engine, "get_last_cycle_profile"):
+                try:
+                    profile.update(engine.get_last_cycle_profile())
+                except Exception:
+                    logger.debug("failed to read engine cycle profile", exc_info=True)
             self._write_predictions(engine, cycle_id=cycle_id)
             self._status["profile"] = profile
             self._set_state("completed", job=job, phase="idle", cycle_id=cycle_id, produced=int(produced or 0))
@@ -533,9 +538,13 @@ class PrecomputeWorker:
             stage = "progress"
             status = "running"
             if isinstance(payload, dict):
+                tokens_used = int(payload.get("tokens_used") or 0)
+                token_budget = int(payload.get("token_budget") or 0)
+                overage = max(0, tokens_used - token_budget)
+                budget_label = f"{token_budget} token target" if token_budget else "token target"
+                overage_label = f" ({overage} over target)" if overage else ""
                 summary = (
-                    f"Progress: {int(payload.get('tokens_used') or 0)}/"
-                    f"{int(payload.get('token_budget') or 0)} tokens, "
+                    f"Progress: {tokens_used} tokens used / {budget_label}{overage_label}, "
                     f"{int(payload.get('scenarios_complete') or 0)} scenarios complete."
                 )
         elif kind == "prediction.artifact_added":

@@ -31,6 +31,43 @@ async def test_store_upsert_and_list(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_store_lists_artefacts_by_keys_and_source_paths(tmp_path):
+    store = ArtefactStore(tmp_path / "store.db")
+    await store.initialize()
+    now = time.time()
+    artefacts = [
+        Artefact(
+            key="file_summary:a.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="a.py",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="alpha",
+        ),
+        Artefact(
+            key="file_summary:b.py",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="b.py",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="beta",
+        ),
+    ]
+    for artefact in artefacts:
+        await store.upsert(artefact)
+
+    by_key = await store.list_by_keys(["file_summary:b.py", "missing", "file_summary:a.py"])
+    by_path = await store.list_by_source_paths(["b.py", "a.py"])
+    paths = await store.list_source_paths()
+
+    assert [row.key for row in by_key] == ["file_summary:b.py", "file_summary:a.py"]
+    assert [row.source_path for row in by_path] == ["b.py", "a.py"]
+    assert paths == ["a.py", "b.py"]
+
+
+@pytest.mark.asyncio
 async def test_store_initialize_migrates_synthetic_v6_database(tmp_path):
     db_path = tmp_path / "store.db"
     async with aiosqlite.connect(db_path) as db:

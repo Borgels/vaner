@@ -196,6 +196,14 @@ def test_models_lmstudio_parses_ids() -> None:
     ]
 
 
+def test_disk_free_probe_reports_decimal_gb() -> None:
+    class Usage:
+        free = 123_400_000_000
+
+    with patch.object(hw.shutil, "disk_usage", return_value=Usage()):
+        assert hw._probe_disk_free_gb() == 123
+
+
 def test_thermal_probe_returns_false_off_linux() -> None:
     with patch.object(hw.sys, "platform", "darwin"):
         assert hw._probe_thermal() is False
@@ -222,6 +230,39 @@ def test_gpu_probe_handles_subprocess_failure() -> None:
         gpu, vram = hw._probe_gpu()
     assert gpu == "none"
     assert vram is None
+
+
+def test_nvidia_smi_marks_dgx_spark_memory_as_unified() -> None:
+    class Result:
+        returncode = 0
+        stdout = "NVIDIA DGX Spark GB10, 131072\n"
+
+    with (
+        patch.object(hw.shutil, "which", return_value="/usr/bin/nvidia-smi"),
+        patch.object(hw.subprocess, "run", return_value=Result()),
+    ):
+        devices = hw._probe_gpu_devices_nvidia_smi()
+
+    assert devices is not None
+    assert devices[0].name == "NVIDIA DGX Spark GB10"
+    assert devices[0].memory_display_gb == 128
+    assert devices[0].memory_kind == "unified"
+
+
+def test_nvidia_smi_keeps_regular_rtx_memory_as_vram() -> None:
+    class Result:
+        returncode = 0
+        stdout = "NVIDIA GeForce RTX 5090, 32768\n"
+
+    with (
+        patch.object(hw.shutil, "which", return_value="/usr/bin/nvidia-smi"),
+        patch.object(hw.subprocess, "run", return_value=Result()),
+    ):
+        devices = hw._probe_gpu_devices_nvidia_smi()
+
+    assert devices is not None
+    assert devices[0].memory_display_gb == 32
+    assert devices[0].memory_kind == "vram"
 
 
 # ---------------------------------------------------------------------------

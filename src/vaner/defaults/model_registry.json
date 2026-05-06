@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "verified_at": "2026-05-01",
+  "verified_at": "2026-05-05",
   "generator": "vaner.setup.catalog_refresh",
   "online": true,
   "sources": [
@@ -9,20 +9,257 @@
   ],
   "models": [
     {
+      "id": "gpt-oss:120b",
+      "display_name": "GPT-OSS 120B",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "coding",
+        "summarization",
+        "reasoning",
+        "agentic",
+        "long_context"
+      ],
+      "quality_rank": 99,
+      "stability_rank": 87,
+      "recency_rank": 98,
+      "download_size_gb": 60.9,
+      "min_effective_memory_gb": 73.8,
+      "recommended_effective_memory_gb": 73.8,
+      "parameters": {
+        "context_window": 131072,
+        "reasoning_mode": "allowed",
+        "reasoning_effort": "medium",
+        "max_response_tokens": 8192,
+        "reasoning_token_budget": 16384,
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 40,
+        "repeat_penalty": 1.0,
+        "min_p": 0.0,
+        "num_ctx": 131072
+      },
+      "family_id": "gpt-oss-120b",
+      "params_b": 109.7,
+      "active_params_b": 5.1,
+      "architecture": "moe",
+      "quantization": "MXFP4",
+      "accelerator_tags": [
+        "nvidia",
+        "blackwell",
+        "unified_memory",
+        "dgx_spark",
+        "moe"
+      ]
+    },
+    {
+      "id": "qwen3.6:35b-a3b-coding-nvfp4",
+      "display_name": "Qwen 3.6 35B A3B Coding NVFP4",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "coding",
+        "summarization",
+        "agentic",
+        "long_context"
+      ],
+      "quality_rank": 99,
+      "stability_rank": 82,
+      "recency_rank": 100,
+      "download_size_gb": 22.0,
+      "min_effective_memory_gb": 31.8,
+      "recommended_effective_memory_gb": 32.8,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 8192,
+        "reasoning_token_budget": 16384,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "repeat_penalty": 1.0,
+        "min_p": 0.0,
+        "num_ctx": 262144
+      },
+      "family_id": "qwen3.6-35b-a3b-coding-nvfp4",
+      "params_b": 35.0,
+      "active_params_b": 3.0,
+      "architecture": "moe",
+      "quantization": "NVFP4",
+      "accelerator_tags": [
+        "nvidia",
+        "blackwell",
+        "moe"
+      ]
+    },
+    {
+      "id": "qwen3.6:27b-coding-nvfp4",
+      "display_name": "Qwen 3.6 27B Coding NVFP4",
+      "runtime": "ollama",
+      "workload_tags": [
+        "coding",
+        "agentic",
+        "general",
+        "long_context"
+      ],
+      "quality_rank": 97,
+      "stability_rank": 82,
+      "recency_rank": 100,
+      "download_size_gb": 20.0,
+      "min_effective_memory_gb": 19.6,
+      "recommended_effective_memory_gb": 43.2,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 8192,
+        "reasoning_token_budget": 16384,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "repeat_penalty": 1.0,
+        "min_p": 0.0,
+        "num_ctx": 262144
+      },
+      "family_id": "qwen3.6-27b-coding-nvfp4",
+      "params_b": 27.1,
+      "active_params_b": 0.0,
+      "architecture": "dense",
+      "quantization": "NVFP4",
+      "accelerator_tags": [
+        "nvidia",
+        "blackwell"
+      ]
+    },
+    {
+      "id": "qwen3.6:35b-a3b-coding-mxfp8",
+      "display_name": "Qwen 3.6 35B A3B Coding MXFP8",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "coding",
+        "summarization",
+        "agentic",
+        "long_context"
+      ],
+      "quality_rank": 99,
+      "stability_rank": 84,
+      "recency_rank": 100,
+      "download_size_gb": 38.0,
+      "min_effective_memory_gb": 49.6,
+      "recommended_effective_memory_gb": 51.3,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 8192,
+        "reasoning_token_budget": 16384,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "repeat_penalty": 1.0,
+        "min_p": 0.0,
+        "num_ctx": 262144
+      },
+      "family_id": "qwen3.6-35b-a3b-coding-mxfp8",
+      "params_b": 35.0,
+      "active_params_b": 3.0,
+      "architecture": "moe",
+      "quantization": "MXFP8",
+      "accelerator_tags": [
+        "apple_silicon",
+        "mlx",
+        "moe"
+      ]
+    },
+    {
+      "id": "qwen3.6:27b-coding-mxfp8",
+      "display_name": "Qwen 3.6 27B Coding MXFP8",
+      "runtime": "ollama",
+      "workload_tags": [
+        "coding",
+        "agentic",
+        "general",
+        "long_context"
+      ],
+      "quality_rank": 97,
+      "stability_rank": 84,
+      "recency_rank": 100,
+      "download_size_gb": 31.0,
+      "min_effective_memory_gb": 33.9,
+      "recommended_effective_memory_gb": 74.2,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 8192,
+        "reasoning_token_budget": 16384,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "repeat_penalty": 1.0,
+        "min_p": 0.0,
+        "num_ctx": 262144
+      },
+      "family_id": "qwen3.6-27b-coding-mxfp8",
+      "params_b": 27.1,
+      "active_params_b": 0.0,
+      "architecture": "dense",
+      "quantization": "MXFP8",
+      "accelerator_tags": [
+        "apple_silicon",
+        "mlx"
+      ]
+    },
+    {
+      "id": "qwen3.6:35b",
+      "display_name": "Qwen 3.6 35B A3B",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "coding",
+        "summarization",
+        "research",
+        "long_context"
+      ],
+      "quality_rank": 98,
+      "stability_rank": 85,
+      "recency_rank": 100,
+      "download_size_gb": 22.3,
+      "min_effective_memory_gb": 32.1,
+      "recommended_effective_memory_gb": 32.8,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 8192,
+        "reasoning_token_budget": 16384,
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 20,
+        "repeat_penalty": 1.05,
+        "min_p": 0.0,
+        "num_ctx": 262144
+      },
+      "family_id": "qwen3.6-35b",
+      "params_b": 40.5,
+      "active_params_b": 3.0,
+      "architecture": "moe",
+      "quantization": "Q4_K_M",
+      "accelerator_tags": []
+    },
+    {
       "id": "qwen3.6:27b",
       "display_name": "Qwen 3.6 27B",
       "runtime": "ollama",
       "workload_tags": [
         "general",
         "coding",
-        "summarization"
+        "summarization",
+        "long_context"
       ],
-      "quality_rank": 98,
-      "stability_rank": 85,
+      "quality_rank": 97,
+      "stability_rank": 86,
       "recency_rank": 100,
-      "download_size_gb": 14.9,
-      "min_effective_memory_gb": 17.2,
-      "recommended_effective_memory_gb": 37.9,
+      "download_size_gb": 16.2,
+      "min_effective_memory_gb": 18.7,
+      "recommended_effective_memory_gb": 41.1,
       "parameters": {
         "context_window": 262144,
         "reasoning_mode": "allowed",
@@ -31,121 +268,287 @@
         "temperature": 0.7,
         "top_p": 0.95,
         "top_k": 20,
-        "min_p": 0.0,
         "repeat_penalty": 1.05,
+        "min_p": 0.0,
         "num_ctx": 262144
       },
-      "family_id": "qwen3.6",
-      "params_b": 27.1,
-      "quantization": "Q4_K_M"
+      "family_id": "qwen3.6-27b",
+      "params_b": 29.5,
+      "active_params_b": 0.0,
+      "architecture": "dense",
+      "quantization": "Q4_K_M",
+      "accelerator_tags": []
     },
     {
-      "id": "qwen3.5:latest",
-      "display_name": "Qwen 3.5",
+      "id": "gemma4:e2b",
+      "display_name": "Gemma 4 E2B",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "summarization",
+        "lightweight",
+        "vision"
+      ],
+      "quality_rank": 84,
+      "stability_rank": 90,
+      "recency_rank": 96,
+      "download_size_gb": 6.7,
+      "min_effective_memory_gb": 15.2,
+      "recommended_effective_memory_gb": 16.7,
+      "parameters": {
+        "context_window": 131072,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 3072,
+        "reasoning_token_budget": 4096,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "top_k": 50,
+        "repeat_penalty": 1.1,
+        "num_ctx": 131072
+      },
+      "family_id": "gemma4-e2b",
+      "params_b": 12.1,
+      "active_params_b": 2.0,
+      "architecture": "moe",
+      "quantization": "Q4_K_M",
+      "accelerator_tags": []
+    },
+    {
+      "id": "gemma4:e4b",
+      "display_name": "Gemma 4 E4B",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "summarization",
+        "coding",
+        "lightweight",
+        "vision"
+      ],
+      "quality_rank": 88,
+      "stability_rank": 90,
+      "recency_rank": 96,
+      "download_size_gb": 8.9,
+      "min_effective_memory_gb": 17.7,
+      "recommended_effective_memory_gb": 19.0,
+      "parameters": {
+        "context_window": 131072,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 4096,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "top_k": 50,
+        "repeat_penalty": 1.1,
+        "num_ctx": 131072
+      },
+      "family_id": "gemma4-e4b",
+      "params_b": 16.3,
+      "active_params_b": 4.0,
+      "architecture": "moe",
+      "quantization": "Q4_K_M",
+      "accelerator_tags": []
+    },
+    {
+      "id": "gemma4:26b",
+      "display_name": "Gemma 4 26B",
       "runtime": "ollama",
       "workload_tags": [
         "general",
         "coding",
-        "summarization"
+        "summarization",
+        "agentic",
+        "vision",
+        "long_context"
+      ],
+      "quality_rank": 94,
+      "stability_rank": 88,
+      "recency_rank": 96,
+      "download_size_gb": 16.8,
+      "min_effective_memory_gb": 26.1,
+      "recommended_effective_memory_gb": 27.9,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 8192,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "top_k": 50,
+        "repeat_penalty": 1.1,
+        "num_ctx": 262144
+      },
+      "family_id": "gemma4-26b",
+      "params_b": 30.5,
+      "active_params_b": 4.0,
+      "architecture": "moe",
+      "quantization": "Q4_K_M",
+      "accelerator_tags": []
+    },
+    {
+      "id": "gemma4:31b",
+      "display_name": "Gemma 4 31B",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "coding",
+        "summarization",
+        "agentic",
+        "vision",
+        "long_context"
       ],
       "quality_rank": 95,
-      "stability_rank": 90,
-      "recency_rank": 90,
-      "download_size_gb": 6.1,
-      "min_effective_memory_gb": 7.4,
-      "recommended_effective_memory_gb": 12.1,
+      "stability_rank": 89,
+      "recency_rank": 96,
+      "download_size_gb": 18.5,
+      "min_effective_memory_gb": 21.2,
+      "recommended_effective_memory_gb": 46.6,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 4096,
+        "reasoning_token_budget": 8192,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "top_k": 50,
+        "repeat_penalty": 1.1,
+        "num_ctx": 262144
+      },
+      "family_id": "gemma4-31b",
+      "params_b": 33.6,
+      "active_params_b": 0.0,
+      "architecture": "dense",
+      "quantization": "Q4_K_M",
+      "accelerator_tags": []
+    },
+    {
+      "id": "nemotron-cascade-2:30b",
+      "display_name": "Nemotron Cascade 2 30B A3B",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "coding",
+        "reasoning",
+        "agentic",
+        "long_context"
+      ],
+      "quality_rank": 93,
+      "stability_rank": 80,
+      "recency_rank": 95,
+      "download_size_gb": 22.6,
+      "min_effective_memory_gb": 32.4,
+      "recommended_effective_memory_gb": 33.2,
+      "parameters": {
+        "context_window": 262144,
+        "reasoning_mode": "allowed",
+        "max_response_tokens": 8192,
+        "reasoning_token_budget": 16384,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 40,
+        "repeat_penalty": 1.05,
+        "num_ctx": 262144
+      },
+      "family_id": "nemotron-cascade-2-30b",
+      "params_b": 41.1,
+      "active_params_b": 3.0,
+      "architecture": "moe",
+      "quantization": "Q4_K_M",
+      "accelerator_tags": [
+        "nvidia",
+        "moe"
+      ]
+    },
+    {
+      "id": "nemotron3:33b",
+      "display_name": "Nemotron 3 Nano Omni 33B",
+      "runtime": "ollama",
+      "workload_tags": [
+        "general",
+        "summarization",
+        "vision",
+        "agentic"
+      ],
+      "quality_rank": 88,
+      "stability_rank": 78,
+      "recency_rank": 100,
+      "download_size_gb": 25.7,
+      "min_effective_memory_gb": 29.3,
+      "recommended_effective_memory_gb": 45.8,
       "parameters": {
         "context_window": 131072,
         "reasoning_mode": "allowed",
         "max_response_tokens": 4096,
         "reasoning_token_budget": 8192,
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "top_k": 20,
-        "min_p": 0.0,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "top_k": 40,
         "repeat_penalty": 1.05,
         "num_ctx": 131072
       },
-      "family_id": "qwen3.5",
-      "params_b": 11.2,
-      "quantization": "Q4_K_M"
+      "family_id": "nemotron3-33b",
+      "params_b": 46.8,
+      "active_params_b": 0.0,
+      "architecture": "dense",
+      "quantization": "Q4_K_M",
+      "accelerator_tags": [
+        "nvidia"
+      ]
     },
     {
-      "id": "qwen3-coder-next:latest",
-      "display_name": "Qwen 3 Coder Next",
-      "runtime": "ollama",
-      "workload_tags": [
-        "coding",
-        "general"
-      ],
-      "quality_rank": 92,
-      "stability_rank": 85,
-      "recency_rank": 95,
-      "download_size_gb": 48.2,
-      "min_effective_memory_gb": 54.5,
-      "recommended_effective_memory_gb": 119.1,
-      "parameters": {
-        "context_window": 262144,
-        "reasoning_mode": "allowed",
-        "max_response_tokens": 4096,
-        "reasoning_token_budget": 8192,
-        "temperature": 0.2,
-        "top_p": 0.95,
-        "top_k": 20,
-        "min_p": 0.0,
-        "repeat_penalty": 1.05,
-        "num_ctx": 262144
-      },
-      "family_id": "qwen3-coder-next",
-      "params_b": 87.6,
-      "quantization": "Q4_K_M"
-    },
-    {
-      "id": "qwen3-next:latest",
-      "display_name": "Qwen 3 Next",
+      "id": "mistral-medium-3.5:128b",
+      "display_name": "Mistral Medium 3.5 128B",
       "runtime": "ollama",
       "workload_tags": [
         "general",
-        "coding"
+        "coding",
+        "summarization",
+        "reasoning",
+        "agentic",
+        "vision",
+        "long_context"
       ],
-      "quality_rank": 90,
-      "stability_rank": 85,
-      "recency_rank": 92,
-      "download_size_gb": 46.9,
-      "min_effective_memory_gb": 53.0,
-      "recommended_effective_memory_gb": 116.0,
+      "quality_rank": 96,
+      "stability_rank": 82,
+      "recency_rank": 100,
+      "download_size_gb": 74.7,
+      "min_effective_memory_gb": 84.2,
+      "recommended_effective_memory_gb": 183.9,
       "parameters": {
         "context_window": 262144,
         "reasoning_mode": "allowed",
-        "max_response_tokens": 4096,
-        "reasoning_token_budget": 8192,
+        "max_response_tokens": 8192,
+        "reasoning_token_budget": 16384,
         "temperature": 0.7,
         "top_p": 0.95,
-        "top_k": 20,
-        "min_p": 0.0,
+        "top_k": 40,
         "repeat_penalty": 1.05,
         "num_ctx": 262144
       },
-      "family_id": "qwen3-next",
-      "params_b": 85.3,
-      "quantization": "Q4_K_M"
+      "family_id": "mistral-medium-3.5-128b",
+      "params_b": 135.9,
+      "active_params_b": 0.0,
+      "architecture": "dense",
+      "quantization": "Q4_K_M",
+      "accelerator_tags": []
     },
     {
-      "id": "llama4:latest",
-      "display_name": "Llama 4",
+      "id": "llama4:16x17b",
+      "display_name": "Llama 4 Scout 16x17B",
       "runtime": "ollama",
       "workload_tags": [
         "general",
-        "summarization"
+        "summarization",
+        "vision",
+        "long_context"
       ],
-      "quality_rank": 94,
-      "stability_rank": 90,
-      "recency_rank": 95,
+      "quality_rank": 87,
+      "stability_rank": 88,
+      "recency_rank": 65,
       "download_size_gb": 62.8,
-      "min_effective_memory_gb": 70.8,
-      "recommended_effective_memory_gb": 426.1,
+      "min_effective_memory_gb": 75.8,
+      "recommended_effective_memory_gb": 609.4,
       "parameters": {
-        "context_window": 1048576,
+        "context_window": 10485760,
         "reasoning_mode": "none",
         "max_response_tokens": 4096,
         "reasoning_token_budget": 0,
@@ -153,77 +556,14 @@
         "top_p": 0.9,
         "top_k": 50,
         "repeat_penalty": 1.1,
-        "num_ctx": 1048576
+        "num_ctx": 10485760
       },
-      "family_id": "llama4",
+      "family_id": "llama4-scout",
       "params_b": 114.2,
-      "quantization": "Q4_K_M"
-    },
-    {
-      "id": "gemma4:latest",
-      "display_name": "Gemma 4",
-      "runtime": "ollama",
-      "workload_tags": [
-        "general",
-        "summarization",
-        "lightweight"
-      ],
-      "quality_rank": 78,
-      "stability_rank": 88,
-      "recency_rank": 92,
-      "download_size_gb": 8.9,
-      "min_effective_memory_gb": 10.5,
-      "recommended_effective_memory_gb": 16.9,
-      "parameters": {
-        "context_window": 131072,
-        "reasoning_mode": "allowed",
-        "max_response_tokens": 3072,
-        "reasoning_token_budget": 4096,
-        "temperature": 0.8,
-        "top_p": 0.95,
-        "top_k": 64,
-        "repeat_penalty": 1.0,
-        "num_ctx": 131072
-      },
-      "family_id": "gemma4",
-      "params_b": 16.3,
-      "quantization": "Q4_K_M"
-    },
-    {
-      "id": "qwen3:latest",
-      "display_name": "Qwen 3",
-      "runtime": "ollama",
-      "workload_tags": [
-        "general",
-        "lightweight"
-      ],
-      "quality_rank": 75,
-      "stability_rank": 95,
-      "recency_rank": 80,
-      "download_size_gb": 4.9,
-      "min_effective_memory_gb": 5.9,
-      "recommended_effective_memory_gb": 7.2,
-      "parameters": {
-        "context_window": 32768,
-        "reasoning_mode": "allowed",
-        "max_response_tokens": 2048,
-        "reasoning_token_budget": 2048,
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "top_k": 20,
-        "min_p": 0.0,
-        "repeat_penalty": 1.05,
-        "num_ctx": 32768
-      },
-      "family_id": "qwen3",
-      "params_b": 8.8,
-      "quantization": "Q4_K_M"
-    }
-  ],
-  "skipped": [
-    {
-      "family": "deepseek-r2",
-      "reason": "ollama_latest_not_found"
+      "active_params_b": 17.0,
+      "architecture": "moe",
+      "quantization": "Q4_K_M",
+      "accelerator_tags": []
     }
   ]
 }

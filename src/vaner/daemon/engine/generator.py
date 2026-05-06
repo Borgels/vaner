@@ -14,11 +14,14 @@ import httpx
 
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.models.config import VanerConfig
+from vaner.policy.internal_llm import EVIDENCE_SUMMARY_POLICY, internal_llm_policy
 from vaner.policy.privacy import redact_text
 
 logger = logging.getLogger(__name__)
 
-FILE_SUMMARY_PROMPT = """You are generating a precise implementation reference for a context system.
+FILE_SUMMARY_PROMPT = (
+    internal_llm_policy(EVIDENCE_SUMMARY_POLICY)
+    + """\n\nYou are generating a precise implementation reference for a context system.
 A model will later use this summary to answer exact questions about this file.
 Your summary MUST enable correct answers — not just plausible ones.
 
@@ -42,8 +45,11 @@ File: {path}
 {content}
 ---
 Implementation reference:"""
+)
 
-DIFF_SUMMARY_PROMPT = """Summarize the following workspace change for a context system.
+DIFF_SUMMARY_PROMPT = (
+    internal_llm_policy(EVIDENCE_SUMMARY_POLICY)
+    + """\n\nSummarize the following workspace change for a context system.
 State clearly what changed, which modules/functions were affected, and likely intent.
 Call out exact limits/guards/conditionals when visible.
 Be concise.
@@ -51,10 +57,33 @@ Be concise.
 {diff}
 ---
 Summary:"""
+)
+
+
+def _format_python_args(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    args: list[str] = []
+    for arg in list(node.args.posonlyargs) + list(node.args.args):
+        item = arg.arg
+        if arg.annotation is not None:
+            item += f": {ast.unparse(arg.annotation)}"
+        args.append(item)
+    if node.args.vararg is not None:
+        args.append(f"*{node.args.vararg.arg}")
+    for arg in node.args.kwonlyargs:
+        item = arg.arg
+        if arg.annotation is not None:
+            item += f": {ast.unparse(arg.annotation)}"
+        args.append(item)
+    if node.args.kwarg is not None:
+        args.append(f"**{node.args.kwarg.arg}")
+    signature = f"{node.name}({', '.join(args)})"
+    if node.returns is not None:
+        signature += f" -> {ast.unparse(node.returns)}"
+    return signature[:180]
 
 
 def _extract_python_shapes(text: str) -> tuple[list[str], list[str]]:
-    """Extract class names, top-level functions, and class method names from Python sources."""
+    """Extract class names, top-level functions, and class method signatures."""
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -65,15 +94,15 @@ def _extract_python_shapes(text: str) -> tuple[list[str], list[str]]:
 
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
-            classes.append(node.name)
+            bases = [ast.unparse(base) for base in node.bases]
+            classes.append(f"{node.name}({', '.join(bases)})" if bases else node.name)
             # Include method names so artefact content matches method-specific queries
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     if not item.name.startswith("_"):
-                        functions.append(item.name)
+                        functions.append(_format_python_args(item))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            args = [arg.arg for arg in node.args.args]
-            functions.append(f"{node.name}({', '.join(args)})")
+            functions.append(_format_python_args(node))
 
     return classes[:8], list(dict.fromkeys(functions))[:20]
 
@@ -104,6 +133,30 @@ def _extract_constants(text: str) -> list[str]:
     return constants[:12]
 
 
+def _extract_sql_schema(text: str) -> list[str]:
+    schema_lines: list[str] = []
+    collecting = False
+    buffer: list[str] = []
+    for raw_line in text.splitlines():
+        stripped = " ".join(raw_line.strip().split())
+        lowered = stripped.lower()
+        if not stripped:
+            continue
+        if any(marker in lowered for marker in ("create table", "create index", "using fts5", "insert into", "select ")):
+            collecting = True
+            buffer = [stripped]
+        elif collecting:
+            buffer.append(stripped)
+        if collecting and (stripped.endswith(")") or stripped.endswith(')"') or stripped.endswith(";") or len(buffer) >= 8):
+            joined = " ".join(buffer)
+            schema_lines.append(joined[:240])
+            collecting = False
+            buffer = []
+        if len(schema_lines) >= 16:
+            break
+    return schema_lines
+
+
 def _summarize_text(
     text: str,
     source_path: Path,
@@ -124,8 +177,9 @@ def _summarize_text(
     ast_source = full_text if full_text is not None else text
 
     sections: list[str] = []
-    constants = _extract_constants(text)
-    limits = _extract_limits(text)
+    constants = _extract_constants(ast_source)
+    limits = _extract_limits(ast_source)
+    sql_schema = _extract_sql_schema(ast_source)
 
     if source_path.suffix == ".py":
         classes, functions = _extract_python_shapes(ast_source)
@@ -138,9 +192,11 @@ def _summarize_text(
         sections.append("Constants: " + "; ".join(constants[:6]))
     if limits:
         sections.append("Limits: " + "; ".join(limits[:6]))
+    if sql_schema:
+        sections.append("Schema: " + "; ".join(sql_schema[:8]))
 
     sections.append("Snippet: " + " ".join(lines[:max_lines])[:900])
-    return "\n".join(sections)[:1600]
+    return "\n".join(sections)[:2400]
 
 
 def _build_artefact(

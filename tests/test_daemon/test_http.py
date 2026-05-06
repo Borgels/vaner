@@ -184,6 +184,83 @@ def test_scenarios_endpoint_separates_live_and_history(temp_repo) -> None:
     assert history.json()["scenarios"][0]["visibility"] == "archived"
 
 
+def test_heatmap_replay_endpoint_returns_persisted_samples(temp_repo) -> None:
+    now = time.time()
+
+    async def _seed() -> None:
+        store = ScenarioStore(temp_repo / ".vaner" / "scenarios.db")
+        await store.initialize()
+        await store.upsert(
+            Scenario(
+                id="scn_heatmap",
+                kind="debug",
+                score=0.9,
+                confidence=0.8,
+                entities=["src/main.py"],
+                prepared_context="ctx",
+                freshness="fresh",
+                created_at=now,
+                last_refreshed_at=now,
+            )
+        )
+
+    asyncio.run(_seed())
+
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        response = client.get(f"/heatmap/replay?from_ts={now - 5}&to_ts={now + 5}&limit=10")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metadata"]["synthetic"] is False
+    assert [item["id"] for item in payload["scenarios"]] == ["scn_heatmap"]
+    assert payload["samples"]
+    assert payload["samples"][0]["scenario_id"] == "scn_heatmap"
+
+
+def test_heatmap_replay_stream_emits_real_snapshot(temp_repo) -> None:
+    now = time.time()
+
+    async def _seed() -> None:
+        store = ScenarioStore(temp_repo / ".vaner" / "scenarios.db")
+        await store.initialize()
+        await store.upsert(
+            Scenario(
+                id="scn_heatmap_stream",
+                kind="debug",
+                score=0.9,
+                confidence=0.8,
+                entities=["src/main.py"],
+                prepared_context="ctx",
+                freshness="fresh",
+                created_at=now,
+                last_refreshed_at=now,
+            )
+        )
+
+    asyncio.run(_seed())
+
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        with client.stream("GET", "/heatmap/replay/stream?range_seconds=60&limit=1") as response:
+            text = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: replay_snapshot" in text
+    assert '"synthetic": false' in text
+    assert "scn_heatmap_stream" in text
+
+
 def test_scenario_stream_route_not_shadowed_by_id_route(temp_repo) -> None:
     config = VanerConfig(
         repo_root=temp_repo,

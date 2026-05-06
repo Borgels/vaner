@@ -191,6 +191,8 @@ export function adaptScenario(payload: ScenarioApiPayload): UIScenario {
     readiness: payload.readiness ?? (payload.prepared_context ? 'ready' : payload.evidence?.length ? 'warming' : 'unprepared'),
     visibility: payload.visibility ?? 'warming',
     lifecycleMotion: payload.lifecycle_motion ?? 'stable',
+    createdAt: payload.created_at ?? null,
+    lastRefreshedAt: payload.last_refreshed_at ?? null,
     lastReinforcedAt: payload.last_reinforced_at ?? payload.last_refreshed_at ?? null,
     archivedAt: payload.archived_at ?? null,
     visibilityReason: payload.visibility_reason ?? '',

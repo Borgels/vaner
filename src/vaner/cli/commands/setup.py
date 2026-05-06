@@ -1033,7 +1033,8 @@ def catalog_refresh_cmd(
         f"{len(skipped)} skipped[/dim])"
     )
     for entry in skipped:
-        _console.print(f"  [yellow]skipped[/yellow] {entry['id']} — {entry['reason']}")
+        family = entry.get("family") or entry.get("id") or "unknown"
+        _console.print(f"  [yellow]skipped[/yellow] {family} — {entry['reason']}")
 
 
 @catalog_app.command(

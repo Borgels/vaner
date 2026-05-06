@@ -166,6 +166,8 @@ def load_config(repo_root: Path) -> VanerConfig:
             "exploration_backend": exploration_section.get("backend", "auto"),
             "embedding_model": exploration_section.get("embedding_model", "all-MiniLM-L6-v2"),
             "embedding_device": exploration_section.get("embedding_device", "cpu"),
+            "runtime_options": exploration_section.get("runtime_options", {}),
+            "sampling_options": exploration_section.get("sampling_options", {}),
         }
         exploration = ExplorationConfig(**mapped_exploration)
     else:
@@ -177,7 +179,7 @@ def load_config(repo_root: Path) -> VanerConfig:
     policy = _build_section(PolicyConfig, "policy", policy_section)
 
     max_age_seconds = _coerce_limit(limits_section, "max_age_seconds", 3600)
-    max_context_tokens = _coerce_limit(limits_section, "max_context_tokens", 4096)
+    max_context_tokens = _coerce_limit(limits_section, "max_context_tokens", 8192)
 
     store_path = repo_root / ".vaner" / "store.db"
     telemetry_path = repo_root / ".vaner" / "telemetry.db"

@@ -8,8 +8,18 @@ import time
 from collections.abc import Callable
 from fnmatch import fnmatch
 
+from vaner.broker.context_preparation import (
+    build_prepared_context_diagnostics,
+    competitive_threshold_multiplier,
+    exact_reference_candidates,
+    hard_constraints_satisfied,
+    infer_context_preparation_profile,
+    query_variants,
+)
 from vaner.models.artefact import Artefact
+from vaner.models.context_preparation import ContextPreparationProfile, PreparedContextDiagnostics
 from vaner.models.decision import ScoreFactor
+from vaner.semantic_aliases import engineering_semantic_aliases
 
 
 def _recency_bonus(artefact: Artefact, decay_half_life_seconds: int = 1800) -> float:
@@ -41,6 +51,7 @@ def _prompt_terms(prompt: str) -> list[str]:
         terms.extend(part.lower() for part in raw.split("_") if len(part) > 2)
         if lowered not in {"fastapi", "openapi"}:
             terms.extend(part.lower() for part in _camel_parts(raw) if len(part) > 2)
+    terms.extend(engineering_semantic_aliases(prompt, terms, stopwords=_COMMON_WORDS))
     return list(dict.fromkeys(term for term in terms if len(term) > 2 and term not in _COMMON_WORDS))
 
 
@@ -310,12 +321,18 @@ def _doc_domain_bonus(path_text: str, content_text: str, terms: list[str]) -> fl
         if path_text in {
             "src/vaner/intent/features.py",
             "src/vaner/intent/trainer.py",
+            "src/vaner/intent/scorer.py",
             "src/vaner/models/artefact.py",
             "src/vaner/store/artefacts.py",
             "tests/test_intent/test_features_follow_up.py",
             "tests/test_intent/test_trainer_v4_rollover.py",
         }:
             bonus += 14.0
+        if "intent" in term_set and "scorer" in term_set and path_text in {
+            "src/vaner/intent/scorer.py",
+            "src/vaner/intent/features.py",
+        }:
+            bonus += 10.0
         if any(
             term in content_text
             for term in (
@@ -348,6 +365,39 @@ def _doc_domain_bonus(path_text: str, content_text: str, terms: list[str]) -> fl
             bonus += 2.0
         if any(term in content_text for term in ("full_hit", "partial_hit", "warm_start", "cache_full_hit", "cache_partial_hit")):
             bonus += 8.0
+    reward_terms = {"reward", "computation", "compute", "signals", "combine", "final", "value", "quality", "lift", "judge"}
+    if "reward" in term_set and len(term_set & reward_terms) >= 3:
+        if path_text in {
+            "src/vaner/learning/reward.py",
+            "eval/train_policy.py",
+            "src/vaner/intent/trainer.py",
+            "tests/test_learning/test_reward.py",
+        }:
+            bonus += 18.0
+        if any(
+            term in content_text
+            for term in (
+                "compute_reward",
+                "reward_total",
+                "reward_components",
+                "quality_lift",
+                "host_outcome",
+                "judge_score",
+            )
+        ):
+            bonus += 10.0
+        if path_text == "src/vaner/intent/scoring_policy.py":
+            bonus -= 4.0
+    store_schema_terms = {"artefactstore", "artefact", "artefacts", "persist", "retrieve", "database", "schema", "table", "tables"}
+    if len(term_set & store_schema_terms) >= 3:
+        if path_text == "src/vaner/store/artefacts.py":
+            bonus += 24.0
+        if path_text == "src/vaner/models/context.py":
+            bonus += 8.0
+        if "package.json" in path_text:
+            bonus -= 22.0
+        if any(term in content_text for term in ("create table", "from artefacts", "insert into artefacts", "select key")):
+            bonus += 12.0
     llm_exploration_terms = {
         "llm",
         "external",
@@ -441,8 +491,15 @@ def _origin_bonus(prompt: str, content: str) -> float:
 
 def _build_fts_query(prompt: str) -> str:
     """Build a safe FTS5 query string from a natural-language prompt."""
-    filtered = _prompt_terms(prompt)[:15]
-    return " ".join(filtered)
+    filtered = _prompt_terms(prompt)[:24]
+    return " OR ".join(filtered)
+
+
+def _candidate_limit(prompt: str, top_n: int) -> int:
+    terms = _prompt_terms(prompt)
+    multi_facet = prompt.count("?") + len(re.findall(r"\b(?:and|what|how|when|which)\b", prompt, flags=re.IGNORECASE))
+    requested = max(50, int(top_n) * 12, len(terms) * 8, multi_facet * 12)
+    return max(50, min(240, requested))
 
 
 async def select_artefacts_fts(
@@ -457,8 +514,16 @@ async def select_artefacts_fts(
     path_excludes: list[str] | None = None,
     capture_factors: dict[str, list[ScoreFactor]] | None = None,
     capture_drop_reasons: dict[str, str] | None = None,
+    candidate_limit: int | None = None,
+    full_scan_limit: int = 2000,
+    context_preparation_mode: str = "balanced",
+    max_query_variants: int = 6,
+    max_candidate_keys: int | None = None,
+    coverage_floor_enabled: bool = True,
+    max_expansion_passes: int = 1,
+    capture_prepared_context_diagnostics: list[PreparedContextDiagnostics] | None = None,
 ) -> list[Artefact]:
-    """Two-phase selection: FTS candidate retrieval, then scorer re-rank.
+    """Multi-source context candidate retrieval, then scorer re-rank.
 
     Falls back to loading all artefacts when the FTS index returns no hits
     or when *store* does not expose ``select_artefacts_fts``.
@@ -466,37 +531,132 @@ async def select_artefacts_fts(
     from vaner.store.artefacts import ArtefactStore  # avoid circular at module level
 
     fts_available = isinstance(store, ArtefactStore)
+    started = time.monotonic()
+    profile = infer_context_preparation_profile(prompt)
+    context_enabled = context_preparation_mode != "legacy"
 
-    # Phase 1: FTS candidate retrieval (gracefully skipped if unavailable)
-    candidate_keys: set[str] = set()
+    source_by_key: dict[str, set[str]] = {}
+    source_rankings: dict[str, list[str]] = {}
+    retrieval_limit = candidate_limit if candidate_limit is not None else _candidate_limit(prompt, top_n)
+    if max_candidate_keys is not None:
+        retrieval_limit = max(50, min(retrieval_limit, max_candidate_keys))
     if fts_available:
-        fts_query = _build_fts_query(prompt)
-        if fts_query:
+        variants = query_variants(prompt, profile, max_variants=max_query_variants) if context_enabled else [prompt]
+        for index, variant in enumerate(variants):
+            fts_query = _build_fts_query(variant)
+            if not fts_query:
+                continue
+            source = "lexical_search" if index == 0 else "generated_query_variants"
             try:
-                candidate_keys = set(await store.select_artefacts_fts(fts_query, limit=50))  # type: ignore[union-attr]
+                keys = list(await store.select_artefacts_fts(fts_query, limit=retrieval_limit))  # type: ignore[union-attr]
             except Exception:
-                candidate_keys = set()
+                keys = []
+            _record_source_ranking(source_rankings, source_by_key, source, keys)
+        if context_enabled:
+            try:
+                available_paths = await store.list_source_paths(limit=max(5000, retrieval_limit * 10))  # type: ignore[union-attr]
+            except Exception:
+                available_paths = []
+            exact_paths = set(exact_reference_candidates(prompt, available_paths, limit=min(32, max(8, top_n * 3))))
+        else:
+            exact_paths = set()
+    else:
+        exact_paths = set()
 
-    # Phase 2: load candidates; fall back to full list on FTS miss
+    preferred = preferred_keys or set()
+    preferred_paths_set = preferred_paths or set()
+    if preferred:
+        _record_source_ranking(source_rankings, source_by_key, "working_set", list(preferred))
+
+    fused_keys = _fuse_source_rankings(source_rankings, limit=max_candidate_keys or retrieval_limit)
+
     if fts_available:
-        all_artefacts: list[Artefact] = await store.list(limit=2000)  # type: ignore[union-attr]
+        if fused_keys or exact_paths or preferred:
+            loaded: list[Artefact] = []
+            load_keys = set(fused_keys) | preferred
+            loaded.extend(await store.list_by_keys(load_keys, limit=max(retrieval_limit, len(load_keys))))  # type: ignore[union-attr]
+            path_loads = set(preferred_paths_set) | exact_paths
+            if path_loads:
+                path_loaded = await store.list_by_source_paths(path_loads, limit=max(retrieval_limit, len(path_loads)))  # type: ignore[union-attr]
+                loaded.extend(path_loaded)
+                _record_source_ranking(source_rankings, source_by_key, "exact_reference", [artefact.key for artefact in path_loaded])
+            seen: set[str] = set()
+            candidates = []
+            for artefact in loaded:
+                if artefact.key in seen:
+                    continue
+                seen.add(artefact.key)
+                candidates.append(artefact)
+            selected = select_artefacts(
+                prompt,
+                candidates,
+                top_n=top_n,
+                preferred_paths=preferred_paths,
+                preferred_keys=preferred_keys,
+                scorer=scorer,
+                exclude_private=exclude_private,
+                path_bonuses=path_bonuses,
+                path_excludes=path_excludes,
+                capture_factors=capture_factors,
+                capture_drop_reasons=capture_drop_reasons,
+                context_need=profile.need if context_enabled else None,
+                context_profile=profile if context_enabled else None,
+            )
+            if context_enabled and coverage_floor_enabled and max_expansion_passes > 0:
+                diagnostics = build_prepared_context_diagnostics(
+                    profile,
+                    source_by_key=source_by_key,
+                    selected=selected,
+                    fused_candidate_count=len(fused_keys),
+                    latency_ms=(time.monotonic() - started) * 1000.0,
+                )
+                if diagnostics.coverage.gap_flags:
+                    recovery_terms = _coverage_recovery_terms(profile, diagnostics)
+                    recovery_query = _build_fts_query(recovery_terms)
+                    if recovery_query:
+                        try:
+                            recovery_keys = list(await store.select_artefacts_fts(recovery_query, limit=retrieval_limit))  # type: ignore[union-attr]
+                        except Exception:
+                            recovery_keys = []
+                        new_keys = [key for key in recovery_keys if key not in {candidate.key for candidate in candidates}]
+                        if new_keys:
+                            _record_source_ranking(source_rankings, source_by_key, "coverage_floor", new_keys)
+                            recovered = await store.list_by_keys(set(new_keys), limit=max(retrieval_limit, len(new_keys)))  # type: ignore[union-attr]
+                            candidates.extend(recovered)
+                            selected = select_artefacts(
+                                prompt,
+                                candidates,
+                                top_n=top_n,
+                                preferred_paths=preferred_paths,
+                                preferred_keys=preferred_keys,
+                                scorer=scorer,
+                                exclude_private=exclude_private,
+                                path_bonuses=path_bonuses,
+                                path_excludes=path_excludes,
+                                capture_factors=capture_factors,
+                                capture_drop_reasons=capture_drop_reasons,
+                                context_need=profile.need,
+                                context_profile=profile,
+                            )
+            _append_source_factors(capture_factors, source_by_key, selected)
+            if capture_prepared_context_diagnostics is not None:
+                capture_prepared_context_diagnostics.append(
+                    build_prepared_context_diagnostics(
+                        profile,
+                        source_by_key=source_by_key,
+                        selected=selected,
+                        fused_candidate_count=len(fused_keys),
+                        latency_ms=(time.monotonic() - started) * 1000.0,
+                    )
+                )
+            return selected
+        all_artefacts: list[Artefact] = await store.list(limit=full_scan_limit)  # type: ignore[union-attr]
     else:
         return []
 
-    if candidate_keys:
-        candidates = [a for a in all_artefacts if a.key in candidate_keys]
-        # Always include preferred items even if not in FTS results
-        preferred = preferred_keys or set()
-        preferred_paths_set = preferred_paths or set()
-        for a in all_artefacts:
-            if a.key not in candidate_keys and (a.key in preferred or a.source_path in preferred_paths_set):
-                candidates.append(a)
-    else:
-        candidates = all_artefacts
-
-    return select_artefacts(
+    selected = select_artefacts(
         prompt,
-        candidates,
+        all_artefacts,
         top_n=top_n,
         preferred_paths=preferred_paths,
         preferred_keys=preferred_keys,
@@ -506,7 +666,108 @@ async def select_artefacts_fts(
         path_excludes=path_excludes,
         capture_factors=capture_factors,
         capture_drop_reasons=capture_drop_reasons,
+        context_need=profile.need if context_enabled else None,
+        context_profile=profile if context_enabled else None,
     )
+    if capture_prepared_context_diagnostics is not None:
+        capture_prepared_context_diagnostics.append(
+            build_prepared_context_diagnostics(
+                profile,
+                source_by_key=source_by_key,
+                selected=selected,
+                fused_candidate_count=len(all_artefacts),
+                latency_ms=(time.monotonic() - started) * 1000.0,
+            )
+        )
+    return selected
+
+
+def _record_source_ranking(
+    source_rankings: dict[str, list[str]],
+    source_by_key: dict[str, set[str]],
+    source: str,
+    keys: list[str],
+) -> None:
+    deduped = list(dict.fromkeys(key for key in keys if key))
+    if not deduped:
+        return
+    source_rankings.setdefault(source, [])
+    seen = set(source_rankings[source])
+    for key in deduped:
+        source_by_key.setdefault(key, set()).add(source)
+        if key not in seen:
+            source_rankings[source].append(key)
+            seen.add(key)
+
+
+def _fuse_source_rankings(source_rankings: dict[str, list[str]], *, limit: int) -> list[str]:
+    weights = {
+        "exact_reference": 1.45,
+        "prepared_context_cache": 1.25,
+        "working_set": 1.20,
+        "lexical_search": 1.0,
+        "generated_query_variants": 0.72,
+        "relationship_graph": 0.9,
+        "semantic_memory": 0.75,
+        "coverage_floor": 0.85,
+    }
+    scores: dict[str, float] = {}
+    for source, keys in source_rankings.items():
+        weight = weights.get(source, 0.8)
+        for rank, key in enumerate(keys, start=1):
+            scores[key] = scores.get(key, 0.0) + weight / (60.0 + rank)
+    return [
+        key
+        for key, _ in sorted(
+            scores.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[: max(1, limit)]
+    ]
+
+
+def _append_source_factors(
+    capture_factors: dict[str, list[ScoreFactor]] | None,
+    source_by_key: dict[str, set[str]],
+    selected: list[Artefact],
+) -> None:
+    if capture_factors is None:
+        return
+    for artefact in selected:
+        sources = sorted(source_by_key.get(artefact.key, set()))
+        if not sources:
+            continue
+        capture_factors.setdefault(artefact.key, []).append(
+            ScoreFactor(
+                name="context_sources",
+                contribution=min(2.0, 0.25 * len(sources)),
+                detail="candidate appeared in context sources: " + ", ".join(sources),
+            )
+        )
+
+
+def _diversity_bucket(artefact: Artefact, context_need: str | None) -> str:
+    path = artefact.source_path
+    if context_need == "implementation_support":
+        parts = path.split("/")
+        return "/".join(parts[:3]) if len(parts) >= 3 else path
+    source_type = str(artefact.metadata.get("source_type") or artefact.metadata.get("corpus_id") or "")
+    if source_type:
+        return source_type
+    parts = path.split("/")
+    return "/".join(parts[:2]) if len(parts) >= 2 else path
+
+
+def _coverage_recovery_terms(profile: ContextPreparationProfile, diagnostics: PreparedContextDiagnostics) -> str:
+    covered = {item.lower() for item in diagnostics.coverage.covered_facets}
+    missing_facets = [facet.value for facet in profile.facets if facet.value.lower() not in covered]
+    terms = [*diagnostics.coverage.missing_constraints, *missing_facets[:10]]
+    if profile.need == "conflict_resolution":
+        terms.extend(["current", "superseded", "latest", "updated"])
+    elif profile.need == "multi_source_synthesis":
+        terms.extend(["summary", "status", "evidence"])
+    elif profile.need == "implementation_support":
+        terms.extend(["caller", "dependency", "test", "implementation"])
+    return " ".join(term for term in terms if term)
 
 
 def select_artefacts(
@@ -521,6 +782,8 @@ def select_artefacts(
     path_excludes: list[str] | None = None,
     capture_factors: dict[str, list[ScoreFactor]] | None = None,
     capture_drop_reasons: dict[str, str] | None = None,
+    context_need: str | None = None,
+    context_profile: ContextPreparationProfile | None = None,
 ) -> list[Artefact]:
     preferred_paths = preferred_paths or set()
     preferred_keys = preferred_keys or set()
@@ -538,6 +801,13 @@ def select_artefacts(
             if capture_drop_reasons is not None:
                 capture_drop_reasons[artefact.key] = "path_excluded"
             continue
+        satisfied_constraints: list[str] = []
+        if context_profile is not None:
+            constraints_ok, satisfied_constraints, missing_constraints = hard_constraints_satisfied(prompt, artefact, context_profile)
+            if not constraints_ok:
+                if capture_drop_reasons is not None:
+                    capture_drop_reasons[artefact.key] = "missing_hard_constraints:" + ",".join(missing_constraints[:3])
+                continue
         factors: list[ScoreFactor] = []
         if scorer is not None:
             score = scorer(prompt, artefact)
@@ -605,6 +875,16 @@ def select_artefacts(
                 )
             )
             score += pinned_path_bonus
+        if context_profile is not None and satisfied_constraints:
+            constraint_bonus = min(2.0, 0.35 * len(satisfied_constraints))
+            factors.append(
+                ScoreFactor(
+                    name="hard_constraint_match",
+                    contribution=constraint_bonus,
+                    detail="artefact satisfies extracted hard constraints",
+                )
+            )
+            score += constraint_bonus
         if capture_factors is not None:
             capture_factors[artefact.key] = factors
         scored_rows.append((score, artefact))
@@ -612,19 +892,32 @@ def select_artefacts(
     ranked = sorted(scored_rows, key=lambda item: item[0], reverse=True)
     selected: list[Artefact] = []
     seen_corpora: set[str] = set()
-    min_competitive_score = ranked[0][0] * 0.45 if ranked else 0.0
+    threshold_multiplier = competitive_threshold_multiplier(context_need)
+    min_competitive_score = ranked[0][0] * threshold_multiplier if ranked else 0.0
+    selected_buckets: set[str] = set()
     for score, artefact in ranked:
         if score < min_competitive_score:
             if capture_drop_reasons is not None:
                 capture_drop_reasons[artefact.key] = "below_competitive_threshold"
             continue
         corpus_id = str(artefact.metadata.get("corpus_id", "default"))
+        bucket = _diversity_bucket(artefact, context_need)
+        if (
+            context_need in {"multi_source_synthesis", "conflict_resolution", "research_mapping", "decision_support"}
+            and bucket in selected_buckets
+            and len(selected) < max(1, top_n // 2)
+        ):
+            if capture_drop_reasons is not None:
+                capture_drop_reasons[artefact.key] = "deferred_for_context_diversity"
+            continue
         if selected and corpus_id not in seen_corpora:
             selected.append(artefact)
             seen_corpora.add(corpus_id)
+            selected_buckets.add(bucket)
         elif len(selected) < top_n:
             selected.append(artefact)
             seen_corpora.add(corpus_id)
+            selected_buckets.add(bucket)
         if len(selected) >= top_n:
             break
     if capture_drop_reasons is not None:

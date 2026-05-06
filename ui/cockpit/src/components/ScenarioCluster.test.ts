@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { computeEdges, initialLayout, jaccard, scenarioPaths, scenarioScoreScale, tickForces } from './ScenarioCluster'
+import { computeEdges, fadingScenario, initialLayout, jaccard, scenarioPaths, scenarioScoreScale, tickForces } from './ScenarioCluster'
 import type { UIScenario } from '../types'
 
 function scenario(overrides: Partial<UIScenario>): UIScenario {
@@ -16,6 +16,8 @@ function scenario(overrides: Partial<UIScenario>): UIScenario {
     readiness: 'warming',
     visibility: 'warming',
     lifecycleMotion: 'stable',
+    createdAt: null,
+    lastRefreshedAt: null,
     lastReinforcedAt: null,
     archivedAt: null,
     visibilityReason: '',
@@ -64,6 +66,18 @@ describe('scenarioScoreScale', () => {
     expect(scenarioScoreScale(0.75)).toBe(1)
     expect(scenarioScoreScale(0.9)).toBe(1.18)
     expect(scenarioScoreScale(0.98)).toBe(1.35)
+  })
+})
+
+describe('fadingScenario', () => {
+  it('marks removed nodes as archived fading nodes', () => {
+    const faded = fadingScenario(scenario({ id: 'old', relevance: 0.8, visiblePriority: 0.75 }), 1000)
+    expect(faded.id).toBe('old')
+    expect(faded.visibility).toBe('archived')
+    expect(faded.lifecycleMotion).toBe('fading')
+    expect(faded.freshness).toBe('stale')
+    expect(faded.relevance).toBeLessThan(0.3)
+    expect(faded.archivedAt).toBe(1)
   })
 })
 

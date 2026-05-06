@@ -27,16 +27,17 @@ export interface CommandItem {
   run: () => void
 }
 
-export type CockpitView = 'focus' | 'prepared-work' | 'now' | 'scenario-map' | 'timeline' | 'board' | 'evidence'
+export type CockpitView = 'focus' | 'prepared-work' | 'now' | 'scenario-map' | 'heatmap' | 'timeline' | 'board' | 'evidence'
 
 const COCKPIT_VIEW_OPTIONS: Array<{ id: CockpitView; label: string; shortcut: string }> = [
   { id: 'focus', label: 'Focus', shortcut: '1' },
   { id: 'prepared-work', label: 'Prepared Work', shortcut: '2' },
   { id: 'now', label: 'Now', shortcut: '3' },
   { id: 'scenario-map', label: 'Scenario Map', shortcut: '4' },
-  { id: 'timeline', label: 'Timeline', shortcut: '5' },
-  { id: 'board', label: 'Board', shortcut: '6' },
-  { id: 'evidence', label: 'Evidence', shortcut: '7' },
+  { id: 'heatmap', label: 'Heatmap', shortcut: '5' },
+  { id: 'timeline', label: 'Timeline', shortcut: '6' },
+  { id: 'board', label: 'Board', shortcut: '7' },
+  { id: 'evidence', label: 'Evidence', shortcut: '8' },
 ]
 
 interface TopBarProps {

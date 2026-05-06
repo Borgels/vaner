@@ -142,6 +142,31 @@ async def test_ollama_max_tokens_translates_to_num_predict(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ollama_extra_options_are_merged_with_num_predict(monkeypatch):
+    captured: dict[str, dict] = {}
+
+    def _handler(req: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(req.content or b"{}")
+        return httpx.Response(200, json={"response": "{}"})
+
+    monkeypatch.setattr(httpx, "AsyncClient", _stub_async_client(_handler))
+
+    call = ollama_llm_structured(
+        model="qwen3.6:27b",
+        base_url="http://localhost:11434",
+        max_tokens=256,
+        extra_body={"options": {"num_ctx": 131072, "temperature": 0.7, "top_k": 20}},
+    )
+    await call("hi")
+    assert captured["body"]["options"] == {
+        "num_ctx": 131072,
+        "temperature": 0.7,
+        "top_k": 20,
+        "num_predict": 256,
+    }
+
+
+@pytest.mark.asyncio
 async def test_ollama_response_format_translates_to_format_json(monkeypatch):
     captured: dict[str, dict] = {}
 

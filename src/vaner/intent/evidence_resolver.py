@@ -11,6 +11,7 @@ from vaner.intent.graph import RelationshipGraph
 from vaner.intent.prediction_v2 import StructuredPrediction
 from vaner.intent.symbol_index import RELATION_PRIORITY, SymbolCandidate
 from vaner.intent.target_normalization import component_terms, normalize_component
+from vaner.semantic_aliases import engineering_semantic_aliases
 
 _STOPWORDS = {
     "about",
@@ -131,6 +132,7 @@ def _alias_tokens(text: str) -> set[str]:
             if token.endswith(suffix) and len(token) > len(suffix) + 2:
                 aliases.add(token[: -len(suffix)])
                 aliases.add(suffix)
+    aliases.update(engineering_semantic_aliases(text, tokens, stopwords=_STOPWORDS))
     return aliases
 
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib import resources
@@ -35,6 +36,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 OLLAMA_REGISTRY_BASE = "https://registry.ollama.ai/v2/library/{name}/manifests/{tag}"
+OLLAMA_LIBRARY_MODEL_URL = "https://ollama.com/library/{name}%3A{tag}"
 HF_API_BASE = "https://huggingface.co/api/models/{repo}"
 DEFAULT_HTTP_TIMEOUT = 8.0
 OLLAMA_MODEL_LAYER_PREFIX = "application/vnd.ollama.image.model"
@@ -54,6 +56,10 @@ class FamilySeed:
     recency_rank: int
     default_params_b: float
     default_download_size_gb: float
+    active_params_b: float
+    architecture: str
+    quantization: str
+    accelerator_tags: tuple[str, ...]
     parameters: dict[str, Any] = field(default_factory=dict)
 
 
@@ -81,6 +87,10 @@ def families_from_seed(seed: dict[str, Any]) -> list[FamilySeed]:
                 recency_rank=int(entry.get("recency_rank", 0)),
                 default_params_b=float(entry.get("default_params_b", 0.0)),
                 default_download_size_gb=float(entry.get("default_download_size_gb", 0.0)),
+                active_params_b=float(entry.get("active_params_b", 0.0) or 0.0),
+                architecture=str(entry.get("architecture", "dense") or "dense"),
+                quantization=str(entry.get("quantization", "") or ""),
+                accelerator_tags=tuple(str(t) for t in entry.get("accelerator_tags", []) if isinstance(t, str)),
                 parameters=dict(entry.get("parameters", {})),
             )
         )
@@ -95,15 +105,28 @@ def quantization_bytes_per_param(seed: dict[str, Any], quant: str) -> float:
     return float(profile.get("bytes_per_param", 0.55))
 
 
-def estimate_memory_budget(params_b: float, bytes_per_param: float, context_window: int) -> tuple[float, float]:
+def estimate_memory_budget(
+    params_b: float,
+    bytes_per_param: float,
+    context_window: int,
+    *,
+    active_params_b: float = 0.0,
+    architecture: str = "dense",
+) -> tuple[float, float]:
     """Return (min_effective_gb, recommended_effective_gb)."""
 
     weights_gb = params_b * bytes_per_param
     if weights_gb <= 0:
         return 0.0, 0.0
-    context_overhead = max(0.5, weights_gb * (context_window / 32768) * 0.18)
-    min_gb = round(weights_gb * 1.12 + 0.5, 1)
-    rec_gb = round(weights_gb + context_overhead + 1.5, 1)
+    if architecture.lower() == "moe" and active_params_b > 0:
+        kv_reference_gb = max(active_params_b * bytes_per_param, weights_gb * 0.08)
+        context_overhead = max(2.0, kv_reference_gb * (context_window / 32768) * 0.18)
+        min_gb = round(weights_gb * 1.08 + 8.0, 1)
+        rec_gb = round(weights_gb + context_overhead + 8.0, 1)
+    else:
+        context_overhead = max(0.5, weights_gb * (context_window / 32768) * 0.18)
+        min_gb = round(weights_gb * 1.12 + 0.5, 1)
+        rec_gb = round(weights_gb + context_overhead + 1.5, 1)
     return min_gb, max(rec_gb, min_gb)
 
 
@@ -155,6 +178,38 @@ def manifest_weights_bytes(manifest: dict[str, Any]) -> int:
     return total
 
 
+def fetch_ollama_library_details(family: str, *, tag: str = "latest", timeout: float = DEFAULT_HTTP_TIMEOUT) -> dict[str, Any] | None:
+    """Best-effort model details from the public Ollama library page.
+
+    Some currently published Ollama tags are visible and runnable through
+    the library UI before their registry manifests are readable through the
+    plain OCI endpoint. Treat the page as a weaker verifier: it must show an
+    `ollama run <family>:<tag>` command and a concrete local size. Cloud-only
+    rows such as `:cloud` intentionally do not pass this check.
+    """
+
+    import urllib.error
+    import urllib.request
+
+    url = OLLAMA_LIBRARY_MODEL_URL.format(name=family, tag=tag)
+    model_id = f"{family}:{tag}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "vaner-catalog-refresh/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.debug("ollama library page %s failed: %s", model_id, exc)
+        return None
+
+    if f"ollama run {model_id}" not in html:
+        return None
+    size_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*GB", html)
+    if not size_match:
+        return None
+    size_gb = float(size_match.group(1))
+    return {"download_size_gb": size_gb, "source": url}
+
+
 def fetch_hf_params_b(repo: str, *, timeout: float = DEFAULT_HTTP_TIMEOUT) -> float | None:
     """Best-effort lookup of HF parameter count, in billions."""
 
@@ -186,6 +241,7 @@ def build_registry_entry_for_family(
     quant: str,
     online: bool,
     manifest_fetcher=fetch_ollama_manifest,
+    library_fetcher=fetch_ollama_library_details,
 ) -> dict[str, Any] | None:
     """Translate one family into a single ``<family>:<tag>`` registry row.
 
@@ -193,30 +249,43 @@ def build_registry_entry_for_family(
     mode) — caller skips it.
     """
 
-    bytes_per_param = quantization_bytes_per_param(seed, quant)
+    effective_quant = family.quantization or quant
+    bytes_per_param = quantization_bytes_per_param(seed, effective_quant)
     params_b: float = 0.0
     download_gb: float = 0.0
 
-    if online:
+    if online and family.runtime == "ollama":
         manifest = manifest_fetcher(family.ollama_family, tag=family.ollama_tag)
-        if manifest is None:
-            return None
-        weights_bytes = manifest_weights_bytes(manifest)
-        if weights_bytes <= 0:
-            logger.debug("ollama manifest for %s has no model layer", family.id)
-            return None
-        download_gb = round(weights_bytes / (1024**3), 1)
-        # Derive params from on-disk size + quant profile. This is more
-        # honest than guessing; the user pulls exactly these bytes.
-        params_b = round(weights_bytes / (1024**3) / bytes_per_param, 1)
+        if manifest is not None:
+            weights_bytes = manifest_weights_bytes(manifest)
+            if weights_bytes <= 0:
+                logger.debug("ollama manifest for %s has no model layer", family.id)
+                return None
+            download_gb = round(weights_bytes / (1024**3), 1)
+            # Derive params from on-disk size + quant profile. This is more
+            # honest than guessing; the user pulls exactly these bytes.
+            params_b = round(weights_bytes / (1024**3) / bytes_per_param, 1)
+        else:
+            details = library_fetcher(family.ollama_family, tag=family.ollama_tag)
+            if not details:
+                return None
+            download_gb = float(details["download_size_gb"])
+            params_b = float(family.default_params_b or 0.0)
     else:
-        # Offline path: use seed sizing when available, otherwise emit a
-        # placeholder so the registry has a row per family.
+        # Offline and non-Ollama paths use seed sizing. Non-Ollama runtimes
+        # such as MLX are installed through their own package/model manager,
+        # so the Ollama manifest probe is not the source of truth.
         params_b = float(family.default_params_b or 0.0)
         download_gb = float(family.default_download_size_gb or 0.0)
 
     context_window = int(family.parameters.get("context_window", 8192))
-    min_gb, rec_gb = estimate_memory_budget(params_b, bytes_per_param, context_window)
+    min_gb, rec_gb = estimate_memory_budget(
+        params_b,
+        bytes_per_param,
+        context_window,
+        active_params_b=family.active_params_b,
+        architecture=family.architecture,
+    )
 
     parameters = dict(family.parameters)
     parameters.setdefault("num_ctx", context_window)
@@ -237,7 +306,10 @@ def build_registry_entry_for_family(
         "parameters": parameters,
         "family_id": family.id,
         "params_b": params_b,
-        "quantization": quant,
+        "active_params_b": family.active_params_b,
+        "architecture": family.architecture,
+        "quantization": effective_quant,
+        "accelerator_tags": list(family.accelerator_tags),
     }
 
 
@@ -246,6 +318,7 @@ def build_registry(
     online: bool = True,
     seed: dict[str, Any] | None = None,
     manifest_fetcher=fetch_ollama_manifest,
+    library_fetcher=fetch_ollama_library_details,
 ) -> dict[str, Any]:
     """Produce a full ``model_registry.json`` payload.
 
@@ -266,6 +339,7 @@ def build_registry(
                 quant=default_quant,
                 online=online,
                 manifest_fetcher=manifest_fetcher,
+                library_fetcher=library_fetcher,
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("catalog: failed for %s (%s)", family.id, exc)

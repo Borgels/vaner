@@ -70,6 +70,10 @@ async def test_deep_drill_widens_follow_on_cap(temp_repo: Path) -> None:
 
     assert ranked == []
     assert len(follow_on) == 5, f"expected 5 follow-ons, got {len(follow_on)}"
+    assert "Vaner internal LLM policy" in captured["prompt"]
+    assert "JSON contract" in captured["prompt"]
+    assert "Prediction policy" in captured["prompt"]
+    assert "Return JSON only (no markdown fences, no extra keys)" in captured["prompt"]
     assert "HIGH-PRIORITY" in captured["prompt"]
     assert "0-5" in captured["prompt"]
 

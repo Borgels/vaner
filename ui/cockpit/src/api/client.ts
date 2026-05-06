@@ -8,6 +8,7 @@ import type {
   DecisionRecordPayload,
   FocusRoutePayload,
   Goal,
+  HeatmapReplayPayload,
   ImpactSummary,
   JobsStatusPayload,
   LearningRecent,
@@ -213,6 +214,21 @@ export function listPredictionsByState(): Promise<PredictionsByState> {
 
 export function getActiveWork(): Promise<ActiveWorkPayload> {
   return request('/work/active')
+}
+
+export function getHeatmapReplay(params: { fromTs: number; toTs: number; limit?: number }): Promise<HeatmapReplayPayload> {
+  const query = new URLSearchParams()
+  query.set('from_ts', String(params.fromTs / 1000))
+  query.set('to_ts', String(params.toTs / 1000))
+  if (params.limit) query.set('limit', String(params.limit))
+  return request(`/heatmap/replay?${query.toString()}`)
+}
+
+export function streamHeatmapReplay(params: { rangeMs: number; limit?: number }): EventSource {
+  const query = new URLSearchParams()
+  query.set('range_seconds', String(params.rangeMs / 1000))
+  if (params.limit) query.set('limit', String(params.limit))
+  return openEventSource(`/heatmap/replay/stream?${query.toString()}`)
 }
 
 export function getLiveWork(entityType: string, entityId: string, limit = 80): Promise<LiveWorkSnapshot> {

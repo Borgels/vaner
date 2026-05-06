@@ -138,7 +138,18 @@ class ExplorationEndpointPool:
             if ep.weight <= 0:
                 continue
             if ep.backend == "ollama":
-                client: LLMCallable = ollama_llm(model=ep.model, base_url=ep.url, timeout=timeout)
+                options = {
+                    str(key): value
+                    for source in (getattr(ep, "runtime_options", {}) or {}, getattr(ep, "sampling_options", {}) or {})
+                    for key, value in source.items()
+                    if value is not None and value != ""
+                }
+                client: LLMCallable = ollama_llm(
+                    model=ep.model,
+                    base_url=ep.url,
+                    timeout=timeout,
+                    extra_body={"options": options} if options else None,
+                )
             else:
                 api_key = (_env(ep.api_key_env) if ep.api_key_env else None) or ""
                 if not api_key and not cls._is_local_url(ep.url):

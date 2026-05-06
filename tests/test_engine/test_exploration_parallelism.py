@@ -24,6 +24,7 @@ from vaner.engine import (
     _merge_llm_ranked_with_seed_paths,
 )
 from vaner.intent.adapter import CodeRepoAdapter
+from vaner.intent.governor import PredictionGovernor
 from vaner.models.config import ComputeConfig, ExplorationConfig
 
 # ---------------------------------------------------------------------------
@@ -112,6 +113,17 @@ def test_llm_rerank_preserves_deterministic_seed_paths() -> None:
         "src/vaner/engine.py",
         "src/vaner/clients/llm_response.py",
     ]
+
+
+def test_llm_rerank_reserves_space_for_seed_paths_when_llm_list_is_full() -> None:
+    merged = _merge_llm_ranked_with_seed_paths(
+        [f"src/vaner/noisy_{idx}.py" for idx in range(8)],
+        ["src/vaner/store/artefacts.py", "src/vaner/learning/reward.py"],
+    )
+
+    assert len(merged) == 8
+    assert "src/vaner/store/artefacts.py" in merged
+    assert "src/vaner/learning/reward.py" in merged
 
 
 def test_core_group_matching_boosts_specific_mechanism_query() -> None:
@@ -249,3 +261,33 @@ async def test_exploration_survives_individual_llm_failure(temp_repo):
     # all, the flaky first call must not crash the surrounding cycle.
     await engine.precompute_cycle()
     assert call_count >= 0  # tautologically true — proof is in the no-raise above
+
+
+@pytest.mark.asyncio
+async def test_normal_background_refills_empty_frontier_with_continuation_agenda(temp_repo):
+    """Normal precompute should keep preparing useful adjacent work after the first frontier drains."""
+
+    extra_files = {
+        "src/example/cache.py": "CACHE_LIMIT = 3\n",
+        "src/example/worker.py": "def run_worker():\n    return 'ok'\n",
+        "tests/test_cache_behavior.py": "def test_cache_limit():\n    assert True\n",
+        "docs/release-notes.md": "# Release notes\n",
+    }
+    for rel_path, content in extra_files.items():
+        path = temp_repo / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    adapter = CodeRepoAdapter(temp_repo)
+    engine = VanerEngine(adapter=adapter, llm=None)
+    engine.config.compute.idle_only = False
+    engine.config.compute.max_cycle_seconds = 20
+    engine.config.compute.adaptive_cycle_budget = False
+    engine.config.exploration.llm_gate = "none"
+    await engine.prepare()
+
+    await engine.precompute_cycle(governor=PredictionGovernor(mode=PredictionGovernor.Mode.BUDGET, budget_units=20))
+
+    assert engine._cycle_policy_state["continuation_rounds_last_cycle"] > 0  # noqa: SLF001
+    explored = engine.get_explored_scenarios()
+    assert any("normal continuation" in scenario.reason for scenario in explored)
