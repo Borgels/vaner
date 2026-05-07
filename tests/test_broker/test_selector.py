@@ -1618,6 +1618,14 @@ def test_context_profile_infers_multi_source_synthesis_without_benchmark_labels(
     assert any(constraint.kind == "restrictive_language" and constraint.value == "after" for constraint in profile.constraints)
 
 
+def test_context_profile_does_not_treat_plain_compound_fact_question_as_multi_source():
+    profile = infer_context_preparation_profile(
+        "What failover sequence and recovery targets did MedThink specify for handling an EU region outage?"
+    )
+
+    assert profile.need != "multi_source_synthesis"
+
+
 def test_select_artefacts_disables_global_gate_for_multi_source_context_need():
     artefacts = [
         Artefact(

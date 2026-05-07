@@ -448,7 +448,7 @@ def _infer_need(lowered: str, archetype: str):
     if archetype == "researcher":
         return "research_mapping"
     if re.search(
-        r"\b(all|every|list|compare|across|summarize|synthesize|count|which .* and|what .* and|which .* most|highest number)\b",
+        r"\b(all|every|list|compare|across|summarize|synthesize|count|which .* most|highest number)\b",
         lowered,
     ):
         return "multi_source_synthesis"
