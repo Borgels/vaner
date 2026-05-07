@@ -36,12 +36,19 @@ def build_source_aggregation(
 
     resolved_provenance_budget = max_sources if provenance_budget is None else provenance_budget
     extraction_spec = _infer_extraction_spec(prompt)
-    grouped, extracted_rows = _group_findings(prompt, source_candidates, extraction_spec)
-    facets = _facet_coverage(profile, source_candidates)
-    source_classes = Counter(_source_class(artefact.source_path) for artefact in source_candidates)
-    source_refs = _source_refs(source_candidates, source_by_key or {}, provenance_budget=resolved_provenance_budget)
-    gaps = _coverage_gaps(prompt, profile, source_candidates, grouped)
-    provenance_truncated = len(source_candidates) > resolved_provenance_budget
+    candidate_scope_spec = _infer_candidate_scope_spec(prompt, source_candidates)
+    eligible_sources, excluded_sources = _apply_candidate_scope(source_candidates, candidate_scope_spec)
+    aggregation_sources = eligible_sources or source_candidates
+    grouped, extracted_rows = _group_findings(prompt, aggregation_sources, extraction_spec)
+    extraction_source_keys = list(dict.fromkeys(row.source_key for row in extracted_rows))
+    extraction_source_paths = list(dict.fromkeys(row.source_path for row in extracted_rows))
+    facets = _facet_coverage(profile, aggregation_sources)
+    source_classes = Counter(_source_class(artefact.source_path) for artefact in aggregation_sources)
+    source_refs = _source_refs(aggregation_sources, source_by_key or {}, provenance_budget=resolved_provenance_budget)
+    gaps = _coverage_gaps(prompt, profile, aggregation_sources, grouped)
+    if not eligible_sources and excluded_sources:
+        gaps.append("scope filter produced no eligible sources; used unfiltered candidates")
+    provenance_truncated = len(aggregation_sources) > resolved_provenance_budget
     if provenance_truncated:
         gaps.append("provenance truncated to budget")
 
@@ -51,9 +58,11 @@ def build_source_aggregation(
         "",
         "Coverage:",
         f"- sources_considered: {len(source_candidates)}",
+        f"- eligible_sources: {len(aggregation_sources)}",
+        f"- excluded_sources: {len(excluded_sources)}",
         "- source_classes: " + _format_counter(source_classes, limit=8),
         "- facets_covered: " + (", ".join(facets) if facets else "none detected"),
-        f"- provenance_coverage: {min(len(source_candidates), resolved_provenance_budget)}/{len(source_candidates)}",
+        f"- provenance_coverage: {min(len(aggregation_sources), resolved_provenance_budget)}/{len(aggregation_sources)}",
         "- gaps: " + ("; ".join(gaps) if gaps else "none detected"),
         "",
         "Extraction:",
@@ -69,12 +78,19 @@ def build_source_aggregation(
         *source_refs,
     ]
     content = "\n".join(sections).strip()
-    digest = hashlib.sha256((prompt + "\n" + "\n".join(a.key for a in source_candidates)).encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256((prompt + "\n" + "\n".join(a.key for a in aggregation_sources)).encode("utf-8")).hexdigest()[:16]
     metadata = {
         "context_sources": ["aggregate_sources"],
-        "aggregation_source_count": len(source_candidates),
-        "aggregation_source_keys": [artefact.key for artefact in source_candidates[:resolved_provenance_budget]],
-        "aggregation_source_paths": [artefact.source_path for artefact in source_candidates[:resolved_provenance_budget]],
+        "aggregation_source_count": len(aggregation_sources),
+        "aggregation_source_keys": [artefact.key for artefact in aggregation_sources[:resolved_provenance_budget]],
+        "aggregation_source_paths": [artefact.source_path for artefact in aggregation_sources[:resolved_provenance_budget]],
+        "candidate_pool_count": len(source_candidates),
+        "eligible_source_count": len(aggregation_sources),
+        "eligible_source_keys": [artefact.key for artefact in aggregation_sources[:resolved_provenance_budget]],
+        "eligible_source_paths": [artefact.source_path for artefact in aggregation_sources[:resolved_provenance_budget]],
+        "excluded_source_count": len(excluded_sources),
+        "excluded_sources": [_excluded_source_metadata(item) for item in excluded_sources[:resolved_provenance_budget]],
+        "candidate_scope_spec": _candidate_scope_spec_metadata(candidate_scope_spec),
         "aggregation_groups": [
             _group_metadata(group, evidence_budget=min(12, resolved_provenance_budget)) for group in grouped[:12]
         ],
@@ -84,16 +100,22 @@ def build_source_aggregation(
         "extracted_row_count": len(extracted_rows),
         "extracted_rows": [_extracted_row_metadata(row) for row in extracted_rows[:resolved_provenance_budget]],
         "extraction_confidence": _mean_confidence(extracted_rows),
-        "provenance_coverage_count": min(len(source_candidates), resolved_provenance_budget),
+        "extraction_source_count": len(extraction_source_keys),
+        "extraction_source_keys": extraction_source_keys[:resolved_provenance_budget],
+        "extraction_source_paths": extraction_source_paths[:resolved_provenance_budget],
+        "provenance_coverage_count": min(len(aggregation_sources), resolved_provenance_budget),
         "provenance_truncated": provenance_truncated,
         "provenance": "prepared_context_aggregation",
     }
     trace.output_count = 1
     trace.notes.append(f"sources_considered:{len(source_candidates)}")
+    trace.notes.append(f"eligible_sources:{len(aggregation_sources)}")
+    trace.notes.append(f"excluded_sources:{len(excluded_sources)}")
     trace.notes.append(f"groups:{len(grouped)}")
     trace.notes.append(f"count_basis:{extraction_spec.count_basis}")
     trace.notes.append(f"item_type:{extraction_spec.item_type}")
     trace.notes.append(f"extracted_rows:{len(extracted_rows)}")
+    trace.notes.append(f"extraction_sources:{len(extraction_source_keys)}")
     return (
         Artefact(
             key=f"prepared_context:source_aggregation:{digest}",
@@ -135,6 +157,98 @@ def _facet_coverage(profile: ContextPreparationProfile, candidates: list[Artefac
     return list(dict.fromkeys(covered))[:16]
 
 
+def _infer_candidate_scope_spec(prompt: str, candidates: list[Artefact]) -> CandidateScopeSpec:
+    required_facets = _required_scope_facets(prompt)
+    source_class = _dominant_source_class(candidates)
+    confidence = 0.72 if required_facets else 0.55
+    return CandidateScopeSpec(
+        source_class=source_class,
+        required_facets=required_facets,
+        optional_facets=extract_query_keywords(prompt, limit=8),
+        exclusion_rules=["missing_required_facets"] if required_facets else [],
+        confidence=confidence,
+    )
+
+
+def _required_scope_facets(prompt: str) -> list[str]:
+    lower = prompt.lower()
+    facets: list[str] = []
+    project_match = re.search(
+        r"\b(?:project|initiative|program|customer|client|account|system|service|component|area)\s+([A-Z][A-Za-z0-9_-]{2,})\b",
+        prompt,
+    )
+    if project_match:
+        facets.append(project_match.group(1))
+    quoted = re.findall(r"['\"]([^'\"]{3,64})['\"]", prompt)
+    facets.extend(quoted)
+    if "postmortem" in lower or "postmortems" in lower:
+        facets.append("postmortem")
+    if "design review" in lower or "design reviews" in lower:
+        facets.append("design review")
+    if "customer feedback" in lower:
+        facets.append("customer feedback")
+    if "meeting notes" in lower:
+        facets.append("meeting notes")
+    return list(dict.fromkeys(facets))[:8]
+
+
+def _dominant_source_class(candidates: list[Artefact]) -> str | None:
+    if not candidates:
+        return None
+    counts = Counter(_source_class(artefact.source_path) for artefact in candidates)
+    source_class, count = counts.most_common(1)[0]
+    return source_class if count >= max(2, len(candidates) // 3) else None
+
+
+def _apply_candidate_scope(
+    candidates: list[Artefact],
+    scope_spec: CandidateScopeSpec,
+) -> tuple[list[Artefact], list[ExcludedAggregationSource]]:
+    eligible: list[Artefact] = []
+    excluded: list[ExcludedAggregationSource] = []
+    for artefact in candidates:
+        reasons = _scope_exclusion_reasons(artefact, scope_spec)
+        if reasons:
+            excluded.append(ExcludedAggregationSource(source_key=artefact.key, source_path=artefact.source_path, reasons=reasons))
+        else:
+            eligible.append(artefact)
+    return eligible, excluded
+
+
+def _scope_exclusion_reasons(artefact: Artefact, scope_spec: CandidateScopeSpec) -> list[str]:
+    reasons: list[str] = []
+    haystack = f"{artefact.source_path}\n{artefact.content}".lower()
+    for facet in scope_spec.required_facets:
+        if facet.lower() not in haystack:
+            reasons.append(f"missing_required_facet:{facet}")
+    if scope_spec.source_class and _source_class(artefact.source_path) != scope_spec.source_class:
+        reasons.append(f"outside_source_class:{scope_spec.source_class}")
+    return reasons
+
+
+def _candidate_scope_spec_metadata(spec: CandidateScopeSpec) -> dict[str, object]:
+    return {
+        "source_class": spec.source_class,
+        "required_facets": spec.required_facets,
+        "optional_facets": spec.optional_facets,
+        "time_window": spec.time_window,
+        "entities": spec.entities,
+        "source_status": spec.source_status,
+        "canonicality": spec.canonicality,
+        "exclusion_rules": spec.exclusion_rules,
+        "max_scope_strategy": spec.max_scope_strategy,
+        "confidence": spec.confidence,
+    }
+
+
+def _excluded_source_metadata(item: ExcludedAggregationSource) -> dict[str, object]:
+    return {
+        "source_key": item.source_key,
+        "source_path": item.source_path,
+        "reasons": item.reasons,
+    }
+
+
 @dataclass(frozen=True)
 class AggregationExtractionSpec:
     item_type: str = "generic_theme"
@@ -151,6 +265,27 @@ class AggregationExtractionSpec:
             "confidence",
         ]
     )
+
+
+@dataclass(frozen=True)
+class CandidateScopeSpec:
+    source_class: str | None = None
+    required_facets: list[str] = field(default_factory=list)
+    optional_facets: list[str] = field(default_factory=list)
+    time_window: str | None = None
+    entities: list[str] = field(default_factory=list)
+    source_status: str | None = None
+    canonicality: str = "prefer_canonical"
+    exclusion_rules: list[str] = field(default_factory=list)
+    max_scope_strategy: str = "facet_intersection"
+    confidence: float = 0.55
+
+
+@dataclass(frozen=True)
+class ExcludedAggregationSource:
+    source_key: str
+    source_path: str
+    reasons: list[str]
 
 
 @dataclass(frozen=True)

@@ -380,6 +380,78 @@ def test_source_aggregation_counts_decision_rows_by_owner():
     assert groups["Search Platform"]["extracted_rows"][0]["item_type"] == "decision"
 
 
+def test_source_aggregation_scopes_extraction_to_requested_project():
+    now = time.time()
+    prompt = "Across project Atlas design reviews, count decisions by DRI."
+    profile = infer_context_preparation_profile(prompt)
+    artefacts = [
+        Artefact(
+            key="file_summary:atlas-search.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/design-reviews/atlas-search.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content=(
+                "Project Atlas design review\n"
+                "## Decisions\n"
+                "- Adopt hybrid search for Atlas recall. DRI: Search Platform.\n"
+                "- Keep lexical fallback for Atlas exact references. DRI: Search Platform.\n"
+            ),
+        ),
+        Artefact(
+            key="file_summary:atlas-billing.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/design-reviews/atlas-billing.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content=(
+                "Project Atlas design review\n"
+                "## Decisions\n"
+                "- Defer metering migration until export tests pass. DRI: Billing Infra.\n"
+            ),
+        ),
+        Artefact(
+            key="file_summary:zephyr-search.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/design-reviews/zephyr-search.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content=(
+                "Project Zephyr design review\n"
+                "## Decisions\n"
+                "- Replace indexing backend for Zephyr. DRI: Search Platform.\n"
+                "- Move Zephyr rollout ownership. DRI: Release Eng.\n"
+            ),
+        ),
+    ]
+
+    aggregate, trace = build_source_aggregation(prompt, artefacts, profile)
+
+    assert aggregate is not None
+    assert "eligible_sources:2" in trace.notes
+    assert "excluded_sources:1" in trace.notes
+    assert aggregate.metadata["candidate_scope_spec"]["required_facets"] == ["Atlas", "design review"]
+    assert aggregate.metadata["candidate_pool_count"] == 3
+    assert aggregate.metadata["eligible_source_count"] == 2
+    assert aggregate.metadata["excluded_source_count"] == 1
+    assert aggregate.metadata["extraction_source_count"] == 2
+    assert aggregate.metadata["extraction_source_keys"] == [
+        "file_summary:atlas-search.md",
+        "file_summary:atlas-billing.md",
+    ]
+    assert aggregate.metadata["extracted_row_count"] == 3
+    excluded = aggregate.metadata["excluded_sources"][0]
+    assert excluded["source_key"] == "file_summary:zephyr-search.md"
+    assert "missing_required_facet:Atlas" in excluded["reasons"]
+    groups = {group["value"]: group for group in aggregate.metadata["aggregation_groups"]}
+    assert groups["Search Platform"]["count"] == 2
+    assert groups["Billing Infra"]["count"] == 1
+    assert "Release Eng" not in groups
+
+
 def test_scheduling_evidence_prepares_confirmed_time_source():
     now = time.time()
     prompt = (
