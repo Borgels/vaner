@@ -16,6 +16,7 @@ from vaner.broker.context_preparation import (
     hard_constraints_satisfied,
     infer_context_preparation_profile,
     query_variants,
+    semantic_path_hint_candidates,
     source_path_hint_candidates,
 )
 from vaner.broker.preparation_policy import choose_preparation_plan, plan_tool_names, plan_uses_tool
@@ -582,18 +583,35 @@ async def select_artefacts_fts(
                 available_paths = []
             exact_paths = set(exact_reference_candidates(prompt, available_paths, limit=min(32, max(8, top_n * 3))))
             source_hint_paths = set(source_path_hint_candidates(prompt, available_paths, limit=min(96, max(16, top_n * 8))))
+            structure_hint_paths = set(
+                semantic_path_hint_candidates(
+                    prompt,
+                    available_paths,
+                    profile=profile,
+                    limit=min(96, max(16, top_n * 8)),
+                )
+            )
             if exact_paths:
                 tool_traces.append(
                     ContextToolTrace(tool="exact_reference_lookup", input_count=len(available_paths), output_count=len(exact_paths))
                 )
-            if source_hint_paths:
+            if source_hint_paths or structure_hint_paths:
                 tool_traces.append(
-                    ContextToolTrace(tool="source_class_search", input_count=len(available_paths), output_count=len(source_hint_paths))
+                    ContextToolTrace(
+                        tool="source_class_search",
+                        input_count=len(available_paths),
+                        output_count=len(source_hint_paths | structure_hint_paths),
+                        notes=[
+                            f"source_class_paths:{len(source_hint_paths)}",
+                            f"artefact_structure_paths:{len(structure_hint_paths)}",
+                        ],
+                    )
                 )
         else:
             available_paths = []
             exact_paths = set()
             source_hint_paths = set()
+            structure_hint_paths = set()
         semantic_trace = ContextToolTrace(tool="semantic_search")
         if semantic_memory_enabled and semantic_embed is not None and hasattr(store, "select_artefacts_semantic"):
             semantic_variants = variants if context_enabled else [prompt]
@@ -623,7 +641,7 @@ async def select_artefacts_fts(
             loaded: list[Artefact] = []
             load_keys = set(fused_keys) | preferred
             loaded.extend(await store.list_by_keys(load_keys, limit=max(retrieval_limit, len(load_keys))))  # type: ignore[union-attr]
-            path_loads = set(preferred_paths_set) | exact_paths | source_hint_paths
+            path_loads = set(preferred_paths_set) | exact_paths | source_hint_paths | structure_hint_paths
             if path_loads:
                 if exact_paths:
                     exact_loaded = await store.list_by_source_paths(exact_paths, limit=max(retrieval_limit, len(exact_paths)))  # type: ignore[union-attr]
@@ -633,7 +651,19 @@ async def select_artefacts_fts(
                     hint_loaded = await store.list_by_source_paths(source_hint_paths, limit=max(retrieval_limit, len(source_hint_paths)))  # type: ignore[union-attr]
                     loaded.extend(hint_loaded)
                     _record_source_ranking(source_rankings, source_by_key, "source_metadata", [artefact.key for artefact in hint_loaded])
-                preferred_path_loads = preferred_paths_set - exact_paths - source_hint_paths
+                if structure_hint_paths:
+                    structure_loaded = await store.list_by_source_paths(
+                        structure_hint_paths,
+                        limit=max(retrieval_limit, len(structure_hint_paths)),
+                    )  # type: ignore[union-attr]
+                    loaded.extend(structure_loaded)
+                    _record_source_ranking(
+                        source_rankings,
+                        source_by_key,
+                        "artefact_structure",
+                        [artefact.key for artefact in structure_loaded],
+                    )
+                preferred_path_loads = preferred_paths_set - exact_paths - source_hint_paths - structure_hint_paths
                 if preferred_path_loads:
                     loaded.extend(
                         await store.list_by_source_paths(preferred_path_loads, limit=max(retrieval_limit, len(preferred_path_loads)))  # type: ignore[union-attr]
@@ -818,6 +848,7 @@ def _fuse_source_rankings(source_rankings: dict[str, list[str]], *, limit: int) 
         "semantic_memory": 0.75,
         "semantic_query_variants": 0.68,
         "source_metadata": 0.82,
+        "artefact_structure": 0.88,
         "coverage_floor": 0.85,
     }
     scores: dict[str, float] = {}
@@ -912,7 +943,7 @@ def _aggregation_candidate_pool(
             continue
         sources = source_by_key.get(artefact.key, set())
         source_signal = 0.7 if sources else 0.0
-        if sources & {"source_metadata", "semantic_memory", "semantic_query_variants", "coverage_floor"}:
+        if sources & {"source_metadata", "artefact_structure", "semantic_memory", "semantic_query_variants", "coverage_floor"}:
             source_signal += 1.0
         canonical_bonus = _canonical_source_class_bonus(prompt, artefact, profile) if canonical_source_class_enabled else 0.0
         score = score_artefact(prompt, artefact) + canonical_bonus + source_signal

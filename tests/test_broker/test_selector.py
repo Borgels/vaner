@@ -7,7 +7,12 @@ import time
 import pytest
 
 from vaner.broker.aggregation import build_source_aggregation
-from vaner.broker.context_preparation import infer_context_preparation_profile, query_variants, source_path_hint_candidates
+from vaner.broker.context_preparation import (
+    infer_context_preparation_profile,
+    query_variants,
+    semantic_path_hint_candidates,
+    source_path_hint_candidates,
+)
 from vaner.broker.preparation_policy import choose_preparation_plan, plan_tool_names
 from vaner.broker.scheduling import build_scheduling_evidence
 from vaner.broker.selector import select_artefacts, select_artefacts_fts
@@ -155,6 +160,72 @@ def test_source_path_hints_surface_source_class_candidates():
         "confluence/oncall-and-incident-response/postmortems/rate-limit-misconfig.json",
         "confluence/oncall-and-incident-response/postmortems/streaming-stalls.json",
     ]
+
+
+def test_semantic_path_hints_bridge_indirect_prompt_to_canonical_source_names():
+    paths = [
+        "github/pr-39751-kernel-stability-thresholds-precision-annealing-kv-sync-guard.json",
+        "github/pr-874321-traffic-escrow-and-rehearse-proxy-for-staged-promotes.json",
+        "docs/team-handbook/weekly-planning.md",
+    ]
+    prompt = "What made low bit math safer before a machine steps down from the safest numeric mode?"
+    profile = infer_context_preparation_profile(prompt)
+
+    selected = semantic_path_hint_candidates(prompt, paths, profile=profile, limit=2)
+
+    assert selected[0] == "github/pr-39751-kernel-stability-thresholds-precision-annealing-kv-sync-guard.json"
+
+
+def test_source_and_semantic_path_hints_support_private_healthcare_deployments():
+    paths = [
+        "google_drive/users/valehealth-implementation-capture.json",
+        "google_drive/users/acme-public-roadmap-notes.json",
+        "slack/random/lunch-thread.json",
+    ]
+    prompt = "Find the hospital implementation notes for running an intake chatbot inside a locked-down data center."
+    profile = infer_context_preparation_profile(prompt)
+
+    source_hints = source_path_hint_candidates(prompt, paths)
+    semantic_hints = semantic_path_hint_candidates(prompt, paths, profile=profile)
+
+    assert "google_drive/users/valehealth-implementation-capture.json" in source_hints
+    assert "google_drive/users/valehealth-implementation-capture.json" in semantic_hints
+
+
+@pytest.mark.asyncio
+async def test_select_artefacts_fts_loads_artefact_structure_candidates(tmp_path):
+    store = ArtefactStore(tmp_path / "store.db")
+    await store.initialize()
+    now = time.time()
+    target = Artefact(
+        key="file_summary:precision-annealing.json",
+        kind=ArtefactKind.FILE_SUMMARY,
+        source_path="github/pr-39751-kernel-stability-thresholds-precision-annealing-kv-sync-guard.json",
+        source_mtime=now,
+        generated_at=now,
+        model="test",
+        content="Default stability pass threshold is 0.995 before leaving safe fp32 mode.",
+    )
+    distractor = Artefact(
+        key="file_summary:planning.md",
+        kind=ArtefactKind.FILE_SUMMARY,
+        source_path="docs/team-handbook/weekly-planning.md",
+        source_mtime=now,
+        generated_at=now,
+        model="test",
+        content="Weekly planning notes and team rituals.",
+    )
+    await store.upsert(target)
+    await store.upsert(distractor)
+
+    selected = await select_artefacts_fts(
+        "What made low bit math safer before a machine steps down from the safest numeric mode?",
+        store,
+        top_n=1,
+    )
+
+    assert selected[0].key == "file_summary:precision-annealing.json"
+    assert "artefact_structure" in selected[0].metadata["context_sources"]
 
 
 def test_source_path_hints_rank_specific_scheduling_threads():

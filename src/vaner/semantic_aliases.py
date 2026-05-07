@@ -57,6 +57,26 @@ def engineering_semantic_aliases(text: str, tokens: Collection[str], *, stopword
 
     if has_any("isolated network", "own network", "private network", "private hosting", "private deploy", "privnet", "vpc"):
         aliases.update({"private", "privnet", "vpc", "vnet", "isolated", "hosting", "deploy", "deployment"})
+    if has_any("locked down", "locked-down", "data center", "datacenter", "on prem", "on-prem", "onprem", "air gapped", "air-gapped"):
+        aliases.update({"private", "onprem", "datacenter", "vpc", "airgap", "air-gapped", "implementation", "capture", "deployment"})
+
+    if has_any("failover", "takeover", "active location", "active locations", "resume credential", "resume token", "full authentication"):
+        aliases.update({"gateway", "bifurcation", "checkpoint", "checkpointing", "kv", "token", "grace", "takeover", "failover"})
+    if has_any("bifurcation", "checkpointing", "token grace", "grace window", "kv checkpoint"):
+        aliases.update({"failover", "takeover", "resume", "credential", "authentication", "active", "region", "location"})
+
+    if has_any(
+        "wrong source",
+        "wrong source records",
+        "verify charges",
+        "charges",
+        "billing",
+        "telemetry never arrived",
+        "telemetry missing",
+    ):
+        aliases.update({"audit", "auditlog", "audit-log", "billing", "reconciliation", "mismatch", "gap", "telemetry", "observability"})
+    if has_any("vector writes", "vector write", "semantic search", "source records", "dense index", "embedding index"):
+        aliases.update({"embedding", "embeddings", "embed", "index", "dense", "reconciliation", "vector", "vectors"})
 
     if has_any("makes things up", "made things up", "hallucination", "hallucinate", "joke", "meme"):
         aliases.update({"hallucination", "hallucinate", "meme", "memes", "satire", "tagging", "joke", "jokes"})

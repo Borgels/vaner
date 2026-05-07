@@ -113,10 +113,10 @@ def source_path_hint_candidates(prompt: str, available_paths: list[str], *, limi
         hint_terms.update({"calendar", "invite", "booking", "schedule", "meeting", "gmail"})
         if re.search(r"\b(architecture|technical|deep dive|review|workshop)\b", lowered):
             hint_terms.update({"architecture", "review", "deepdive", "deep-dive", "technical", "workshop"})
-        if re.search(r"\b(healthcare|health care|clinical|medical|hospital)\b", lowered):
-            hint_terms.update({"health", "healthcare", "clinical", "medical"})
-        if re.search(r"\b(isolated network|private|vpc|on-prem|own network)\b", lowered):
-            hint_terms.update({"private", "privhost", "vpc", "network", "hosting"})
+    if re.search(r"\b(healthcare|health care|clinical|medical|hospital|patient|phi)\b", lowered):
+        hint_terms.update({"health", "healthcare", "clinical", "medical", "hospital", "patient", "phi"})
+    if re.search(r"\b(isolated network|locked-down|locked down|data center|datacenter|private|vpc|on-prem|onprem|own network)\b", lowered):
+        hint_terms.update({"private", "privhost", "vpc", "network", "hosting", "onprem", "on-prem", "datacenter", "implementation"})
     if re.search(r"\b(issue|ticket|bug|support escalation|incident)\b", lowered):
         hint_terms.update({"jira", "linear", "support", "incidents"})
     if not hint_terms:
@@ -142,6 +142,52 @@ def source_path_hint_candidates(prompt: str, available_paths: list[str], *, limi
     return [path for _, path in ranked[:limit]]
 
 
+def semantic_path_hint_candidates(
+    prompt: str,
+    available_paths: list[str],
+    *,
+    profile: ContextPreparationProfile | None = None,
+    limit: int = 64,
+) -> list[str]:
+    """Return paths/titles whose canonical terms bridge an indirect prompt.
+
+    This is an artefact-structure signal, not a benchmark shortcut. It helps
+    when a user asks in operational language but durable sources are named with
+    canonical implementation, project, customer, or workflow terms.
+    """
+
+    if not available_paths:
+        return []
+    profile = profile or infer_context_preparation_profile(prompt)
+    terms = _semantic_path_terms(prompt, profile)
+    if not terms:
+        return []
+    term_set = set(terms)
+    ranked: list[tuple[float, str]] = []
+    for path in available_paths:
+        path_terms = set(extract_query_keywords(path.replace("/", " ").replace(".", " "), limit=48))
+        if not path_terms:
+            continue
+        direct_hits = term_set & path_terms
+        if not direct_hits:
+            continue
+        score = 0.0
+        for term in direct_hits:
+            score += 3.0 if _is_high_signal_path_term(term) else 1.0
+        # Reward multiple independent bridges more than repeated single-word
+        # matches. A path that names two or three canonical concepts is a
+        # stronger source candidate than a broad folder match.
+        score += min(8.0, len(direct_hits) * len(direct_hits) * 0.65)
+        path_lower = path.lower()
+        for source_hint in profile.source_hints:
+            if source_hint and source_hint in path_lower:
+                score += 2.0
+        if len(direct_hits) >= 2 or score >= 5.0:
+            ranked.append((score, path))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [path for _, path in ranked[: max(1, int(limit))]]
+
+
 def extract_query_keywords(prompt: str, *, limit: int = 24) -> list[str]:
     """Extract FTS-friendly terms from a conversational prompt."""
 
@@ -161,6 +207,49 @@ def extract_query_keywords(prompt: str, *, limit: int = 24) -> list[str]:
         if len(keywords) >= limit:
             break
     return keywords[:limit]
+
+
+def _semantic_path_terms(prompt: str, profile: ContextPreparationProfile, *, limit: int = 48) -> list[str]:
+    keywords = extract_query_keywords(prompt, limit=32)
+    facets = [facet.value for facet in profile.facets if len(facet.value) > 2]
+    aliases = sorted(engineering_semantic_aliases(prompt, [*keywords, *facets], stopwords=_QUERY_STOPWORDS))
+    terms: list[str] = []
+    seen: set[str] = set()
+    for term in [*keywords, *facets, *aliases]:
+        for part in extract_query_keywords(term.replace("/", " ").replace(".", " "), limit=8):
+            if part not in seen and part not in _QUERY_STOPWORDS:
+                seen.add(part)
+                terms.append(part)
+        if len(terms) >= limit:
+            break
+    return terms[:limit]
+
+
+def _is_high_signal_path_term(term: str) -> bool:
+    if len(term) >= 7:
+        return True
+    return term in {
+        "annealing",
+        "auditlog",
+        "audit",
+        "billing",
+        "bifurcation",
+        "checkpoint",
+        "egress",
+        "escrow",
+        "failover",
+        "healthcare",
+        "kernel",
+        "latency",
+        "onprem",
+        "precision",
+        "rehearse",
+        "residency",
+        "routing",
+        "telemetry",
+        "vector",
+        "embedding",
+    }
 
 
 def _looks_like_scheduling_query(prompt: str) -> bool:
