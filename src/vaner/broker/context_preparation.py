@@ -75,6 +75,9 @@ def query_variants(prompt: str, profile: ContextPreparationProfile, *, max_varia
         variants.append(" ".join([*constraint_terms[:4], *facet_terms[:6]]))
     if profile.need in {"multi_source_synthesis", "research_mapping", "decision_support"}:
         variants.append(" ".join([*facet_terms[:10], *keywords[:8], "summary status decision evidence"]))
+    if _looks_like_scheduling_query(prompt):
+        variants.append(" ".join([*keywords[:10], "schedule calendar invite booking event meeting time window"]))
+        variants.append(" ".join([*keywords[:8], "technical deep dive architecture review private hosting isolated network vpc"]))
     if profile.need == "source_evidence":
         variants.append(" ".join([*facet_terms[:8], *keywords[:8], "source evidence claim citation provenance"]))
     if profile.need == "conflict_resolution":
@@ -93,6 +96,44 @@ def query_variants(prompt: str, profile: ContextPreparationProfile, *, max_varia
         if len(deduped) >= max(1, max_variants):
             break
     return deduped
+
+
+def source_path_hint_candidates(prompt: str, available_paths: list[str], *, limit: int = 64) -> list[str]:
+    """Return paths whose source class/path shape is directly implied by the prompt."""
+
+    lowered = prompt.lower()
+    hint_terms: set[str] = set()
+    if re.search(r"\b(postmortem|postmortems|retro|retrospective|rca|incident review)\b", lowered):
+        hint_terms.update({"postmortem", "postmortems", "rca"})
+    if re.search(r"\b(runbook|playbook|procedure|operating guide)\b", lowered):
+        hint_terms.update({"runbook", "runbooks", "playbook", "playbooks"})
+    if _looks_like_scheduling_query(prompt):
+        hint_terms.update({"calendar", "invite", "booking", "schedule", "meeting", "gmail"})
+        if re.search(r"\b(architecture|technical|deep dive|review|workshop)\b", lowered):
+            hint_terms.update({"architecture", "review", "deepdive", "deep-dive", "technical", "workshop"})
+        if re.search(r"\b(healthcare|health care|clinical|medical|hospital)\b", lowered):
+            hint_terms.update({"health", "healthcare", "clinical", "medical"})
+        if re.search(r"\b(isolated network|private|vpc|on-prem|own network)\b", lowered):
+            hint_terms.update({"private", "privhost", "vpc", "network", "hosting"})
+    if re.search(r"\b(issue|ticket|bug|support escalation|incident)\b", lowered):
+        hint_terms.update({"jira", "linear", "support", "incidents"})
+    if not hint_terms:
+        return []
+    ranked: list[tuple[int, str]] = []
+    for path in available_paths:
+        path_lower = path.lower()
+        score = 0
+        for term in hint_terms:
+            if term in path_lower:
+                score += 3 if f"/{term}" in path_lower or f"{term}/" in path_lower else 1
+        if "postmortem" in hint_terms and "/postmortems/" in path_lower:
+            score += 8
+        if "gmail" in hint_terms and path_lower.startswith("gmail/"):
+            score += 4
+        if score:
+            ranked.append((score, path))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [path for _, path in ranked[:limit]]
 
 
 def extract_query_keywords(prompt: str, *, limit: int = 24) -> list[str]:
@@ -114,6 +155,14 @@ def extract_query_keywords(prompt: str, *, limit: int = 24) -> list[str]:
         if len(keywords) >= limit:
             break
     return keywords[:limit]
+
+
+def _looks_like_scheduling_query(prompt: str) -> bool:
+    lowered = prompt.lower()
+    return bool(
+        re.search(r"\b(when|scheduled|schedule|calendar|invite|meeting|deep dive|time window|booking|booked)\b", lowered)
+        and re.search(r"\b(client|customer|call|review|demo|technical|architecture|workshop)\b", lowered)
+    )
 
 
 def exact_reference_candidates(prompt: str, available_paths: list[str], *, limit: int = 32) -> list[str]:

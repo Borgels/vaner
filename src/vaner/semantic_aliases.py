@@ -52,6 +52,12 @@ def engineering_semantic_aliases(text: str, tokens: Collection[str], *, stopword
     if has_any("egress", "residency", "cross region", "edge fallback", "routing anomaly", "routed"):
         aliases.update({"route", "routing", "egress", "residency", "fallback", "failover", "edge", "control", "plane"})
 
+    if has_any("healthcare", "health care", "clinical", "medical", "hospital"):
+        aliases.update({"health", "healthcare", "clinical", "medical", "patient", "hipaa"})
+
+    if has_any("isolated network", "own network", "private network", "private hosting", "private deploy", "privnet", "vpc"):
+        aliases.update({"private", "privnet", "vpc", "vnet", "isolated", "hosting", "deploy", "deployment"})
+
     if has_any("makes things up", "made things up", "hallucination", "hallucinate", "joke", "meme"):
         aliases.update({"hallucination", "hallucinate", "meme", "memes", "satire", "tagging", "joke", "jokes"})
 

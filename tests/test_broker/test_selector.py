@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from vaner.broker.context_preparation import infer_context_preparation_profile, query_variants
+from vaner.broker.context_preparation import infer_context_preparation_profile, query_variants, source_path_hint_candidates
 from vaner.broker.selector import select_artefacts, select_artefacts_fts
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.store.artefacts import ArtefactStore
@@ -124,6 +124,50 @@ def test_query_variants_add_local_keyword_and_alias_recall_terms():
     assert "candidate release" in variants
     assert "escrow" in variants
     assert "promote" in variants
+
+
+def test_query_variants_add_scheduling_and_private_hosting_aliases():
+    prompt = (
+        "When is the 60 to 90 minute technical deep dive scheduled with the healthcare client "
+        "about running model serving inside their own isolated network?"
+    )
+    profile = infer_context_preparation_profile(prompt)
+
+    variants = " ".join(query_variants(prompt, profile, max_variants=8))
+
+    assert "calendar invite booking" in variants
+    assert "architecture review private hosting isolated network" in variants
+
+
+def test_source_path_hints_surface_source_class_candidates():
+    paths = [
+        "slack/incidents/random-thread.json",
+        "confluence/oncall-and-incident-response/postmortems/streaming-stalls.json",
+        "confluence/oncall-and-incident-response/postmortems/rate-limit-misconfig.json",
+    ]
+
+    selected = source_path_hint_candidates("Across all incident postmortems, which team owned action items?", paths)
+
+    assert selected[:2] == [
+        "confluence/oncall-and-incident-response/postmortems/rate-limit-misconfig.json",
+        "confluence/oncall-and-incident-response/postmortems/streaming-stalls.json",
+    ]
+
+
+def test_source_path_hints_rank_specific_scheduling_threads():
+    paths = [
+        "gmail/team/generic-deepdive-scheduler.json",
+        "gmail/soojin/architecture-review-booking-next-steps-cytohealth.json",
+        "hubspot/company-health-network.json",
+    ]
+    prompt = (
+        "When is the technical deep dive scheduled with the healthcare client "
+        "about running model serving inside their own isolated network?"
+    )
+
+    selected = source_path_hint_candidates(prompt, paths)
+
+    assert selected[0] == "gmail/soojin/architecture-review-booking-next-steps-cytohealth.json"
 
 
 def test_source_evidence_profile_uses_evidence_mode():
@@ -295,6 +339,81 @@ def test_select_artefacts_seeds_coverage_for_multi_source_synthesis():
 
     selected_paths = {artefact.source_path for artefact in selected}
     assert {"docs/hosted.md", "docs/dedicated.md", "docs/private.md"} <= selected_paths
+
+
+def test_multi_source_aggregation_prefers_canonical_postmortem_docs():
+    now = time.time()
+    artefacts = [
+        Artefact(
+            key="file_summary:slack-postmortem.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="slack/postmortems/action-items-thread.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="postmortem action items action items assigned team action items",
+        ),
+        Artefact(
+            key="file_summary:template.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/oncall/postmortems/postmortem-template.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Postmortem template for assigned team action items",
+        ),
+        Artefact(
+            key="file_summary:canonical.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/oncall/postmortems/streaming-stalls-2026-01-12.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Postmortem: Streaming stalls. Follow-up action items assigned to runtime and SRE.",
+        ),
+    ]
+    prompt = "Across all incident postmortems, which team was assigned the most follow-up action items?"
+    profile = infer_context_preparation_profile(prompt)
+
+    selected = select_artefacts(prompt, artefacts, top_n=1, context_need=profile.need, context_profile=profile)
+
+    assert selected[0].key == "file_summary:canonical.json"
+
+
+def test_scheduling_queries_prefer_confirmed_invite_context():
+    now = time.time()
+    artefacts = [
+        Artefact(
+            key="file_summary:generic-deepdive.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="gmail/team/generic-deepdive.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Technical deep dive coordination for hosted integration scheduler.",
+        ),
+        Artefact(
+            key="file_summary:confirmed-private-review.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="gmail/solutions/architecture-review-booking.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content=(
+                "Schedule private hosting architecture review. Confirming Tue Oct 24, 10:00-11:15 PT. "
+                "Invite attached. 60-90 minute architecture review / technical deep dive for private VPC deployment."
+            ),
+        ),
+    ]
+    prompt = (
+        "When is the 60 to 90 minute technical deep dive scheduled with the healthcare client "
+        "about running model serving inside their own isolated network, and what is the time window in Pacific time?"
+    )
+    profile = infer_context_preparation_profile(prompt)
+
+    selected = select_artefacts(prompt, artefacts, top_n=1, context_need=profile.need, context_profile=profile)
+
+    assert selected[0].key == "file_summary:confirmed-private-review.json"
 
 
 def test_select_artefacts_origin_rerank_prefers_definition_files():
