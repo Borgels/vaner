@@ -130,6 +130,10 @@ def source_path_hint_candidates(prompt: str, available_paths: list[str], *, limi
                 score += 3 if f"/{term}" in path_lower or f"{term}/" in path_lower else 1
         if "postmortem" in hint_terms and "/postmortems/" in path_lower:
             score += 8
+            if path_lower.startswith(("confluence/", "docs/", "google_drive/")):
+                score += 6
+            elif path_lower.startswith(("slack/", "gmail/")):
+                score -= 3
         if "gmail" in hint_terms and path_lower.startswith("gmail/"):
             score += 4
         if score:

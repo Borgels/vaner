@@ -8,7 +8,7 @@ import pytest
 
 from vaner.broker.aggregation import build_source_aggregation
 from vaner.broker.context_preparation import infer_context_preparation_profile, query_variants, source_path_hint_candidates
-from vaner.broker.preparation_policy import choose_preparation_plan
+from vaner.broker.preparation_policy import choose_preparation_plan, plan_tool_names
 from vaner.broker.selector import select_artefacts, select_artefacts_fts
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.store.artefacts import ArtefactStore
@@ -236,9 +236,18 @@ def test_source_aggregation_preserves_group_counts_and_provenance():
     assert aggregate is not None
     assert trace.tool == "aggregate_sources"
     assert trace.output_count == 1
-    assert "Runtime: 2 source(s)" in aggregate.content
+    assert "Runtime: 2 item(s)" in aggregate.content
     assert "Representative provenance:" in aggregate.content
     assert aggregate.metadata["aggregation_source_count"] == 3
+    runtime_group = next(group for group in aggregate.metadata["aggregation_groups"] if group["value"] == "Runtime")
+    assert runtime_group["count_basis"] == "extracted_item"
+    assert runtime_group["source_keys"] == ["file_summary:runtime.json", "file_summary:runtime-2.json"]
+    assert {item["source_key"] for item in runtime_group["evidence"]} == {
+        "file_summary:runtime.json",
+        "file_summary:runtime-2.json",
+    }
+    assert aggregate.metadata["provenance_coverage_count"] == 3
+    assert aggregate.metadata["provenance_truncated"] is False
 
 
 @pytest.mark.asyncio
@@ -335,7 +344,7 @@ async def test_select_artefacts_fts_injects_prepared_aggregation_for_multi_sourc
     )
 
     assert selected[0].key.startswith("prepared_context:source_aggregation:")
-    assert "Runtime: 2 source(s)" in selected[0].content
+    assert "Runtime: 2 item(s)" in selected[0].content
     assert diagnostics[-1].preparation_plan is not None
     assert diagnostics[-1].preparation_plan.name == "multi_source_synthesis"
     assert diagnostics[-1].aggregation_count == 1
@@ -358,7 +367,14 @@ def test_date_constraints_report_but_do_not_drop_relevant_evidence_per_document(
         )
     ]
 
-    selected = select_artefacts(prompt, artefacts, top_n=1, context_need=profile.need, context_profile=profile)
+    selected = select_artefacts(
+        prompt,
+        artefacts,
+        top_n=1,
+        context_need=profile.need,
+        context_profile=profile,
+        enabled_context_tools=plan_tool_names(choose_preparation_plan(profile, prompt)),
+    )
 
     assert selected[0].key == "file_summary:timeout.md"
 
@@ -499,7 +515,14 @@ def test_multi_source_aggregation_prefers_canonical_postmortem_docs():
     prompt = "Across all incident postmortems, which team was assigned the most follow-up action items?"
     profile = infer_context_preparation_profile(prompt)
 
-    selected = select_artefacts(prompt, artefacts, top_n=1, context_need=profile.need, context_profile=profile)
+    selected = select_artefacts(
+        prompt,
+        artefacts,
+        top_n=1,
+        context_need=profile.need,
+        context_profile=profile,
+        enabled_context_tools=plan_tool_names(choose_preparation_plan(profile, prompt)),
+    )
 
     assert selected[0].key == "file_summary:canonical.json"
 
@@ -535,9 +558,54 @@ def test_scheduling_queries_prefer_confirmed_invite_context():
     )
     profile = infer_context_preparation_profile(prompt)
 
-    selected = select_artefacts(prompt, artefacts, top_n=1, context_need=profile.need, context_profile=profile)
+    selected = select_artefacts(
+        prompt,
+        artefacts,
+        top_n=1,
+        context_need=profile.need,
+        context_profile=profile,
+        enabled_context_tools=plan_tool_names(choose_preparation_plan(profile, prompt)),
+    )
 
     assert selected[0].key == "file_summary:confirmed-private-review.json"
+
+
+def test_context_specific_rank_boosts_require_enabled_policy_tools():
+    now = time.time()
+    prompt = "When is the technical deep dive scheduled with the customer?"
+    profile = infer_context_preparation_profile(prompt)
+    artefact = Artefact(
+        key="file_summary:confirmed.json",
+        kind=ArtefactKind.FILE_SUMMARY,
+        source_path="gmail/solutions/architecture-review-booking.json",
+        source_mtime=now,
+        generated_at=now,
+        model="test",
+        content="Confirming Tue Oct 24, 10:00-11:15 PT. Invite attached.",
+    )
+    factors_without_policy: dict[str, list] = {}
+    factors_with_policy: dict[str, list] = {}
+
+    select_artefacts(
+        prompt,
+        [artefact],
+        top_n=1,
+        context_need=profile.need,
+        context_profile=profile,
+        capture_factors=factors_without_policy,
+    )
+    select_artefacts(
+        prompt,
+        [artefact],
+        top_n=1,
+        context_need=profile.need,
+        context_profile=profile,
+        capture_factors=factors_with_policy,
+        enabled_context_tools=plan_tool_names(choose_preparation_plan(profile, prompt)),
+    )
+
+    assert not any(factor.name == "scheduling_evidence" for factor in factors_without_policy[artefact.key])
+    assert any(factor.name == "scheduling_evidence" for factor in factors_with_policy[artefact.key])
 
 
 def test_select_artefacts_origin_rerank_prefers_definition_files():

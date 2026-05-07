@@ -18,7 +18,7 @@ from vaner.broker.context_preparation import (
     query_variants,
     source_path_hint_candidates,
 )
-from vaner.broker.preparation_policy import choose_preparation_plan, plan_uses_tool
+from vaner.broker.preparation_policy import choose_preparation_plan, plan_tool_names, plan_uses_tool
 from vaner.models.artefact import Artefact
 from vaner.models.context_preparation import ContextPreparationProfile, ContextToolTrace, PreparedContextDiagnostics
 from vaner.models.decision import ScoreFactor
@@ -554,6 +554,7 @@ async def select_artefacts_fts(
     profile = infer_context_preparation_profile(prompt)
     context_enabled = context_preparation_mode != "legacy"
     preparation_plan = choose_preparation_plan(profile, prompt) if context_enabled else None
+    enabled_context_tools = plan_tool_names(preparation_plan)
     tool_traces: list[ContextToolTrace] = []
 
     source_by_key: dict[str, set[str]] = {}
@@ -657,6 +658,7 @@ async def select_artefacts_fts(
                 capture_drop_reasons=capture_drop_reasons,
                 context_need=profile.need if context_enabled else None,
                 context_profile=profile if context_enabled else None,
+                enabled_context_tools=enabled_context_tools,
             )
             if context_enabled and coverage_floor_enabled and max_expansion_passes > 0:
                 diagnostics = build_prepared_context_diagnostics(
@@ -697,6 +699,7 @@ async def select_artefacts_fts(
                                 capture_drop_reasons=capture_drop_reasons,
                                 context_need=profile.need,
                                 context_profile=profile,
+                                enabled_context_tools=enabled_context_tools,
                             )
             if context_enabled and preparation_plan is not None and plan_uses_tool(preparation_plan, "aggregate_sources"):
                 aggregate_budget = _plan_budget(preparation_plan, "aggregate_sources", default=40)
@@ -708,6 +711,7 @@ async def select_artefacts_fts(
                     exclude_private=exclude_private,
                     path_excludes=path_excludes or [],
                     source_by_key=source_by_key,
+                    canonical_source_class_enabled="source_class_search" in enabled_context_tools,
                     limit=aggregate_budget,
                 )
                 aggregate, trace = build_source_aggregation(
@@ -751,10 +755,11 @@ async def select_artefacts_fts(
         path_bonuses=path_bonuses,
         path_excludes=path_excludes,
         capture_factors=capture_factors,
-        capture_drop_reasons=capture_drop_reasons,
-        context_need=profile.need if context_enabled else None,
-        context_profile=profile if context_enabled else None,
-    )
+                capture_drop_reasons=capture_drop_reasons,
+                context_need=profile.need if context_enabled else None,
+                context_profile=profile if context_enabled else None,
+                enabled_context_tools=enabled_context_tools,
+            )
     if capture_prepared_context_diagnostics is not None:
         capture_prepared_context_diagnostics.append(
             build_prepared_context_diagnostics(
@@ -878,6 +883,7 @@ def _aggregation_candidate_pool(
     exclude_private: bool,
     path_excludes: list[str],
     source_by_key: dict[str, set[str]],
+    canonical_source_class_enabled: bool,
     limit: int,
 ) -> list[Artefact]:
     selected_keys = {artefact.key for artefact in selected}
@@ -894,7 +900,8 @@ def _aggregation_candidate_pool(
         source_signal = 0.7 if sources else 0.0
         if sources & {"source_metadata", "semantic_memory", "semantic_query_variants", "coverage_floor"}:
             source_signal += 1.0
-        score = score_artefact(prompt, artefact) + _canonical_source_class_bonus(prompt, artefact, profile) + source_signal
+        canonical_bonus = _canonical_source_class_bonus(prompt, artefact, profile) if canonical_source_class_enabled else 0.0
+        score = score_artefact(prompt, artefact) + canonical_bonus + source_signal
         if artefact.key in selected_keys:
             score += 2.0
         rows.append((score, artefact))
@@ -1054,12 +1061,14 @@ def select_artefacts(
     capture_drop_reasons: dict[str, str] | None = None,
     context_need: str | None = None,
     context_profile: ContextPreparationProfile | None = None,
+    enabled_context_tools: set[str] | None = None,
 ) -> list[Artefact]:
     preferred_paths = preferred_paths or set()
     preferred_keys = preferred_keys or set()
     path_bonuses = path_bonuses or []
     path_excludes = path_excludes or []
     apply_origin_rerank = _is_origin_question(prompt)
+    enabled_context_tools = enabled_context_tools or set()
 
     scored_rows: list[tuple[float, Artefact]] = []
     for artefact in artefacts:
@@ -1155,7 +1164,11 @@ def select_artefacts(
                 )
             )
             score += constraint_bonus
-        canonical_bonus = _canonical_source_class_bonus(prompt, artefact, context_profile)
+        canonical_bonus = (
+            _canonical_source_class_bonus(prompt, artefact, context_profile)
+            if "source_class_search" in enabled_context_tools
+            else 0.0
+        )
         if canonical_bonus:
             factors.append(
                 ScoreFactor(
@@ -1165,7 +1178,11 @@ def select_artefacts(
                 )
             )
             score += canonical_bonus
-        scheduling_bonus = _scheduling_evidence_bonus(prompt, artefact, context_profile)
+        scheduling_bonus = (
+            _scheduling_evidence_bonus(prompt, artefact, context_profile)
+            if {"time_entity_extraction", "conflict_scan"} & enabled_context_tools
+            else 0.0
+        )
         if scheduling_bonus:
             factors.append(
                 ScoreFactor(

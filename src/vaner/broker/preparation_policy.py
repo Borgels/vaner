@@ -83,3 +83,9 @@ def choose_preparation_plan(profile: ContextPreparationProfile, prompt: str) -> 
 
 def plan_uses_tool(plan: ContextPreparationPlan, tool_name: str) -> bool:
     return any(step.tool == tool_name for step in plan.steps)
+
+
+def plan_tool_names(plan: ContextPreparationPlan | None) -> set[str]:
+    if plan is None:
+        return set()
+    return {str(step.tool) for step in plan.steps}
