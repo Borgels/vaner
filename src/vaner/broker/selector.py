@@ -535,6 +535,7 @@ async def select_artefacts_fts(
     coverage_floor_enabled: bool = True,
     max_expansion_passes: int = 1,
     capture_prepared_context_diagnostics: list[PreparedContextDiagnostics] | None = None,
+    semantic_memory_enabled: bool = False,
 ) -> list[Artefact]:
     """Multi-source context candidate retrieval, then scorer re-rank.
 
@@ -565,6 +566,12 @@ async def select_artefacts_fts(
             except Exception:
                 keys = []
             _record_source_ranking(source_rankings, source_by_key, source, keys)
+        if semantic_memory_enabled and hasattr(store, "select_artefacts_semantic"):
+            try:
+                semantic_keys = list(await store.select_artefacts_semantic(prompt, limit=retrieval_limit))  # type: ignore[attr-defined]
+            except Exception:
+                semantic_keys = []
+            _record_source_ranking(source_rankings, source_by_key, "semantic_memory", semantic_keys)
         if context_enabled:
             try:
                 available_paths = await store.list_source_paths(limit=max(5000, retrieval_limit * 10))  # type: ignore[union-attr]
@@ -599,7 +606,7 @@ async def select_artefacts_fts(
                 if artefact.key in seen:
                     continue
                 seen.add(artefact.key)
-                candidates.append(artefact)
+                candidates.append(_with_context_source_metadata(artefact, source_rankings, source_by_key))
             selected = select_artefacts(
                 prompt,
                 candidates,
@@ -635,7 +642,9 @@ async def select_artefacts_fts(
                         if new_keys:
                             _record_source_ranking(source_rankings, source_by_key, "coverage_floor", new_keys)
                             recovered = await store.list_by_keys(set(new_keys), limit=max(retrieval_limit, len(new_keys)))  # type: ignore[union-attr]
-                            candidates.extend(recovered)
+                            candidates.extend(
+                                _with_context_source_metadata(artefact, source_rankings, source_by_key) for artefact in recovered
+                            )
                             selected = select_artefacts(
                                 prompt,
                                 candidates,
@@ -738,6 +747,32 @@ def _fuse_source_rankings(source_rankings: dict[str, list[str]], *, limit: int) 
     ]
 
 
+def _with_context_source_metadata(
+    artefact: Artefact,
+    source_rankings: dict[str, list[str]],
+    source_by_key: dict[str, set[str]],
+) -> Artefact:
+    sources = sorted(source_by_key.get(artefact.key, set()))
+    if not sources:
+        return artefact
+    best_rank: int | None = None
+    best_source: str | None = None
+    for source in sources:
+        try:
+            rank = source_rankings.get(source, []).index(artefact.key) + 1
+        except ValueError:
+            continue
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_source = source
+    metadata = dict(artefact.metadata)
+    metadata.setdefault("context_sources", sources)
+    if best_rank is not None:
+        metadata.setdefault("retrieval_rank", best_rank)
+        metadata.setdefault("retrieval_source", best_source)
+    return artefact.model_copy(update={"metadata": metadata})
+
+
 def _append_source_factors(
     capture_factors: dict[str, list[ScoreFactor]] | None,
     source_by_key: dict[str, set[str]],
@@ -781,6 +816,70 @@ def _coverage_recovery_terms(profile: ContextPreparationProfile, diagnostics: Pr
     elif profile.need == "implementation_support":
         terms.extend(["caller", "dependency", "test", "implementation"])
     return " ".join(term for term in terms if term)
+
+
+_COVERAGE_SENSITIVE_NEEDS = {
+    "multi_source_synthesis",
+    "source_evidence",
+    "conflict_resolution",
+    "research_mapping",
+    "decision_support",
+}
+
+
+def _artefact_context_text(artefact: Artefact) -> str:
+    return f"{artefact.source_path}\n{artefact.content}".lower()
+
+
+def _matches_facet(artefact: Artefact, facet_value: str) -> bool:
+    value = facet_value.lower()
+    text = _artefact_context_text(artefact)
+    if value in text:
+        return True
+    parts = [part for part in re.split(r"[_\-\s]+", value) if len(part) > 2]
+    return bool(parts) and all(part in text for part in parts)
+
+
+def _coverage_seed_artefacts(
+    ranked: list[tuple[float, Artefact]],
+    profile: ContextPreparationProfile | None,
+    *,
+    top_n: int,
+    min_score: float,
+) -> list[Artefact]:
+    if profile is None or profile.need not in _COVERAGE_SENSITIVE_NEEDS or top_n <= 1:
+        return []
+    selected: list[Artefact] = []
+    selected_keys: set[str] = set()
+
+    def add_best_matching(predicate: Callable[[Artefact], bool]) -> None:
+        if len(selected) >= top_n:
+            return
+        for score, artefact in ranked:
+            if score < min_score or artefact.key in selected_keys:
+                continue
+            if predicate(artefact):
+                selected.append(artefact)
+                selected_keys.add(artefact.key)
+                return
+
+    if profile.need == "conflict_resolution":
+        add_best_matching(
+            lambda artefact: any(term in _artefact_context_text(artefact) for term in ("current", "latest", "updated", "newer", "now"))
+        )
+        add_best_matching(
+            lambda artefact: any(
+                term in _artefact_context_text(artefact) for term in ("superseded", "old", "older", "deprecated", "previous")
+            )
+        )
+
+    facet_limit = min(top_n, max(1, profile.expected_evidence_count), 6)
+    facets = sorted(profile.facets, key=lambda facet: (not facet.required, len(facet.value)))
+    for facet in facets[: max(facet_limit * 2, facet_limit)]:
+        if len(selected) >= facet_limit:
+            break
+        add_best_matching(lambda artefact, value=facet.value: _matches_facet(artefact, value))
+    return selected
 
 
 def select_artefacts(
@@ -920,7 +1019,17 @@ def select_artefacts(
     selected_buckets: set[str] = set()
     deferred_for_diversity: list[Artefact] = []
     diversity_floor = max(1, top_n // 2)
+
+    for artefact in _coverage_seed_artefacts(ranked, context_profile, top_n=top_n, min_score=min_competitive_score):
+        if artefact in selected:
+            continue
+        selected.append(artefact)
+        seen_corpora.add(str(artefact.metadata.get("corpus_id", "default")))
+        selected_buckets.add(_diversity_bucket(artefact, context_need))
+
     for score, artefact in ranked:
+        if artefact in selected:
+            continue
         if score < min_competitive_score:
             if capture_drop_reasons is not None:
                 capture_drop_reasons[artefact.key] = "below_competitive_threshold"

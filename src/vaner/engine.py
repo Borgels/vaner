@@ -1321,6 +1321,7 @@ class VanerEngine:
                         max_candidate_keys=self.config.context_preparation.max_candidate_keys,
                         coverage_floor_enabled=self.config.context_preparation.coverage_floor_enabled,
                         max_expansion_passes=self.config.context_preparation.max_expansion_passes,
+                        semantic_memory_enabled=self.config.context_preparation.semantic_memory_enabled,
                         capture_prepared_context_diagnostics=prepared_context_diagnostics,
                     )
                     seen = {a.key for a in selected}
@@ -6078,6 +6079,7 @@ class VanerEngine:
             max_candidate_keys=self.config.context_preparation.max_candidate_keys,
             coverage_floor_enabled=self.config.context_preparation.coverage_floor_enabled,
             max_expansion_passes=self.config.context_preparation.max_expansion_passes,
+            semantic_memory_enabled=self.config.context_preparation.semantic_memory_enabled,
             capture_prepared_context_diagnostics=prepared_context_diagnostics,
         )
         if source_key is None and selected:
@@ -6104,6 +6106,7 @@ class VanerEngine:
                 max_candidate_keys=self.config.context_preparation.max_candidate_keys,
                 coverage_floor_enabled=self.config.context_preparation.coverage_floor_enabled,
                 max_expansion_passes=self.config.context_preparation.max_expansion_passes,
+                semantic_memory_enabled=self.config.context_preparation.semantic_memory_enabled,
                 capture_prepared_context_diagnostics=prepared_context_diagnostics,
             )
         score_map = {artefact.key: self._intent_scorer.score(prompt, artefact, features=features) for artefact in selected}

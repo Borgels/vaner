@@ -14,6 +14,7 @@ from vaner.models.context_preparation import (
     ContextSourceStats,
     PreparedContextDiagnostics,
 )
+from vaner.semantic_aliases import engineering_semantic_aliases
 
 _PATH_RE = re.compile(r"\b(?:[\w.-]+/)+[\w.-]+\b")
 _QUOTED_RE = re.compile(r"[`'\"]([^`'\"]{3,100})[`'\"]")
@@ -26,6 +27,11 @@ _DATE_RE = re.compile(
 _RESTRICTIVE_RE = re.compile(
     r"\b(?:only|except|before|after|latest|current|superseded|newest|oldest|no later than|at least|at most)\b",
     re.IGNORECASE,
+)
+_QUERY_STOPWORDS = frozenset(
+    "about across after again also and any are because before between can could did does during every for from had has have"
+    " how into its list most not only our over should since than that the their them then there these this those through what"
+    " when where which while who why with would".split()
 )
 
 
@@ -41,7 +47,7 @@ def infer_context_preparation_profile(prompt: str) -> ContextPreparationProfile:
     notes: list[str] = []
     if any(constraint.kind == "restrictive_language" for constraint in constraints):
         notes.append("hard_constraints_detected")
-    if need in {"multi_source_synthesis", "conflict_resolution", "research_mapping"}:
+    if need in {"multi_source_synthesis", "source_evidence", "conflict_resolution", "research_mapping"}:
         notes.append("coverage_sensitive")
     return ContextPreparationProfile(
         need=need,
@@ -57,20 +63,28 @@ def infer_context_preparation_profile(prompt: str) -> ContextPreparationProfile:
 
 def query_variants(prompt: str, profile: ContextPreparationProfile, *, max_variants: int = 6) -> list[str]:
     variants = [prompt]
+    keywords = extract_query_keywords(prompt)
     facet_terms = [facet.value for facet in profile.facets if len(facet.value) > 2]
     constraint_terms = [constraint.value for constraint in profile.constraints if constraint.kind != "restrictive_language"]
+    alias_terms = sorted(engineering_semantic_aliases(prompt, [*keywords, *facet_terms], stopwords=_QUERY_STOPWORDS))
+    if keywords:
+        variants.append(" ".join(keywords[:14]))
     if facet_terms:
         variants.append(" ".join(facet_terms[:8]))
     if constraint_terms:
         variants.append(" ".join([*constraint_terms[:4], *facet_terms[:6]]))
     if profile.need in {"multi_source_synthesis", "research_mapping", "decision_support"}:
-        variants.append(" ".join([*facet_terms[:10], "summary status decision evidence"]))
+        variants.append(" ".join([*facet_terms[:10], *keywords[:8], "summary status decision evidence"]))
+    if profile.need == "source_evidence":
+        variants.append(" ".join([*facet_terms[:8], *keywords[:8], "source evidence claim citation provenance"]))
     if profile.need == "conflict_resolution":
-        variants.append(" ".join([*facet_terms[:8], "current superseded conflict updated latest"]))
+        variants.append(" ".join([*facet_terms[:8], *keywords[:8], "current superseded conflict updated latest"]))
     if profile.need == "implementation_support":
-        variants.append(" ".join([*facet_terms[:10], "implementation caller dependency test"]))
+        variants.append(" ".join([*facet_terms[:10], *keywords[:8], "implementation caller dependency test"]))
     if profile.need == "absence_check":
-        variants.append(" ".join([*facet_terms[:8], "source truth reference policy"]))
+        variants.append(" ".join([*facet_terms[:8], *keywords[:8], "source truth reference policy"]))
+    if alias_terms:
+        variants.append(" ".join([*keywords[:8], *alias_terms[:10]]))
     deduped = []
     for variant in variants:
         normalized = " ".join(variant.split())
@@ -79,6 +93,27 @@ def query_variants(prompt: str, profile: ContextPreparationProfile, *, max_varia
         if len(deduped) >= max(1, max_variants):
             break
     return deduped
+
+
+def extract_query_keywords(prompt: str, *, limit: int = 24) -> list[str]:
+    """Extract FTS-friendly terms from a conversational prompt."""
+
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"\b[A-Za-z0-9][A-Za-z0-9_-]{2,}\b", prompt):
+        normalized = token.strip("_-").lower()
+        if len(normalized) < 3 or normalized in _QUERY_STOPWORDS:
+            continue
+        if normalized not in seen:
+            seen.add(normalized)
+            keywords.append(normalized)
+        for part in re.split(r"[_-]+", normalized):
+            if len(part) >= 3 and part not in _QUERY_STOPWORDS and part not in seen:
+                seen.add(part)
+                keywords.append(part)
+        if len(keywords) >= limit:
+            break
+    return keywords[:limit]
 
 
 def exact_reference_candidates(prompt: str, available_paths: list[str], *, limit: int = 32) -> list[str]:
@@ -118,6 +153,7 @@ def hard_constraints_satisfied(prompt: str, artefact: Artefact, profile: Context
     text = f"{artefact.source_path}\n{artefact.content}".lower()
     satisfied: list[str] = []
     missing: list[str] = []
+    blocking_missing: list[str] = []
     for constraint in profile.constraints:
         value = constraint.value.lower()
         if constraint.kind == "restrictive_language":
@@ -127,13 +163,17 @@ def hard_constraints_satisfied(prompt: str, artefact: Artefact, profile: Context
             satisfied.append(constraint.value)
         elif constraint.required:
             missing.append(constraint.value)
-    if _constraint_terms(prompt) and not satisfied and profile.need in {"direct_reference", "conflict_resolution", "absence_check"}:
+            if constraint.kind in {"path", "quoted_reference"}:
+                blocking_missing.append(constraint.value)
+    if blocking_missing:
+        return False, satisfied, blocking_missing
+    if _constraint_terms(prompt) and not satisfied and profile.need in {"absence_check"}:
         return False, satisfied, missing
-    return not missing, satisfied, missing
+    return True, satisfied, missing
 
 
 def competitive_threshold_multiplier(need: str | None) -> float:
-    if need in {"multi_source_synthesis", "conflict_resolution", "research_mapping", "decision_support"}:
+    if need in {"multi_source_synthesis", "source_evidence", "conflict_resolution", "research_mapping", "decision_support"}:
         return 0.0
     if need in {"implementation_support", "absence_check", "working_set_extension", "creative_grounding"}:
         return 0.20
@@ -243,13 +283,18 @@ def _infer_need(lowered: str, archetype: str):
         return "conflict_resolution"
     if re.search(r"\b(not found|unavailable|missing|is there|do we have|absence|not available|cannot find)\b", lowered):
         return "absence_check"
+    if re.search(r"\b(according to|source|evidence|citation|cite|provenance|claim|where did .* come from)\b", lowered):
+        return "source_evidence"
     if archetype == "developer" and re.search(r"\b(implement|fix|debug|change|affected|callers|tests?|dependency|regression)\b", lowered):
         return "implementation_support"
     if archetype == "writer":
         return "creative_grounding"
     if archetype == "researcher":
         return "research_mapping"
-    if re.search(r"\b(all|every|list|compare|across|summarize|synthesize|count|which .* and|what .* and)\b", lowered):
+    if re.search(
+        r"\b(all|every|list|compare|across|summarize|synthesize|count|which .* and|what .* and|which .* most|highest number)\b",
+        lowered,
+    ):
         return "multi_source_synthesis"
     if re.search(r"\b(decide|decision|recommend|tradeoff|risk|should we|plan)\b", lowered):
         return "decision_support"
@@ -278,7 +323,7 @@ def _extract_facets(prompt: str, constraints: list[ContextConstraint]) -> list[C
     facets: list[ContextFacet] = []
     for token in re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{3,}\b", prompt):
         lowered = token.lower()
-        if lowered in constrained_values or lowered in {"what", "where", "when", "which", "does", "with", "from", "that", "this", "should"}:
+        if lowered in constrained_values or lowered in _QUERY_STOPWORDS:
             continue
         required = any(char.isupper() for char in token[1:]) or "_" in token or "-" in token
         facets.append(ContextFacet(name="term", value=token, required=required))
@@ -296,6 +341,8 @@ def _extract_source_hints(lowered: str) -> list[str]:
 def _expected_evidence_count(lowered: str, need: str) -> int:
     if need in {"multi_source_synthesis", "research_mapping"}:
         return 4
+    if need == "source_evidence":
+        return 2
     if need == "conflict_resolution":
         return 2
     if re.search(r"\b(all|every|complete|completeness|list)\b", lowered):

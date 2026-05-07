@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from vaner.broker.context_preparation import infer_context_preparation_profile
+from vaner.broker.context_preparation import infer_context_preparation_profile, query_variants
 from vaner.broker.selector import select_artefacts
 from vaner.models.artefact import Artefact, ArtefactKind
 
@@ -102,6 +102,46 @@ def test_select_artefacts_uses_bounded_source_rank_prior():
     assert any(factor.name == "source_rank_prior" for factor in factors["file_summary:early.md"])
 
 
+def test_query_variants_add_local_keyword_and_alias_recall_terms():
+    prompt = "What prevents a candidate release from getting full traffic until replay and smoke checks pass?"
+    profile = infer_context_preparation_profile(prompt)
+
+    variants = " ".join(query_variants(prompt, profile))
+
+    assert "candidate release" in variants
+    assert "escrow" in variants
+    assert "promote" in variants
+
+
+def test_source_evidence_profile_uses_evidence_mode():
+    prompt = "What source evidence supports the rollout claim?"
+    profile = infer_context_preparation_profile(prompt)
+
+    assert profile.need == "source_evidence"
+    assert any("source evidence claim citation provenance" in variant for variant in query_variants(prompt, profile))
+
+
+def test_date_constraints_report_but_do_not_drop_relevant_evidence_per_document():
+    now = time.time()
+    prompt = "In March 2026, which deployment offering had the most request timeouts?"
+    profile = infer_context_preparation_profile(prompt)
+    artefacts = [
+        Artefact(
+            key="file_summary:timeout.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="support/timeout.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Hosted API request timeout escalation with customer impact.",
+        )
+    ]
+
+    selected = select_artefacts(prompt, artefacts, top_n=1, context_need=profile.need, context_profile=profile)
+
+    assert selected[0].key == "file_summary:timeout.md"
+
+
 def test_select_artefacts_backfills_deferred_diversity_candidates():
     now = time.time()
     artefacts = [
@@ -149,6 +189,59 @@ def test_select_artefacts_backfills_deferred_diversity_candidates():
     selected_keys = {artefact.key for artefact in selected}
     assert "file_summary:strong-1.md" in selected_keys
     assert "file_summary:strong-2.md" in selected_keys
+
+
+def test_select_artefacts_seeds_coverage_for_multi_source_synthesis():
+    now = time.time()
+    artefacts = [
+        Artefact(
+            key="file_summary:hosted.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/hosted.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Hosted API support escalations auth incident customer escalation escalation escalation escalation",
+            metadata={"retrieval_rank": 1},
+        ),
+        Artefact(
+            key="file_summary:dedicated.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/dedicated.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Dedicated deployment support escalations auth customers",
+            metadata={"retrieval_rank": 40},
+        ),
+        Artefact(
+            key="file_summary:private.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/private.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Private deployment support escalations auth customers",
+            metadata={"retrieval_rank": 41},
+        ),
+        Artefact(
+            key="file_summary:generic.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/generic.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="support escalations auth customers escalation escalation escalation escalation escalation",
+            metadata={"retrieval_rank": 2},
+        ),
+    ]
+    prompt = "Across Hosted API, Dedicated, and Private deployment offerings, which had the most auth-related support escalations?"
+    profile = infer_context_preparation_profile(prompt)
+
+    selected = select_artefacts(prompt, artefacts, top_n=3, context_need=profile.need, context_profile=profile)
+
+    selected_paths = {artefact.source_path for artefact in selected}
+    assert {"docs/hosted.md", "docs/dedicated.md", "docs/private.md"} <= selected_paths
 
 
 def test_select_artefacts_origin_rerank_prefers_definition_files():

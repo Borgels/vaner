@@ -11,6 +11,7 @@ ContextNeed = Literal[
     "task_continuation",
     "evidence_gathering",
     "multi_source_synthesis",
+    "source_evidence",
     "decision_support",
     "conflict_resolution",
     "creative_grounding",
@@ -81,4 +82,3 @@ class PreparedContextDiagnostics(BaseModel):
     latency_ms: float = 0.0
     compactness_score: float = 1.0
     provenance_coverage: float = 0.0
-
