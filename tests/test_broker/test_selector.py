@@ -257,12 +257,16 @@ def test_source_aggregation_preserves_group_counts_and_provenance():
     assert "Representative provenance:" in aggregate.content
     assert aggregate.metadata["aggregation_source_count"] == 3
     runtime_group = next(group for group in aggregate.metadata["aggregation_groups"] if group["value"] == "Runtime")
-    assert runtime_group["count_basis"] == "extracted_item"
+    assert runtime_group["count_basis"] == "extracted_item_count"
     assert runtime_group["source_keys"] == ["file_summary:runtime.json", "file_summary:runtime-2.json"]
     assert {item["source_key"] for item in runtime_group["evidence"]} == {
         "file_summary:runtime.json",
         "file_summary:runtime-2.json",
     }
+    assert aggregate.metadata["count_basis"] == "extracted_item_count"
+    assert aggregate.metadata["aggregation_extraction_spec"]["item_type"] == "action_item"
+    assert aggregate.metadata["extracted_row_count"] == 4
+    assert runtime_group["extracted_rows"][0]["group"]["normalized_value"] == "Runtime"
     assert aggregate.metadata["provenance_coverage_count"] == 3
     assert aggregate.metadata["provenance_truncated"] is False
 
@@ -320,6 +324,60 @@ def test_source_aggregation_normalizes_owning_team_prefixes():
     assert groups["SRE"]["count"] == 1
     assert "Eng Platform" not in groups
     assert "Eng SRE" not in groups
+
+
+def test_source_aggregation_counts_decision_rows_by_owner():
+    now = time.time()
+    prompt = "Across the design reviews, count decisions by DRI."
+    profile = infer_context_preparation_profile(prompt)
+    artefacts = [
+        Artefact(
+            key="file_summary:search-review.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/design-reviews/search-review.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content=(
+                "## Decisions\n"
+                "- Adopt hybrid search for recall-sensitive queries. DRI: Search Platform.\n"
+                "- Keep lexical fallback for exact references. DRI: Search Platform.\n"
+            ),
+        ),
+        Artefact(
+            key="file_summary:billing-review.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/design-reviews/billing-review.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content=(
+                "## Decisions\n"
+                "- Defer metering schema migration until export tests pass. DRI: Billing Infra.\n"
+            ),
+        ),
+        Artefact(
+            key="file_summary:notes.md",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="docs/design-reviews/notes.md",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Meeting notes with no decision owner.",
+        ),
+    ]
+
+    aggregate, trace = build_source_aggregation(prompt, artefacts, profile)
+
+    assert aggregate is not None
+    assert "count_basis:extracted_item_count" in trace.notes
+    assert aggregate.metadata["aggregation_extraction_spec"]["item_type"] == "decision"
+    assert aggregate.metadata["aggregation_extraction_spec"]["group_by"] == "owner"
+    assert aggregate.metadata["extracted_row_count"] == 3
+    groups = {group["value"]: group for group in aggregate.metadata["aggregation_groups"]}
+    assert groups["Search Platform"]["count"] == 2
+    assert groups["Billing Infra"]["count"] == 1
+    assert groups["Search Platform"]["extracted_rows"][0]["item_type"] == "decision"
 
 
 def test_scheduling_evidence_prepares_confirmed_time_source():
