@@ -6,7 +6,9 @@ import time
 
 import pytest
 
+from vaner.broker.aggregation import build_source_aggregation
 from vaner.broker.context_preparation import infer_context_preparation_profile, query_variants, source_path_hint_candidates
+from vaner.broker.preparation_policy import choose_preparation_plan
 from vaner.broker.selector import select_artefacts, select_artefacts_fts
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.store.artefacts import ArtefactStore
@@ -178,6 +180,67 @@ def test_source_evidence_profile_uses_evidence_mode():
     assert any("source evidence claim citation provenance" in variant for variant in query_variants(prompt, profile))
 
 
+def test_preparation_policy_names_bounded_context_tools():
+    profile = infer_context_preparation_profile(
+        "Across all incident reviews, which owner had the highest number of follow-up tasks?"
+    )
+
+    plan = choose_preparation_plan(profile, "Across all incident reviews, which owner had the highest number of follow-up tasks?")
+
+    assert plan.name == "multi_source_synthesis"
+    assert plan.deterministic is True
+    assert [step.tool for step in plan.steps] == [
+        "source_class_search",
+        "semantic_search",
+        "aggregate_sources",
+        "coverage_check",
+    ]
+
+
+def test_source_aggregation_preserves_group_counts_and_provenance():
+    now = time.time()
+    prompt = "Across all incident reviews, which team owned the most follow-up action items?"
+    profile = infer_context_preparation_profile(prompt)
+    artefacts = [
+        Artefact(
+            key="file_summary:runtime.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/incidents/postmortems/runtime-latency.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Post-incident review. Follow-up action items assigned to Runtime and SRE.",
+        ),
+        Artefact(
+            key="file_summary:runtime-2.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/incidents/postmortems/rate-limit.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Review notes. Owner: Runtime. Action items track throttling defaults.",
+        ),
+        Artefact(
+            key="file_summary:data.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/incidents/postmortems/replay-gap.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Incident review. Assigned to Data Platform for replay coverage.",
+        ),
+    ]
+
+    aggregate, trace = build_source_aggregation(prompt, artefacts, profile)
+
+    assert aggregate is not None
+    assert trace.tool == "aggregate_sources"
+    assert trace.output_count == 1
+    assert "Runtime: 2 source(s)" in aggregate.content
+    assert "Representative provenance:" in aggregate.content
+    assert aggregate.metadata["aggregation_source_count"] == 3
+
+
 @pytest.mark.asyncio
 async def test_select_artefacts_fts_uses_semantic_memory_source(tmp_path):
     store = ArtefactStore(tmp_path / "store.db")
@@ -216,6 +279,67 @@ async def test_select_artefacts_fts_uses_semantic_memory_source(tmp_path):
 
     assert selected[0].key == "file_summary:rollout.md"
     assert "semantic_memory" in selected[0].metadata["context_sources"]
+
+
+@pytest.mark.asyncio
+async def test_select_artefacts_fts_injects_prepared_aggregation_for_multi_source_synthesis(tmp_path):
+    store = ArtefactStore(tmp_path / "store.db")
+    await store.initialize()
+    now = time.time()
+    for artefact in [
+        Artefact(
+            key="file_summary:runtime.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/oncall/postmortems/runtime-latency.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Postmortem. Follow-up action items assigned to Runtime and SRE after incident review.",
+        ),
+        Artefact(
+            key="file_summary:runtime-2.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/oncall/postmortems/rate-limit.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Postmortem. Owner: Runtime. Action items cover throttling and monitoring.",
+        ),
+        Artefact(
+            key="file_summary:data.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/oncall/postmortems/replay-gap.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Postmortem. Assigned to Data Platform for replay and audit coverage.",
+        ),
+        Artefact(
+            key="file_summary:template.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/oncall/postmortems/template.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Postmortem template. Assigned team placeholder.",
+        ),
+    ]:
+        await store.upsert(artefact)
+    diagnostics = []
+
+    selected = await select_artefacts_fts(
+        "Across all incident postmortems, which team was assigned the most follow-up action items?",
+        store,
+        top_n=4,
+        capture_prepared_context_diagnostics=diagnostics,
+    )
+
+    assert selected[0].key.startswith("prepared_context:source_aggregation:")
+    assert "Runtime: 2 source(s)" in selected[0].content
+    assert diagnostics[-1].preparation_plan is not None
+    assert diagnostics[-1].preparation_plan.name == "multi_source_synthesis"
+    assert diagnostics[-1].aggregation_count == 1
+    assert any(trace.tool == "aggregate_sources" and trace.output_count == 1 for trace in diagnostics[-1].tool_traces)
 
 
 def test_date_constraints_report_but_do_not_drop_relevant_evidence_per_document():

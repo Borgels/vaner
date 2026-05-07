@@ -157,6 +157,8 @@ def _prepared_context_mode(diagnostics: PreparedContextDiagnostics | None, answe
         return "writing"
     if need == "decision_support":
         return "decision"
+    if need == "scheduling":
+        return "planning"
     if need == "conflict_resolution":
         return "conflict_resolution"
     if need == "absence_check":

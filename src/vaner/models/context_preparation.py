@@ -12,6 +12,7 @@ ContextNeed = Literal[
     "evidence_gathering",
     "multi_source_synthesis",
     "source_evidence",
+    "scheduling",
     "decision_support",
     "conflict_resolution",
     "creative_grounding",
@@ -22,6 +23,22 @@ ContextNeed = Literal[
 ]
 
 ContextArchetype = Literal["developer", "writer", "researcher", "operator", "general"]
+
+ContextToolName = Literal[
+    "lexical_search",
+    "semantic_search",
+    "source_class_search",
+    "exact_reference_lookup",
+    "relationship_expand",
+    "working_set_lookup",
+    "prepared_memory_lookup",
+    "aggregate_sources",
+    "coverage_check",
+    "conflict_scan",
+    "test_lookup",
+    "risk_check",
+    "time_entity_extraction",
+]
 
 
 class ContextFacet(BaseModel):
@@ -47,6 +64,28 @@ class ContextPreparationProfile(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class ContextToolStep(BaseModel):
+    tool: ContextToolName
+    mode: str = "balanced"
+    budget: int = 0
+    stop_condition: str = ""
+
+
+class ContextPreparationPlan(BaseModel):
+    name: str
+    need: ContextNeed = "evidence_gathering"
+    steps: list[ContextToolStep] = Field(default_factory=list)
+    max_recovery_passes: int = 1
+    deterministic: bool = True
+
+
+class ContextToolTrace(BaseModel):
+    tool: ContextToolName
+    input_count: int = 0
+    output_count: int = 0
+    notes: list[str] = Field(default_factory=list)
+
+
 class ContextCoverageReport(BaseModel):
     covered_facets: list[str] = Field(default_factory=list)
     missing_constraints: list[str] = Field(default_factory=list)
@@ -68,9 +107,12 @@ class ContextSourceStats(BaseModel):
 
 class PreparedContextDiagnostics(BaseModel):
     profile: ContextPreparationProfile = Field(default_factory=ContextPreparationProfile)
+    preparation_plan: ContextPreparationPlan | None = None
+    tool_traces: list[ContextToolTrace] = Field(default_factory=list)
     source_counts: list[ContextSourceStats] = Field(default_factory=list)
     fused_candidate_count: int = 0
     selected_count: int = 0
+    aggregation_count: int = 0
     hard_constraints_extracted: list[str] = Field(default_factory=list)
     hard_constraints_satisfied: list[str] = Field(default_factory=list)
     hard_constraints_missing: list[str] = Field(default_factory=list)

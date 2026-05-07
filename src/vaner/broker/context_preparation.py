@@ -10,8 +10,10 @@ from vaner.models.context_preparation import (
     ContextConstraint,
     ContextCoverageReport,
     ContextFacet,
+    ContextPreparationPlan,
     ContextPreparationProfile,
     ContextSourceStats,
+    ContextToolTrace,
     PreparedContextDiagnostics,
 )
 from vaner.semantic_aliases import engineering_semantic_aliases
@@ -224,7 +226,7 @@ def hard_constraints_satisfied(prompt: str, artefact: Artefact, profile: Context
 def competitive_threshold_multiplier(need: str | None) -> float:
     if need in {"multi_source_synthesis", "source_evidence", "conflict_resolution", "research_mapping", "decision_support"}:
         return 0.0
-    if need in {"implementation_support", "absence_check", "working_set_extension", "creative_grounding"}:
+    if need in {"implementation_support", "absence_check", "working_set_extension", "creative_grounding", "scheduling"}:
         return 0.20
     if need == "evidence_gathering":
         return 0.30
@@ -284,6 +286,8 @@ def build_prepared_context_diagnostics(
     selected: list[Artefact],
     fused_candidate_count: int,
     latency_ms: float,
+    preparation_plan: ContextPreparationPlan | None = None,
+    tool_traces: list[ContextToolTrace] | None = None,
 ) -> PreparedContextDiagnostics:
     selected_keys = {artefact.key for artefact in selected}
     source_counter: Counter[str] = Counter()
@@ -297,12 +301,17 @@ def build_prepared_context_diagnostics(
     coverage = build_coverage_report(profile, selected, source_by_key)
     return PreparedContextDiagnostics(
         profile=profile,
+        preparation_plan=preparation_plan,
+        tool_traces=tool_traces or [],
         source_counts=[
             ContextSourceStats(source=source, candidate_count=count, selected_count=selected_counter.get(source, 0))
             for source, count in sorted(source_counter.items())
         ],
         fused_candidate_count=fused_candidate_count,
         selected_count=len(selected),
+        aggregation_count=sum(
+            1 for artefact in selected if str(artefact.metadata.get("provenance")) == "prepared_context_aggregation"
+        ),
         hard_constraints_extracted=constraints,
         hard_constraints_satisfied=[value for value in constraints if value not in coverage.missing_constraints],
         hard_constraints_missing=coverage.missing_constraints,
@@ -334,6 +343,11 @@ def _infer_need(lowered: str, archetype: str):
         return "absence_check"
     if re.search(r"\b(according to|source|evidence|citation|cite|provenance|claim|where did .* come from)\b", lowered):
         return "source_evidence"
+    if re.search(r"\b(when|scheduled|schedule|calendar|invite|meeting|time window|booking|booked)\b", lowered) and re.search(
+        r"\b(client|customer|call|review|demo|technical|architecture|workshop)\b",
+        lowered,
+    ):
+        return "scheduling"
     if archetype == "developer" and re.search(r"\b(implement|fix|debug|change|affected|callers|tests?|dependency|regression)\b", lowered):
         return "implementation_support"
     if archetype == "writer":

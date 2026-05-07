@@ -8,6 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from fnmatch import fnmatch
 
+from vaner.broker.aggregation import build_source_aggregation
 from vaner.broker.context_preparation import (
     build_prepared_context_diagnostics,
     competitive_threshold_multiplier,
@@ -17,8 +18,9 @@ from vaner.broker.context_preparation import (
     query_variants,
     source_path_hint_candidates,
 )
+from vaner.broker.preparation_policy import choose_preparation_plan, plan_uses_tool
 from vaner.models.artefact import Artefact
-from vaner.models.context_preparation import ContextPreparationProfile, PreparedContextDiagnostics
+from vaner.models.context_preparation import ContextPreparationProfile, ContextToolTrace, PreparedContextDiagnostics
 from vaner.models.decision import ScoreFactor
 from vaner.semantic_aliases import engineering_semantic_aliases
 
@@ -551,6 +553,8 @@ async def select_artefacts_fts(
     started = time.monotonic()
     profile = infer_context_preparation_profile(prompt)
     context_enabled = context_preparation_mode != "legacy"
+    preparation_plan = choose_preparation_plan(profile, prompt) if context_enabled else None
+    tool_traces: list[ContextToolTrace] = []
 
     source_by_key: dict[str, set[str]] = {}
     source_rankings: dict[str, list[str]] = {}
@@ -576,10 +580,19 @@ async def select_artefacts_fts(
                 available_paths = []
             exact_paths = set(exact_reference_candidates(prompt, available_paths, limit=min(32, max(8, top_n * 3))))
             source_hint_paths = set(source_path_hint_candidates(prompt, available_paths, limit=min(96, max(16, top_n * 8))))
+            if exact_paths:
+                tool_traces.append(
+                    ContextToolTrace(tool="exact_reference_lookup", input_count=len(available_paths), output_count=len(exact_paths))
+                )
+            if source_hint_paths:
+                tool_traces.append(
+                    ContextToolTrace(tool="source_class_search", input_count=len(available_paths), output_count=len(source_hint_paths))
+                )
         else:
             available_paths = []
             exact_paths = set()
             source_hint_paths = set()
+        semantic_trace = ContextToolTrace(tool="semantic_search")
         if semantic_memory_enabled and semantic_embed is not None and hasattr(store, "select_artefacts_semantic"):
             semantic_variants = variants if context_enabled else [prompt]
             for index, variant in enumerate(semantic_variants):
@@ -589,6 +602,9 @@ async def select_artefacts_fts(
                     semantic_keys = []
                 source = "semantic_memory" if index == 0 else "semantic_query_variants"
                 _record_source_ranking(source_rankings, source_by_key, source, semantic_keys)
+                semantic_trace.input_count += 1
+                semantic_trace.output_count += len(semantic_keys)
+            tool_traces.append(semantic_trace)
     else:
         exact_paths = set()
         source_hint_paths = set()
@@ -649,6 +665,8 @@ async def select_artefacts_fts(
                     selected=selected,
                     fused_candidate_count=len(fused_keys),
                     latency_ms=(time.monotonic() - started) * 1000.0,
+                    preparation_plan=preparation_plan,
+                    tool_traces=tool_traces,
                 )
                 if diagnostics.coverage.gap_flags:
                     recovery_terms = _coverage_recovery_terms(profile, diagnostics)
@@ -680,6 +698,30 @@ async def select_artefacts_fts(
                                 context_need=profile.need,
                                 context_profile=profile,
                             )
+            if context_enabled and preparation_plan is not None and plan_uses_tool(preparation_plan, "aggregate_sources"):
+                aggregate_budget = _plan_budget(preparation_plan, "aggregate_sources", default=40)
+                aggregate_pool = _aggregation_candidate_pool(
+                    prompt,
+                    candidates,
+                    selected,
+                    profile,
+                    exclude_private=exclude_private,
+                    path_excludes=path_excludes or [],
+                    source_by_key=source_by_key,
+                    limit=aggregate_budget,
+                )
+                aggregate, trace = build_source_aggregation(
+                    prompt,
+                    aggregate_pool,
+                    profile,
+                    source_by_key=source_by_key,
+                    max_sources=aggregate_budget,
+                )
+                tool_traces.append(trace)
+                if aggregate is not None:
+                    _record_source_ranking(source_rankings, source_by_key, "aggregate_sources", [aggregate.key])
+                    aggregate = _with_context_source_metadata(aggregate, source_rankings, source_by_key)
+                    selected = [aggregate, *[artefact for artefact in selected if artefact.key != aggregate.key]][:top_n]
             _append_source_factors(capture_factors, source_by_key, selected)
             if capture_prepared_context_diagnostics is not None:
                 capture_prepared_context_diagnostics.append(
@@ -689,6 +731,8 @@ async def select_artefacts_fts(
                         selected=selected,
                         fused_candidate_count=len(fused_keys),
                         latency_ms=(time.monotonic() - started) * 1000.0,
+                        preparation_plan=preparation_plan,
+                        tool_traces=tool_traces,
                     )
                 )
             return selected
@@ -719,6 +763,8 @@ async def select_artefacts_fts(
                 selected=selected,
                 fused_candidate_count=len(all_artefacts),
                 latency_ms=(time.monotonic() - started) * 1000.0,
+                preparation_plan=preparation_plan,
+                tool_traces=tool_traces,
             )
         )
     return selected
@@ -813,6 +859,47 @@ def _append_source_factors(
                 detail="candidate appeared in context sources: " + ", ".join(sources),
             )
         )
+
+
+def _plan_budget(plan: object, tool_name: str, *, default: int) -> int:
+    steps = getattr(plan, "steps", [])
+    for step in steps:
+        if getattr(step, "tool", None) == tool_name and getattr(step, "budget", 0):
+            return int(step.budget)
+    return default
+
+
+def _aggregation_candidate_pool(
+    prompt: str,
+    candidates: list[Artefact],
+    selected: list[Artefact],
+    profile: ContextPreparationProfile,
+    *,
+    exclude_private: bool,
+    path_excludes: list[str],
+    source_by_key: dict[str, set[str]],
+    limit: int,
+) -> list[Artefact]:
+    selected_keys = {artefact.key for artefact in selected}
+    rows: list[tuple[float, Artefact]] = []
+    for artefact in candidates:
+        if exclude_private and str(artefact.metadata.get("privacy_zone", "")).lower() == "private_local":
+            continue
+        if any(fnmatch(artefact.source_path, pattern) for pattern in path_excludes):
+            continue
+        constraints_ok, _, _ = hard_constraints_satisfied(prompt, artefact, profile)
+        if not constraints_ok:
+            continue
+        sources = source_by_key.get(artefact.key, set())
+        source_signal = 0.7 if sources else 0.0
+        if sources & {"source_metadata", "semantic_memory", "semantic_query_variants", "coverage_floor"}:
+            source_signal += 1.0
+        score = score_artefact(prompt, artefact) + _canonical_source_class_bonus(prompt, artefact, profile) + source_signal
+        if artefact.key in selected_keys:
+            score += 2.0
+        rows.append((score, artefact))
+    rows.sort(key=lambda item: (-item[0], item[1].source_path))
+    return [artefact for _, artefact in rows[: max(1, limit)]]
 
 
 def _diversity_bucket(artefact: Artefact, context_need: str | None) -> str:
