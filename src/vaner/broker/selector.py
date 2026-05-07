@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from fnmatch import fnmatch
 
 from vaner.broker.context_preparation import (
@@ -536,6 +536,7 @@ async def select_artefacts_fts(
     max_expansion_passes: int = 1,
     capture_prepared_context_diagnostics: list[PreparedContextDiagnostics] | None = None,
     semantic_memory_enabled: bool = False,
+    semantic_embed: Callable[[list[str]], Awaitable[list[list[float]]]] | None = None,
 ) -> list[Artefact]:
     """Multi-source context candidate retrieval, then scorer re-rank.
 
@@ -566,9 +567,9 @@ async def select_artefacts_fts(
             except Exception:
                 keys = []
             _record_source_ranking(source_rankings, source_by_key, source, keys)
-        if semantic_memory_enabled and hasattr(store, "select_artefacts_semantic"):
+        if semantic_memory_enabled and semantic_embed is not None and hasattr(store, "select_artefacts_semantic"):
             try:
-                semantic_keys = list(await store.select_artefacts_semantic(prompt, limit=retrieval_limit))  # type: ignore[attr-defined]
+                semantic_keys = list(await store.select_artefacts_semantic(prompt, limit=retrieval_limit, embed=semantic_embed))  # type: ignore[attr-defined]
             except Exception:
                 semantic_keys = []
             _record_source_ranking(source_rankings, source_by_key, "semantic_memory", semantic_keys)

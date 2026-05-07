@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re as _re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import aiosqlite
@@ -25,6 +27,45 @@ from vaner.models.work_product import (
     WorkProductType,
 )
 from vaner.policy.privacy import sanitize_no_absolute_paths
+
+SemanticEmbedder = Callable[[list[str]], Awaitable[list[list[float]]]]
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(left * right for left, right in zip(a, b, strict=False))
+    mag_a = math.sqrt(sum(value * value for value in a))
+    mag_b = math.sqrt(sum(value * value for value in b))
+    if mag_a == 0.0 or mag_b == 0.0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+def _semantic_chunks_for_artefact(artefact: Artefact, *, max_chunks: int = 24, max_chars: int = 1600) -> list[tuple[int, str]]:
+    text = f"{artefact.source_path}\n{artefact.content}".strip()
+    if not text:
+        return []
+    paragraphs = [part.strip() for part in _re.split(r"\n\s*\n+", text) if part.strip()]
+    chunks: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        if len(paragraph) > max_chars:
+            for start in range(0, len(paragraph), max_chars):
+                part = paragraph[start : start + max_chars].strip()
+                if part:
+                    chunks.append(part)
+            continue
+        if current and len(current) + len(paragraph) + 2 > max_chars:
+            chunks.append(current)
+            current = paragraph
+        else:
+            current = f"{current}\n\n{paragraph}".strip() if current else paragraph
+    if current:
+        chunks.append(current)
+    if not chunks:
+        chunks = [text[:max_chars]]
+    return [(index, chunk) for index, chunk in enumerate(chunks[: max(1, int(max_chunks))])]
 
 
 class ArtefactStore:
@@ -509,6 +550,23 @@ class ArtefactStore:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_updated_at ON work_products(updated_at DESC)")
         await db.execute(
             """
+                CREATE TABLE IF NOT EXISTS artefact_semantic_chunks (
+                    chunk_id TEXT PRIMARY KEY,
+                    artefact_key TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    embedding_json TEXT NOT NULL,
+                    embedding_model TEXT NOT NULL DEFAULT '',
+                    updated_at REAL NOT NULL
+                )
+                """
+        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_chunks_key ON artefact_semantic_chunks(artefact_key)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_chunks_model ON artefact_semantic_chunks(embedding_model)")
+        await db.execute(
+            """
                 CREATE TABLE IF NOT EXISTS work_product_events (
                     id TEXT PRIMARY KEY,
                     product_id TEXT NOT NULL,
@@ -703,6 +761,28 @@ class ArtefactStore:
                 await db.execute("ALTER TABLE workspace_goals ADD COLUMN pc_unfinished_item_state TEXT NOT NULL DEFAULT 'none'")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_workspace_goals_subgoal_of ON workspace_goals(subgoal_of)")
             await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (8)")
+            current_schema_version = 8
+
+        if current_schema_version < 9:
+            await db.execute(
+                """
+                    CREATE TABLE IF NOT EXISTS artefact_semantic_chunks (
+                        chunk_id TEXT PRIMARY KEY,
+                        artefact_key TEXT NOT NULL,
+                        source_path TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL,
+                        text TEXT NOT NULL,
+                        content_hash TEXT NOT NULL,
+                        embedding_json TEXT NOT NULL,
+                        embedding_model TEXT NOT NULL DEFAULT '',
+                        updated_at REAL NOT NULL
+                    )
+                    """
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_chunks_key ON artefact_semantic_chunks(artefact_key)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_chunks_model ON artefact_semantic_chunks(embedding_model)")
+            await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (9)")
+            current_schema_version = 9
 
         # FTS5 index on artefact source_path + content for sub-millisecond
         # candidate retrieval; the full scorer then re-ranks the top-N hits.
@@ -755,6 +835,7 @@ class ArtefactStore:
                 "INSERT INTO artefacts_fts(key, source_path, content) VALUES (?, ?, ?)",
                 (artefact.key, artefact.source_path, artefact.content[:8192]),
             )
+            await db.execute("DELETE FROM artefact_semantic_chunks WHERE artefact_key = ?", (artefact.key,))
             await db.commit()
 
     async def get(self, key: str) -> Artefact | None:
@@ -1705,6 +1786,154 @@ class ArtefactStore:
             return [row[0] for row in rows]
         except Exception:
             return []
+
+    async def index_artefact_semantic(
+        self,
+        artefact: Artefact,
+        *,
+        embed: SemanticEmbedder,
+        embedding_model: str = "",
+        max_chunks: int = 24,
+    ) -> int:
+        """Persist dense semantic chunks for one artefact.
+
+        This is a context-source index, not a prediction cache. It lets Vaner
+        retrieve semantically related raw evidence and then run the normal
+        context-preparation selection, coverage, provenance, and gap logic.
+        """
+
+        chunks = _semantic_chunks_for_artefact(artefact, max_chunks=max_chunks)
+        if not chunks:
+            await self.replace_artefact_semantic_chunks(artefact, [], [], embedding_model=embedding_model)
+            return 0
+        vectors = await embed([chunk for _, chunk in chunks])
+        await self.replace_artefact_semantic_chunks(artefact, chunks, vectors, embedding_model=embedding_model)
+        return len(chunks)
+
+    async def replace_artefact_semantic_chunks(
+        self,
+        artefact: Artefact,
+        chunks: list[tuple[int, str]],
+        vectors: list[list[float]],
+        *,
+        embedding_model: str = "",
+    ) -> None:
+        if len(chunks) != len(vectors):
+            raise ValueError("semantic chunk/vector count mismatch")
+        now = time.time()
+        content_hash = hashlib.sha1(f"{artefact.source_path}\n{artefact.content}".encode()).hexdigest()  # noqa: S324
+        rows = []
+        for chunk_index, text in chunks:
+            chunk_id = hashlib.sha1(f"{artefact.key}:{chunk_index}:{content_hash}".encode()).hexdigest()  # noqa: S324
+            vector = [float(value) for value in vectors[chunk_index]]
+            rows.append(
+                (
+                    chunk_id,
+                    artefact.key,
+                    artefact.source_path,
+                    chunk_index,
+                    text,
+                    content_hash,
+                    json.dumps(vector),
+                    embedding_model,
+                    now,
+                )
+            )
+        async with self._write_lock:
+            async with self._connect() as db:
+                await db.execute("DELETE FROM artefact_semantic_chunks WHERE artefact_key = ?", (artefact.key,))
+                if rows:
+                    await db.executemany(
+                        """
+                        INSERT INTO artefact_semantic_chunks(
+                            chunk_id, artefact_key, source_path, chunk_index, text,
+                            content_hash, embedding_json, embedding_model, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        rows,
+                    )
+                await db.commit()
+
+    async def rebuild_semantic_index(
+        self,
+        *,
+        embed: SemanticEmbedder,
+        embedding_model: str = "",
+        limit: int = 2000,
+        max_chunks_per_artefact: int = 24,
+    ) -> int:
+        artefacts = await self.list(limit=limit)
+        indexed = 0
+        for artefact in artefacts:
+            indexed += await self.index_artefact_semantic(
+                artefact,
+                embed=embed,
+                embedding_model=embedding_model,
+                max_chunks=max_chunks_per_artefact,
+            )
+        return indexed
+
+    async def select_artefacts_semantic(
+        self,
+        query: str,
+        *,
+        embed: SemanticEmbedder | None = None,
+        limit: int = 50,
+        embedding_model: str = "",
+        chunk_limit: int = 2000,
+    ) -> list[str]:
+        """Return artefact keys ranked by semantic chunk similarity."""
+
+        if embed is None or not query.strip():
+            return []
+        try:
+            query_vectors = await embed([query])
+        except Exception:
+            return []
+        if not query_vectors:
+            return []
+        query_vector = [float(value) for value in query_vectors[0]]
+        params: list[object] = []
+        where = ""
+        if embedding_model:
+            where = "WHERE embedding_model = ?"
+            params.append(embedding_model)
+        params.append(max(1, int(chunk_limit)))
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"""
+                SELECT artefact_key, embedding_json
+                FROM artefact_semantic_chunks
+                {where}
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            )
+            rows = await cursor.fetchall()
+        scores: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for key, embedding_json in rows:
+            try:
+                vector = [float(value) for value in json.loads(str(embedding_json))]
+            except Exception:
+                continue
+            score = _cosine_similarity(query_vector, vector)
+            if score <= 0.0:
+                continue
+            key_str = str(key)
+            counts[key_str] = counts.get(key_str, 0) + 1
+            scores[key_str] = max(scores.get(key_str, 0.0), score) + min(0.05, counts[key_str] * 0.005)
+        return [key for key, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))[: max(1, int(limit))]]
+
+    async def semantic_index_snapshot(self) -> dict[str, int]:
+        async with self._connect() as db:
+            chunks_row = await (await db.execute("SELECT COUNT(*) FROM artefact_semantic_chunks")).fetchone()
+            artefacts_row = await (await db.execute("SELECT COUNT(DISTINCT artefact_key) FROM artefact_semantic_chunks")).fetchone()
+        return {
+            "chunks": int(chunks_row[0] or 0),
+            "artefacts": int(artefacts_row[0] or 0),
+        }
 
     async def replace_quality_issues(self, issues: list[dict[str, object]]) -> None:
         async with self._connect() as db:

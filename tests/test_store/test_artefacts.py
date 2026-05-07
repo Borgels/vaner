@@ -11,6 +11,17 @@ from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.store.artefacts import ArtefactStore
 
 
+async def _fake_embed(texts: list[str]) -> list[list[float]]:
+    vectors: list[list[float]] = []
+    for text in texts:
+        lowered = text.lower()
+        rollout = 1.0 if any(term in lowered for term in ("candidate", "release", "traffic", "replay", "smoke", "escrow")) else 0.0
+        timeout = 1.0 if any(term in lowered for term in ("timeout", "deadline", "504")) else 0.0
+        auth = 1.0 if any(term in lowered for term in ("auth", "credential", "token")) else 0.0
+        vectors.append([rollout, timeout, auth])
+    return vectors
+
+
 @pytest.mark.asyncio
 async def test_store_upsert_and_list(tmp_path):
     store = ArtefactStore(tmp_path / "store.db")
@@ -110,9 +121,51 @@ async def test_store_initialize_migrates_synthetic_v6_database(tmp_path):
         version_row = await (await db.execute("SELECT MAX(version) FROM schema_version")).fetchone()
         prediction_columns = [row[1] for row in await (await db.execute("PRAGMA table_info(prediction_cache)")).fetchall()]
         goal_columns = [row[1] for row in await (await db.execute("PRAGMA table_info(workspace_goals)")).fetchall()]
+        semantic_columns = [row[1] for row in await (await db.execute("PRAGMA table_info(artefact_semantic_chunks)")).fetchall()]
 
-    assert version_row[0] == 8
+    assert version_row[0] == 9
     assert "last_accessed_at" in prediction_columns
     assert "subgoal_of" in goal_columns
     assert "pc_reconciliation_state" in goal_columns
     assert "pc_unfinished_item_state" in goal_columns
+    assert "embedding_json" in semantic_columns
+
+
+@pytest.mark.asyncio
+async def test_store_semantic_index_selects_by_embedding_similarity(tmp_path):
+    store = ArtefactStore(tmp_path / "store.db")
+    await store.initialize()
+    now = time.time()
+    rollout = Artefact(
+        key="file_summary:rollout.md",
+        kind=ArtefactKind.FILE_SUMMARY,
+        source_path="docs/rollout.md",
+        source_mtime=now,
+        generated_at=now,
+        model="test",
+        content="Traffic escrow rehearses replay and smoke policy checks before promote.",
+    )
+    unrelated = Artefact(
+        key="file_summary:auth.md",
+        kind=ArtefactKind.FILE_SUMMARY,
+        source_path="docs/auth.md",
+        source_mtime=now,
+        generated_at=now,
+        model="test",
+        content="Credential rotation and token validation notes.",
+    )
+    await store.upsert(rollout)
+    await store.upsert(unrelated)
+    await store.index_artefact_semantic(rollout, embed=_fake_embed, embedding_model="fake")
+    await store.index_artefact_semantic(unrelated, embed=_fake_embed, embedding_model="fake")
+
+    selected = await store.select_artefacts_semantic(
+        "candidate release gets full traffic after checks",
+        embed=_fake_embed,
+        embedding_model="fake",
+        limit=1,
+    )
+    snapshot = await store.semantic_index_snapshot()
+
+    assert selected == ["file_summary:rollout.md"]
+    assert snapshot["artefacts"] == 2

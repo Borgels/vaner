@@ -4,9 +4,22 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from vaner.broker.context_preparation import infer_context_preparation_profile, query_variants
-from vaner.broker.selector import select_artefacts
+from vaner.broker.selector import select_artefacts, select_artefacts_fts
 from vaner.models.artefact import Artefact, ArtefactKind
+from vaner.store.artefacts import ArtefactStore
+
+
+async def _fake_embed(texts: list[str]) -> list[list[float]]:
+    vectors: list[list[float]] = []
+    for text in texts:
+        lowered = text.lower()
+        rollout = 1.0 if any(term in lowered for term in ("candidate", "release", "traffic", "replay", "smoke", "escrow")) else 0.0
+        auth = 1.0 if any(term in lowered for term in ("auth", "credential", "token")) else 0.0
+        vectors.append([rollout, auth])
+    return vectors
 
 
 def test_select_artefacts_prefers_prompt_matches():
@@ -119,6 +132,46 @@ def test_source_evidence_profile_uses_evidence_mode():
 
     assert profile.need == "source_evidence"
     assert any("source evidence claim citation provenance" in variant for variant in query_variants(prompt, profile))
+
+
+@pytest.mark.asyncio
+async def test_select_artefacts_fts_uses_semantic_memory_source(tmp_path):
+    store = ArtefactStore(tmp_path / "store.db")
+    await store.initialize()
+    now = time.time()
+    rollout = Artefact(
+        key="file_summary:rollout.md",
+        kind=ArtefactKind.FILE_SUMMARY,
+        source_path="docs/rollout.md",
+        source_mtime=now,
+        generated_at=now,
+        model="test",
+        content="Traffic escrow rehearses replay and smoke policy checks before promote.",
+    )
+    unrelated = Artefact(
+        key="file_summary:auth.md",
+        kind=ArtefactKind.FILE_SUMMARY,
+        source_path="docs/auth.md",
+        source_mtime=now,
+        generated_at=now,
+        model="test",
+        content="Credential rotation and token validation notes.",
+    )
+    await store.upsert(rollout)
+    await store.upsert(unrelated)
+    await store.index_artefact_semantic(rollout, embed=_fake_embed, embedding_model="fake")
+    await store.index_artefact_semantic(unrelated, embed=_fake_embed, embedding_model="fake")
+
+    selected = await select_artefacts_fts(
+        "candidate release gets full traffic after checks",
+        store,
+        top_n=1,
+        semantic_memory_enabled=True,
+        semantic_embed=_fake_embed,
+    )
+
+    assert selected[0].key == "file_summary:rollout.md"
+    assert "semantic_memory" in selected[0].metadata["context_sources"]
 
 
 def test_date_constraints_report_but_do_not_drop_relevant_evidence_per_document():
