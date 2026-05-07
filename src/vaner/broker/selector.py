@@ -19,6 +19,7 @@ from vaner.broker.context_preparation import (
     source_path_hint_candidates,
 )
 from vaner.broker.preparation_policy import choose_preparation_plan, plan_tool_names, plan_uses_tool
+from vaner.broker.scheduling import build_scheduling_evidence, score_scheduling_evidence
 from vaner.models.artefact import Artefact
 from vaner.models.context_preparation import ContextPreparationProfile, ContextToolTrace, PreparedContextDiagnostics
 from vaner.models.decision import ScoreFactor
@@ -726,6 +727,19 @@ async def select_artefacts_fts(
                     _record_source_ranking(source_rankings, source_by_key, "aggregate_sources", [aggregate.key])
                     aggregate = _with_context_source_metadata(aggregate, source_rankings, source_by_key)
                     selected = [aggregate, *[artefact for artefact in selected if artefact.key != aggregate.key]][:top_n]
+            if context_enabled and preparation_plan is not None and plan_uses_tool(preparation_plan, "prepare_scheduling_evidence"):
+                schedule_budget = _plan_budget(preparation_plan, "prepare_scheduling_evidence", default=24)
+                scheduling, trace = build_scheduling_evidence(
+                    prompt,
+                    candidates,
+                    profile,
+                    max_sources=schedule_budget,
+                )
+                tool_traces.append(trace)
+                if scheduling is not None:
+                    _record_source_ranking(source_rankings, source_by_key, "prepare_scheduling_evidence", [scheduling.key])
+                    scheduling = _with_context_source_metadata(scheduling, source_rankings, source_by_key)
+                    selected = [scheduling, *[artefact for artefact in selected if artefact.key != scheduling.key]][:top_n]
             _append_source_factors(capture_factors, source_by_key, selected)
             if capture_prepared_context_diagnostics is not None:
                 capture_prepared_context_diagnostics.append(
@@ -1018,33 +1032,7 @@ def _canonical_source_class_bonus(prompt: str, artefact: Artefact, profile: Cont
 
 
 def _scheduling_evidence_bonus(prompt: str, artefact: Artefact, profile: ContextPreparationProfile | None) -> float:
-    lowered = prompt.lower()
-    if profile is None or not re.search(r"\b(when|scheduled|schedule|calendar|invite|meeting|time window|booking|booked)\b", lowered):
-        return 0.0
-    if not re.search(r"\b(client|customer|call|review|demo|technical|architecture|workshop)\b", lowered):
-        return 0.0
-    path = artefact.source_path.lower()
-    text = _artefact_context_text(artefact)[:9000]
-    bonus = 0.0
-    if path.startswith(("gmail/", "calendar/")):
-        bonus += 4.0
-    elif path.startswith(("hubspot/", "fireflies/")) and re.search(r"\b(when|scheduled|time window|booking|booked)\b", lowered):
-        bonus -= 2.0
-    if any(term in text for term in ("calendar", "invite", ".ics", "event/", "scheduled", "confirming", "works for our team")):
-        bonus += 5.0
-    if "technical deep dive" in lowered and "technical deep dive" in text and "architecture review" in text:
-        bonus += 4.0
-    if "isolated network" in lowered and "private" in text and any(
-        term in text for term in ("vpc", "on-prem", "isolated", "private hosting")
-    ):
-        bonus += 5.0
-    numeric_terms = set(re.findall(r"\b\d{2,4}\b", lowered))
-    matched_numeric = sum(1 for term in numeric_terms if term in text)
-    if matched_numeric:
-        bonus += min(4.0, matched_numeric * 2.0)
-    if re.search(r"\b(pacific|pt|time window)\b", lowered) and re.search(r"\b(?:pt|pst|pdt|-0[78]00|\d{1,2}:\d{2})\b", text):
-        bonus += 3.0
-    return bonus
+    return score_scheduling_evidence(prompt, artefact, profile)
 
 
 def select_artefacts(

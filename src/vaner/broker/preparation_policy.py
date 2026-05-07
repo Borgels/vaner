@@ -33,6 +33,7 @@ def choose_preparation_plan(profile: ContextPreparationProfile, prompt: str) -> 
                 ContextToolStep(tool="source_class_search", mode="calendar_invite_preferred", budget=64),
                 ContextToolStep(tool="semantic_search", mode="query_variants", budget=64),
                 ContextToolStep(tool="conflict_scan", mode="time_evidence", budget=16),
+                ContextToolStep(tool="prepare_scheduling_evidence", mode="confirmed_time_source", budget=24),
                 ContextToolStep(tool="coverage_check", mode="facets_constraints", budget=0),
             ],
         )

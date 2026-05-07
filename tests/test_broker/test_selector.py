@@ -9,6 +9,7 @@ import pytest
 from vaner.broker.aggregation import build_source_aggregation
 from vaner.broker.context_preparation import infer_context_preparation_profile, query_variants, source_path_hint_candidates
 from vaner.broker.preparation_policy import choose_preparation_plan, plan_tool_names
+from vaner.broker.scheduling import build_scheduling_evidence
 from vaner.broker.selector import select_artefacts, select_artefacts_fts
 from vaner.models.artefact import Artefact, ArtefactKind
 from vaner.store.artefacts import ArtefactStore
@@ -197,6 +198,22 @@ def test_preparation_policy_names_bounded_context_tools():
     ]
 
 
+def test_preparation_policy_names_scheduling_evidence_tool():
+    prompt = "When is the technical deep dive scheduled with the healthcare client?"
+    profile = infer_context_preparation_profile(prompt)
+    plan = choose_preparation_plan(profile, prompt)
+
+    assert profile.need == "scheduling"
+    assert [step.tool for step in plan.steps] == [
+        "time_entity_extraction",
+        "source_class_search",
+        "semantic_search",
+        "conflict_scan",
+        "prepare_scheduling_evidence",
+        "coverage_check",
+    ]
+
+
 def test_source_aggregation_preserves_group_counts_and_provenance():
     now = time.time()
     prompt = "Across all incident reviews, which team owned the most follow-up action items?"
@@ -248,6 +265,46 @@ def test_source_aggregation_preserves_group_counts_and_provenance():
     }
     assert aggregate.metadata["provenance_coverage_count"] == 3
     assert aggregate.metadata["provenance_truncated"] is False
+
+
+def test_scheduling_evidence_prepares_confirmed_time_source():
+    now = time.time()
+    prompt = (
+        "When is the 60 to 90 minute technical deep dive scheduled with the healthcare client "
+        "about running model serving inside their own isolated network, and what is the time window in Pacific time?"
+    )
+    profile = infer_context_preparation_profile(prompt)
+    artefacts = [
+        Artefact(
+            key="file_summary:generic.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="gmail/sales/generic-private-review.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content="Proposed private hosting review slots next month. No confirmed attendees yet.",
+        ),
+        Artefact(
+            key="file_summary:confirmed.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="gmail/solutions/architecture-review-booking-next-steps-cytohealth.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content=(
+                "CytoHealth private VPC architecture review. Tue Oct 24 10:00-11:15 PT works for our team. "
+                "Invite attached invite-20281024.ics. PHI-sensitive workloads and isolated network deployment."
+            ),
+        ),
+    ]
+
+    scheduling, trace = build_scheduling_evidence(prompt, artefacts, profile)
+
+    assert scheduling is not None
+    assert trace.output_count == 1
+    assert scheduling.metadata["scheduling_evidence_source_keys"][0] == "file_summary:confirmed.json"
+    assert scheduling.metadata["scheduling_evidence"][0]["status"] == "confirmed"
+    assert "10:00-11:15 PT" in scheduling.content
 
 
 @pytest.mark.asyncio

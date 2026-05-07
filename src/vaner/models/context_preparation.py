@@ -33,6 +33,7 @@ ContextToolName = Literal[
     "working_set_lookup",
     "prepared_memory_lookup",
     "aggregate_sources",
+    "prepare_scheduling_evidence",
     "coverage_check",
     "conflict_scan",
     "test_lookup",
