@@ -42,6 +42,10 @@ def build_source_aggregation(
     grouped, extracted_rows = _group_findings(prompt, aggregation_sources, extraction_spec)
     extraction_source_keys = list(dict.fromkeys(row.source_key for row in extracted_rows))
     extraction_source_paths = list(dict.fromkeys(row.source_path for row in extracted_rows))
+    counted_rows = [row for row in extracted_rows if row.scope_status == "counted"]
+    counted_source_keys = list(dict.fromkeys(row.source_key for row in counted_rows))
+    counted_source_paths = list(dict.fromkeys(row.source_path for row in counted_rows))
+    dropped_rows = [row for row in extracted_rows if row.scope_status != "counted"]
     facets = _facet_coverage(profile, aggregation_sources)
     source_classes = Counter(_source_class(artefact.source_path) for artefact in aggregation_sources)
     source_refs = _source_refs(aggregation_sources, source_by_key or {}, provenance_budget=resolved_provenance_budget)
@@ -70,6 +74,8 @@ def build_source_aggregation(
         f"- group_by: {extraction_spec.group_by}",
         f"- count_basis: {extraction_spec.count_basis}",
         f"- extracted_row_count: {len(extracted_rows)}",
+        f"- counted_row_count: {len(counted_rows)}",
+        f"- dropped_row_count: {len(dropped_rows)}",
         "",
         "Grouped findings:",
         *_finding_lines(grouped),
@@ -99,10 +105,17 @@ def build_source_aggregation(
         "count_basis": extraction_spec.count_basis,
         "extracted_row_count": len(extracted_rows),
         "extracted_rows": [_extracted_row_metadata(row) for row in extracted_rows[:resolved_provenance_budget]],
+        "counted_row_count": len(counted_rows),
+        "counted_rows": [_extracted_row_metadata(row) for row in counted_rows[:resolved_provenance_budget]],
+        "dropped_row_count": len(dropped_rows),
+        "dropped_rows": [_extracted_row_metadata(row) for row in dropped_rows[:resolved_provenance_budget]],
         "extraction_confidence": _mean_confidence(extracted_rows),
         "extraction_source_count": len(extraction_source_keys),
         "extraction_source_keys": extraction_source_keys[:resolved_provenance_budget],
         "extraction_source_paths": extraction_source_paths[:resolved_provenance_budget],
+        "counted_source_count": len(counted_source_keys),
+        "counted_source_keys": counted_source_keys[:resolved_provenance_budget],
+        "counted_source_paths": counted_source_paths[:resolved_provenance_budget],
         "provenance_coverage_count": min(len(aggregation_sources), resolved_provenance_budget),
         "provenance_truncated": provenance_truncated,
         "provenance": "prepared_context_aggregation",
@@ -116,6 +129,9 @@ def build_source_aggregation(
     trace.notes.append(f"item_type:{extraction_spec.item_type}")
     trace.notes.append(f"extracted_rows:{len(extracted_rows)}")
     trace.notes.append(f"extraction_sources:{len(extraction_source_keys)}")
+    trace.notes.append(f"counted_rows:{len(counted_rows)}")
+    trace.notes.append(f"counted_sources:{len(counted_source_keys)}")
+    trace.notes.append(f"dropped_rows:{len(dropped_rows)}")
     return (
         Artefact(
             key=f"prepared_context:source_aggregation:{digest}",
@@ -309,6 +325,8 @@ class ExtractedAggregationRow:
     status: str | None = None
     date: str | None = None
     confidence: float = 0.7
+    scope_status: str = "counted"
+    scope_exclusion_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -751,6 +769,8 @@ def _extracted_row_metadata(row: ExtractedAggregationRow) -> dict[str, object]:
         },
         "status": row.status,
         "date": row.date,
+        "scope_status": row.scope_status,
+        "scope_exclusion_reason": row.scope_exclusion_reason,
         "confidence": row.confidence,
     }
 

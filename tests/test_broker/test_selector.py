@@ -443,12 +443,20 @@ def test_source_aggregation_scopes_extraction_to_requested_project():
         "file_summary:atlas-billing.md",
     ]
     assert aggregate.metadata["extracted_row_count"] == 3
+    assert aggregate.metadata["counted_row_count"] == 3
+    assert aggregate.metadata["dropped_row_count"] == 0
+    assert aggregate.metadata["counted_source_count"] == 2
+    assert aggregate.metadata["counted_source_keys"] == [
+        "file_summary:atlas-search.md",
+        "file_summary:atlas-billing.md",
+    ]
     excluded = aggregate.metadata["excluded_sources"][0]
     assert excluded["source_key"] == "file_summary:zephyr-search.md"
     assert "missing_required_facet:Atlas" in excluded["reasons"]
     groups = {group["value"]: group for group in aggregate.metadata["aggregation_groups"]}
     assert groups["Search Platform"]["count"] == 2
     assert groups["Billing Infra"]["count"] == 1
+    assert groups["Search Platform"]["extracted_rows"][0]["scope_status"] == "counted"
     assert "Release Eng" not in groups
 
 
