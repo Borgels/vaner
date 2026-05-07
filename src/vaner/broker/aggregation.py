@@ -249,6 +249,7 @@ def _extract_owned_items(content: str) -> list[tuple[str, str]]:
 def _owners_from_line(line: str) -> set[str]:
     owners: set[str] = set()
     patterns = (
+        r"\bowning team\s*:\s*([^.;\n]+)",
         r"\bowner team\s*:\s*([^.;\n]+)",
         r"\bowner\s*:\s*([^.;\n]+)",
         r"\bassigned to\s+([^.;\n]+)",
@@ -281,6 +282,8 @@ def _split_group_value(raw: str) -> set[str]:
 
 def _normalize_group_value(value: str) -> str:
     tokens = [token for token in re.findall(r"[A-Za-z0-9_-]+", value) if token.lower() not in _GROUP_STOPWORDS]
+    while len(tokens) > 1 and tokens[0].lower() in _GROUP_PREFIX_STOPWORDS:
+        tokens.pop(0)
     if not tokens:
         return ""
     return " ".join(token.upper() if token.isupper() else token[:1].upper() + token[1:].lower() for token in tokens[:4])
@@ -398,6 +401,11 @@ _GROUP_STOPWORDS = {
     "the",
     "to",
     "for",
+}
+
+_GROUP_PREFIX_STOPWORDS = {
+    "eng",
+    "engineering",
 }
 
 _THEME_STOPWORDS = {

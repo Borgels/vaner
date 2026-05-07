@@ -267,6 +267,61 @@ def test_source_aggregation_preserves_group_counts_and_provenance():
     assert aggregate.metadata["provenance_truncated"] is False
 
 
+def test_source_aggregation_normalizes_owning_team_prefixes():
+    now = time.time()
+    prompt = "Across all incident reviews, which team owned the most follow-up action items?"
+    profile = infer_context_preparation_profile(prompt)
+    artefacts = [
+        Artefact(
+            key="file_summary:control-plane.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/incidents/postmortems/control-plane.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content=(
+                "## Follow-up action items\n"
+                "1) Add schema validation. Owning team: Eng Platform.\n"
+                "2) Add rollback smoke test. Owning team: Eng Platform.\n"
+            ),
+        ),
+        Artefact(
+            key="file_summary:streaming.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/incidents/postmortems/streaming.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content=(
+                "## Follow-up action items\n"
+                "1) Add stream stall alert. Owning team: Eng SRE.\n"
+                "2) Document gateway ownership. Owner team: Platform.\n"
+            ),
+        ),
+        Artefact(
+            key="file_summary:rbac.json",
+            kind=ArtefactKind.FILE_SUMMARY,
+            source_path="confluence/incidents/postmortems/rbac.json",
+            source_mtime=now,
+            generated_at=now,
+            model="test",
+            content=(
+                "## Follow-up action items\n"
+                "1) Add policy diff approval. Owner team: Security.\n"
+            ),
+        ),
+    ]
+
+    aggregate, _trace = build_source_aggregation(prompt, artefacts, profile)
+
+    assert aggregate is not None
+    groups = {group["value"]: group for group in aggregate.metadata["aggregation_groups"]}
+    assert groups["Platform"]["count"] == 3
+    assert groups["SRE"]["count"] == 1
+    assert "Eng Platform" not in groups
+    assert "Eng SRE" not in groups
+
+
 def test_scheduling_evidence_prepares_confirmed_time_source():
     now = time.time()
     prompt = (
