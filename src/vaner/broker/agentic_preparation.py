@@ -106,7 +106,7 @@ def build_evidence_selection_prompt(
     *,
     support_budget: int,
     max_candidates: int = 96,
-    max_excerpt_chars: int = 900,
+    max_excerpt_chars: int = 2400,
 ) -> str:
     rows = candidate_rows(list(candidates)[:max_candidates], max_excerpt_chars=max_excerpt_chars)
     return (
@@ -114,7 +114,9 @@ def build_evidence_selection_prompt(
         "the user's request. Prefer exact evidence over topical similarity. Include multiple items only when the "
         "request asks for comparison, completeness, conflicts, synthesis, counts, or multiple facts. Do not include "
         "corroborating, background, nearby, follow-up, or merely topical items. For a one-fact request, select exactly "
-        "one item only if it directly contains the answer. Return no items if the candidates do not contain the answer.\n"
+        "one item only if it directly contains the answer. If a candidate is clearly the requested source but the "
+        "available excerpt is incomplete, select it as partial support instead of dropping it. Return no items only "
+        "when no candidate is a plausible direct source for the request.\n"
         "This is a general context-preparation step, not a benchmark shortcut. Do not infer hidden expected sources; "
         "use only the request and candidate content.\n\n"
         f"User request: {prompt}\n\n"

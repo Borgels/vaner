@@ -41,4 +41,4 @@ class AgenticPreparationConfig(BaseModel):
     max_queries: int = 6
     max_candidates: int = 96
     max_support_items: int = 12
-    max_excerpt_chars: int = 900
+    max_excerpt_chars: int = 2400
