@@ -39,6 +39,8 @@ ContextToolName = Literal[
     "test_lookup",
     "risk_check",
     "time_entity_extraction",
+    "agentic_recall_plan",
+    "agentic_evidence_selection",
 ]
 
 
