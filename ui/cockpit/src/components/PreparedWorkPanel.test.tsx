@@ -111,6 +111,46 @@ describe('PreparedWorkPanel', () => {
     expect(await screen.findByLabelText('Prepared work detail')).toHaveTextContent('+fixed')
   })
 
+  it('opens inspect results inline on the selected prepared work card', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/prepared-work')) {
+        return new Response(JSON.stringify({ prepared_work: [makeCard()] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({
+        title: 'Prepared parser fix',
+        source_id: 'wp-1',
+        source_type: 'work_product',
+        kind: 'diff',
+        why_prepared: 'Ready because recent parser edits are likely to need follow-up.',
+        body: 'Inspect the parser error branch before using this.',
+        evidence_refs: [],
+        events: [],
+        self_eval: {
+          evidence_coverage: 0.76,
+          groundedness: 0.84,
+          contradiction_risk: 0.12,
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    render(<PreparedWorkPanel fetcher={fetcher as unknown as typeof fetch} />)
+
+    const button = await screen.findByRole('button', { name: 'Inspect' })
+    fireEvent.click(button)
+
+    expect(await screen.findByTestId('prepared-work-inspection')).toHaveTextContent(
+      'Inspect the parser error branch before using this.',
+    )
+    expect(screen.getByText('Ready because recent parser edits are likely to need follow-up.')).toBeInTheDocument()
+    expect(fetcher).toHaveBeenCalledWith('/work-products/wp-1', expect.objectContaining({ method: 'GET' }))
+  })
+
   it('renders an empty state when nothing is ready', async () => {
     const fetcher = vi.fn(async () =>
       new Response(JSON.stringify({ prepared_work: [] }), {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { inspectWorkProduct, listPreparedWork, runPreparedWorkAction } from '../api/client'
 import type {
@@ -49,14 +49,24 @@ export function PreparedWorkPanel({
   const [cards, setCards] = useState<PreparedWorkCard[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [detail, setDetail] = useState<WorkProductInspection | null>(null)
-  const [detailFallback, setDetailFallback] = useState<string | null>(null)
+  const [expandedCardId, setExpandedCardId] = useState<string | null>(null)
+  const [detailsByCardId, setDetailsByCardId] = useState<Record<string, WorkProductInspection>>({})
+  const [fallbackByCardId, setFallbackByCardId] = useState<Record<string, string>>({})
+  const [pendingInspectByCardId, setPendingInspectByCardId] = useState<Record<string, boolean>>({})
   // Lazy-loaded self-eval / lifecycle data, keyed by work-product source_id.
   // Populated for cards backed by a work_product when the panel mounts and
   // reused for the inline confidence bars + the inspect detail view.
   const [inspectionsBySource, setInspectionsBySource] = useState<
     Record<string, WorkProductInspection | null>
   >({})
+  const pendingInspectionSources = useRef(new Set<string>())
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
   const endpoint = useMemo(() => {
     const query = new URLSearchParams()
     query.set('surface', 'cockpit')
@@ -118,33 +128,53 @@ export function PreparedWorkPanel({
   // haven't inspected yet. Cards backed by predictions don't have a
   // /work-products/{id}/inspect endpoint, so we skip them.
   useEffect(() => {
-    let cancelled = false
+    if (variant !== 'rail') return
     const targets = displayCards.filter(
-      (card) => card.source_type === 'work_product' && inspectionsBySource[card.source_id] === undefined,
+      (card) => card.source_type === 'work_product'
+        && inspectionsBySource[card.source_id] === undefined
+        && !pendingInspectionSources.current.has(card.source_id),
     )
     if (targets.length === 0) return
+    for (const card of targets) {
+      pendingInspectionSources.current.add(card.source_id)
+    }
     void Promise.all(
       targets.map(async (card) => {
         try {
           const data = await inspectWorkProduct(card.source_id)
-          if (!cancelled) {
+          if (mountedRef.current) {
             setInspectionsBySource((prev) => ({ ...prev, [card.source_id]: data }))
           }
         } catch {
-          if (!cancelled) {
+          if (mountedRef.current) {
             setInspectionsBySource((prev) => ({ ...prev, [card.source_id]: null }))
           }
+        } finally {
+          pendingInspectionSources.current.delete(card.source_id)
         }
       }),
     )
-    return () => {
-      cancelled = true
-    }
-  }, [displayCards, inspectionsBySource])
+  }, [displayCards, inspectionsBySource, variant])
 
   const runAction = useCallback(
     async (card: PreparedWorkCard, action: PreparedWorkAction) => {
       if (!action.endpoint) return
+      if (action.kind === 'inspect') {
+        const cachedInspection = detailsByCardId[card.id] ?? (
+          card.source_type === 'work_product' ? inspectionsBySource[card.source_id] : null
+        )
+        setExpandedCardId(card.id)
+        if (cachedInspection) {
+          setPendingInspectByCardId((prev) => ({ ...prev, [card.id]: false }))
+          return
+        }
+        setPendingInspectByCardId((prev) => ({ ...prev, [card.id]: true }))
+        setFallbackByCardId((prev) => {
+          const next = { ...prev }
+          delete next[card.id]
+          return next
+        })
+      }
       try {
         const result = fetcher
           ? await (async () => {
@@ -163,24 +193,43 @@ export function PreparedWorkPanel({
           : await runPreparedWorkAction(action)
         if (action.kind === 'inspect') {
           const inspection = result as WorkProductInspection
-          setDetail(inspection)
-          setDetailFallback(null)
+          setExpandedCardId(card.id)
+          setDetailsByCardId((prev) => ({ ...prev, [card.id]: inspection }))
+          setPendingInspectByCardId((prev) => ({ ...prev, [card.id]: false }))
+          setFallbackByCardId((prev) => {
+            const next = { ...prev }
+            delete next[card.id]
+            return next
+          })
           if (card.source_type === 'work_product' && inspection?.source_id) {
             setInspectionsBySource((prev) => ({ ...prev, [card.source_id]: inspection }))
           }
         } else if (action.kind === 'export') {
-          setDetail(null)
-          setDetailFallback(JSON.stringify(result, null, 2))
+          setExpandedCardId(card.id)
+          setDetailsByCardId((prev) => {
+            const next = { ...prev }
+            delete next[card.id]
+            return next
+          })
+          setFallbackByCardId((prev) => ({ ...prev, [card.id]: JSON.stringify(result, null, 2) }))
         }
         if (action.kind === 'dismiss') {
           setDisplayCards(displayCards.filter((item) => item.id !== card.id))
+          if (expandedCardId === card.id) setExpandedCardId(null)
         }
         onAction?.(`${action.label} complete`)
       } catch (err) {
+        if (action.kind === 'inspect') {
+          setPendingInspectByCardId((prev) => ({ ...prev, [card.id]: false }))
+          setFallbackByCardId((prev) => ({
+            ...prev,
+            [card.id]: err instanceof Error ? err.message : `Failed to inspect ${card.title}`,
+          }))
+        }
         onAction?.(err instanceof Error ? err.message : `Failed to ${action.label.toLowerCase()}`)
       }
     },
-    [baseUrl, displayCards, fetcher, onAction, setDisplayCards],
+    [baseUrl, detailsByCardId, displayCards, expandedCardId, fetcher, inspectionsBySource, onAction, setDisplayCards],
   )
 
   if (displayLoading && displayCards.length === 0) {
@@ -213,23 +262,16 @@ export function PreparedWorkPanel({
             selected={selectedId === card.id}
             variant={variant}
             inspection={
-              card.source_type === 'work_product' ? inspectionsBySource[card.source_id] ?? null : null
+              detailsByCardId[card.id] ?? (card.source_type === 'work_product' ? inspectionsBySource[card.source_id] ?? null : null)
             }
+            expanded={expandedCardId === card.id}
+            detailFallback={fallbackByCardId[card.id] ?? null}
+            detailPending={Boolean(pendingInspectByCardId[card.id])}
+            onCloseDetail={() => setExpandedCardId(null)}
             onSelect={onSelect}
             onAction={runAction}
           />
         ))}
-        {detail ? (
-          <PreparedWorkInspectionDetail
-            inspection={detail}
-            onClose={() => setDetail(null)}
-          />
-        ) : null}
-        {detailFallback ? (
-          <pre style={detailStyle} aria-label="Prepared work detail">
-            {detailFallback}
-          </pre>
-        ) : null}
       </div>
     </section>
   )
@@ -238,15 +280,23 @@ export function PreparedWorkPanel({
 function PreparedWorkItem({
   card,
   inspection,
+  expanded,
+  detailFallback,
+  detailPending,
   selected,
   variant,
+  onCloseDetail,
   onSelect,
   onAction,
 }: {
   card: PreparedWorkCard
   inspection: WorkProductInspection | null
+  expanded: boolean
+  detailFallback: string | null
+  detailPending: boolean
   selected: boolean
   variant: 'rail' | 'main'
+  onCloseDetail: () => void
   onSelect?: (id: string) => void
   onAction: (card: PreparedWorkCard, action: PreparedWorkAction) => Promise<void>
 }) {
@@ -260,7 +310,7 @@ function PreparedWorkItem({
   const facts = displayFacts(card, variant)
   return (
     <article
-      style={cardStyleForVariant(variant, selected)}
+      style={cardStyleForVariant(variant, selected, card.kind)}
       onClick={() => onSelect?.(card.id)}
       data-selected={selected ? 'true' : undefined}
     >
@@ -275,19 +325,36 @@ function PreparedWorkItem({
         {facts.map((fact) => <span key={fact}>{fact}</span>)}
       </div>
       {card.action_note ? <div style={warningStyle}>{card.action_note}</div> : null}
-      {inspection?.self_eval ? <SelfEvalBars selfEval={inspection.self_eval} /> : null}
+      {variant === 'rail' && inspection?.self_eval ? <SelfEvalBars selfEval={inspection.self_eval} compact /> : null}
       <div style={actionsStyle}>
         {primary ? (
-          <button type="button" style={primaryButtonStyle} onClick={() => void onAction(card, primary)}>
+          <button type="button" style={primaryButtonStyle} onClick={(event) => {
+            event.stopPropagation()
+            void onAction(card, primary)
+          }}>
             {actionLabel(primary)}
           </button>
         ) : null}
         {secondaryActions.map((action) => (
-          <button key={`${card.id}-${action.kind}-${action.label}`} type="button" style={secondaryButtonStyle} onClick={() => void onAction(card, action)}>
+          <button key={`${card.id}-${action.kind}-${action.label}`} type="button" style={secondaryButtonStyle} onClick={(event) => {
+            event.stopPropagation()
+            void onAction(card, action)
+          }}>
             {actionLabel(action)}
           </button>
         ))}
       </div>
+      {expanded && detailPending && !inspection ? (
+        <div style={inlineStatusStyle} aria-label="Prepared work detail loading">Loading inspection...</div>
+      ) : null}
+      {expanded && inspection ? (
+        <PreparedWorkInspectionDetail inspection={inspection} onClose={onCloseDetail} />
+      ) : null}
+      {expanded && !inspection && detailFallback ? (
+        <pre style={inlineFallbackStyle} aria-label="Prepared work detail">
+          {detailFallback}
+        </pre>
+      ) : null}
     </article>
   )
 }
@@ -329,7 +396,20 @@ function displaySummary(card: PreparedWorkCard, title: string): string {
 }
 
 function displayFacts(card: PreparedWorkCard, variant: 'rail' | 'main'): string[] {
-  const facts = variant === 'rail' ? [card.badge, card.confidence_label, card.freshness_label] : [card.confidence_label, card.freshness_label]
+  if (variant === 'main') {
+    const facts: string[] = []
+    if (card.target_label) facts.push(card.target_label)
+    if (card.kind === 'finance' || card.external_input_count) {
+      facts.push(card.external_input_count ? `${card.external_input_count} external inputs` : 'external state')
+    } else if (card.evidence_count) {
+      facts.push(`${card.evidence_count} source${card.evidence_count === 1 ? '' : 's'}`)
+    }
+    if (card.sensitivity_class && card.sensitivity_class !== 'general') facts.push(card.sensitivity_class)
+    if (card.fresh_precheck_required) facts.push('fresh precheck required')
+    return facts.filter(Boolean)
+  }
+
+  const facts = [card.badge, card.confidence_label, card.freshness_label]
   if (card.kind === 'finance' || card.external_input_count) {
     facts.push(card.external_input_count ? `${card.external_input_count} external` : 'external state')
   } else if (card.evidence_count) {
@@ -348,7 +428,7 @@ function clamp01(value: number): number {
   return value
 }
 
-function SelfEvalBars({ selfEval }: { selfEval: NonNullable<WorkProductInspection['self_eval']> }) {
+function SelfEvalBars({ selfEval, compact = false }: { selfEval: NonNullable<WorkProductInspection['self_eval']>; compact?: boolean }) {
   // Three side-by-side micro-bars. Contradiction is inverted so 'longer is
   // better' for all three — a quick visual sanity check rather than a
   // numerical breakdown.
@@ -378,7 +458,7 @@ function SelfEvalBars({ selfEval }: { selfEval: NonNullable<WorkProductInspectio
   return (
     <div
       data-testid="self-eval-bars"
-      style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'baseline' }}
+      style={{ display: 'flex', gap: 6, marginTop: compact ? 7 : 10, alignItems: 'baseline' }}
     >
       {bars.map((bar) => (
         <div
@@ -389,7 +469,7 @@ function SelfEvalBars({ selfEval }: { selfEval: NonNullable<WorkProductInspectio
           <span
             style={{
               fontFamily: 'var(--font-mono, monospace)',
-              fontSize: 9.5,
+              fontSize: compact ? 9.5 : 10.5,
               color: 'var(--fg-4)',
               letterSpacing: 0.4,
             }}
@@ -401,7 +481,7 @@ function SelfEvalBars({ selfEval }: { selfEval: NonNullable<WorkProductInspectio
             aria-label={bar.title}
             style={{
               display: 'block',
-              height: 5,
+              height: compact ? 5 : 7,
               borderRadius: 3,
               background: 'var(--bg-0, #0e0e12)',
               overflow: 'hidden',
@@ -459,17 +539,17 @@ function PreparedWorkInspectionDetail({
   return (
     <div
       style={{
-        ...detailStyle,
+        ...inspectionDetailStyle,
         whiteSpace: 'normal',
         display: 'flex',
         flexDirection: 'column',
-        gap: 8,
+        gap: 10,
       }}
       aria-label="Prepared work detail"
       data-testid="prepared-work-inspection"
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-        <strong style={{ color: 'var(--fg-1)', fontSize: 12 }}>{inspection.title}</strong>
+        <strong style={{ color: 'var(--fg-1)', fontSize: 14 }}>{inspection.title}</strong>
         <button
           type="button"
           onClick={onClose}
@@ -480,7 +560,7 @@ function PreparedWorkInspectionDetail({
         </button>
       </div>
       {inspection.why_prepared ? (
-        <p style={{ margin: 0, fontSize: 11.5, color: 'var(--fg-3)' }}>{inspection.why_prepared}</p>
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--fg-3)', lineHeight: 1.45 }}>{inspection.why_prepared}</p>
       ) : null}
       {inspection.self_eval ? <SelfEvalBars selfEval={inspection.self_eval} /> : null}
       {(inspection.action_note || inspection.sensitivity_class || inspection.fresh_precheck_required) ? (
@@ -516,12 +596,12 @@ function PreparedWorkInspectionDetail({
             margin: 0,
             padding: 8,
             border: '1px solid var(--line-hair)',
-            borderRadius: 'var(--r-2)',
+            borderRadius: 'var(--r-1)',
             background: 'var(--bg-0)',
             color: 'var(--fg-2)',
             whiteSpace: 'pre-wrap',
-            fontSize: 11,
-            maxHeight: 160,
+            fontSize: 12,
+            maxHeight: 260,
             overflow: 'auto',
           }}
         >
@@ -593,45 +673,64 @@ const emptyStyle: CSSProperties = {
   fontSize: 12,
 }
 
-function cardStyleForVariant(variant: 'rail' | 'main', selected: boolean): CSSProperties {
+function cardStyleForVariant(variant: 'rail' | 'main', selected: boolean, kind: PreparedWorkCard['kind']): CSSProperties {
   return {
     border: selected ? '1px solid var(--accent)' : '1px solid var(--line-hair)',
+    borderLeft: `3px solid ${kindAccent(kind)}`,
     borderRadius: 'var(--r-1)',
     background: selected ? 'color-mix(in oklch, var(--accent) 8%, var(--bg-inset))' : 'var(--bg-inset)',
-    padding: variant === 'main' ? 12 : 10,
-    marginBottom: variant === 'main' ? 8 : 8,
+    padding: variant === 'main' ? 16 : 10,
+    marginBottom: variant === 'main' ? 10 : 8,
     cursor: 'pointer',
+  }
+}
+
+function kindAccent(kind: PreparedWorkCard['kind']): string {
+  switch (kind) {
+    case 'finance':
+      return 'var(--amber)'
+    case 'diff':
+    case 'draft':
+      return 'var(--accent)'
+    case 'review':
+      return '#7acb8a'
+    case 'bug':
+      return '#d36b6b'
+    case 'docs':
+      return '#9f8bd8'
+    default:
+      return 'var(--line-2)'
   }
 }
 
 const titleStyle: CSSProperties = {
   color: 'var(--fg-1)',
-  fontSize: 12.5,
+  fontSize: 14.5,
   lineHeight: 1.25,
   fontWeight: 600,
 }
 
 const summaryStyle: CSSProperties = {
   color: 'var(--fg-3)',
-  fontSize: 11.5,
-  lineHeight: 1.35,
-  marginTop: 4,
+  fontSize: 12.5,
+  lineHeight: 1.45,
+  marginTop: 6,
 }
 
 const badgeStyle: CSSProperties = {
   border: '1px solid var(--line-2)',
   borderRadius: 999,
   color: 'var(--fg-2)',
-  fontSize: 10,
-  padding: '2px 7px',
+  fontSize: 10.5,
+  padding: '3px 8px',
   whiteSpace: 'nowrap',
 }
 
 const warningStyle: CSSProperties = {
-  marginTop: 8,
+  marginTop: 10,
   color: 'var(--amber)',
   fontFamily: 'var(--font-mono)',
-  fontSize: 10.5,
+  fontSize: 11.5,
   lineHeight: 1.35,
 }
 
@@ -641,15 +740,15 @@ const factsStyle: CSSProperties = {
   flexWrap: 'wrap',
   color: 'var(--fg-4)',
   fontFamily: 'var(--font-mono)',
-  fontSize: 10,
-  marginTop: 8,
+  fontSize: 11,
+  marginTop: 10,
 }
 
 const actionsStyle: CSSProperties = {
   display: 'flex',
   flexWrap: 'wrap',
   gap: 6,
-  marginTop: 9,
+  marginTop: 12,
 }
 
 const primaryButtonStyle: CSSProperties = {
@@ -657,8 +756,8 @@ const primaryButtonStyle: CSSProperties = {
   borderRadius: 'var(--r-1)',
   background: 'var(--accent-bg)',
   color: 'var(--fg-1)',
-  padding: '5px 8px',
-  fontSize: 11,
+  padding: '6px 10px',
+  fontSize: 12,
   cursor: 'pointer',
 }
 
@@ -667,19 +766,35 @@ const secondaryButtonStyle: CSSProperties = {
   borderRadius: 'var(--r-1)',
   background: 'transparent',
   color: 'var(--fg-2)',
-  padding: '5px 8px',
-  fontSize: 11,
+  padding: '6px 10px',
+  fontSize: 12,
   cursor: 'pointer',
 }
 
-const detailStyle: CSSProperties = {
-  maxHeight: 160,
-  overflow: 'auto',
-  border: '1px solid var(--line-hair)',
-  borderRadius: 'var(--r-2)',
-  background: 'var(--bg-0)',
+const inspectionDetailStyle: CSSProperties = {
+  marginTop: 14,
+  paddingTop: 14,
+  borderTop: '1px solid var(--line-1)',
   color: 'var(--fg-2)',
-  padding: 10,
-  fontSize: 10.5,
+  fontSize: 12.5,
+}
+
+const inlineFallbackStyle: CSSProperties = {
+  marginTop: 14,
+  padding: 12,
+  maxHeight: 280,
+  overflow: 'auto',
+  borderTop: '1px solid var(--line-1)',
+  background: 'transparent',
+  color: 'var(--fg-2)',
+  fontSize: 12,
   whiteSpace: 'pre-wrap',
+}
+
+const inlineStatusStyle: CSSProperties = {
+  marginTop: 14,
+  paddingTop: 14,
+  borderTop: '1px solid var(--line-1)',
+  color: 'var(--fg-3)',
+  fontSize: 12.5,
 }
