@@ -15,6 +15,7 @@ from vaner.models.config import (
     BackendConfig,
     ComputeConfig,
     ExplorationConfig,
+    ExternalStateConfig,
     GatewayConfig,
     GenerationConfig,
     IntegrationsConfig,
@@ -108,6 +109,7 @@ def load_config(repo_root: Path) -> VanerConfig:
     sources_section = _section_dict(parsed, "sources")
     refinement_section = _section_dict(parsed, "refinement")
     integrations_section = _section_dict(parsed, "integrations")
+    external_state_section = _section_dict(parsed, "external_state")
     setup_section = _section_dict(parsed, "setup")
     policy_section = _section_dict(parsed, "policy")
     limits_section = _section_dict(parsed, "limits")
@@ -175,6 +177,7 @@ def load_config(repo_root: Path) -> VanerConfig:
     sources = _build_section(SourcesConfig, "sources", sources_section)
     refinement = _build_section(RefinementConfig, "refinement", refinement_section)
     integrations = _build_section(IntegrationsConfig, "integrations", integrations_section)
+    external_state = _build_section(ExternalStateConfig, "external_state", external_state_section)
     setup = _build_section(SetupConfig, "setup", setup_section)
     policy = _build_section(PolicyConfig, "policy", policy_section)
 
@@ -201,6 +204,7 @@ def load_config(repo_root: Path) -> VanerConfig:
         sources=sources,
         refinement=refinement,
         integrations=integrations,
+        external_state=external_state,
         setup=setup,
         policy=policy,
     )

@@ -43,6 +43,11 @@ function makeCard(overrides: Partial<PreparedWorkCard> = {}): PreparedWorkCard {
       },
     ],
     diagnostic_refs: overrides.diagnostic_refs ?? [],
+    sensitivity_class: overrides.sensitivity_class,
+    fresh_precheck_required: overrides.fresh_precheck_required,
+    external_input_count: overrides.external_input_count,
+    prohibited_actions: overrides.prohibited_actions,
+    action_note: overrides.action_note,
   }
 }
 
@@ -117,5 +122,41 @@ describe('PreparedWorkPanel', () => {
     render(<PreparedWorkPanel fetcher={fetcher as unknown as typeof fetch} />)
 
     expect(await screen.findByText(/No prepared work is ready/i)).toBeInTheDocument()
+  })
+
+  it('renders finance prepared work as trading prep', async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(JSON.stringify({
+        prepared_work: [
+          makeCard({
+            kind: 'finance',
+            title: 'Trading strategy prep',
+            summary: 'Uses fresh market, account, options, and news inputs.',
+            badge: 'Trading',
+            sensitivity_class: 'position_specific',
+            fresh_precheck_required: true,
+            external_input_count: 5,
+            primary_action: {
+              kind: 'inspect',
+              label: 'Inspect',
+              tool: 'vaner.work_products.inspect',
+              endpoint: '/work-products/wp-finance/inspect',
+              arguments: { work_product_id: 'wp-finance' },
+            },
+          }),
+        ],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    render(<PreparedWorkPanel fetcher={fetcher as unknown as typeof fetch} />)
+
+    expect(await screen.findByText('Trading strategy prep')).toBeInTheDocument()
+    expect(screen.getByText('trading prep')).toBeInTheDocument()
+    expect(screen.getByText('position_specific')).toBeInTheDocument()
+    expect(screen.getByText('fresh precheck')).toBeInTheDocument()
+    expect(screen.getByText('5 external')).toBeInTheDocument()
   })
 })

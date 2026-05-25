@@ -11,7 +11,9 @@ import pytest
 from vaner.models.work_product import (
     WorkProduct,
     WorkProductAdoptability,
+    WorkProductExternalInput,
     WorkProductFreshness,
+    WorkProductSensitivity,
     WorkProductSourceSnapshot,
     WorkProductStatus,
     WorkProductType,
@@ -85,6 +87,51 @@ async def test_hidden_and_non_exportable_are_filtered_and_blocked(tmp_path: Path
     assert len(await store.list_work_products(include_hidden=True)) == 1
     with pytest.raises(PermissionError):
         await store.export_work_product("hidden")
+
+
+@pytest.mark.asyncio
+async def test_finance_safety_metadata_persists(tmp_path: Path) -> None:
+    store = ArtefactStore(tmp_path / "artefacts.db")
+    await store.initialize()
+    now = time.time()
+    product = WorkProduct(
+        id="finance-1",
+        type=WorkProductType.FINANCE_POSITION_BRIEF,
+        title="Position brief",
+        summary="Prepared from account snapshot",
+        body="Advisory only.",
+        source_snapshot=WorkProductSourceSnapshot(project_id="proj", generated_at=now),
+        confidence=0.7,
+        freshness=WorkProductFreshness.FRESH,
+        status=WorkProductStatus.SURFACED,
+        adoptability=WorkProductAdoptability.ADVISORY,
+        feedback_state="none",
+        sensitivity_class=WorkProductSensitivity.POSITION_SPECIFIC,
+        external_inputs=[
+            WorkProductExternalInput(
+                provider_id="provider",
+                capability="list_positions",
+                snapshot_id="snap-1",
+                freshness_class="account_snapshot",
+                captured_at=now,
+                expires_at=now + 60,
+                payload_fingerprint="abc",
+            )
+        ],
+        stale_after=now + 60,
+        created_at=now,
+        updated_at=now,
+        target_key="finance:position",
+    )
+    await store.upsert_work_product(product)
+
+    saved = await store.get_work_product("finance-1")
+    assert saved is not None
+    assert saved.sensitivity_class == WorkProductSensitivity.POSITION_SPECIFIC
+    assert saved.fresh_precheck_required is True
+    assert saved.prohibited_actions == ["execution"]
+    assert saved.external_inputs[0].capability == "list_positions"
+    assert saved.stale_after == pytest.approx(now + 60)
 
 
 @pytest.mark.asyncio

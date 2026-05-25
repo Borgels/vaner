@@ -334,6 +334,21 @@ def _json_entry(container_key: str, launcher_cmd: str, launcher_args: list[str])
     return {"command": launcher_cmd, "args": launcher_args}
 
 
+def _launcher_args_for_client(client_id: str, launcher_args: list[str]) -> list[str]:
+    if client_id != "claude-desktop":
+        return list(launcher_args)
+    if "--tool-name-format" in launcher_args:
+        return list(launcher_args)
+    adjusted = list(launcher_args)
+    try:
+        path_index = adjusted.index("--path")
+    except ValueError:
+        adjusted.extend(["--tool-name-format", "strict"])
+    else:
+        adjusted[path_index:path_index] = ["--tool-name-format", "strict"]
+    return adjusted
+
+
 def _merge_json_server(
     *,
     client_id: str,
@@ -517,6 +532,7 @@ def write_client(
 ) -> WriteResult:
     spec = detected.spec
     target_path = path_override or detected.path
+    effective_launcher_args = _launcher_args_for_client(spec.id, launcher_args)
     if spec.kind == "json-mcpServers":
         assert target_path is not None
         return _merge_json_server(
@@ -524,7 +540,7 @@ def write_client(
             path=target_path,
             container_key="mcpServers",
             launcher_cmd=launcher_cmd,
-            launcher_args=launcher_args,
+            launcher_args=effective_launcher_args,
             server_key=server_key,
             dry_run=dry_run,
             force=force,
@@ -536,7 +552,7 @@ def write_client(
             path=target_path,
             container_key="servers",
             launcher_cmd=launcher_cmd,
-            launcher_args=launcher_args,
+            launcher_args=effective_launcher_args,
             server_key=server_key,
             dry_run=dry_run,
             force=force,
@@ -548,7 +564,7 @@ def write_client(
             path=target_path,
             container_key="context_servers",
             launcher_cmd=launcher_cmd,
-            launcher_args=launcher_args,
+            launcher_args=effective_launcher_args,
             server_key=server_key,
             dry_run=dry_run,
             force=force,
@@ -559,7 +575,7 @@ def write_client(
             client_id=spec.id,
             path=target_path,
             launcher_cmd=launcher_cmd,
-            launcher_args=launcher_args,
+            launcher_args=effective_launcher_args,
             dry_run=dry_run,
         )
     if spec.kind == "cli-claude":

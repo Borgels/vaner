@@ -113,6 +113,28 @@ advertise_guidance_resource = false
 mode = "digest_only"
 digest_token_budget = 250
 
+[external_state]
+enabled = true
+max_calls_per_cycle = 3
+max_cycle_ms = 2500
+
+[external_state.consumers.example]
+transport = "stdio"
+command = "example-provider"
+args = ["--stdio"]
+allowed_tools = ["provider_screen_market"]
+tool_risks = {provider_screen_market = "read"}
+timeout_ms = 2000
+
+[external_state.finance]
+enabled = true
+provider = "example"
+market_data_enabled = true
+account_state_enabled = false
+
+[external_state.finance.capability_tools]
+screen_market = "provider_screen_market"
+
 [setup]
 mode = "advanced"
 work_styles = ["coding", "research"]
@@ -175,6 +197,15 @@ auto_select = false
     assert config.integrations.advertise_guidance_resource is False
     assert config.integrations.context_injection.mode == "digest_only"
     assert config.integrations.context_injection.digest_token_budget == 250
+    assert config.external_state.enabled is True
+    assert config.external_state.max_calls_per_cycle == 3
+    assert config.external_state.consumers["example"].command == "example-provider"
+    assert config.external_state.consumers["example"].allowed_tools == ["provider_screen_market"]
+    assert config.external_state.consumers["example"].tool_risks["provider_screen_market"] == "read"
+    assert config.external_state.finance.provider == "example"
+    assert config.external_state.finance.market_data_enabled is True
+    assert config.external_state.finance.account_state_enabled is False
+    assert config.external_state.finance.capability_tools["screen_market"] == "provider_screen_market"
     assert config.setup.mode == "advanced"
     assert config.setup.work_styles == ["coding", "research"]
     assert config.setup.priority == "quality"

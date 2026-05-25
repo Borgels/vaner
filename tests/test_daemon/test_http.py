@@ -82,6 +82,68 @@ def test_status_payload_includes_backend(temp_repo) -> None:
     assert payload["prediction_health"]["diagnostic_status"] == "engine_unavailable"
 
 
+def test_external_state_endpoints_save_provider_and_permissions(temp_repo) -> None:
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        provider = client.post(
+            "/external-state/providers",
+            json={
+                "id": "provider",
+                "transport": "stdio",
+                "command": "provider-mcp",
+                "args": ["--stdio"],
+                "env": {"TOKEN": "secret"},
+            },
+        )
+        finance = client.post(
+            "/external-state/finance",
+            json={"enabled": True, "provider": "provider", "market_data_enabled": True, "account_state_enabled": False},
+        )
+        current = client.get("/external-state")
+
+    assert provider.status_code == 200
+    assert finance.status_code == 200
+    assert current.status_code == 200
+    payload = current.json()
+    assert payload["finance"]["provider"] == "provider"
+    assert payload["finance"]["market_data_enabled"] is True
+    assert payload["providers"][0]["env_keys"] == ["TOKEN"]
+    assert "secret" not in json.dumps(payload)
+
+
+def test_external_state_endpoint_saves_model_native_search_settings(temp_repo, monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_API_KEY", "secret")
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        response = client.post(
+            "/external-state/model-native-search",
+            json={
+                "enabled": True,
+                "provider": "ollama",
+                "base_url": "https://ollama.com/api",
+                "api_key_env": "OLLAMA_API_KEY",
+                "max_results": 6,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model_native_search"]["enabled"] is True
+    assert payload["model_native_search"]["provider"] == "ollama"
+    assert payload["model_native_search"]["max_results"] == 6
+    assert "secret" not in json.dumps(payload)
+
+
 def test_ui_route_redirects_to_root(temp_repo) -> None:
     config = VanerConfig(
         repo_root=temp_repo,

@@ -205,7 +205,7 @@ def run_up(
             "--path",
             str(repo_root),
             "--interval-seconds",
-            "45",
+            str(max(5, int(interval_seconds))),
             "--startup-delay-seconds",
             "10",
         ],

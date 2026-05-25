@@ -162,6 +162,49 @@ class MCPConfig(BaseModel):
     text fallback."""
 
 
+class McpConsumerRateBudgetConfig(BaseModel):
+    max_calls_per_cycle: int = Field(default=20, ge=0)
+    max_calls_per_minute: int = Field(default=60, ge=0)
+
+
+class McpConsumerConfig(BaseModel):
+    transport: Literal["stdio", "streamable_http"] = "stdio"
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    url: str = ""
+    env: dict[str, str] = Field(default_factory=dict)
+    timeout_ms: int = Field(default=10000, ge=100)
+    allowed_tools: list[str] = Field(default_factory=list)
+    tool_risks: dict[str, str] = Field(default_factory=dict)
+    rate_budget: McpConsumerRateBudgetConfig = Field(default_factory=McpConsumerRateBudgetConfig)
+
+
+class FinanceExternalStateConfig(BaseModel):
+    enabled: bool = False
+    provider: str = ""
+    market_data_enabled: bool = False
+    account_state_enabled: bool = False
+    capability_tools: dict[str, str] = Field(default_factory=dict)
+
+
+class ModelNativeSearchConfig(BaseModel):
+    enabled: bool = False
+    provider: Literal["ollama", "brave"] = "ollama"
+    base_url: str = "https://ollama.com/api"
+    api_key_env: str = "OLLAMA_API_KEY"
+    max_results: int = Field(default=5, ge=1, le=10)
+    timeout_seconds: float = Field(default=15.0, ge=1.0)
+
+
+class ExternalStateConfig(BaseModel):
+    enabled: bool = False
+    max_calls_per_cycle: int = Field(default=20, ge=0)
+    max_cycle_ms: int = Field(default=10000, ge=0)
+    consumers: dict[str, McpConsumerConfig] = Field(default_factory=dict)
+    finance: FinanceExternalStateConfig = Field(default_factory=FinanceExternalStateConfig)
+    model_native_search: ModelNativeSearchConfig = Field(default_factory=ModelNativeSearchConfig)
+
+
 class ComputeConfig(BaseModel):
     device: str = "auto"
     cpu_fraction: float = 0.2
@@ -775,6 +818,7 @@ class VanerConfig(BaseModel):
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
+    external_state: ExternalStateConfig = Field(default_factory=ExternalStateConfig)
     setup: SetupConfig = Field(default_factory=SetupConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     cost: CostConfig = Field(default_factory=CostConfig)

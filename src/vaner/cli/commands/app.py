@@ -33,6 +33,7 @@ from rich.table import Table
 from vaner import VERSION, api
 from vaner.broker.prompting import build_evidence_bound_context_prompt
 from vaner.cli.commands import mcp_clients
+from vaner.cli.commands.bundles import bundle_app
 from vaner.cli.commands.clients import clients_app
 from vaner.cli.commands.config import load_config, set_compute_value, set_config_value
 from vaner.cli.commands.daemon import (
@@ -50,6 +51,7 @@ from vaner.cli.commands.daemon import (
 from vaner.cli.commands.deep_run import deep_run_app
 from vaner.cli.commands.distill import distill_skill_file
 from vaner.cli.commands.explain import render_human, render_json
+from vaner.cli.commands.external_state import external_state_app
 from vaner.cli.commands.focus import focus_app, jobs_app, resources_app
 from vaner.cli.commands.guidance import guidance_app
 from vaner.cli.commands.hooks import HOOK_SURFACES, write_hooks
@@ -1227,6 +1229,11 @@ def mcp_server(
     transport: str = typer.Option("stdio", "--transport", "-t", help="Transport: stdio | sse"),
     host: str = typer.Option("127.0.0.1", "--host", help="SSE server host (sse transport only)"),
     port: int = typer.Option(8472, "--port", "-p", help="SSE server port (sse transport only)"),
+    tool_name_format: str = typer.Option(
+        "canonical",
+        "--tool-name-format",
+        help="MCP tool naming: canonical dotted names, or strict regex-safe aliases for Claude Desktop.",
+    ),
 ) -> None:
     """Start the Vaner MCP server for native IDE integration.
 
@@ -1251,16 +1258,18 @@ def mcp_server(
         _fail(f"MCP not available: {exc}", hint="Install optional extras: pip install 'vaner[mcp]'.")
 
     repo_root = _repo_root(path)
+    if tool_name_format not in {"canonical", "strict"}:
+        _fail("Invalid --tool-name-format value.", hint="Use `canonical` or `strict`.")
 
     if transport == "sse":
         typer.echo(f"Starting Vaner MCP server (SSE) on {host}:{port}  repo={repo_root}")
         try:
-            _asyncio.run(run_sse(repo_root, host=host, port=port))
+            _asyncio.run(run_sse(repo_root, host=host, port=port, tool_name_format=tool_name_format))
         except RuntimeError as exc:
             _fail(str(exc), hint="Install optional extras: pip install 'vaner[mcp]'.")
     else:
         try:
-            _asyncio.run(run_stdio(repo_root))
+            _asyncio.run(run_stdio(repo_root, tool_name_format=tool_name_format))
         except RuntimeError as exc:
             _fail(str(exc), hint="Install optional extras: pip install 'vaner[mcp]'.")
 
@@ -2436,7 +2445,9 @@ app.add_typer(jobs_app, name="jobs", rich_help_panel="Background and local")
 app.add_typer(sources_app, name="sources", rich_help_panel="Background and local")
 app.add_typer(guidance_app, name="guidance", rich_help_panel="Use with an agent")
 app.add_typer(integrations_app, name="integrations", rich_help_panel="Inspect and debug")
+app.add_typer(external_state_app, name="external-state", rich_help_panel="Configure")
 app.add_typer(clients_app, name="clients", rich_help_panel="Connect MCP clients")
+app.add_typer(bundle_app, name="bundle", rich_help_panel="Configure")
 app.add_typer(setup_app, name="setup", rich_help_panel="Get started")
 
 

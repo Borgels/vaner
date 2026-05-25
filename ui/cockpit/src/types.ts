@@ -49,7 +49,7 @@ export interface UISkill {
 }
 
 export type PreparedWorkSourceType = 'work_product' | 'prediction'
-export type PreparedWorkKind = 'review' | 'bug' | 'docs' | 'diff' | 'brief' | 'draft' | 'prediction'
+export type PreparedWorkKind = 'review' | 'bug' | 'docs' | 'diff' | 'brief' | 'finance' | 'draft' | 'prediction'
 export type PreparedWorkActionKind = 'inspect' | 'export' | 'adopt' | 'dismiss' | 'feedback'
 
 export interface PreparedWorkAction {
@@ -84,6 +84,11 @@ export interface PreparedWorkCard {
   primary_action: PreparedWorkAction | null
   secondary_actions: PreparedWorkAction[]
   diagnostic_refs: PreparedWorkDiagnosticRef[]
+  sensitivity_class?: string
+  fresh_precheck_required?: boolean
+  external_input_count?: number
+  prohibited_actions?: string[]
+  action_note?: string
 }
 
 export interface UIPinnedFact {
@@ -162,6 +167,57 @@ export interface MCPSettings {
   transport: 'stdio' | 'sse'
   http_host: string
   http_port: number
+}
+
+export interface ExternalStateProvider {
+  id: string
+  transport: 'stdio' | 'streamable_http'
+  command: string
+  args: string[]
+  url: string
+  env_keys: string[]
+  timeout_ms: number
+  allowed_tools: string[]
+  tool_risks: Record<string, string>
+  capability_tools: Record<string, string>
+}
+
+export interface ExternalStateSettings {
+  enabled: boolean
+  max_calls_per_cycle: number
+  max_cycle_ms: number
+  providers: ExternalStateProvider[]
+  finance: {
+    enabled?: boolean
+    provider?: string
+    market_data_enabled?: boolean
+    account_state_enabled?: boolean
+    capability_tools?: Record<string, string>
+  }
+}
+
+export interface DiscoveredExternalTool {
+  name: string
+  annotations: Record<string, unknown>
+  read_only_hint?: boolean | null
+  destructive_hint?: boolean | null
+  open_world_hint?: boolean | null
+  provider_risk?: string | null
+  safety_allowed: boolean
+  safety_reason: string
+  proposed_capability?: string | null
+  sensitivity_class: string
+  access_scope: string
+  auto_selected: boolean
+}
+
+export interface ExternalStateDiscovery {
+  provider_id: string
+  tools: DiscoveredExternalTool[]
+  applied: boolean
+  applied_allowed_tools: string[]
+  applied_capability_tools: Record<string, string>
+  blocked_count: number
 }
 
 export interface LimitSettings {
@@ -788,6 +844,11 @@ export interface WorkProductInspection {
   freshness_state?: string
   target_label: string
   evidence_count: number
+  sensitivity_class?: string
+  fresh_precheck_required?: boolean
+  external_input_count?: number
+  prohibited_actions?: string[]
+  action_note?: string
   evidence_refs: Array<{
     kind: string
     path: string

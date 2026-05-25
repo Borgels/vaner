@@ -24,7 +24,6 @@ export interface PreparedWorkPanelProps {
 }
 
 function actionLabel(action: PreparedWorkAction): string {
-  if (action.kind === 'feedback') return 'Useful'
   return action.label
 }
 
@@ -150,7 +149,9 @@ export function PreparedWorkPanel({
         const result = fetcher
           ? await (async () => {
               const method = action.kind === 'inspect' ? 'GET' : 'POST'
-              const body = action.kind === 'feedback' ? JSON.stringify({ feedback_state: 'useful' }) : undefined
+              const feedbackState =
+                typeof action.arguments?.feedback_state === 'string' ? action.arguments.feedback_state : 'useful'
+              const body = action.kind === 'feedback' ? JSON.stringify({ feedback_state: feedbackState }) : undefined
               const response = await fetcher(`${baseUrl}${action.endpoint}`, {
                 method,
                 headers: body ? { 'content-type': 'application/json' } : undefined,
@@ -159,7 +160,7 @@ export function PreparedWorkPanel({
               if (!response.ok) throw new Error(`HTTP ${response.status}`)
               return response.json()
             })()
-          : await runPreparedWorkAction(action.endpoint, action.kind)
+          : await runPreparedWorkAction(action)
         if (action.kind === 'inspect') {
           const inspection = result as WorkProductInspection
           setDetail(inspection)
@@ -202,7 +203,7 @@ export function PreparedWorkPanel({
 
   return (
     <section aria-label="Prepared work" style={panelStyleForVariant(variant)}>
-      <PanelHeader count={displayCards.length} variant={variant} />
+      {variant === 'rail' ? <PanelHeader count={displayCards.length} variant={variant} /> : null}
       <div className="scroll" style={{ overflow: 'auto', minHeight: 0, padding: variant === 'main' ? '0 18px 18px' : '0 12px 12px' }}>
         {displayCards.length === 0 ? <p style={emptyStyle}>No prepared work is ready.</p> : null}
         {displayCards.map((card) => (
@@ -250,7 +251,13 @@ function PreparedWorkItem({
   onAction: (card: PreparedWorkCard, action: PreparedWorkAction) => Promise<void>
 }) {
   const primary = canRenderAction(card.primary_action) ? card.primary_action : null
+  const secondaryActions = uniqueActions(card.secondary_actions.filter(canRenderAction), primary)
+    .filter((action) => variant !== 'main' || action.kind !== 'feedback')
+    .slice(0, variant === 'main' ? 2 : 3)
   const typeLabel = preparedKindLabel(card.kind)
+  const title = displayTitle(card)
+  const summary = displaySummary(card, title)
+  const facts = displayFacts(card, variant)
   return (
     <article
       style={cardStyleForVariant(variant, selected)}
@@ -259,18 +266,15 @@ function PreparedWorkItem({
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
         <div style={{ minWidth: 0 }}>
-          <div style={titleStyle}>{card.title}</div>
-          <div style={summaryStyle}>{card.summary}</div>
+          <div style={titleStyle}>{title}</div>
+          {summary ? <div style={summaryStyle}>{summary}</div> : null}
         </div>
         <span style={badgeStyle}>{typeLabel}</span>
       </div>
       <div style={factsStyle}>
-        <span>{card.badge}</span>
-        <span>{card.confidence_label}</span>
-        <span>{card.freshness_label}</span>
-        <span>{card.target_label}</span>
-        {card.evidence_count ? <span>{card.evidence_count} sources</span> : null}
+        {facts.map((fact) => <span key={fact}>{fact}</span>)}
       </div>
+      {card.action_note ? <div style={warningStyle}>{card.action_note}</div> : null}
       {inspection?.self_eval ? <SelfEvalBars selfEval={inspection.self_eval} /> : null}
       <div style={actionsStyle}>
         {primary ? (
@@ -278,14 +282,63 @@ function PreparedWorkItem({
             {actionLabel(primary)}
           </button>
         ) : null}
-        {card.secondary_actions.filter(canRenderAction).slice(0, 3).map((action) => (
-          <button key={`${card.id}-${action.kind}`} type="button" style={secondaryButtonStyle} onClick={() => void onAction(card, action)}>
+        {secondaryActions.map((action) => (
+          <button key={`${card.id}-${action.kind}-${action.label}`} type="button" style={secondaryButtonStyle} onClick={() => void onAction(card, action)}>
             {actionLabel(action)}
           </button>
         ))}
       </div>
     </article>
   )
+}
+
+function uniqueActions(actions: PreparedWorkAction[], primary: PreparedWorkAction | null): PreparedWorkAction[] {
+  const seen = new Set<string>()
+  if (primary) {
+    seen.add(`${primary.kind}:${primary.endpoint ?? ''}:${primary.label}`)
+  }
+  return actions.filter((action) => {
+    const key = `${action.kind}:${action.endpoint ?? ''}:${action.label}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function displayTitle(card: PreparedWorkCard): string {
+  return card.title
+    .replace(/^Continue related work:\s*/i, '')
+    .replace(/^Prepare context for\s+/i, 'Context: ')
+}
+
+function displaySummary(card: PreparedWorkCard, title: string): string {
+  const summary = card.summary.trim()
+  if (!summary) return ''
+  const normalizedTitle = title.toLowerCase().replace(/\W+/g, ' ').trim()
+  const normalizedSummary = summary.toLowerCase().replace(/\W+/g, ' ').trim()
+  if (normalizedTitle && normalizedSummary.includes(normalizedTitle.slice(0, Math.min(60, normalizedTitle.length)))) {
+    return ''
+  }
+  if (summary.startsWith('Likely follow-up to the most recent user question:')) {
+    return 'Likely next branch inferred from the current conversation.'
+  }
+  if (summary.startsWith('Artefact item under goal')) {
+    return ''
+  }
+  return summary
+}
+
+function displayFacts(card: PreparedWorkCard, variant: 'rail' | 'main'): string[] {
+  const facts = variant === 'rail' ? [card.badge, card.confidence_label, card.freshness_label] : [card.confidence_label, card.freshness_label]
+  if (card.kind === 'finance' || card.external_input_count) {
+    facts.push(card.external_input_count ? `${card.external_input_count} external` : 'external state')
+  } else if (card.evidence_count) {
+    facts.push(`${card.evidence_count} sources`)
+  }
+  if (variant === 'rail' && card.target_label) facts.push(card.target_label)
+  if (card.sensitivity_class && card.sensitivity_class !== 'general') facts.push(card.sensitivity_class)
+  if (card.fresh_precheck_required) facts.push('fresh precheck')
+  return facts.filter(Boolean)
 }
 
 function clamp01(value: number): number {
@@ -430,6 +483,13 @@ function PreparedWorkInspectionDetail({
         <p style={{ margin: 0, fontSize: 11.5, color: 'var(--fg-3)' }}>{inspection.why_prepared}</p>
       ) : null}
       {inspection.self_eval ? <SelfEvalBars selfEval={inspection.self_eval} /> : null}
+      {(inspection.action_note || inspection.sensitivity_class || inspection.fresh_precheck_required) ? (
+        <div style={warningStyle}>
+          {[inspection.action_note, inspection.sensitivity_class ? `sensitivity: ${inspection.sensitivity_class}` : '', inspection.fresh_precheck_required ? 'fresh precheck required' : '']
+            .filter(Boolean)
+            .join(' · ')}
+        </div>
+      ) : null}
       {events.length > 0 ? (
         <div
           style={{
@@ -484,6 +544,8 @@ export function preparedKindLabel(kind: PreparedWorkCard['kind']): string {
       return 'virtual diff'
     case 'brief':
       return 'research brief'
+    case 'finance':
+      return 'trading prep'
     case 'draft':
       return 'suggested change'
     case 'prediction':
@@ -508,7 +570,7 @@ function panelStyleForVariant(variant: 'rail' | 'main'): CSSProperties {
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
-    background: 'var(--bg-1)',
+    background: variant === 'main' ? 'transparent' : 'var(--bg-1)',
     borderBottom: variant === 'rail' ? '1px solid var(--line-1)' : 'none',
   }
 }
@@ -534,10 +596,10 @@ const emptyStyle: CSSProperties = {
 function cardStyleForVariant(variant: 'rail' | 'main', selected: boolean): CSSProperties {
   return {
     border: selected ? '1px solid var(--accent)' : '1px solid var(--line-hair)',
-    borderRadius: 'var(--r-2)',
+    borderRadius: 'var(--r-1)',
     background: selected ? 'color-mix(in oklch, var(--accent) 8%, var(--bg-inset))' : 'var(--bg-inset)',
-    padding: variant === 'main' ? 14 : 10,
-    marginBottom: variant === 'main' ? 10 : 8,
+    padding: variant === 'main' ? 12 : 10,
+    marginBottom: variant === 'main' ? 8 : 8,
     cursor: 'pointer',
   }
 }
@@ -563,6 +625,14 @@ const badgeStyle: CSSProperties = {
   fontSize: 10,
   padding: '2px 7px',
   whiteSpace: 'nowrap',
+}
+
+const warningStyle: CSSProperties = {
+  marginTop: 8,
+  color: 'var(--amber)',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 10.5,
+  lineHeight: 1.35,
 }
 
 const factsStyle: CSSProperties = {

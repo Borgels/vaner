@@ -10,7 +10,7 @@ export function usePreparedWork(limit = 24, intervalMs = 4000) {
 
   const refresh = useCallback(async () => {
     try {
-      const payload = await listPreparedWork({ limit, includeAdvisory: false, surface: 'cockpit' })
+      const payload = await listPreparedWork({ limit, includeAdvisory: true, surface: 'cockpit' })
       setCards(payload.prepared_work ?? [])
       setError(null)
     } catch (err) {

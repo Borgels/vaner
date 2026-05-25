@@ -197,6 +197,17 @@ class PrecomputeWorker:
 
         engine = build_default_engine(self.repo_root, config)
         await engine.initialize()
+        external_state_manager = None
+        if bool(getattr(config.external_state, "enabled", False)):
+            from vaner.external_state import ExternalStateManager, model_search_provider_from_config
+
+            external_state_manager = ExternalStateManager(
+                config.external_state,
+                model_search_provider=model_search_provider_from_config(config.external_state),
+            )
+            await external_state_manager.start()
+            if hasattr(engine, "set_external_state_manager"):
+                engine.set_external_state_manager(external_state_manager)
         if hasattr(engine, "set_prediction_event_listener"):
             engine.set_prediction_event_listener(self._record_prediction_event)
         if hasattr(engine, "set_live_work_event_listener"):
@@ -216,6 +227,8 @@ class PrecomputeWorker:
         finally:
             scheduler.cancel()
             controller.cancel()
+            if external_state_manager is not None:
+                await external_state_manager.stop()
             self._set_state("stopping", explanation="worker stopping")
 
     async def _schedule_periodic(self, focus_manager: FocusManager) -> None:

@@ -6,8 +6,12 @@ import pytest
 
 from vaner.integrations.capability import (
     ClientCapabilityTier,
+    ClientFamily,
+    classify_client,
+    current_client_family,
     current_tier,
     detect_tier,
+    is_terminal_host,
     record_tier,
     reset_cache,
 )
@@ -116,3 +120,65 @@ def test_session_cache_is_per_instance() -> None:
     record_tier(s1, detect_tier(_params(roots=SimpleNamespace())))
     assert current_tier(s1) is ClientCapabilityTier.TIER_2
     assert current_tier(s2) is ClientCapabilityTier.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("claude-code", ClientFamily.CLAUDE_CODE),
+        ("Claude Code", ClientFamily.CLAUDE_CODE),
+        ("claude-code-cli/1.2.3", ClientFamily.CLAUDE_CODE),
+        ("Claude Desktop", ClientFamily.CLAUDE_DESKTOP),
+        ("claude-desktop", ClientFamily.CLAUDE_DESKTOP),
+        ("claude.ai", ClientFamily.CLAUDE_WEB),
+        ("ChatGPT", ClientFamily.CHATGPT),
+        ("chatgpt-mcp/0.1", ClientFamily.CHATGPT),
+        ("codex-cli", ClientFamily.CODEX),
+        ("Cursor", ClientFamily.CURSOR),
+        ("cursor", ClientFamily.CURSOR),
+        ("vscode", ClientFamily.VSCODE),
+        ("Visual Studio Code", ClientFamily.VSCODE),
+        ("github-copilot", ClientFamily.VSCODE),
+        ("Zed", ClientFamily.ZED),
+        ("Goose", ClientFamily.GOOSE),
+        ("Windsurf", ClientFamily.WINDSURF),
+        ("Cline", ClientFamily.CLINE),
+        ("continue.dev", ClientFamily.CONTINUE),
+    ],
+)
+def test_classify_client_recognises_known_hosts(name: str, expected: ClientFamily) -> None:
+    assert classify_client(name) is expected
+
+
+@pytest.mark.parametrize("name", [None, "", "   ", "some-random-thing", "openai/gpt-4o"])
+def test_classify_client_returns_unknown_for_unrecognised(name) -> None:
+    assert classify_client(name) is ClientFamily.UNKNOWN
+
+
+def test_is_terminal_host_groups_cli_clients() -> None:
+    assert is_terminal_host(ClientFamily.CLAUDE_CODE)
+    assert is_terminal_host(ClientFamily.CODEX)
+    assert is_terminal_host(ClientFamily.CLINE)
+    # GUI hosts should not be flagged terminal.
+    assert not is_terminal_host(ClientFamily.CLAUDE_DESKTOP)
+    assert not is_terminal_host(ClientFamily.CLAUDE_WEB)
+    assert not is_terminal_host(ClientFamily.CHATGPT)
+    assert not is_terminal_host(ClientFamily.UNKNOWN)
+
+
+def test_current_client_family_returns_unknown_when_session_unseen() -> None:
+    class _Session:
+        pass
+
+    assert current_client_family(_Session()) is ClientFamily.UNKNOWN
+
+
+def test_current_client_family_reflects_recorded_clientinfo() -> None:
+    class _Session:
+        pass
+
+    s = _Session()
+    record_tier(s, detect_tier(_params(client_name="claude-code", roots=SimpleNamespace())))
+    assert current_client_family(s) is ClientFamily.CLAUDE_CODE
+    # Tier resolution still works alongside.
+    assert current_tier(s) is ClientCapabilityTier.TIER_2

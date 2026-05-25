@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-DOMAINS: tuple[str, ...] = ("coding", "research", "writing", "ops")
+DOMAINS: tuple[str, ...] = ("coding", "research", "writing", "ops", "finance")
 MODES: tuple[str, ...] = ("understand", "implement", "debug", "validate", "plan", "explain")
 
 _DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -13,6 +13,25 @@ _DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "research": ("research", "paper", "benchmark", "evidence", "study", "compare", "analysis"),
     "writing": ("write", "copy", "draft", "tone", "grammar", "edit", "summary"),
     "ops": ("deploy", "infra", "incident", "monitor", "latency", "runtime", "oncall", "k8s"),
+    "finance": (
+        "option",
+        "strike",
+        "expiry",
+        "delta",
+        "vega",
+        "theta",
+        "iv",
+        "underlying",
+        "position",
+        "portfolio",
+        "ticker",
+        "spread",
+        "premium",
+        "assignment",
+        "hedge",
+        "watchlist",
+        "earnings",
+    ),
 }
 
 _MODE_KEYWORDS: dict[str, tuple[str, ...]] = {

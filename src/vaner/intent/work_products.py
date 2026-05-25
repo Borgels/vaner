@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import json
 import re
 import time
 from pathlib import Path
 from typing import Any
 
 from vaner.daemon.signals.git_reader import read_content_hashes, read_git_state, read_head_sha
+from vaner.external_state.models import ExternalStateSnapshot
 from vaner.models.artefact import Artefact
 from vaner.models.work_product import (
     WorkProduct,
     WorkProductAdoptability,
     WorkProductEvidenceRef,
+    WorkProductExternalInput,
     WorkProductFreshness,
     WorkProductSelfEval,
+    WorkProductSensitivity,
     WorkProductSourceSnapshot,
     WorkProductStatus,
     WorkProductType,
@@ -38,6 +42,31 @@ _CODE_SUFFIXES = {
 }
 _DOC_SUFFIXES = {".md", ".mdx", ".rst", ".txt"}
 _WORK_PRODUCT_VERSION = "work_product.v1"
+_FINANCE_TERMS = {
+    "account",
+    "assignment",
+    "balance",
+    "delta",
+    "earnings",
+    "expiry",
+    "greek",
+    "hedge",
+    "iv",
+    "option",
+    "order",
+    "portfolio",
+    "position",
+    "premium",
+    "screen",
+    "spread",
+    "strike",
+    "theta",
+    "ticker",
+    "underlying",
+    "vega",
+    "volatility",
+    "watchlist",
+}
 
 
 def _stable_id(kind: WorkProductType, target_key: str, body: str) -> str:
@@ -352,6 +381,353 @@ def _generate_research_brief(repo_root: Path, recent_queries: list[str], artefac
     )
 
 
+def _finance_signal(text: str) -> bool:
+    lowered = text.lower()
+    return any(term in lowered for term in _FINANCE_TERMS)
+
+
+def _finance_sensitivity(text: str) -> WorkProductSensitivity:
+    lowered = text.lower()
+    if any(term in lowered for term in ("order", "fill", "activity", "cancel", "modify")):
+        return WorkProductSensitivity.ORDER_ACTIVITY
+    if any(term in lowered for term in ("position", "holding", "assignment", "short leg", "long leg")):
+        return WorkProductSensitivity.POSITION_SPECIFIC
+    if any(term in lowered for term in ("account", "balance", "margin", "cash", "portfolio")):
+        return WorkProductSensitivity.ACCOUNT_SUMMARY
+    if "watchlist" in lowered:
+        return WorkProductSensitivity.USER_WATCHLIST
+    return WorkProductSensitivity.PUBLIC_MARKET_ONLY
+
+
+def _finance_kind(query_text: str, evidence_text: str) -> WorkProductType:
+    lowered = f"{query_text}\n{evidence_text}".lower()
+    if any(term in lowered for term in ("position", "portfolio", "balance", "order", "assignment")):
+        return WorkProductType.FINANCE_POSITION_BRIEF
+    if any(term in lowered for term in ("option", "spread", "strike", "expiry", "delta", "theta", "vega", "iv")):
+        return WorkProductType.FINANCE_OPTION_STRATEGY_PLAN
+    if any(term in lowered for term in ("screen", "watchlist", "candidate")):
+        return WorkProductType.FINANCE_SCREENING_RESULT
+    if any(term in lowered for term in ("trade", "entry", "exit", "hedge", "rebalance")):
+        return WorkProductType.FINANCE_TRADE_BRIEF
+    return WorkProductType.FINANCE_MORNING_BRIEF
+
+
+def _decode_external_payload(payload: dict[str, Any]) -> Any:
+    content = payload.get("content")
+    if isinstance(content, list):
+        decoded: list[Any] = []
+        for item in content:
+            text = item.get("text") if isinstance(item, dict) else None
+            if not isinstance(text, str) or not text.strip():
+                continue
+            try:
+                decoded.append(json.loads(text))
+            except json.JSONDecodeError:
+                decoded.append({"text": text})
+        if decoded:
+            return decoded[0] if len(decoded) == 1 else decoded
+    return payload
+
+
+def _candidate_lists(value: Any, *, depth: int = 0) -> list[list[dict[str, Any]]]:
+    if depth > 4:
+        return []
+    if isinstance(value, list):
+        if value and all(isinstance(item, dict) for item in value):
+            return [list(value)]
+        lists: list[list[dict[str, Any]]] = []
+        for item in value:
+            lists.extend(_candidate_lists(item, depth=depth + 1))
+        return lists
+    if not isinstance(value, dict):
+        return []
+    preferred_keys = (
+        "candidates",
+        "results",
+        "items",
+        "instruments",
+        "securities",
+        "strategies",
+        "quotes",
+        "data",
+        "rows",
+    )
+    lists = []
+    for key in preferred_keys:
+        if key in value:
+            lists.extend(_candidate_lists(value[key], depth=depth + 1))
+    if lists:
+        return lists
+    for nested in value.values():
+        lists.extend(_candidate_lists(nested, depth=depth + 1))
+    return lists
+
+
+def _field_value(item: dict[str, Any], names: tuple[str, ...]) -> Any:
+    lowered = {str(key).lower(): value for key, value in item.items()}
+    for name in names:
+        if name.lower() in lowered:
+            return lowered[name.lower()]
+    for value in item.values():
+        if isinstance(value, dict):
+            nested = _field_value(value, names)
+            if nested not in (None, ""):
+                return nested
+    return None
+
+
+def _candidate_label(item: dict[str, Any]) -> str:
+    value = _field_value(
+        item,
+        (
+            "symbol",
+            "ticker",
+            "displaySymbol",
+            "identifier",
+            "uic",
+            "name",
+            "description",
+            "instrument",
+        ),
+    )
+    if isinstance(value, dict):
+        value = _field_value(value, ("symbol", "ticker", "name", "description", "uic"))
+    label = str(value or "candidate").strip()
+    return sanitize_no_absolute_paths(label[:80])
+
+
+def _score_finance_candidate(item: dict[str, Any], query_terms: set[str], *, snapshot_stale: bool) -> tuple[float, list[str]]:
+    label = _candidate_label(item).lower()
+    present_fields = 0
+    field_groups: tuple[tuple[str, ...], ...] = (
+        ("symbol", "ticker", "uic", "identifier"),
+        ("name", "description"),
+        ("price", "lastPrice", "last", "close"),
+        ("change", "changePercent", "percentChange"),
+        ("volume", "turnover"),
+        ("score", "rank", "rankScore"),
+    )
+    for group in field_groups:
+        if _field_value(item, group) not in (None, ""):
+            present_fields += 1
+    relevance_hits = sum(1 for term in query_terms if len(term) > 2 and term in label)
+    score = 0.25 + min(0.4, present_fields * 0.075) + min(0.2, relevance_hits * 0.08)
+    reasons = ["complete-enough evidence"] if present_fields >= 3 else ["thin evidence"]
+    if relevance_hits:
+        reasons.append("matches recent finance intent")
+    if not snapshot_stale:
+        score += 0.1
+        reasons.append("fresh snapshot")
+    else:
+        score -= 0.2
+        reasons.append("stale snapshot")
+    return (max(0.0, min(1.0, score)), reasons)
+
+
+def _finance_exploration_summary(snapshots: list[ExternalStateSnapshot], query_text: str) -> dict[str, Any]:
+    query_terms = set(re.findall(r"[a-zA-Z0-9_.$-]+", query_text.lower()))
+    candidate_rows: list[tuple[float, str, str, list[str]]] = []
+    for snapshot in snapshots:
+        payload = _decode_external_payload(snapshot.payload)
+        snapshot_stale = snapshot.is_stale()
+        for candidate_list in _candidate_lists(payload):
+            for item in candidate_list[:100]:
+                score, reasons = _score_finance_candidate(item, query_terms, snapshot_stale=snapshot_stale)
+                candidate_rows.append((score, snapshot.capability, _candidate_label(item), reasons))
+    candidate_rows.sort(key=lambda row: row[0], reverse=True)
+    kept = candidate_rows[:5]
+    pruning_rules = [
+        "prefer fresh snapshots over stale branches",
+        "prefer candidates with enough comparable market fields",
+        "prefer candidates aligned with recent user finance intent",
+        "prune low-evidence branches before requesting deeper provider data",
+    ]
+    return {
+        "objective": "risk_adjusted_preparation",
+        "candidate_count": len(candidate_rows),
+        "kept_candidate_count": len(kept),
+        "pruned_candidate_count": max(0, len(candidate_rows) - len(kept)),
+        "kept_candidates": [
+            {"label": label, "score": round(score, 3), "capability": capability, "reasons": reasons}
+            for score, capability, label, reasons in kept
+        ],
+        "pruning_rules": pruning_rules,
+        "abstentions": [] if candidate_rows else ["external snapshot did not expose a comparable candidate list"],
+    }
+
+
+def _generate_finance_brief(repo_root: Path, recent_queries: list[str], artefacts: list[Artefact]) -> WorkProduct | None:
+    query_text = " ".join(recent_queries[-5:])
+    finance_artefacts = [
+        artefact
+        for artefact in artefacts
+        if Path(str(artefact.source_path)).suffix.lower() in _DOC_SUFFIXES
+        and _finance_signal(f"{artefact.source_path}\n{artefact.content}")
+    ]
+    if not finance_artefacts and not _finance_signal(query_text):
+        return None
+    selected = finance_artefacts[:3]
+    evidence_text = "\n".join(str(artefact.content) for artefact in selected)
+    if not selected:
+        return None
+    paths = [str(artefact.source_path) for artefact in selected]
+    sensitivity = _finance_sensitivity(f"{query_text}\n{evidence_text}")
+    kind = _finance_kind(query_text, evidence_text)
+    bullets: list[str] = []
+    for artefact in selected:
+        excerpt = " ".join(str(artefact.content).split())[:260]
+        bullets.append(f"- `{artefact.source_path}`: {excerpt}")
+    body = (
+        "Finance preparation from local workspace evidence only.\n\n"
+        + "\n".join(bullets)
+        + "\n\nFreshness note: no external market/account snapshot was used. "
+        "Treat this as planning context, not an execution-ready recommendation."
+    )
+    target_digest = hashlib.sha1(f"{kind.value}\n{query_text}\n{','.join(paths)}".encode()).hexdigest()[:12]  # noqa: S324
+    product = _make_product(
+        repo_root=repo_root,
+        kind=kind,
+        title="Prepared finance brief",
+        summary="Local finance notes prepared without external market or account data.",
+        body=body,
+        paths=paths,
+        evidence_reason="local finance evidence; external data access was not required",
+        confidence=0.62 if query_text else 0.55,
+        adoptability=WorkProductAdoptability.ADVISORY,
+        target_key=f"{kind.value}:local:{target_digest}",
+        provenance={
+            "finance": {
+                "external_state_enabled": False,
+                "abstention_or_downgrade": "local_only_no_external_snapshot",
+            }
+        },
+    )
+    product.sensitivity_class = sensitivity
+    product.fresh_precheck_required = False
+    product.stale_after = product.expires_at
+    product.prohibited_actions = ["execution"]
+    product.self_eval.stale_risk = max(product.self_eval.stale_risk, 0.35)
+    return product
+
+
+def generate_external_finance_work_products(
+    *,
+    repo_root: Path,
+    recent_queries: list[str],
+    snapshots: list[ExternalStateSnapshot],
+    max_products: int = 2,
+) -> list[WorkProduct]:
+    if not snapshots:
+        return []
+    now = time.time()
+    strict_expiry = min((snapshot.expires_at for snapshot in snapshots if snapshot.expires_at is not None), default=now + 300)
+    sensitivity = WorkProductSensitivity.PUBLIC_MARKET_ONLY
+    if any(snapshot.sensitivity_class.value in {"position_specific", "order_activity"} for snapshot in snapshots):
+        sensitivity = WorkProductSensitivity.POSITION_SPECIFIC
+    elif any(snapshot.sensitivity_class.value == "account_summary" for snapshot in snapshots):
+        sensitivity = WorkProductSensitivity.ACCOUNT_SUMMARY
+    query_text = " ".join(recent_queries[-5:])
+    capabilities = ", ".join(sorted({snapshot.capability for snapshot in snapshots}))
+    exploration = _finance_exploration_summary(snapshots, query_text)
+    candidate_lines = ""
+    if exploration["kept_candidates"]:
+        bullets = [
+            f"- {item['label']} ({item['capability']}, score {item['score']}): {', '.join(item['reasons'])}"
+            for item in exploration["kept_candidates"]
+        ]
+        candidate_lines = "\n\nCandidate branches kept for review:\n" + "\n".join(bullets)
+    else:
+        candidate_lines = (
+            "\n\nNo comparable candidate list was available from the external snapshots, "
+            "so Vaner abstained from candidate-level ranking."
+        )
+    body = (
+        "Finance preparation from fresh external-state snapshots.\n\n"
+        f"Capabilities observed: {capabilities}.\n\n"
+        "Exploration summary: "
+        f"evaluated {exploration['candidate_count']} candidate records, "
+        f"kept {exploration['kept_candidate_count']}, "
+        f"pruned {exploration['pruned_candidate_count']} lower-evidence branches."
+        f"{candidate_lines}\n\n"
+        "Pruning rules: "
+        + "; ".join(exploration["pruning_rules"])
+        + ".\n\n"
+        "This prepared work is advisory. It ranks branches for risk-adjusted preparation, summarizes read-only provider data, "
+        "and requires a fresh precheck before any action. It is not execution guidance."
+    )
+    kind = (
+        WorkProductType.FINANCE_POSITION_BRIEF
+        if sensitivity in {WorkProductSensitivity.POSITION_SPECIFIC, WorkProductSensitivity.ACCOUNT_SUMMARY}
+        else WorkProductType.FINANCE_SCREENING_RESULT
+    )
+    target_digest = hashlib.sha1(  # noqa: S324
+        f"{kind.value}\n{query_text}\n{','.join(snapshot.id for snapshot in snapshots)}".encode()
+    ).hexdigest()[:12]
+    product = WorkProduct(
+        id=_stable_id(kind, f"{kind.value}:external:{target_digest}", body),
+        type=kind,
+        title="Prepared finance snapshot brief",
+        summary="Read-only external finance snapshots prepared for inspection.",
+        body=body,
+        evidence_refs=[
+            WorkProductEvidenceRef(
+                kind="record",
+                reason=f"external-state snapshot for {snapshot.capability}",
+                confidence=0.72,
+            )
+            for snapshot in snapshots
+        ],
+        source_snapshot=build_source_snapshot(
+            repo_root,
+            [],
+            generated_at=now,
+            generator_version=f"{_WORK_PRODUCT_VERSION}.external_finance",
+        ),
+        confidence=0.72,
+        freshness=WorkProductFreshness.FRESH,
+        expires_at=strict_expiry,
+        status=WorkProductStatus.SURFACED,
+        adoptability=WorkProductAdoptability.ADVISORY,
+        provenance={
+            "generator": f"{_WORK_PRODUCT_VERSION}.external_finance",
+            "finance": {
+                "fresh_precheck_required": True,
+                "external_state_enabled": True,
+                "snapshot_count": len(snapshots),
+                "exploration": exploration,
+            },
+        },
+        self_eval=_self_eval(
+            evidence_count=len(snapshots),
+            confidence=0.72,
+            stale_risk=0.45,
+            contradiction_risk=0.12,
+            reason="external finance snapshots decay and remain advisory",
+        ),
+        feedback_state="none",
+        sensitivity_class=sensitivity,
+        fresh_precheck_required=True,
+        external_inputs=[
+            WorkProductExternalInput(
+                provider_id=snapshot.provider_id,
+                capability=snapshot.capability,
+                snapshot_id=snapshot.id,
+                freshness_class=snapshot.freshness_class.value,
+                captured_at=snapshot.captured_at,
+                expires_at=snapshot.expires_at,
+                payload_fingerprint=snapshot.payload_fingerprint,
+            )
+            for snapshot in snapshots
+        ],
+        stale_after=strict_expiry,
+        prohibited_actions=["execution"],
+        created_at=now,
+        updated_at=now,
+        target_key=f"{kind.value}:external:{target_digest}",
+    )
+    return [product][: max(1, int(max_products))]
+
+
 def generate_work_products(
     *,
     repo_root: Path,
@@ -382,4 +758,11 @@ def generate_work_products(
         research = None
     if research is not None:
         products.append(research)
+    if len(products) < max_products:
+        try:
+            finance = _generate_finance_brief(repo_root, recent_queries, artefacts)
+        except Exception:
+            finance = None
+        if finance is not None:
+            products.append(finance)
     return products[:max_products]

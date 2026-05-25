@@ -309,6 +309,7 @@ _WORKSTYLE_BUNDLE_AFFINITY: dict[WorkStyle, dict[str, float]] = {
     "support": {"hybrid_balanced": 0.6, "local_balanced": 0.4, "cost_saver": 0.4},
     "learning": {"local_balanced": 0.6, "hybrid_balanced": 0.4, "cost_saver": 0.2},
     "coding": {"local_balanced": 0.8, "hybrid_quality": 0.4, "local_heavy": 0.4},
+    "trading": {"deep_research": 0.8, "hybrid_quality": 0.6, "hybrid_balanced": 0.4},
     "general": {"hybrid_balanced": 0.6, "local_balanced": 0.4},
     "mixed": {"hybrid_balanced": 0.6, "local_balanced": 0.4},
     "unsure": {"hybrid_balanced": 0.8, "local_balanced": 0.2},

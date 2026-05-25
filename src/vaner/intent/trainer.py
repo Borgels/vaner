@@ -10,7 +10,7 @@ from vaner.intent.scorer import IntentScorer
 from vaner.learning.reward import RewardInput, compute_reward
 from vaner.store.artefacts import ArtefactStore
 
-FEATURE_SCHEMA_VERSION = "v4"
+FEATURE_SCHEMA_VERSION = "v5"
 FEATURE_KEYS: tuple[str, ...] = (
     "signal_count_recent_15m",
     "query_count_total",
@@ -39,6 +39,19 @@ FEATURE_KEYS: tuple[str, ...] = (
     "skill_presence",
     "skill_kind_match",
     "follow_up_offer_strength",
+    "finance_public_market_plane",
+    "finance_account_state_plane",
+    "finance_horizon_days",
+    "finance_option_strategy_entry_debit",
+    "finance_option_strategy_leg_count",
+    "finance_option_strategy_is_single_leg",
+    "finance_option_strategy_is_debit_spread",
+    "finance_option_strategy_is_call",
+    "finance_option_strategy_is_put",
+    "finance_option_strategy_min_abs_delta",
+    "finance_option_strategy_max_abs_delta",
+    "finance_option_strategy_mean_iv",
+    "finance_liquidity_penalty",
     "access_count",
     "artefact_age_seconds",
 )
@@ -172,7 +185,7 @@ class IntentTrainer:
 
         backend = self.config.scorer_backend
         extension = ".txt"
-        if backend == "xgboost":
+        if backend in {"auto", "xgboost"}:
             extension = ".json"
         elif backend == "catboost":
             extension = ".cbm"

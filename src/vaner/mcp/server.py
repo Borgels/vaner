@@ -98,6 +98,42 @@ _MANAGED_PATH_MARKERS = (
     ".claude/skills/vaner/vaner-feedback/skill.md",
 )
 _MANAGED_QUERY_HINTS = {"mcp", "cursor", "claude", "skill", "skills", "feedback", "config", "prompt"}
+_STRICT_TOOL_NAME_FORMAT = "strict"
+
+
+def _strict_tool_name(name: str) -> str:
+    """Return a Claude Desktop compatible MCP tool name.
+
+    Recent Claude Desktop builds reject tool names outside
+    ``^[a-zA-Z0-9_-]{1,64}$``. Vaner's canonical MCP names are dotted
+    (``vaner.status``), so strict clients get a lossless double-underscore
+    alias (``vaner__status``). Single underscores inside canonical segments,
+    such as ``deep_run``, remain intact.
+    """
+
+    return name.replace(".", "__")
+
+
+def _canonical_tool_name(name: str) -> str:
+    if "__" in name:
+        return name.replace("__", ".")
+    return name
+
+
+def _tool_for_name_format(tool: Tool, *, tool_name_format: str) -> Tool:
+    if tool_name_format != _STRICT_TOOL_NAME_FORMAT:
+        return tool
+    canonical_name = str(getattr(tool, "name", ""))
+    strict_name = _strict_tool_name(canonical_name)
+    description = str(getattr(tool, "description", "") or "")
+    if canonical_name != strict_name and "Canonical tool:" not in description:
+        description = f"{description}\n\nCanonical tool: `{canonical_name}`."
+    if hasattr(tool, "model_copy"):
+        return tool.model_copy(update={"name": strict_name, "description": description})
+    payload = dict(tool)
+    payload["name"] = strict_name
+    payload["description"] = description
+    return Tool(**payload)
 
 
 def _make_text(content: str) -> list[TextContent]:
@@ -629,27 +665,84 @@ async def _increment_resource_metric(name: str, repo_root: Path) -> None:
 
 
 def _dashboard_fallback_text(cards: list[dict[str, Any]]) -> str:
-    """Render a plain-text Vaner dashboard for non-UI MCP clients.
+    """Render a markdown Vaner dashboard for non-UI MCP clients.
 
-    0.8.5 WS5: called from the `vaner.predictions.dashboard` handler when
-    the connected client does not advertise MCP Apps support. The text
-    format matches the spec exactly so downstream scripts can regex it if
-    they want to.
+    Called from the ``vaner.predictions.dashboard`` handler when the connected
+    client does not advertise MCP Apps support. Markdown renders well in
+    terminal AI clients (Claude Code, Codex, Cursor inline) and degrades
+    cleanly to plain text in hosts that don't render it. Each adoptable card
+    surfaces an inline ``vaner.predictions.adopt`` command so the user can
+    invoke it without round-tripping through the AI.
     """
     if not cards:
-        return "Vaner is preparing likely next work.\nNo prepared context is ready to use yet."
+        return "Vaner is preparing likely next work.\n\nNo prepared context is ready to use yet."
     lines: list[str] = [f"Vaner has {len(cards)} prepared context item(s):", ""]
     for i, card in enumerate(cards, start=1):
         readiness = card.get("readiness_label") or card.get("readiness") or "Unknown"
         eta = card.get("eta_bucket_label")
         label = card.get("label", "").strip() or "(untitled)"
-        marker = "Ready" if card.get("adoptable") else readiness
+        adoptable = bool(card.get("adoptable"))
+        marker = "Ready" if adoptable else readiness
         eta_text = f" ({eta})" if eta and eta != readiness else ""
-        lines.append(f'{i}. {marker}{eta_text} — "{label}"')
+        lines.append(f"{i}. **{marker}**{eta_text} — **{label}**")
+        if adoptable and card.get("id"):
+            lines.append(f'   Adopt: `vaner.predictions.adopt id="{card["id"]}"`')
         if card.get("suppression_reason"):
-            lines.append(f"   Not adoptable yet: {card['suppression_reason']}")
+            lines.append(f"   Not adoptable yet: `{card['suppression_reason']}`")
     lines.append("")
-    lines.append("Use vaner.suggest for the turn decision, then adopt at most one strong match.")
+    lines.append(
+        "Use `vaner.suggest` for the turn decision, then adopt at most one strong match."
+    )
+    return "\n".join(lines)
+
+
+def _prepared_work_fallback_text(cards: list[dict[str, Any]]) -> str:
+    """Render a markdown summary of prepared-work cards for non-UI clients.
+
+    Mirrors :func:`_dashboard_fallback_text` for the unified prepared-work
+    surface. Each card includes its title, kind/badge, freshness, and an
+    inline ``vaner.work_products.inspect`` command keyed by the card's
+    ``source_id`` (the work-product id) when available.
+    """
+    if not cards:
+        return (
+            "Vaner has no prepared work to surface right now.\n\n"
+            "It will be populated as the engine warms up or as predictions reach `ready`."
+        )
+    lines: list[str] = [f"Vaner has {len(cards)} prepared work item(s):", ""]
+    for i, card in enumerate(cards, start=1):
+        title = (card.get("title") or "").strip() or "(untitled)"
+        kind = (card.get("kind") or "").strip()
+        badge = (card.get("badge") or "").strip()
+        freshness = (card.get("freshness_label") or "").strip()
+        confidence = (card.get("confidence_label") or "").strip()
+        target = (card.get("target_label") or "").strip()
+        head_bits: list[str] = []
+        if badge:
+            head_bits.append(f"**{badge}**")
+        elif kind:
+            head_bits.append(f"**{kind}**")
+        if confidence:
+            head_bits.append(confidence)
+        if freshness:
+            head_bits.append(freshness)
+        head = " · ".join(head_bits)
+        head_text = f" ({head})" if head else ""
+        lines.append(f"{i}. **{title}**{head_text}")
+        if target:
+            lines.append(f"   Target: {target}")
+        source_id = (card.get("source_id") or "").strip()
+        source_type = (card.get("source_type") or "").strip()
+        if source_id and source_type == "work_product":
+            lines.append(f'   Inspect: `vaner.work_products.inspect id="{source_id}"`')
+        elif source_id and source_type == "prediction":
+            lines.append(f'   Adopt: `vaner.predictions.adopt id="{source_id}"`')
+    lines.append("")
+    lines.append(
+        "Use `vaner.work_products.inspect` for details, "
+        "`vaner.work_products.export` to export, or "
+        "`vaner.work_products.feedback` to record a verdict."
+    )
     return "\n".join(lines)
 
 
@@ -730,6 +823,7 @@ def build_server(
     *,
     engine: Any | None = None,
     daemon_client: Any | None = None,
+    tool_name_format: str = "canonical",
 ) -> Server:
     """Construct the MCP server.
 
@@ -742,6 +836,10 @@ def build_server(
     prediction-tool invocation pointing at ``127.0.0.1:8473``. This is the
     shared HTTP contract Vaner's own surfaces (cockpit, desktop, CLI, and
     this MCP subprocess) use to reach the daemon.
+
+    ``tool_name_format="strict"`` exposes regex-safe tool aliases for clients
+    that reject dots in MCP tool names. Calls are normalized back to Vaner's
+    canonical dotted names before dispatch.
     """
     # Lazy import keeps MCP server import-free of pydantic/httpx when the
     # tools surface is unused (e.g. CLI --help).
@@ -989,8 +1087,7 @@ def build_server(
     @server.list_tools()
     async def list_tools() -> ListToolsResult:
         _detect_and_record_tier()
-        return ListToolsResult(
-            tools=[
+        tools = [
                 Tool(
                     name="vaner.status",
                     description="Return Vaner readiness, freshness, and memory quality health.",
@@ -1699,6 +1796,8 @@ def build_server(
                     inputSchema={"type": "object", "properties": {}},
                 ),
             ]
+        return ListToolsResult(
+            tools=[_tool_for_name_format(tool, tool_name_format=tool_name_format) for tool in tools]
         )
 
     @server.list_resources()
@@ -1849,8 +1948,30 @@ def build_server(
         await _increment_resource_metric(f"guidance_resource_read_{variant}", repo_root)
         return [ReadResourceContents(content=body, mime_type="text/markdown")]
 
+    @server.list_prompts()
+    async def list_prompts() -> list[Any]:
+        """Advertise Vaner's slash-command-style prompts.
+
+        See ``vaner.mcp.prompts`` for the registry. Hosts surface these as
+        native slash commands (e.g. Claude Code's ``/mcp__vaner__vaner-resolve``).
+        """
+        try:
+            from vaner.mcp.prompts import build_prompts
+        except ModuleNotFoundError:  # pragma: no cover - optional dep path
+            return []
+        return list(build_prompts())
+
+    @server.get_prompt()
+    async def get_prompt(name: str, arguments: dict[str, str] | None) -> Any:
+        """Resolve a single Vaner prompt invocation."""
+        from vaner.mcp.prompts import get_prompt as _resolve
+
+        await _increment_resource_metric(f"mcp_prompt_get_{name}", repo_root)
+        return _resolve(name, arguments)
+
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any] | None) -> CallToolResult:
+        name = _canonical_tool_name(name)
         args = arguments or {}
         started = time.perf_counter()
         active_repo_root = repo_root
@@ -2904,6 +3025,10 @@ def build_server(
                         context_id=context_id,
                         surface=surface,
                     )
+                    if isinstance(body, dict) and "fallback_text" not in body:
+                        body["fallback_text"] = _prepared_work_fallback_text(
+                            list(body.get("prepared_work") or [])
+                        )
                     await _record("ok")
                     return _prepared_work_result(body)
                 except VanerDaemonUnavailable:
@@ -2929,7 +3054,11 @@ def build_server(
                 limit=limit,
             )
             await _record("ok")
-            prepared_payload = {"prepared_work": [card.model_dump(mode="json") for card in prepared_cards]}
+            serialized_cards = [card.model_dump(mode="json") for card in prepared_cards]
+            prepared_payload = {
+                "prepared_work": serialized_cards,
+                "fallback_text": _prepared_work_fallback_text(serialized_cards),
+            }
             return _prepared_work_result(prepared_payload)
 
         if name in {
@@ -2949,6 +3078,18 @@ def build_server(
             )
             await work_product_store.initialize()
             await work_product_store.refresh_work_product_staleness(active_repo_root)
+
+            def _work_product_event_metadata(product: Any | None, *, surface: str = "mcp") -> dict[str, Any]:
+                metadata: dict[str, Any] = {"surface": surface}
+                if product is None:
+                    return metadata
+                sensitivity = getattr(product, "sensitivity_class", "general")
+                metadata["sensitivity_class"] = getattr(sensitivity, "value", str(sensitivity))
+                metadata["fresh_precheck_required"] = bool(getattr(product, "fresh_precheck_required", False))
+                metadata["external_input_count"] = len(list(getattr(product, "external_inputs", []) or []))
+                metadata["expires_at"] = getattr(product, "expires_at", None)
+                metadata["stale_after"] = getattr(product, "stale_after", None)
+                return metadata
 
             if name == "vaner.work_products.list":
                 raw_type = args.get("type")
@@ -3040,7 +3181,11 @@ def build_server(
                         {"code": "not_found", "message": f"no such work product: {product_id}"},
                         is_error=True,
                     )
-                await work_product_store.record_work_product_event(product_id, "inspect", metadata={"surface": "mcp"})
+                await work_product_store.record_work_product_event(
+                    product_id,
+                    "inspect",
+                    metadata=_work_product_event_metadata(product),
+                )
                 await _record("ok")
                 return _json_result(build_work_product_inspection(product).model_dump(mode="json"))
 
@@ -3050,6 +3195,15 @@ def build_server(
                     await _record("error")
                     return _json_result(
                         {"code": "stale_work_product", "message": "work product is stale; regenerate it before export"},
+                        is_error=True,
+                    )
+                if product is not None and product.fresh_precheck_required:
+                    await _record("error")
+                    return _json_result(
+                        {
+                            "code": "fresh_precheck_required",
+                            "message": "work product requires a fresh external-state precheck before export",
+                        },
                         is_error=True,
                     )
                 try:
@@ -3066,7 +3220,11 @@ def build_server(
                         {"code": "not_exportable", "message": str(exc)},
                         is_error=True,
                     )
-                await work_product_store.record_work_product_event(product_id, "export", metadata={"surface": "mcp"})
+                await work_product_store.record_work_product_event(
+                    product_id,
+                    "export",
+                    metadata=_work_product_event_metadata(product),
+                )
                 await _record("ok")
                 return _json_result(exported.model_dump(mode="json"))
 
@@ -3774,7 +3932,7 @@ async def run_smoke_probe(repo_root: Path) -> dict[str, Any]:
     }
 
 
-async def run_stdio(repo_root: Path) -> None:
+async def run_stdio(repo_root: Path, *, tool_name_format: str = "canonical") -> None:
     """Run the MCP server on stdio (for Claude Desktop / Cursor local config)."""
     try:
         from mcp.server.lowlevel import NotificationOptions
@@ -3782,7 +3940,7 @@ async def run_stdio(repo_root: Path) -> None:
     except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency path
         raise RuntimeError("MCP transport requires 'mcp[cli]>=1.0'. Install with: pip install 'mcp[cli]>=1.0'.") from exc
 
-    server = build_server(repo_root)
+    server = build_server(repo_root, tool_name_format=tool_name_format)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
@@ -3802,7 +3960,7 @@ async def run_stdio(repo_root: Path) -> None:
         )
 
 
-async def run_sse(repo_root: Path, host: str, port: int) -> None:
+async def run_sse(repo_root: Path, host: str, port: int, *, tool_name_format: str = "canonical") -> None:
     import uvicorn
 
     try:
@@ -3814,7 +3972,7 @@ async def run_sse(repo_root: Path, host: str, port: int) -> None:
     from starlette.applications import Starlette
     from starlette.routing import Mount, Route
 
-    server = build_server(repo_root)
+    server = build_server(repo_root, tool_name_format=tool_name_format)
     sse_transport = SseServerTransport("/messages/")
 
     async def handle_sse(request):

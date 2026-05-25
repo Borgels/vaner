@@ -31,6 +31,7 @@ from vaner.intent.adapter import CodeRepoAdapter, ContextSource, CorpusAdapter, 
 from vaner.intent.allocator import PortfolioAllocator
 from vaner.intent.arcs import ArcObservation, ConversationArcModel, classify_query_category, derive_prompt_macro
 from vaner.intent.briefing import BriefingAssembler
+from vaner.intent.bundles import bundle_rejection_reason
 from vaner.intent.cache import TieredPredictionCache
 from vaner.intent.deep_run import (
     DeepRunFocus,
@@ -93,7 +94,7 @@ from vaner.intent.timing import ActivityTimingModel
 from vaner.intent.trainer import IntentTrainer
 from vaner.intent.transfer import bootstrap_transfer_priors
 from vaner.intent.volatility import semantic_volatility_profile
-from vaner.intent.work_products import generate_work_products
+from vaner.intent.work_products import generate_external_finance_work_products, generate_work_products
 from vaner.intent.work_style_priors import (
     IntentPriorAdjustments,
 )
@@ -533,6 +534,7 @@ class VanerEngine:
         self._last_explored_scenarios: list[ExploredScenario] = []
         self._last_no_scenario_reason: str = ""
         self._last_refinement_outcomes: list[dict[str, object]] = []
+        self._external_state_manager: Any | None = None
         self._core_group_rotation_index = 0
         # Phase 4 / WS6: prediction registry persists across cycles. First
         # created on the first ``precompute_cycle``; thereafter reused and
@@ -3015,6 +3017,9 @@ class VanerEngine:
 
         return [dict(item) for item in self._last_refinement_outcomes]
 
+    def set_external_state_manager(self, manager: Any | None) -> None:
+        self._external_state_manager = manager
+
     async def _run_work_product_pass(self, *, cycle_deadline: float | None) -> int:
         """Prepare a small set of Vaner-owned artifacts during idle cycles.
 
@@ -3036,6 +3041,28 @@ class VanerEngine:
                 artefacts=artefacts,
                 max_products=4,
             )
+            manager = self._external_state_manager
+            if (
+                manager is not None
+                and bool(getattr(getattr(self.config, "external_state", None), "enabled", False))
+                and (cycle_deadline is None or time.monotonic() < cycle_deadline)
+            ):
+                try:
+                    if hasattr(manager, "reset_cycle_budget"):
+                        manager.reset_cycle_budget()
+                    snapshots = await manager.collect_finance_snapshots(recent_queries)
+                    for snapshot in snapshots:
+                        await self.store.upsert_external_state_snapshot(snapshot)
+                    products.extend(
+                        generate_external_finance_work_products(
+                            repo_root=self.config.repo_root,
+                            recent_queries=recent_queries,
+                            snapshots=snapshots,
+                            max_products=max(1, 4 - len(products)),
+                        )
+                    )
+                except Exception:
+                    logger.debug("external finance work product pass skipped", exc_info=True)
             await self.store.refresh_work_product_staleness(self.config.repo_root)
             written = 0
             for product in products:
@@ -5786,7 +5813,13 @@ class VanerEngine:
             await self._persist_learning_state()
         return model_path
 
-    async def load_bundle(self, bundle_dir: Path | str) -> bool:
+    async def load_bundle(
+        self,
+        bundle_dir: Path | str,
+        *,
+        allow_rejected: bool = False,
+        allow_experimental_data: bool = False,
+    ) -> bool:
         """Apply a pre-trained bundle to this engine's store.
 
         A bundle is a directory produced by ``eval/train_policy.py`` containing:
@@ -5798,7 +5831,11 @@ class VanerEngine:
         the engine and persisted to the store so future ``initialize()`` calls
         load them automatically.
 
-        Returns True if the bundle was applied successfully, False on failure.
+        Rejected training bundles are refused by default. Use
+        ``allow_rejected=True`` only for local diagnostics.
+
+        Returns True if the bundle's scorer model was applied successfully,
+        False on failure or when the bundle is rejected.
         """
         import json as _json
 
@@ -5806,6 +5843,14 @@ class VanerEngine:
         bundle_path = Path(bundle_dir)
         if not bundle_path.exists():
             return False
+        if not allow_rejected and bundle_rejection_reason(
+            bundle_path,
+            allow_experimental_data=allow_experimental_data,
+        ):
+            return False
+
+        previous_policy = self._scoring_policy
+        previous_cache_policy = self._cache.scoring_policy
 
         # Load scoring policy
         policy_file = bundle_path / "scoring_policy.json"
@@ -5826,6 +5871,10 @@ class VanerEngine:
                 model_path = Path(model_path_str)
                 if not model_path.is_absolute():
                     model_path = bundle_path / model_path_str
+                elif not model_path.exists():
+                    bundled_model = bundle_path / model_path.name
+                    if bundled_model.exists():
+                        model_path = bundled_model
                 if model_path.exists():
                     loaded = self._intent_scorer.load_model(
                         model_path,
@@ -5848,6 +5897,11 @@ class VanerEngine:
             influence = meta.get("model_influence")
             if isinstance(influence, (int, float)) and model_loaded:
                 self._intent_scorer.set_model_influence(float(influence))
+
+        if not model_loaded:
+            self._scoring_policy = previous_policy
+            self._cache.scoring_policy = previous_cache_policy
+            return False
 
         self._mark_policy_state_dirty()
         await self._persist_learning_state(force=True)

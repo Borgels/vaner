@@ -8,7 +8,7 @@ the five-step Simple-Mode flow described in the 0.8.6 spec §5:
 
 - ``WorkStyle`` — multi-select. What kind of work do you want help with?
   ("writing", "research", "planning", "support", "learning", "coding",
-  "general", "mixed", "unsure"). The engine averages priors when more
+  "trading", "general", "mixed", "unsure"). The engine averages priors when more
   than one work style is selected.
 - ``Priority`` — single-select. What matters most? ("balanced", "speed",
   "quality", "privacy", "cost", "low_resource").
@@ -41,6 +41,7 @@ WorkStyle = Literal[
     "support",
     "learning",
     "coding",
+    "trading",
     "general",
     "mixed",
     "unsure",

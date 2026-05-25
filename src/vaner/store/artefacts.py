@@ -26,6 +26,11 @@ from vaner.models.work_product import (
     WorkProductStatus,
     WorkProductType,
 )
+from vaner.external_state.models import (
+    ExternalStateFreshnessClass,
+    ExternalStateSensitivity,
+    ExternalStateSnapshot,
+)
 from vaner.policy.privacy import sanitize_no_absolute_paths
 
 SemanticEmbedder = Callable[[list[str]], Awaitable[list[list[float]]]]
@@ -536,6 +541,11 @@ class ArtefactStore:
                     provenance_json TEXT NOT NULL,
                     self_eval_json TEXT NOT NULL,
                     feedback_state TEXT NOT NULL,
+                    sensitivity_class TEXT NOT NULL DEFAULT 'general',
+                    fresh_precheck_required INTEGER NOT NULL DEFAULT 0,
+                    external_inputs_json TEXT NOT NULL DEFAULT '[]',
+                    stale_after REAL,
+                    prohibited_actions_json TEXT NOT NULL DEFAULT '[]',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     target_key TEXT NOT NULL DEFAULT '',
@@ -548,6 +558,26 @@ class ArtefactStore:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_type ON work_products(type)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_target_key ON work_products(target_key)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_updated_at ON work_products(updated_at DESC)")
+        await db.execute(
+            """
+                CREATE TABLE IF NOT EXISTS external_state_snapshots (
+                    id TEXT PRIMARY KEY,
+                    provider_id TEXT NOT NULL,
+                    capability TEXT NOT NULL,
+                    query_key TEXT NOT NULL DEFAULT '',
+                    source_tool TEXT NOT NULL DEFAULT '',
+                    freshness_class TEXT NOT NULL,
+                    sensitivity_class TEXT NOT NULL,
+                    captured_at REAL NOT NULL,
+                    expires_at REAL,
+                    payload_fingerprint TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_external_state_provider ON external_state_snapshots(provider_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_external_state_capability ON external_state_snapshots(capability)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_external_state_expires ON external_state_snapshots(expires_at)")
         await db.execute(
             """
                 CREATE TABLE IF NOT EXISTS artefact_semantic_chunks (
@@ -784,6 +814,22 @@ class ArtefactStore:
             await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (9)")
             current_schema_version = 9
 
+        if current_schema_version < 10:
+            async with db.execute("PRAGMA table_info(work_products)") as cursor:
+                work_product_columns = [row[1] for row in await cursor.fetchall()]
+            if "sensitivity_class" not in work_product_columns:
+                await db.execute("ALTER TABLE work_products ADD COLUMN sensitivity_class TEXT NOT NULL DEFAULT 'general'")
+            if "fresh_precheck_required" not in work_product_columns:
+                await db.execute("ALTER TABLE work_products ADD COLUMN fresh_precheck_required INTEGER NOT NULL DEFAULT 0")
+            if "external_inputs_json" not in work_product_columns:
+                await db.execute("ALTER TABLE work_products ADD COLUMN external_inputs_json TEXT NOT NULL DEFAULT '[]'")
+            if "stale_after" not in work_product_columns:
+                await db.execute("ALTER TABLE work_products ADD COLUMN stale_after REAL")
+            if "prohibited_actions_json" not in work_product_columns:
+                await db.execute("ALTER TABLE work_products ADD COLUMN prohibited_actions_json TEXT NOT NULL DEFAULT '[]'")
+            await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (10)")
+            current_schema_version = 10
+
         # FTS5 index on artefact source_path + content for sub-millisecond
         # candidate retrieval; the full scorer then re-ranks the top-N hits.
         await db.execute(
@@ -982,11 +1028,118 @@ class ArtefactStore:
             provenance=json.loads(str(row[12] or "{}")),
             self_eval=json.loads(str(row[13] or "{}")),
             feedback_state=WorkProductFeedbackState(str(row[14])),
-            created_at=float(row[15]),
-            updated_at=float(row[16]),
-            target_key=str(row[17] or ""),
-            supersedes=str(row[18]) if row[18] is not None else None,
+            sensitivity_class=str(row[15] or "general"),
+            fresh_precheck_required=bool(row[16]),
+            external_inputs=json.loads(str(row[17] or "[]")),
+            stale_after=float(row[18]) if row[18] is not None else None,
+            prohibited_actions=json.loads(str(row[19] or "[]")),
+            created_at=float(row[20]),
+            updated_at=float(row[21]),
+            target_key=str(row[22] or ""),
+            supersedes=str(row[23]) if row[23] is not None else None,
         )
+
+    @staticmethod
+    def _external_state_snapshot_from_row(row: tuple[object, ...]) -> ExternalStateSnapshot:
+        return ExternalStateSnapshot(
+            id=str(row[0]),
+            provider_id=str(row[1]),
+            capability=str(row[2]),
+            query_key=str(row[3] or ""),
+            source_tool=str(row[4] or ""),
+            freshness_class=ExternalStateFreshnessClass(str(row[5])),
+            sensitivity_class=ExternalStateSensitivity(str(row[6])),
+            captured_at=float(row[7]),
+            expires_at=float(row[8]) if row[8] is not None else None,
+            payload_fingerprint=str(row[9]),
+            payload=json.loads(str(row[10] or "{}")),
+        )
+
+    async def upsert_external_state_snapshot(self, snapshot: ExternalStateSnapshot) -> None:
+        clean = ExternalStateSnapshot.model_validate(sanitize_no_absolute_paths(snapshot.model_dump(mode="json")))
+        async with self._write_lock:
+            async with self._connect() as db:
+                await db.execute(
+                    """
+                    INSERT INTO external_state_snapshots(
+                        id, provider_id, capability, query_key, source_tool,
+                        freshness_class, sensitivity_class, captured_at, expires_at,
+                        payload_fingerprint, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        provider_id=excluded.provider_id,
+                        capability=excluded.capability,
+                        query_key=excluded.query_key,
+                        source_tool=excluded.source_tool,
+                        freshness_class=excluded.freshness_class,
+                        sensitivity_class=excluded.sensitivity_class,
+                        captured_at=excluded.captured_at,
+                        expires_at=excluded.expires_at,
+                        payload_fingerprint=excluded.payload_fingerprint,
+                        payload_json=excluded.payload_json
+                    """,
+                    (
+                        clean.id,
+                        clean.provider_id,
+                        clean.capability,
+                        clean.query_key,
+                        clean.source_tool,
+                        clean.freshness_class.value,
+                        clean.sensitivity_class.value,
+                        clean.captured_at,
+                        clean.expires_at,
+                        clean.payload_fingerprint,
+                        json.dumps(clean.payload, sort_keys=True),
+                    ),
+                )
+                await db.commit()
+
+    async def get_external_state_snapshot(self, snapshot_id: str) -> ExternalStateSnapshot | None:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT id, provider_id, capability, query_key, source_tool,
+                       freshness_class, sensitivity_class, captured_at, expires_at,
+                       payload_fingerprint, payload_json
+                FROM external_state_snapshots
+                WHERE id = ?
+                """,
+                (snapshot_id,),
+            )
+            row = await cursor.fetchone()
+        return self._external_state_snapshot_from_row(row) if row is not None else None
+
+    async def list_external_state_snapshots(
+        self,
+        *,
+        provider_id: str | None = None,
+        capability: str | None = None,
+        include_stale: bool = False,
+        now: float | None = None,
+        limit: int = 50,
+    ) -> list[ExternalStateSnapshot]:
+        ts = time.time() if now is None else float(now)
+        query = (
+            "SELECT id, provider_id, capability, query_key, source_tool, "
+            "freshness_class, sensitivity_class, captured_at, expires_at, "
+            "payload_fingerprint, payload_json FROM external_state_snapshots WHERE 1=1"
+        )
+        params: list[object] = []
+        if provider_id:
+            query += " AND provider_id = ?"
+            params.append(provider_id)
+        if capability:
+            query += " AND capability = ?"
+            params.append(capability)
+        if not include_stale:
+            query += " AND (expires_at IS NULL OR expires_at > ?)"
+            params.append(ts)
+        query += " ORDER BY captured_at DESC LIMIT ?"
+        params.append(max(1, min(200, int(limit))))
+        async with self._connect() as db:
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+        return [self._external_state_snapshot_from_row(row) for row in rows]
 
     async def upsert_work_product(self, product: WorkProduct) -> None:
         payload = sanitize_no_absolute_paths(product.model_dump(mode="json"))
@@ -999,8 +1152,10 @@ class ArtefactStore:
                         id, type, title, summary, body, evidence_refs_json,
                         source_snapshot_json, confidence, freshness, expires_at,
                         status, adoptability, provenance_json, self_eval_json,
-                        feedback_state, created_at, updated_at, target_key, supersedes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        feedback_state, sensitivity_class, fresh_precheck_required,
+                        external_inputs_json, stale_after, prohibited_actions_json,
+                        created_at, updated_at, target_key, supersedes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         type=excluded.type,
                         title=excluded.title,
@@ -1016,6 +1171,11 @@ class ArtefactStore:
                         provenance_json=excluded.provenance_json,
                         self_eval_json=excluded.self_eval_json,
                         feedback_state=excluded.feedback_state,
+                        sensitivity_class=excluded.sensitivity_class,
+                        fresh_precheck_required=excluded.fresh_precheck_required,
+                        external_inputs_json=excluded.external_inputs_json,
+                        stale_after=excluded.stale_after,
+                        prohibited_actions_json=excluded.prohibited_actions_json,
                         updated_at=excluded.updated_at,
                         target_key=excluded.target_key,
                         supersedes=excluded.supersedes
@@ -1036,6 +1196,11 @@ class ArtefactStore:
                         json.dumps(clean.provenance),
                         json.dumps(clean.self_eval.model_dump(mode="json")),
                         clean.feedback_state.value,
+                        clean.sensitivity_class.value,
+                        1 if clean.fresh_precheck_required else 0,
+                        json.dumps([item.model_dump(mode="json") for item in clean.external_inputs]),
+                        clean.stale_after,
+                        json.dumps(list(clean.prohibited_actions)),
                         clean.created_at,
                         clean.updated_at,
                         clean.target_key,
@@ -1051,7 +1216,9 @@ class ArtefactStore:
                 SELECT id, type, title, summary, body, evidence_refs_json,
                        source_snapshot_json, confidence, freshness, expires_at,
                        status, adoptability, provenance_json, self_eval_json,
-                       feedback_state, created_at, updated_at, target_key, supersedes
+                       feedback_state, sensitivity_class, fresh_precheck_required,
+                       external_inputs_json, stale_after, prohibited_actions_json,
+                       created_at, updated_at, target_key, supersedes
                 FROM work_products
                 WHERE id = ?
                 """,
@@ -1072,7 +1239,9 @@ class ArtefactStore:
             "SELECT id, type, title, summary, body, evidence_refs_json, "
             "source_snapshot_json, confidence, freshness, expires_at, "
             "status, adoptability, provenance_json, self_eval_json, "
-            "feedback_state, created_at, updated_at, target_key, supersedes "
+            "feedback_state, sensitivity_class, fresh_precheck_required, "
+            "external_inputs_json, stale_after, prohibited_actions_json, "
+            "created_at, updated_at, target_key, supersedes "
             "FROM work_products WHERE 1=1"
         )
         params: list[object] = []
