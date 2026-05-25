@@ -76,7 +76,7 @@ class ExternalStateSnapshot(BaseModel):
         ts = time.time() if captured_at is None else float(captured_at)
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        digest = hashlib.sha1(  # noqa: S324
+        digest = hashlib.sha256(
             f"{provider_id}\n{capability}\n{query_key}\n{fingerprint}\n{ts:.6f}".encode()
         ).hexdigest()[:20]
         return cls(

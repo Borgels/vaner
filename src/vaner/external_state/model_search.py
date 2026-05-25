@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 import httpx
 
@@ -176,7 +177,7 @@ def model_search_provider_from_config(config: ExternalStateConfig) -> ModelNativ
         return None
     if provider == "ollama":
         base_url = search.base_url or "https://ollama.com/api"
-        if "api.search.brave.com" in base_url:
+        if _hostname(base_url) == "api.search.brave.com":
             base_url = "https://ollama.com/api"
         return OllamaWebSearchProvider(
             api_key=api_key,
@@ -186,7 +187,7 @@ def model_search_provider_from_config(config: ExternalStateConfig) -> ModelNativ
         )
     if provider == "brave":
         base_url = search.base_url or "https://api.search.brave.com/res/v1"
-        if "ollama.com" in base_url:
+        if _hostname(base_url) == "ollama.com":
             base_url = "https://api.search.brave.com/res/v1"
         return BraveWebSearchProvider(
             api_key=api_key,
@@ -203,6 +204,10 @@ def _api_key_env(provider: str, configured: str) -> str:
     if provider == "ollama" and not configured:
         return "OLLAMA_API_KEY"
     return configured
+
+
+def _hostname(url: str) -> str:
+    return (urlparse(url).hostname or "").lower()
 
 
 def _brave_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
