@@ -21,6 +21,7 @@ interface PreparedWorkViewProps {
   cards: PreparedWorkCard[]
   loading: boolean
   error: string | null
+  route: FocusRoutePayload | null
   selectedId: string | null
   onSelect: (id: string) => void
   onCardsChange: (cards: PreparedWorkCard[]) => void
@@ -31,6 +32,7 @@ export function PreparedWorkView({
   cards,
   loading,
   error,
+  route,
   selectedId,
   onSelect,
   onCardsChange,
@@ -38,8 +40,10 @@ export function PreparedWorkView({
 }: PreparedWorkViewProps) {
   const visibleCards = highSignalPreparedCards(cards)
   const visibleIds = new Set(visibleCards.map((card) => card.id))
+  const workspace = workspaceSummary(route)
   return (
     <ViewShell eyebrow="Ready Work" title="Prepared work worth reviewing">
+      {workspace ? <WorkspaceLine workspace={workspace} /> : null}
       <div style={quietNoticeStyle}>
         Showing {visibleCards.length} high-signal item{visibleCards.length === 1 ? '' : 's'}.
         {cards.length > visibleCards.length ? ` ${cards.length - visibleCards.length} generic context item${cards.length - visibleCards.length === 1 ? '' : 's'} moved out of the main queue.` : ''}
@@ -53,6 +57,7 @@ export function PreparedWorkView({
         onSelect={onSelect}
         onCardsChange={(next) => mergeFilteredCards(cards, visibleIds, next, onCardsChange)}
         onAction={onAction}
+        workspaceLabel={workspace?.label ?? null}
       />
     </ViewShell>
   )
@@ -68,6 +73,7 @@ interface OperatorOverviewViewProps {
   onAction: (message: string) => void
   activeWork: ActiveWorkPayload | null
   jobs: JobsStatusPayload | null
+  route: FocusRoutePayload | null
   activity: RecentActivityPayload | null
   predictions: PredictionSummary[]
   externalState: ExternalStateSettings | null
@@ -84,6 +90,7 @@ export function OperatorOverviewView({
   onAction,
   activeWork,
   jobs,
+  route,
   activity,
   predictions,
   externalState,
@@ -95,6 +102,7 @@ export function OperatorOverviewView({
   const cycleMs = numberFromProfile(profile.total_ms)
   const visibleCards = highSignalPreparedCards(cards).slice(0, 4)
   const visibleCardIds = new Set(visibleCards.map((card) => card.id))
+  const workspace = workspaceSummary(route)
   const handleVisibleCardsChange = (updatedVisible: PreparedWorkCard[]) => {
     const updatedById = new Map(updatedVisible.map((card) => [card.id, card]))
     onCardsChange(cards.map((card) => updatedById.get(card.id) ?? card).filter((card) => visibleCardIds.has(card.id) || !updatedById.has(card.id)))
@@ -123,7 +131,9 @@ export function OperatorOverviewView({
               {activeWork?.summary || 'Vaner is listening for useful work to prepare.'}
             </div>
             <div style={{ color: 'var(--fg-3)', fontSize: 12.5, lineHeight: 1.45, marginTop: 9, maxWidth: 780 }}>
-              The main queue hides generic context and shows only work that looks useful to review now.
+              {workspace
+                ? `Workspace: ${workspace.label}${workspace.path ? ` (${workspace.path})` : ''}.`
+                : 'The main queue hides generic context and shows only work that looks useful to review now.'}
             </div>
           </div>
           <div style={operatorMetricGridStyle}>
@@ -148,6 +158,7 @@ export function OperatorOverviewView({
               onSelect={onSelect}
               onCardsChange={handleVisibleCardsChange}
               onAction={onAction}
+              workspaceLabel={workspace?.label ?? null}
             />
           ) : (
             <EmptyState text="No prepared work is ready yet." />
@@ -180,6 +191,29 @@ export function OperatorOverviewView({
         </div>
       </div>
     </ViewShell>
+  )
+}
+
+interface WorkspaceSummary {
+  label: string
+  path: string | null
+}
+
+function workspaceSummary(route: FocusRoutePayload | null): WorkspaceSummary | null {
+  const workspace = route?.effective_route?.workspace
+  if (!workspace) return null
+  const path = workspace.canonical_path ?? null
+  const label = workspace.display_name ?? (path ? compactPath(path) : workspace.id)
+  return { label, path }
+}
+
+function WorkspaceLine({ workspace }: { workspace: WorkspaceSummary }) {
+  return (
+    <div style={workspaceLineStyle}>
+      <span className="mono" style={{ color: 'var(--fg-4)', fontSize: 10.5 }}>WORKSPACE</span>
+      <span style={{ color: 'var(--fg-1)', fontSize: 13 }}>{workspace.label}</span>
+      {workspace.path ? <span className="mono" style={{ color: 'var(--fg-4)', fontSize: 10.5 }}>{workspace.path}</span> : null}
+    </div>
   )
 }
 
@@ -1093,6 +1127,17 @@ const quietNoticeStyle: React.CSSProperties = {
   fontSize: 12,
   lineHeight: 1.4,
   background: 'var(--bg-0)',
+}
+
+const workspaceLineStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: 10,
+  alignItems: 'baseline',
+  padding: '10px 18px',
+  borderBottom: '1px solid var(--line-hair)',
+  background: 'var(--bg-0)',
+  minWidth: 0,
+  flexWrap: 'wrap',
 }
 
 const subtleLineStyle: React.CSSProperties = {

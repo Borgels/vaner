@@ -272,6 +272,8 @@ interface LeftRailProps {
   workerState?: string | null
   live?: boolean
   modelName?: string | null
+  workspaceLabel?: string | null
+  workspacePath?: string | null
   /**
    * Cockpit refresh: small slot below the existing skills/pinned blocks.
    * Used to render the learning summary so feedback the user gives is
@@ -295,6 +297,8 @@ export function LeftRail({
   workerState = null,
   live = false,
   modelName = null,
+  workspaceLabel = null,
+  workspacePath = null,
   footer,
 }: LeftRailProps) {
   if (quiet && mode !== 'proxy') {
@@ -336,7 +340,7 @@ export function LeftRail({
             </span>
           </div>
           <div style={{ color: 'var(--fg-3)', fontSize: 12, lineHeight: 1.45, marginTop: 10 }}>
-            Vaner is preparing background work for this workspace. Use Diagnostics for raw events and evidence.
+            Vaner is preparing background work for the selected workspace.
           </div>
         </div>
 
@@ -345,6 +349,7 @@ export function LeftRail({
             ROUTE
           </div>
           <Row k="mode" v="daemon" />
+          <Row k="workspace" v={<RailWorkspace label={workspaceLabel ?? 'current'} path={workspacePath} />} />
           <Row k="model" v={modelName ?? 'standby'} />
         </div>
         <div style={{ flex: 1 }} />
@@ -567,6 +572,15 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
       <span style={{ color: 'var(--fg-4)' }}>{k}</span>
       <span>{v}</span>
     </div>
+  )
+}
+
+function RailWorkspace({ label, path }: { label: string; path?: string | null }) {
+  return (
+    <span title={path ?? label} style={{ minWidth: 0, textAlign: 'right' }}>
+      <span style={{ display: 'block', color: 'var(--fg-1)' }}>{label}</span>
+      {path ? <span className="mono" style={{ display: 'block', color: 'var(--fg-4)', fontSize: 9.5, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 145 }}>{path}</span> : null}
+    </span>
   )
 }
 

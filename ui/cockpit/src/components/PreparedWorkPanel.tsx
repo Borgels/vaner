@@ -21,6 +21,7 @@ export interface PreparedWorkPanelProps {
   onSelect?: (id: string) => void
   onCardsChange?: (cards: PreparedWorkCard[]) => void
   variant?: 'rail' | 'main'
+  workspaceLabel?: string | null
 }
 
 function actionLabel(action: PreparedWorkAction): string {
@@ -45,6 +46,7 @@ export function PreparedWorkPanel({
   onSelect,
   onCardsChange,
   variant = 'rail',
+  workspaceLabel = null,
 }: PreparedWorkPanelProps) {
   const [cards, setCards] = useState<PreparedWorkCard[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -267,6 +269,7 @@ export function PreparedWorkPanel({
             expanded={expandedCardId === card.id}
             detailFallback={fallbackByCardId[card.id] ?? null}
             detailPending={Boolean(pendingInspectByCardId[card.id])}
+            workspaceLabel={workspaceLabel}
             onCloseDetail={() => setExpandedCardId(null)}
             onSelect={onSelect}
             onAction={runAction}
@@ -283,6 +286,7 @@ function PreparedWorkItem({
   expanded,
   detailFallback,
   detailPending,
+  workspaceLabel,
   selected,
   variant,
   onCloseDetail,
@@ -294,6 +298,7 @@ function PreparedWorkItem({
   expanded: boolean
   detailFallback: string | null
   detailPending: boolean
+  workspaceLabel: string | null
   selected: boolean
   variant: 'rail' | 'main'
   onCloseDetail: () => void
@@ -307,7 +312,7 @@ function PreparedWorkItem({
   const typeLabel = preparedKindLabel(card.kind)
   const title = displayTitle(card)
   const summary = displaySummary(card, title)
-  const facts = displayFacts(card, variant)
+  const facts = displayFacts(card, variant, workspaceLabel)
   return (
     <article
       style={cardStyleForVariant(variant, selected, card.kind)}
@@ -395,9 +400,10 @@ function displaySummary(card: PreparedWorkCard, title: string): string {
   return summary
 }
 
-function displayFacts(card: PreparedWorkCard, variant: 'rail' | 'main'): string[] {
+function displayFacts(card: PreparedWorkCard, variant: 'rail' | 'main', workspaceLabel: string | null): string[] {
   if (variant === 'main') {
     const facts: string[] = []
+    if (workspaceLabel) facts.push(`workspace: ${workspaceLabel}`)
     if (card.target_label) facts.push(card.target_label)
     if (card.kind === 'finance' || card.external_input_count) {
       facts.push(card.external_input_count ? `${card.external_input_count} external inputs` : 'external state')

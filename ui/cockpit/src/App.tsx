@@ -98,6 +98,11 @@ type ScenarioScope = 'live' | 'session' | 'focus' | 'history'
 const PREDICTION_STATE_ORDER = ['ready', 'drafting', 'evidence_gathering', 'grounding', 'queued', 'stale']
 const LIVE_STALE_GRACE_SECONDS = 30 * 60
 
+function compactWorkspacePath(path: string): string {
+  const parts = path.split('/').filter(Boolean)
+  return parts.slice(-1)[0] ?? path
+}
+
 function predictionReadiness(prediction: PredictionSummary): string {
   return String(prediction.readiness ?? prediction.run?.readiness ?? 'queued')
 }
@@ -579,6 +584,14 @@ function App() {
       return b.updated_at - a.updated_at
     })
   }, [preparedWork.cards])
+
+  const activeWorkspace = focusRuntime.route?.effective_route?.workspace
+    ?? focusState?.workspaces?.find((workspace) => workspace.id === focusState.active_workspace_id)
+    ?? null
+  const activeWorkspaceLabel = activeWorkspace?.display_name
+    ?? (activeWorkspace?.canonical_path ? compactWorkspacePath(activeWorkspace.canonical_path) : activeWorkspace?.id)
+    ?? null
+  const activeWorkspacePath = activeWorkspace?.canonical_path ?? null
 
   useEffect(() => {
     if (!bootstrapPayload?.cockpit_sha || !COCKPIT_BUILD_SHA) {
@@ -1211,6 +1224,8 @@ function App() {
         workerState={focusRuntime.jobs?.worker?.state ?? activeWork.snapshot?.phase ?? null}
         live={streamLive}
         modelName={pipeline.model.lastModel ?? null}
+        workspaceLabel={activeWorkspaceLabel}
+        workspacePath={activeWorkspacePath}
         header={
           <SystemVitals
             live={streamLive}
@@ -1279,6 +1294,7 @@ function App() {
                   onAction={(message) => showToast(message, message.startsWith('HTTP') || message.startsWith('Failed') ? 'var(--err)' : 'var(--accent)')}
                   activeWork={activeWork.snapshot}
                   jobs={focusRuntime.jobs}
+                  route={focusRuntime.route}
                   activity={focusRuntime.activity}
                   predictions={predictions}
                   externalState={externalState}
@@ -1290,6 +1306,7 @@ function App() {
                   cards={preparedCards}
                   loading={preparedWork.loading}
                   error={preparedWork.error}
+                  route={focusRuntime.route}
                   selectedId={selectedWorkId}
                   onSelect={setSelectedWorkId}
                   onCardsChange={preparedWork.setCards}
