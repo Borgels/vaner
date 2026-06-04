@@ -7,7 +7,7 @@
 aiosqlite==0.22.1 \
     --hash=sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650 \
     --hash=sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb
-    # via -r requirements/runtime.in
+    # via -r runtime.in
 annotated-doc==0.0.4 \
     --hash=sha256:571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320 \
     --hash=sha256:fbcda96e87e9c92ad167c2e53839e57503ecfda18804ea28102353485033faa4
@@ -171,7 +171,7 @@ click==8.3.2 \
 fastapi==0.136.1 \
     --hash=sha256:7af665ad7acfa0a3baf8983d393b6b471b9da10ede59c60045f49fbc89a0fa7f \
     --hash=sha256:a6e9d7eeada96c93a4d69cb03836b44fa34e2854accb7244a1ece36cd4781c3f
-    # via -r requirements/runtime.in
+    # via -r runtime.in
 h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
@@ -185,7 +185,7 @@ httpcore==1.0.9 \
 httpx==0.28.1 \
     --hash=sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc \
     --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
-    # via -r requirements/runtime.in
+    # via -r runtime.in
 idna==3.11 \
     --hash=sha256:771a87f49d9defaf64091e6e6fe9c18d4833f140bd19464795bc32d966ca37ea \
     --hash=sha256:795dafcc9c04ed0c1fb032c2aa73654d8e8c5023a7df64a53f39190ada629902
@@ -200,7 +200,7 @@ lightgbm==4.6.0 \
     --hash=sha256:b7a393de8a334d5c8e490df91270f0763f83f959574d504c7ccb9eee4aef70ed \
     --hash=sha256:cb19b5afea55b5b61cbb2131095f50538bd608a00655f23ad5d25ae3e3bf1c8d \
     --hash=sha256:cb1c59720eb569389c0ba74d14f52351b573af489f230032a1c9f314f8bab7fe
-    # via -r requirements/runtime.in
+    # via -r runtime.in
 markdown-it-py==4.0.0 \
     --hash=sha256:87327c59b172c5011896038353a81343b6754500a08cd7a4973bb48c6d578147 \
     --hash=sha256:cb0a2b4aa34f932c007117b194e945bd74e0ec24133ceb5bac59009cda1cb9f3
@@ -283,14 +283,14 @@ numpy==2.4.4 \
     --hash=sha256:fbc356aae7adf9e6336d336b9c8111d390a05df88f1805573ebb0807bd06fd1d \
     --hash=sha256:fcfe2045fd2e8f3cb0ce9d4ba6dba6333b8fa05bb8a4939c908cd43322d14c7e
     # via
-    #   -r requirements/runtime.in
+    #   -r runtime.in
     #   lightgbm
     #   scipy
 pydantic==2.13.3 \
     --hash=sha256:6db14ac8dfc9a1e57f87ea2c0de670c251240f43cb0c30a5130e9720dc612927 \
     --hash=sha256:af09e9d1d09f4e7fe37145c1f577e1d61ceb9a41924bf0094a36506285d0a84d
     # via
-    #   -r requirements/runtime.in
+    #   -r runtime.in
     #   fastapi
 pydantic-core==2.46.3 \
     --hash=sha256:0087084960f209a9a4af50ecd1fb063d9ad3658c07bb81a7a53f452dacbfb2ba \
@@ -609,9 +609,9 @@ shellingham==1.5.4 \
     --hash=sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686 \
     --hash=sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de
     # via typer
-starlette==1.0.0 \
-    --hash=sha256:6a4beaf1f81bb472fd19ea9b918b50dc3a77a6f2e190a12954b25e6ed5eea149 \
-    --hash=sha256:d3ec55e0bb321692d275455ddfd3df75fff145d009685eb40dc91fc66b03d38b
+starlette==1.0.1 \
+    --hash=sha256:512399c5f1de7fac99c88572212ded9ddeddef2fb32afa82d724000e88b38f4f \
+    --hash=sha256:7c0e69b2ee1c848bd54669d908500117a3ee13de603a21427e5c6fc1adf98dcd
     # via fastapi
 tiktoken==0.12.0 \
     --hash=sha256:01d99484dc93b129cd0964f9d34eee953f2737301f18b3c7257bf368d7615baa \
@@ -671,11 +671,11 @@ tiktoken==0.12.0 \
     --hash=sha256:f61c0aea5565ac82e2ec50a05e02a6c44734e91b51c10510b084ea1b8e633a71 \
     --hash=sha256:fc530a28591a2d74bce821d10b418b26a094bf33839e69042a6e86ddb7a7fb27 \
     --hash=sha256:ffc5288f34a8bc02e1ea7047b8d041104791d2ddbf42d1e5fa07822cbffe16bd
-    # via -r requirements/runtime.in
+    # via -r runtime.in
 typer==0.25.0 \
     --hash=sha256:123eaf9f19bb40fd268310e12a542c0c6b4fab9c98d9d23342a01ff95e3ce930 \
     --hash=sha256:ac01b48823d3db9a83c9e164338057eadbb1c9957a2a6b4eeb486669c560b5dc
-    # via -r requirements/runtime.in
+    # via -r runtime.in
 typing-extensions==4.15.0 \
     --hash=sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466 \
     --hash=sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548
@@ -699,7 +699,7 @@ urllib3==2.6.3 \
 uvicorn==0.44.0 \
     --hash=sha256:6c942071b68f07e178264b9152f1f16dfac5da85880c4ce06366a96d70d4f31e \
     --hash=sha256:ce937c99a2cc70279556967274414c087888e8cec9f9c94644dfca11bd3ced89
-    # via -r requirements/runtime.in
+    # via -r runtime.in
 watchdog==6.0.0 \
     --hash=sha256:07df1fdd701c5d4c8e55ef6cf55b8f0120fe1aef7ef39a1c6fc6bc2e606d517a \
     --hash=sha256:20ffe5b202af80ab4266dcd3e91aae72bf2da48c0d33bdb15c66658e685e94e2 \
@@ -731,4 +731,4 @@ watchdog==6.0.0 \
     --hash=sha256:e6f0e77c9417e7cd62af82529b10563db3423625c5fce018430b249bf977f9e8 \
     --hash=sha256:e7631a77ffb1f7d2eefa4445ebbee491c720a5661ddf6df3498ebecae5ed375c \
     --hash=sha256:ef810fbf7b781a5a593894e4f439773830bdecb885e6880d957d5b9382a960d2
-    # via -r requirements/runtime.in
+    # via -r runtime.in
