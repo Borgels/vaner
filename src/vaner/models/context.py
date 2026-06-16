@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from vaner.models.answerable import AnswerabilityMetadata, AnswerableBriefing
+from vaner.models.context_preparation import PreparedContextDiagnostics
 
 
 class ContextSelection(BaseModel):
@@ -32,6 +33,9 @@ class ContextPackage(BaseModel):
     conflict_notes: list[str] = Field(default_factory=list)
     answerable_briefing: AnswerableBriefing | None = None
     answerability_metadata: AnswerabilityMetadata | None = None
+    prepared_context_briefing: str = ""
+    prepared_context_mode: str = ""
+    prepared_context_diagnostics: PreparedContextDiagnostics | None = None
     cache_tier: str = "miss"
     """How this package was sourced: ``"full_hit"`` | ``"partial_hit"`` | ``"miss"``."""
     partial_similarity: float = 0.0

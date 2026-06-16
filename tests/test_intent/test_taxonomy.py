@@ -24,6 +24,7 @@ from vaner.intent.taxonomy import (
         ("research paper benchmark analysis", "research"),
         ("write a draft with good grammar", "writing"),
         ("deploy to k8s and monitor latency", "ops"),
+        ("review option expiry and delta hedge for the portfolio", "finance"),
     ],
 )
 def test_classify_taxonomy_domain(query, expected_domain):

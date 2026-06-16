@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 
 import type { CycleState, ModelState } from '../api/usePipelineEvents'
 import type { BucketBudgets } from '../types'
@@ -459,24 +459,21 @@ function BucketBudgetPanel({ bucketBudgets }: BucketBudgetPanelProps) {
           const utilColor =
             util > 1.1 ? 'var(--err)' : util > 0.9 ? 'var(--ok)' : util > 0.5 ? 'var(--accent)' : 'var(--fg-3)'
           return (
-            <>
-              <span key={`${key}-label`} style={{ color: 'var(--fg-3)' }}>
+            <Fragment key={key}>
+              <span style={{ color: 'var(--fg-3)' }}>
                 {label}
               </span>
               <span
-                key={`${key}-alloc`}
                 style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
               >
                 {formatBudget(alloc)}
               </span>
               <span
-                key={`${key}-used`}
                 style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
               >
                 {formatBudget(used)}
               </span>
               <span
-                key={`${key}-util`}
                 style={{
                   textAlign: 'right',
                   fontVariantNumeric: 'tabular-nums',
@@ -485,7 +482,7 @@ function BucketBudgetPanel({ bucketBudgets }: BucketBudgetPanelProps) {
               >
                 {alloc > 0 ? `${(util * 100).toFixed(0)}%` : '—'}
               </span>
-            </>
+            </Fragment>
           )
         })}
       </div>

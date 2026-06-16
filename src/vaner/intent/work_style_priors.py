@@ -161,6 +161,18 @@ WORK_STYLE_PRIORS: Final[Mapping[WorkStyle, IntentPriorAdjustments]] = {
         preferred_artefact_templates=("debugging_brief", "patch_proposal"),
         composer_signal_weight_multiplier=1.0,
     ),
+    "trading": IntentPriorAdjustments(
+        # Trading/finance is preparation-oriented: favour strong evidence,
+        # broad branch pruning, and conservative draft surfacing because
+        # external market/account state can decay quickly.
+        artefact_alignment_weight_multiplier=1.4,
+        long_horizon_bonus_multiplier=1.1,
+        possible_branch_bonus_multiplier=1.4,
+        drafting_evidence_floor=0.6,
+        drafting_volatility_ceiling_multiplier=0.7,
+        preferred_artefact_templates=("finance_morning_brief", "position_brief", "option_strategy_plan"),
+        composer_signal_weight_multiplier=1.2,
+    ),
     "general": IntentPriorAdjustments(
         # General-purpose: very gentle nudges, no template preference.
         artefact_alignment_weight_multiplier=1.1,

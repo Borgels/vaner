@@ -4,6 +4,8 @@ import { KIND_COLOR } from '../lib/constants'
 import type { UIScenario, UIScenarioKind } from '../types'
 
 export type ClusterPosition = { x: number; y: number; vx?: number; vy?: number; _manual?: boolean }
+const EXIT_RETENTION_MS = 2600
+const LEGEND_KINDS: UIScenarioKind[] = ['research', 'explain', 'change', 'debug', 'refactor']
 
 export interface ScenarioEdge {
   from: string
@@ -61,6 +63,41 @@ function scenarioNodeBadge(scenario: UIScenario): string {
   if (scenario.visibility === 'archived') return 'history'
   if (scenario.readiness === 'ready') return 'ready'
   return `${Math.round(scenario.relevance * 100)}%`
+}
+
+export function fadingScenario(scenario: UIScenario, nowMs = Date.now()): UIScenario {
+  return {
+    ...scenario,
+    relevance: Math.min(scenario.relevance, 0.28),
+    visiblePriority: Math.min(scenario.visiblePriority, 0.28),
+    freshness: 'stale',
+    readiness: 'cooling',
+    visibility: 'archived',
+    lifecycleMotion: 'fading',
+    archivedAt: nowMs / 1000,
+    visibilityReason: scenario.visibilityReason || 'no longer in the active daemon frontier',
+  }
+}
+
+function scenarioMotionMarkerStyle(color: string, motion: UIScenario['lifecycleMotion']): React.CSSProperties | null {
+  if (motion === 'stable') {
+    return null
+  }
+  const pointsUp = motion === 'rising'
+  return {
+    position: 'absolute',
+    right: -13,
+    top: '50%',
+    transform: 'translateY(-50%)',
+    width: 0,
+    height: 0,
+    borderLeft: '4px solid transparent',
+    borderRight: '4px solid transparent',
+    borderBottom: pointsUp ? `7px solid ${color}` : undefined,
+    borderTop: pointsUp ? undefined : `7px solid ${color}`,
+    opacity: motion === 'fading' ? 0.45 : 0.8,
+    filter: 'drop-shadow(0 0 4px rgba(0,0,0,.28))',
+  }
 }
 
 /**
@@ -323,6 +360,8 @@ export function ScenarioCluster({
   const [, forceTick] = useState(0)
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 })
   const dragRef = useRef<{ id: string; moved: boolean } | null>(null)
+  const previousScenariosRef = useRef<Map<string, UIScenario>>(new Map())
+  const [exitingScenarios, setExitingScenarios] = useState<Record<string, { scenario: UIScenario; expiresAt: number }>>({})
 
   useEffect(() => {
     const element = wrapRef.current
@@ -339,9 +378,53 @@ export function ScenarioCluster({
   }, [])
 
   useEffect(() => {
-    edgesRef.current = computeEdges(scenarios)
+    const now = Date.now()
+    const currentIds = new Set(scenarios.map((scenario) => scenario.id))
+    setExitingScenarios((previous) => {
+      const next: Record<string, { scenario: UIScenario; expiresAt: number }> = {}
+      for (const [id, item] of Object.entries(previous)) {
+        if (item.expiresAt > now && !currentIds.has(id)) {
+          next[id] = item
+        }
+      }
+      for (const [id, scenario] of previousScenariosRef.current.entries()) {
+        if (!currentIds.has(id)) {
+          next[id] = { scenario: fadingScenario(scenario, now), expiresAt: now + EXIT_RETENTION_MS }
+        }
+      }
+      return next
+    })
+    previousScenariosRef.current = new Map(scenarios.map((scenario) => [scenario.id, scenario]))
+  }, [scenarios])
+
+  useEffect(() => {
+    if (!Object.keys(exitingScenarios).length) {
+      return
+    }
+    const timer = window.setTimeout(() => {
+      const now = Date.now()
+      setExitingScenarios((previous) => {
+        const next = Object.fromEntries(Object.entries(previous).filter(([, item]) => item.expiresAt > now))
+        return next
+      })
+    }, EXIT_RETENTION_MS + 80)
+    return () => window.clearTimeout(timer)
+  }, [exitingScenarios])
+
+  const displayScenarios = useMemo(() => {
+    const currentIds = new Set(scenarios.map((scenario) => scenario.id))
+    return [
+      ...scenarios,
+      ...Object.values(exitingScenarios)
+        .map((item) => item.scenario)
+        .filter((scenario) => !currentIds.has(scenario.id)),
+    ]
+  }, [exitingScenarios, scenarios])
+
+  useEffect(() => {
+    edgesRef.current = computeEdges(displayScenarios)
     const previous = posRef.current
-    const fresh = initialLayout(scenarios, size.w || 800, size.h || 520)
+    const fresh = initialLayout(displayScenarios, size.w || 800, size.h || 520)
     for (const id of Object.keys(fresh)) {
       if (previous[id]) {
         fresh[id] = { ...fresh[id], ...previous[id] }
@@ -349,11 +432,11 @@ export function ScenarioCluster({
     }
     posRef.current = fresh
     forceTick((value) => value + 1)
-  }, [scenarios, size.h, size.w])
+  }, [displayScenarios, size.h, size.w])
 
   const gravityTargets = useMemo(
-    () => Object.fromEntries(scenarios.map((scenario) => [scenario.id, scenarioTargetY(scenario, size.h || 520)])),
-    [scenarios, size.h],
+    () => Object.fromEntries(displayScenarios.map((scenario) => [scenario.id, scenarioTargetY(scenario, size.h || 520)])),
+    [displayScenarios, size.h],
   )
 
   useEffect(() => {
@@ -479,7 +562,7 @@ export function ScenarioCluster({
     // to recompute when it changes even though the linter doesn't see the
     // indirect dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, scenarios])
+  }, [selectedId, displayScenarios])
 
   useEffect(() => {
     if (!selectedId) {
@@ -498,7 +581,7 @@ export function ScenarioCluster({
 
   const positions = posRef.current
 
-  if (!scenarios.length) {
+  if (!displayScenarios.length) {
     return (
       <div
         ref={wrapRef}
@@ -567,7 +650,7 @@ export function ScenarioCluster({
           })}
         </svg>
 
-        {scenarios.map((scenario) => {
+        {displayScenarios.map((scenario) => {
           const position = positions[scenario.id]
           if (!position) {
             return null
@@ -585,6 +668,8 @@ export function ScenarioCluster({
           const freshnessOpacity = scenarioFreshnessOpacity(scenario)
           const borderWidth = plan || prediction ? 2 : 1 + Math.max(0.4, scenario.confidence) * 1.4
           const stalePinned = pinned && (scenario.freshness === 'stale' || scenario.relevance < 0.65)
+          const exiting = scenario.visibility === 'archived' || scenario.lifecycleMotion === 'fading'
+          const motionStyle = scenarioMotionMarkerStyle(color, scenario.lifecycleMotion)
 
           return (
             <div
@@ -592,7 +677,13 @@ export function ScenarioCluster({
               data-cluster-node
               data-scenario-id={scenario.id}
               title={`${scenario.title}\nRelevance ${Math.round(scenario.relevance * 100)}% · ${scenario.readiness} · ${scenario.visibilityReason || scenario.freshness}`}
-              onPointerDown={(event) => onNodePointerDown(event, scenario.id)}
+              onPointerDown={(event) => {
+                if (exiting) {
+                  event.stopPropagation()
+                  return
+                }
+                onNodePointerDown(event, scenario.id)
+              }}
               style={{
                 position: 'absolute',
                 left: position.x - radius,
@@ -600,10 +691,10 @@ export function ScenarioCluster({
                 width: radius * 2,
                 height: radius * 2,
                 borderRadius: plan ? '28%' : '50%',
-                cursor: 'pointer',
+                cursor: exiting ? 'default' : 'pointer',
                 background: rejected ? 'transparent' : `color-mix(in oklch, ${color} ${plan || prediction || scenario.readiness === 'ready' ? 30 : 18}%, transparent)`,
                 border: `${borderWidth}px solid ${color}`,
-                opacity: rejected ? 0.25 : dim ? 0.42 : freshnessOpacity,
+                opacity: rejected ? 0.25 : exiting ? 0.24 : dim ? 0.42 : freshnessOpacity,
                 boxShadow: selected
                   ? `0 0 0 3px var(--bg-0), 0 0 0 5px ${color}, 0 0 26px ${color}80`
                   : pinned
@@ -613,7 +704,7 @@ export function ScenarioCluster({
                   : chosen
                     ? `0 0 18px ${color}80`
                     : 'none',
-                transition: 'box-shadow .2s, opacity .2s',
+                transition: 'box-shadow .2s, opacity .65s',
                 animation: pulse ? 'dc-pulse 1.2s infinite' : 'none',
               }}
             >
@@ -674,48 +765,13 @@ export function ScenarioCluster({
               >
                 {scenarioNodeBadge(scenario)}
               </div>
-              <div
-                aria-hidden
-                style={{
-                  position: 'absolute',
-                  left: '50%',
-                  top: scenario.lifecycleMotion === 'rising' ? -14 : 'auto',
-                  bottom: scenario.lifecycleMotion === 'falling' || scenario.lifecycleMotion === 'fading' ? -14 : 'auto',
-                  transform: 'translateX(-50%)',
-                  width: 0,
-                  height: 0,
-                  borderLeft: '4px solid transparent',
-                  borderRight: '4px solid transparent',
-                  borderBottom: scenario.lifecycleMotion === 'rising' ? `6px solid ${color}` : undefined,
-                  borderTop: scenario.lifecycleMotion === 'falling' || scenario.lifecycleMotion === 'fading' ? `6px solid ${color}` : undefined,
-                  opacity: scenario.lifecycleMotion === 'stable' ? 0 : 0.75,
-                }}
-              />
+              {motionStyle ? <div aria-hidden style={motionStyle} /> : null}
             </div>
           )
         })}
       </div>
 
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 12,
-          left: 12,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          background: 'var(--bg-1)',
-          border: '1px solid var(--line-1)',
-          borderRadius: 'var(--r-2)',
-          padding: '7px 9px',
-          zIndex: 3,
-        }}
-      >
-        <span style={{ display: 'inline-flex', width: 10, height: 10, borderRadius: '50%', border: '1px solid var(--accent)', background: 'color-mix(in oklch, var(--accent) 18%, transparent)' }} />
-        <span className="mono" style={{ fontSize: 10.5, color: 'var(--fg-3)' }}>
-          Top = relevant now · size = readiness · opacity = freshness · border = confidence
-        </span>
-      </div>
+      <ScenarioLegend />
 
       <div
         style={{
@@ -731,11 +787,11 @@ export function ScenarioCluster({
           zIndex: 3,
         }}
       >
-        <button onClick={() => setView((current) => ({ ...current, scale: Math.min(2.5, current.scale * 1.2) }))} style={clusterBtn} aria-label="zoom in">
-          +
-        </button>
         <button onClick={() => setView((current) => ({ ...current, scale: Math.max(0.3, current.scale * 0.83) }))} style={clusterBtn} aria-label="zoom out">
           −
+        </button>
+        <button onClick={() => setView((current) => ({ ...current, scale: Math.min(2.5, current.scale * 1.2) }))} style={clusterBtn} aria-label="zoom in">
+          +
         </button>
         <button onClick={() => setView({ x: 0, y: 0, scale: 1 })} style={{ ...clusterBtn, paddingLeft: 8, paddingRight: 8 }} aria-label="reset view">
           ⟲
@@ -746,6 +802,72 @@ export function ScenarioCluster({
       </div>
     </div>
   )
+}
+
+function ScenarioLegend() {
+  return (
+    <div style={legendStyle} aria-label="Scenario map legend">
+      <div className="mono" style={{ color: 'var(--fg-4)', fontSize: 10, letterSpacing: 1 }}>
+        LEGEND
+      </div>
+      <div style={legendGridStyle}>
+        {LEGEND_KINDS.map((kind) => (
+          <div key={kind} style={legendItemStyle}>
+            <span style={{ ...legendBubbleStyle, borderColor: KIND_COLOR[kind], background: `color-mix(in oklch, ${KIND_COLOR[kind]} 26%, transparent)` }} />
+            <span>{kind}</span>
+          </div>
+        ))}
+      </div>
+      <div style={legendItemStyle}>
+        <span style={{ ...legendBubbleStyle, borderRadius: '28%', borderColor: 'var(--accent)', background: 'color-mix(in oklch, var(--accent) 28%, transparent)' }} />
+        <span>plan</span>
+        <span style={{ ...legendBubbleStyle, borderColor: 'var(--kind-change)', background: 'color-mix(in oklch, var(--kind-change) 28%, transparent)', boxShadow: '0 0 14px var(--kind-change)' }} />
+        <span>prepared/live work</span>
+      </div>
+    </div>
+  )
+}
+
+const legendStyle: React.CSSProperties = {
+  position: 'absolute',
+  bottom: 12,
+  left: 12,
+  zIndex: 3,
+  display: 'grid',
+  gap: 8,
+  width: 390,
+  maxWidth: 'calc(100% - 36px)',
+  background: 'color-mix(in oklch, var(--bg-1) 94%, transparent)',
+  border: '1px solid var(--line-1)',
+  borderRadius: 'var(--r-2)',
+  padding: '10px 11px',
+  boxShadow: '0 10px 28px rgba(0,0,0,.2)',
+  color: 'var(--fg-3)',
+  fontSize: 10.5,
+}
+
+const legendGridStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+  gap: 7,
+}
+
+const legendItemStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 5,
+  minWidth: 0,
+  fontFamily: 'var(--font-mono)',
+  whiteSpace: 'nowrap',
+}
+
+const legendBubbleStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  width: 10,
+  height: 10,
+  flex: '0 0 auto',
+  borderRadius: '50%',
+  border: '1.5px solid var(--accent)',
 }
 
 const clusterBtn: React.CSSProperties = {

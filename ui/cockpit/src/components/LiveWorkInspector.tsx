@@ -61,7 +61,7 @@ export function LiveWorkInspector({ snapshot, live, error, title, onClose }: Liv
               <span className="mono" style={{ color: 'var(--accent)', fontSize: 10.5 }}>{event.stage} · {event.status}</span>
               <span className="mono" style={{ color: 'var(--fg-4)', fontSize: 10 }}>{relativeAge(event.ts)}</span>
             </div>
-            <div style={{ color: 'var(--fg-2)', fontSize: 12.5, lineHeight: 1.45, marginTop: 6 }}>{event.summary}</div>
+            <div style={{ color: 'var(--fg-2)', fontSize: 12.5, lineHeight: 1.45, marginTop: 6 }}>{liveWorkEventSummary(event)}</div>
             {event.model || event.latency_ms || event.artifact_kind ? (
               <div className="mono" style={{ color: 'var(--fg-4)', fontSize: 10, marginTop: 6 }}>
                 {[event.model, event.latency_ms ? `${Math.round(event.latency_ms)}ms` : null, event.artifact_kind].filter(Boolean).join(' · ')}
@@ -102,6 +102,27 @@ function relativeAge(epoch: number): string {
   if (delta < 3600) return `${Math.round(delta / 60)}m ago`
   if (delta < 86400) return `${Math.round(delta / 3600)}h ago`
   return `${Math.round(delta / 86400)}d ago`
+}
+
+function liveWorkEventSummary(event: LiveWorkSnapshot['events'][number]): string {
+  const payload = event.metadata?.payload
+  if (!isRecord(payload)) {
+    return event.summary
+  }
+  const tokensUsed = Number(payload.tokens_used)
+  const tokenBudget = Number(payload.token_budget)
+  if (!Number.isFinite(tokensUsed) || !Number.isFinite(tokenBudget) || tokenBudget <= 0) {
+    return event.summary
+  }
+  const complete = Number(payload.scenarios_complete)
+  const over = Math.max(0, Math.round(tokensUsed - tokenBudget))
+  const base = `Progress: ${Math.round(tokensUsed)} tokens used / ${Math.round(tokenBudget)} token target`
+  const suffix = Number.isFinite(complete) ? `, ${Math.round(complete)} scenarios complete` : ''
+  return over > 0 ? `${base} (${over} over target)${suffix}.` : `${base}${suffix}.`
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 const eyebrowStyle: React.CSSProperties = { fontSize: 10, letterSpacing: 1.2, color: 'var(--fg-4)', marginBottom: 8 }

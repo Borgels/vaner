@@ -17,6 +17,9 @@ def ollama_llm(
     model: str,
     base_url: str = "http://127.0.0.1:11434",
     timeout: float = 120.0,
+    max_tokens: int | None = None,
+    extra_body: dict | None = None,
+    reasoning_mode: ReasoningMode = "off",
 ) -> Callable[[str], Awaitable[str]]:
     """Ollama inference client (bare-string return — legacy contract).
 
@@ -27,7 +30,9 @@ def ollama_llm(
         model=model,
         base_url=base_url,
         timeout=timeout,
-        reasoning_mode="off",
+        max_tokens=max_tokens,
+        extra_body=extra_body,
+        reasoning_mode=reasoning_mode,
     )
 
     async def _call(prompt: str) -> str:
@@ -79,7 +84,11 @@ def ollama_llm_structured(
             body = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
         else:
             body = {"model": model, "prompt": prompt, "stream": False}
+        merged_extra = dict(extra_body or {})
+        extra_options = merged_extra.pop("options", None)
         options: dict = {}
+        if isinstance(extra_options, dict):
+            options.update(extra_options)
         if max_tokens is not None and max_tokens > 0:
             options["num_predict"] = int(max_tokens)
         if options:
@@ -88,7 +97,6 @@ def ollama_llm_structured(
             rf_type = response_format.get("type")
             if rf_type in ("json_object", "json"):
                 body["format"] = "json"
-        merged_extra = dict(extra_body or {})
         if reasoning_mode == "off":
             # Modern Ollama reasoning models support a top-level ``think``
             # switch and return reasoning in a separate ``thinking`` field.

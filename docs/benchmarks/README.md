@@ -39,6 +39,12 @@ but doesn't measure whether the briefing actually helps the backend LLM
 produce a better answer. File-recall is still reported as a secondary
 diagnostic but is not the ship gate.
 
+Benchmark misses should be treated as diagnostic evidence for general
+context-preparation failures, not as invitations to encode benchmark-specific
+routes or answer patterns. See
+[`docs/context-preparation.md`](../context-preparation.md) for the current
+benchmark-driven development guardrails.
+
 ## Methodology
 
 See the evaluation harness for the session replay runner.

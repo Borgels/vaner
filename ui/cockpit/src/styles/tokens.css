@@ -219,9 +219,20 @@ textarea {
   color: var(--fg-1);
 }
 
+.cockpit-root--wide-graph {
+  grid-template-areas:
+    "top top"
+    "rail graph";
+  grid-template-columns: 260px minmax(0, 1fr);
+}
+
 @media (max-width: 1120px) {
   .cockpit-root {
     grid-template-columns: 240px minmax(0, 1fr) 320px;
+  }
+
+  .cockpit-root--wide-graph {
+    grid-template-columns: 240px minmax(0, 1fr);
   }
 }
 

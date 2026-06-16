@@ -42,6 +42,15 @@ Vaner is a local-first predictive context engine for coding assistants.
   - `vaner why [decision-id] [--list|--verbose|--json]`
   - `vaner query --explain [--verbose|--json]`
 
+## Context preparation
+
+Vaner prepares context through explicit needs, bounded preparation policies,
+general context tools, traces, and provenance-preserving packages. Benchmark
+work must improve these reusable product capabilities instead of teaching the
+engine dataset-specific routes or answer patterns. See
+[`docs/context-preparation.md`](docs/context-preparation.md) for the current
+architecture notes and benchmark-driven development guardrails.
+
 ## Claude Code plugin packaging
 
 Vaner ships a Claude Code plugin under `plugins/vaner/`, catalogued by a repo-root marketplace at `.claude-plugin/marketplace.json`. The plugin is a thin wrapper — it registers the `vaner` MCP server, the `vaner-feedback` skill, and a SessionStart hook that checks whether the `vaner` CLI is on PATH. The actual code still ships via PyPI and `scripts/install.sh`; the plugin only wires Claude Code to the installed CLI. Version parity between `pyproject.toml`, `plugins/vaner/.claude-plugin/plugin.json`, and the marketplace entry is enforced by `scripts/bump-plugin-version.sh` (pre-commit and CI).

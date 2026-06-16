@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from vaner.models.answerable import AnswerabilityMetadata, AnswerableBriefing, EvidenceChannel
 
-Domain = Literal["code", "docs", "support", "operations", "research", "planning", "learning", "writing", "general"]
+Domain = Literal["code", "docs", "support", "operations", "research", "planning", "learning", "writing", "finance", "general"]
 EvidenceOverlay = Literal["indexed", "working_tree", "staged", "live", "predicted", "memory", "external"]
 ProvenanceMode = Literal["predictive_hit", "cached_result", "fresh_resolution", "retrieval_fallback"]
 Budget = Literal["low", "medium", "high"]

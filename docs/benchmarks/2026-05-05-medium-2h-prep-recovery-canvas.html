@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vaner Medium 2h Preparation Recovery Canvas</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #111113;
+        --panel: #18191d;
+        --panel-2: #202126;
+        --ink: #f2f0e8;
+        --muted: #aaa7a0;
+        --line: #34363d;
+        --green: #7fd08a;
+        --blue: #86b7ff;
+        --amber: #f0c36a;
+        --red: #ff8d8d;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main { width: min(1180px, calc(100vw - 40px)); margin: 0 auto; padding: 44px 0; }
+      header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 28px;
+        align-items: end;
+        padding-bottom: 28px;
+        border-bottom: 1px solid var(--line);
+      }
+      h1, h2, h3, p { margin: 0; }
+      .eyebrow { color: var(--amber); font-size: 12px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
+      h1 { max-width: 900px; margin-top: 10px; font-size: clamp(42px, 6vw, 78px); line-height: 0.95; letter-spacing: 0; }
+      .subtitle { max-width: 820px; margin-top: 18px; color: var(--muted); font-size: 18px; line-height: 1.45; }
+      .stamp { min-width: 260px; padding: 18px; border: 1px solid var(--line); background: var(--panel); }
+      .stamp .label { color: var(--muted); font-size: 12px; }
+      .stamp .value { margin-top: 7px; font-size: 23px; font-weight: 850; }
+      .grid { display: grid; gap: 18px; }
+      .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 28px; }
+      .card { border: 1px solid var(--line); background: var(--panel); padding: 18px; }
+      .warn { border-color: color-mix(in srgb, var(--amber), var(--line) 55%); }
+      .bad { border-color: color-mix(in srgb, var(--red), var(--line) 55%); }
+      .good { border-color: color-mix(in srgb, var(--green), var(--line) 55%); }
+      .metric .number { font-size: 40px; font-weight: 850; line-height: 1; }
+      .metric .caption { margin-top: 9px; color: var(--muted); font-size: 13px; line-height: 1.35; }
+      .metric .caption strong { color: var(--ink); }
+      .sections { grid-template-columns: 1.1fr 0.9fr; margin-top: 18px; }
+      .triptych { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; }
+      h2 { font-size: 20px; margin-bottom: 16px; }
+      h3 { font-size: 15px; margin: 16px 0 8px; }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      th, td { padding: 13px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+      td strong, .green { color: var(--green); }
+      .amber { color: var(--amber); }
+      .red { color: var(--red); }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        padding: 4px 9px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .list { display: grid; gap: 12px; }
+      .item { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 11px; align-items: start; }
+      .dot {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--blue);
+        font-size: 13px;
+        font-weight: 800;
+      }
+      .item strong { display: block; margin-bottom: 3px; font-size: 14px; }
+      .item span, .note { color: var(--muted); font-size: 13px; line-height: 1.38; }
+      .footer { margin-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+      .bar-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 70px; gap: 12px; align-items: center; font-size: 13px; }
+      .track { height: 24px; border: 1px solid var(--line); background: var(--panel-2); overflow: hidden; }
+      .bar { display: block; height: 100%; background: var(--green); }
+      .bar.blue { background: var(--blue); }
+      .bar.amber { background: var(--amber); }
+      .bar.red { background: var(--red); }
+      code { color: var(--blue); }
+      @media (max-width: 860px) {
+        header, .metrics, .sections, .triptych { grid-template-columns: 1fr; }
+        main { width: min(100vw - 28px, 1180px); padding: 28px 0; }
+        .bar-row { grid-template-columns: 1fr; gap: 6px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <div class="eyebrow">Preparation engine validation &middot; recovery canvas</div>
+          <h1>Vaner helps AI stop starting from scratch. The reactive floor is strong; continuation still needs proof.</h1>
+          <p class="subtitle">
+            This canvas reframes the medium two-hour run around Vaner's real product claim: preparation before the prompt.
+            The corrected A/B quality slice is strong, but the telemetry also shows that normal continuation did not activate
+            during this run.
+          </p>
+        </div>
+        <div class="stamp">
+          <div class="label">Run date</div>
+          <div class="value">2026-05-05</div>
+          <div class="label" style="margin-top:14px">Models</div>
+          <div class="note">Vaner prep: <code>local qwen</code><br>Answer: <code>claude:sonnet</code><br>Judge: <code>claude:opus</code></div>
+        </div>
+      </header>
+
+      <section class="grid metrics">
+        <div class="card metric good">
+          <div class="number">4/4</div>
+          <div class="caption"><strong>Corrected quality A/B</strong><br>Vaner-context answers won every recovered medium case.</div>
+        </div>
+        <div class="card metric good">
+          <div class="number">7189s</div>
+          <div class="caption"><strong>Preparation observed</strong><br>The two-hour window reached 99.8% before the original quality phase crashed.</div>
+        </div>
+        <div class="card metric warn">
+          <div class="number">0</div>
+          <div class="caption"><strong>Continuation rounds</strong><br>No normal continuation activity was recorded in telemetry.</div>
+        </div>
+        <div class="card metric warn">
+          <div class="number">21</div>
+          <div class="caption"><strong>Ready predictions</strong><br>73 total predictions at the end: 21 ready, 52 queued.</div>
+        </div>
+      </section>
+
+      <section class="grid sections">
+        <div class="card">
+          <h2>Layer Results</h2>
+          <table>
+            <thead><tr><th>Layer</th><th>Benchmark</th><th>Result</th><th>Read</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Reactive floor</td>
+                <td>4 Claude-judged repo mechanism questions</td>
+                <td><strong>4 Vaner wins, 0 naked wins, 0 ties</strong></td>
+                <td>When prepared context is available, the primary AI answers with more exact files, identifiers, and mechanisms.</td>
+              </tr>
+              <tr>
+                <td>Preparation window</td>
+                <td>Normal background run, target 7200s</td>
+                <td>Last sample at 7188.9s; 236 telemetry samples</td>
+                <td>Vaner stayed active through almost the whole preparation window.</td>
+              </tr>
+              <tr>
+                <td>Prepared state</td>
+                <td>Prediction snapshot at final sample</td>
+                <td>73 predictions, 21 ready, 52 queued, 8 prepared-work cards</td>
+                <td>The system accumulated useful prepared context, but visible prepared work did not grow during the run.</td>
+              </tr>
+              <tr>
+                <td>Continuation</td>
+                <td>Normal-background continuation profile</td>
+                <td><span class="amber">0 nonzero continuation samples</span></td>
+                <td>This run does not prove that Vaner kept branching, revisiting, or hardening likely next scenarios.</td>
+              </tr>
+              <tr>
+                <td>Harness reliability</td>
+                <td>Original quality phase</td>
+                <td><span class="red">Crashed before final quality output</span></td>
+                <td>The recovered A/B is valid, but final release claims need the versioned release harness fixed.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h2>Is Vaner Worth It?</h2>
+          <div class="list">
+            <div class="item"><div class="dot">1</div><div><strong>Yes, when work has continuity</strong><span>Vaner is useful when the same project, repo, research area, writing workflow, or team knowledge base comes up repeatedly.</span></div></div>
+            <div class="item"><div class="dot">2</div><div><strong>Why this slice matters</strong><span>Even when tested like reactive RAG, Vaner helped Sonnet avoid generic answers and use concrete repo evidence.</span></div></div>
+            <div class="item"><div class="dot">3</div><div><strong>Where it is not enough</strong><span>The run does not yet demonstrate the larger product claim: that Vaner keeps preparing many plausible next scenarios over time.</span></div></div>
+            <div class="item"><div class="dot">4</div><div><strong>Next proof needed</strong><span>Run a preparation-over-time benchmark: 0m, 5m, 15m, 60m, 2h, and overnight, with prepared-work hit rate and stale rate.</span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid triptych">
+        <div class="card">
+          <h2>Corrected A/B Cases</h2>
+          <table>
+            <thead><tr><th>Case</th><th>Winner</th><th>Judge read</th></tr></thead>
+            <tbody>
+              <tr><td>Reward computation</td><td><strong>Vaner</strong></td><td>Concrete files and signal mappings; medium hallucination risk for naming variance.</td></tr>
+              <tr><td>IntentScorer GBDT</td><td><strong>Vaner</strong></td><td>Strong file paths, feature names, fallback, calibration, and blend details.</td></tr>
+              <tr><td>LLM exploration flow</td><td><strong>Vaner</strong></td><td>Concrete JSON contract, parser, ranking, and follow-on behavior.</td></tr>
+              <tr><td>ArtefactStore schema</td><td><strong>Vaner</strong></td><td>Concrete schema and methods; medium hallucination risk around one uncertain cache-table detail.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h2>Quality Comparison</h2>
+          <div class="grid" style="gap:12px">
+            <div class="bar-row">
+              <span>Naked Sonnet wins</span>
+              <div class="track"><span class="bar red" style="width:0%"></span></div>
+              <strong>0</strong>
+            </div>
+            <div class="bar-row">
+              <span>Ties</span>
+              <div class="track"><span class="bar amber" style="width:0%"></span></div>
+              <strong>0</strong>
+            </div>
+            <div class="bar-row">
+              <span>Vaner-context wins</span>
+              <div class="track"><span class="bar" style="width:100%"></span></div>
+              <strong>4</strong>
+            </div>
+          </div>
+          <p class="footer">Valid artifact: <code>quality_ab_recovered_claude_valid.json</code>. Invalid failed-CLI artifact: <code>quality_ab_recovered_claude.json</code>.</p>
+        </div>
+
+        <div class="card">
+          <h2>Preparation Spend</h2>
+          <table>
+            <tbody>
+              <tr><td>Model starts</td><td><strong>118</strong></td></tr>
+              <tr><td>Model completions</td><td><strong>118</strong></td></tr>
+              <tr><td>Max GPU utilization sample</td><td>1.00</td></tr>
+              <tr><td>Queue coalesced</td><td>53</td></tr>
+              <tr><td>Queue dropped</td><td><span class="amber">11</span></td></tr>
+            </tbody>
+          </table>
+          <p class="footer">This proves background work happened. It does not prove the desired continuation policy yet.</p>
+        </div>
+      </section>
+
+      <section class="grid sections">
+        <div class="card">
+          <h2>Before / After Pattern</h2>
+          <table>
+            <thead><tr><th>Without Vaner</th><th>With Vaner</th><th>User-visible improvement</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Generic answer or caveat that repo details are unknown.</td>
+                <td>Specific files such as <code>learning/reward.py</code>, <code>intent/scorer.py</code>, <code>engine.py</code>, and <code>store/artefacts.py</code>.</td>
+                <td>Less setup, fewer clarifying turns, better grounded follow-up work.</td>
+              </tr>
+              <tr>
+                <td>Broad architecture pattern.</td>
+                <td>Exact constants, methods, schema fields, and flow stages when evidence was present.</td>
+                <td>The assistant starts from project evidence instead of rediscovery.</td>
+              </tr>
+              <tr>
+                <td>Safer but often non-actionable uncertainty.</td>
+                <td>More useful specificity, but still needs hallucination-risk checks in public claims.</td>
+                <td>Better answer quality with a clear need for evidence-precision gates.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h2>Release-safe Language</h2>
+          <div class="list">
+            <div class="item"><div class="dot">OK</div><div><strong>Safe claim</strong><span>In a recovered medium quality slice after background preparation, Vaner context helped Claude Sonnet produce better answers than naked prompting on all four tested mechanism questions.</span></div></div>
+            <div class="item"><div class="dot">NO</div><div><strong>Do not claim yet</strong><span>Do not say this run proves Vaner continuously explores and hardens many future scenarios over a two-hour idle window.</span></div></div>
+            <div class="item"><div class="dot">FIT</div><div><strong>Best fit</strong><span>Recurring project work, codebases, research, writing, planning, and team knowledge where prepared context can be reused.</span></div></div>
+            <div class="item"><div class="dot">LOW</div><div><strong>Weak fit</strong><span>Generic one-off prompts, vague unrelated asks, and tasks where the base model already knows enough.</span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid triptych">
+        <div class="card">
+          <h2>Needed Harness Fixes</h2>
+          <div class="list">
+            <div class="item"><div class="dot">A</div><div><strong>Normalize context payloads</strong><span>Structured Vaner payloads must be converted to text before prompt assembly.</span></div></div>
+            <div class="item"><div class="dot">B</div><div><strong>Keep A/B artifacts explicit</strong><span>Mark recovered, failed, and release-harness files separately.</span></div></div>
+            <div class="item"><div class="dot">C</div><div><strong>Gate hallucination risk</strong><span>Medium-risk wins need identifier checks before marketing copy.</span></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Preparation Benchmark Next</h2>
+          <table>
+            <thead><tr><th>Window</th><th>Measure</th></tr></thead>
+            <tbody>
+              <tr><td>0m</td><td>Cold reactive floor.</td></tr>
+              <tr><td>5m</td><td>Fast preparation payoff.</td></tr>
+              <tr><td>15m</td><td>Short work-session continuity.</td></tr>
+              <tr><td>60m</td><td>Idle lunch-break preparation.</td></tr>
+              <tr><td>2h</td><td>Normal background exploration, not deep-run.</td></tr>
+              <tr><td>Overnight</td><td>Deep preparation and stale-rate pressure.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h2>Metrics To Add</h2>
+          <div class="list">
+            <div class="item"><div class="dot">H</div><div><strong>Prepared Work Hit Rate</strong><span>How often useful work was ready before the user asked.</span></div></div>
+            <div class="item"><div class="dot">E</div><div><strong>Evidence Precision</strong><span>Whether prepared evidence was actually the decisive evidence.</span></div></div>
+            <div class="item"><div class="dot">S</div><div><strong>Stale Rate</strong><span>How often prepared work was outdated or irrelevant.</span></div></div>
+            <div class="item"><div class="dot">C</div><div><strong>Compounding Score</strong><span>Whether usefulness improves over repeated sessions.</span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <p class="footer">
+        Source run: <code>.vaner/bench-runs/normal-bg-medium-2h-20260505T182339Z</code>.
+        This canvas is a recovery and interpretation artifact, not a final versioned release benchmark.
+      </p>
+    </main>
+  </body>
+</html>

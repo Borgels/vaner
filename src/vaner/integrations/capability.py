@@ -33,8 +33,92 @@ class ClientCapabilityTier(IntEnum):
     TIER_4 = 4
 
 
+class ClientFamily(IntEnum):
+    """Normalised host family derived from ``clientInfo.name``.
+
+    Tier detection answers *what the host can render*. ClientFamily answers
+    *which host is rendering it* — useful for tiny per-host UX tweaks
+    (markdown vs plain, slash-command hints, dashboard wording) without
+    branching on capability flags. ``UNKNOWN`` covers everything we don't
+    have a tested heuristic for; treat it the same as a generic Tier-aware
+    host.
+    """
+
+    UNKNOWN = 0
+    CLAUDE_CODE = 1
+    CLAUDE_DESKTOP = 2
+    CLAUDE_WEB = 3
+    CHATGPT = 4
+    CODEX = 5
+    CURSOR = 6
+    VSCODE = 7
+    ZED = 8
+    GOOSE = 9
+    WINDSURF = 10
+    CLINE = 11
+    CONTINUE = 12
+
+
 _UI_EXT_KEY = "io.modelcontextprotocol/ui"
 _INJECTION_EXT_KEY = "vaner.context_injection"
+
+
+def classify_client(name: str | None) -> ClientFamily:
+    """Map a ``clientInfo.name`` string into a :class:`ClientFamily`.
+
+    Matching is case-insensitive and substring-tolerant because hosts are
+    inconsistent ("claude-code" vs "Claude Code" vs "claude-code-cli"). New
+    hosts default to ``UNKNOWN`` — adding one is intentional, not automatic,
+    so we can document the heuristic per host.
+    """
+
+    if not isinstance(name, str) or not name.strip():
+        return ClientFamily.UNKNOWN
+    raw = name.strip().lower()
+    # Normalise whitespace and underscores to hyphens so "Claude Code",
+    # "claude_code", and "claude-code" all classify identically.
+    n = raw.replace("_", "-")
+    n_compact = " ".join(n.split())
+    n = n_compact.replace(" ", "-")
+    # Order matters: more specific prefixes first.
+    if "claude-code" in n:
+        return ClientFamily.CLAUDE_CODE
+    if "claude-desktop" in n:
+        return ClientFamily.CLAUDE_DESKTOP
+    if n in {"claude.ai", "claude-ai", "claude-web", "claudeai"}:
+        return ClientFamily.CLAUDE_WEB
+    if n.startswith("chatgpt") or "openai-chatgpt" in n:
+        return ClientFamily.CHATGPT
+    if "codex" in n:
+        return ClientFamily.CODEX
+    if "cursor" in n:
+        return ClientFamily.CURSOR
+    if "vscode" in n or "vs-code" in n or "visual-studio-code" in n or "copilot" in n:
+        return ClientFamily.VSCODE
+    if n.startswith("zed"):
+        return ClientFamily.ZED
+    if "goose" in n:
+        return ClientFamily.GOOSE
+    if "windsurf" in n:
+        return ClientFamily.WINDSURF
+    if "cline" in n:
+        return ClientFamily.CLINE
+    if n.startswith("continue") or "continue.dev" in n:
+        return ClientFamily.CONTINUE
+    return ClientFamily.UNKNOWN
+
+
+def is_terminal_host(family: ClientFamily) -> bool:
+    """Return True for hosts that render output as terminal text (no iframes)."""
+
+    return family in {
+        ClientFamily.CLAUDE_CODE,
+        ClientFamily.CODEX,
+        ClientFamily.ZED,
+        ClientFamily.CLINE,
+        ClientFamily.CONTINUE,
+        ClientFamily.WINDSURF,
+    }
 
 
 @dataclass(frozen=True)
@@ -191,6 +275,15 @@ def current_tier(session: Any) -> ClientCapabilityTier:
 
 def current_detection(session: Any) -> TierDetection | None:
     return _CACHE.get(session)
+
+
+def current_client_family(session: Any) -> ClientFamily:
+    """Return the :class:`ClientFamily` for *session*, or UNKNOWN if not seen."""
+
+    detection = _CACHE.get(session)
+    if detection is None:
+        return ClientFamily.UNKNOWN
+    return classify_client(detection.client_name)
 
 
 def reset_cache() -> None:

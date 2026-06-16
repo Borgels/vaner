@@ -1,6 +1,7 @@
 import type { PipelineEvent } from '../api/usePipelineEvents'
 import type {
   ActiveWorkPayload,
+  ExternalStateSettings,
   FocusStatePayload,
   FocusRoutePayload,
   JobsStatusPayload,
@@ -20,6 +21,7 @@ interface PreparedWorkViewProps {
   cards: PreparedWorkCard[]
   loading: boolean
   error: string | null
+  route: FocusRoutePayload | null
   selectedId: string | null
   onSelect: (id: string) => void
   onCardsChange: (cards: PreparedWorkCard[]) => void
@@ -30,24 +32,222 @@ export function PreparedWorkView({
   cards,
   loading,
   error,
+  route,
   selectedId,
   onSelect,
   onCardsChange,
   onAction,
 }: PreparedWorkViewProps) {
+  const visibleCards = highSignalPreparedCards(cards)
+  const visibleIds = new Set(visibleCards.map((card) => card.id))
+  const workspace = workspaceSummary(route)
   return (
-    <ViewShell eyebrow="Prepared Work" title="What Vaner has ready right now">
+    <ViewShell eyebrow="Ready Work" title="Prepared work worth reviewing">
+      {workspace ? <WorkspaceLine workspace={workspace} /> : null}
+      <div style={quietNoticeStyle}>
+        Showing {visibleCards.length} high-signal item{visibleCards.length === 1 ? '' : 's'}.
+        {cards.length > visibleCards.length ? ` ${cards.length - visibleCards.length} generic context item${cards.length - visibleCards.length === 1 ? '' : 's'} moved out of the main queue.` : ''}
+      </div>
       <PreparedWorkPanel
         variant="main"
-        cards={cards}
+        cards={visibleCards}
         loading={loading}
         error={error}
         selectedId={selectedId}
         onSelect={onSelect}
-        onCardsChange={onCardsChange}
+        onCardsChange={(next) => mergeFilteredCards(cards, visibleIds, next, onCardsChange)}
         onAction={onAction}
+        workspaceLabel={workspace?.label ?? null}
       />
     </ViewShell>
+  )
+}
+
+interface OperatorOverviewViewProps {
+  cards: PreparedWorkCard[]
+  loading: boolean
+  error: string | null
+  selectedId: string | null
+  onSelect: (id: string) => void
+  onCardsChange: (cards: PreparedWorkCard[]) => void
+  onAction: (message: string) => void
+  activeWork: ActiveWorkPayload | null
+  jobs: JobsStatusPayload | null
+  route: FocusRoutePayload | null
+  activity: RecentActivityPayload | null
+  predictions: PredictionSummary[]
+  externalState: ExternalStateSettings | null
+  onSelectPrediction?: (id: string) => void
+}
+
+export function OperatorOverviewView({
+  cards,
+  loading,
+  error,
+  selectedId,
+  onSelect,
+  onCardsChange,
+  onAction,
+  activeWork,
+  jobs,
+  route,
+  activity,
+  predictions,
+  externalState,
+  onSelectPrediction,
+}: OperatorOverviewViewProps) {
+  const worker = jobs?.worker
+  const queue = jobs?.queue
+  const profile = jobs?.profile ?? {}
+  const cycleMs = numberFromProfile(profile.total_ms)
+  const visibleCards = highSignalPreparedCards(cards).slice(0, 4)
+  const visibleCardIds = new Set(visibleCards.map((card) => card.id))
+  const workspace = workspaceSummary(route)
+  const handleVisibleCardsChange = (updatedVisible: PreparedWorkCard[]) => {
+    const updatedById = new Map(updatedVisible.map((card) => [card.id, card]))
+    onCardsChange(cards.map((card) => updatedById.get(card.id) ?? card).filter((card) => visibleCardIds.has(card.id) || !updatedById.has(card.id)))
+  }
+  const directionPredictions = predictions
+    .filter((prediction) => prediction.trust_status !== 'invalidated')
+    .filter((prediction) => isDirectionPrediction(prediction))
+    .slice(0, 4)
+  const latestPrompt = activity?.items?.[0]
+  const externalEnabled = Boolean(externalState?.enabled)
+  const financeEnabled = Boolean(externalState?.finance?.enabled)
+  const accountEnabled = Boolean(externalState?.finance?.account_state_enabled)
+
+  return (
+    <ViewShell eyebrow="Overview" title="What Vaner is doing">
+      <div className="scroll" style={{ ...viewScrollStyle, padding: 20 }}>
+        <section style={operatorHeroStyle}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: worker?.state === 'running' ? 'var(--ok)' : 'var(--fg-4)' }} />
+              <span className="mono" style={{ color: worker?.state === 'running' ? 'var(--ok)' : 'var(--fg-4)', fontSize: 10.5, letterSpacing: 0.7 }}>
+                {worker?.state === 'running' ? 'RUNNING' : 'WAITING'}
+              </span>
+            </div>
+            <div style={{ fontFamily: 'var(--font-display)', color: 'var(--fg-1)', fontSize: 24, lineHeight: 1.2, marginTop: 8 }}>
+              {activeWork?.summary || 'Vaner is listening for useful work to prepare.'}
+            </div>
+            <div style={{ color: 'var(--fg-3)', fontSize: 12.5, lineHeight: 1.45, marginTop: 9, maxWidth: 780 }}>
+              {workspace
+                ? `Workspace: ${workspace.label}${workspace.path ? ` (${workspace.path})` : ''}.`
+                : 'The main queue hides generic context and shows only work that looks useful to review now.'}
+            </div>
+          </div>
+          <div style={operatorMetricGridStyle}>
+            <Metric label="ready work" value={cards.length} tone={cards.length ? 'ok' : 'default'} />
+            <Metric label="queue" value={`${queue?.size ?? 0}/${queue?.max_size ?? 0}`} />
+            <Metric label="cycle" value={formatDurationMs(cycleMs)} />
+          </div>
+        </section>
+
+        <section style={operatorSectionStyle}>
+          <SectionHeader title="Ready For Review" meta={`${visibleCards.length} shown`} />
+          {cards.length > visibleCards.length ? (
+            <div style={subtleLineStyle}>{cards.length - visibleCards.length} generic context item{cards.length - visibleCards.length === 1 ? '' : 's'} hidden from Overview.</div>
+          ) : null}
+          {visibleCards.length || loading || error ? (
+            <PreparedWorkPanel
+              variant="main"
+              cards={visibleCards}
+              loading={loading}
+              error={error}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              onCardsChange={handleVisibleCardsChange}
+              onAction={onAction}
+              workspaceLabel={workspace?.label ?? null}
+            />
+          ) : (
+            <EmptyState text="No prepared work is ready yet." />
+          )}
+        </section>
+
+        <div style={operatorTwoColumnStyle}>
+          <section style={operatorSectionStyle}>
+            <SectionHeader title="Exploration" meta={`${directionPredictions.length} active`} />
+            {directionPredictions.length ? (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {directionPredictions.slice(0, 2).map((prediction) => (
+                  <PredictionMiniCard key={prediction.id} prediction={prediction} onSelect={onSelectPrediction} />
+                ))}
+              </div>
+            ) : (
+              <EmptyState text="No active exploration branches are visible yet." />
+            )}
+          </section>
+
+          <section style={operatorSectionStyle}>
+            <SectionHeader title="External State" meta={externalEnabled ? 'enabled' : 'off'} />
+            <div style={{ display: 'grid', gap: 9 }}>
+              <FocusField label="Market data" value={financeEnabled ? 'enabled' : 'off'} tone={financeEnabled ? 'ok' : 'muted'} />
+              <FocusField label="Account data" value={accountEnabled ? 'enabled' : 'off'} tone={accountEnabled ? 'warn' : 'muted'} />
+              <FocusField label="Providers" value={externalState?.providers?.length ?? 0} />
+              {latestPrompt ? <FocusField label="Latest signal" value={latestPrompt.query_text} /> : null}
+            </div>
+          </section>
+        </div>
+      </div>
+    </ViewShell>
+  )
+}
+
+interface WorkspaceSummary {
+  label: string
+  path: string | null
+}
+
+function workspaceSummary(route: FocusRoutePayload | null): WorkspaceSummary | null {
+  const workspace = route?.effective_route?.workspace
+  if (!workspace) return null
+  const path = workspace.canonical_path ?? null
+  const label = workspace.display_name ?? (path ? compactPath(path) : workspace.id)
+  return { label, path }
+}
+
+function WorkspaceLine({ workspace }: { workspace: WorkspaceSummary }) {
+  return (
+    <div style={workspaceLineStyle}>
+      <span className="mono" style={{ color: 'var(--fg-4)', fontSize: 10.5 }}>WORKSPACE</span>
+      <span style={{ color: 'var(--fg-1)', fontSize: 13 }}>{workspace.label}</span>
+      {workspace.path ? <span className="mono" style={{ color: 'var(--fg-4)', fontSize: 10.5 }}>{workspace.path}</span> : null}
+    </div>
+  )
+}
+
+function highSignalPreparedCards(cards: PreparedWorkCard[]): PreparedWorkCard[] {
+  const ranked = [...cards].sort((a, b) => preparedCardRank(b) - preparedCardRank(a))
+  const highSignal = ranked.filter((card) => preparedCardRank(card) >= 40)
+  return highSignal.length ? highSignal : ranked.slice(0, Math.min(3, ranked.length))
+}
+
+function preparedCardRank(card: PreparedWorkCard): number {
+  const text = `${card.kind} ${card.badge} ${card.title} ${card.summary} ${card.target_label} ${card.sensitivity_class ?? ''}`.toLowerCase()
+  let score = 0
+  if (card.kind === 'finance' || text.includes('trading') || text.includes('option') || text.includes('position')) score += 120
+  if (card.source_type === 'work_product') score += 40
+  if (card.kind === 'diff' || card.kind === 'review') score += 35
+  if (card.fresh_precheck_required || (card.external_input_count ?? 0) > 0) score += 25
+  if (card.primary_action?.kind === 'export') score += 10
+  if (text.includes('artefact item under goal') || card.target_label === 'artefact_item') score -= 60
+  if (text.includes('prepare context for src/vaner') || text.includes('architecture')) score -= 35
+  if (card.target_label === 'history') score -= 20
+  return score
+}
+
+function mergeFilteredCards(
+  original: PreparedWorkCard[],
+  visibleIds: Set<string>,
+  updatedVisible: PreparedWorkCard[],
+  onCardsChange: (cards: PreparedWorkCard[]) => void,
+) {
+  const updatedById = new Map(updatedVisible.map((card) => [card.id, card]))
+  onCardsChange(
+    original
+      .map((card) => updatedById.get(card.id) ?? card)
+      .filter((card) => !visibleIds.has(card.id) || updatedById.has(card.id)),
   )
 }
 
@@ -89,6 +289,13 @@ export function FocusView({
   const proactiveTone = typeof focusState?.proactive_allowed === 'boolean' ? (focusState.proactive_allowed ? 'ok' : 'warn') : 'muted'
   const worker = jobs?.worker
   const queue = jobs?.queue
+  const profile = jobs?.profile ?? {}
+  const continuationRounds = numberFromProfile(profile.continuation_rounds)
+  const continuationAdmitted = numberFromProfile(profile.continuation_admitted)
+  const produced = numberFromProfile(profile.produced)
+  const precomputeMs = numberFromProfile(profile.precompute_ms)
+  const totalMs = numberFromProfile(profile.total_ms)
+  const noScenarioReason = stringFromProfile(profile.no_scenario_reason)
   const codexCapability = capabilities?.composer_adapters?.find((adapter) => adapter.host_app === 'codex-cli')
   const globalPlans = sources?.sources?.global_client_plans
   const directionPredictions = predictions
@@ -171,6 +378,16 @@ export function FocusView({
                   <span className="mono" style={{ color: worker.state === 'running' ? 'var(--ok)' : 'var(--fg-4)', fontSize: 10 }}>{worker.state ?? 'unknown'}</span>
                 </div>
                 <Meta>{[worker.phase, worker.defer_reason, queue ? `queue ${queue.size ?? 0}/${queue.max_size ?? 0}` : null].filter(Boolean).join(' · ')}</Meta>
+                {Object.keys(profile).length ? (
+                  <div style={focusProfileGridStyle}>
+                    <FocusField label="Continued" value={`${formatCount(continuationRounds)} rounds`} tone={continuationRounds > 0 ? 'ok' : 'muted'} />
+                    <FocusField label="Admitted" value={`${formatCount(continuationAdmitted)} chunks`} tone={continuationAdmitted > 0 ? 'ok' : 'muted'} />
+                    <FocusField label="Produced" value={formatCount(produced)} />
+                    <FocusField label="Cycle" value={formatDurationMs(totalMs)} />
+                    <FocusField label="Precompute" value={formatDurationMs(precomputeMs)} />
+                    {noScenarioReason ? <FocusField label="Stopped" value={noScenarioReason} tone="muted" /> : null}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {focusJobs.length ? (
@@ -819,6 +1036,19 @@ function Meta({ children }: { children: React.ReactNode }) {
   return <div className="mono" style={{ color: 'var(--fg-4)', fontSize: 10.5, marginTop: 4 }}>{children}</div>
 }
 
+function Metric({ label, value, tone = 'default' }: { label: string; value: React.ReactNode; tone?: 'default' | 'ok' }) {
+  return (
+    <div style={metricStyle}>
+      <div style={{ color: tone === 'ok' ? 'var(--ok)' : 'var(--fg-1)', fontFamily: 'var(--font-display)', fontSize: 20, fontVariantNumeric: 'tabular-nums' }}>
+        {value}
+      </div>
+      <div className="mono" style={{ color: 'var(--fg-4)', fontSize: 10, marginTop: 4 }}>
+        {label}
+      </div>
+    </div>
+  )
+}
+
 function formatConfidence(value: number | undefined): string {
   return typeof value === 'number' ? value.toFixed(2) : 'unknown'
 }
@@ -832,10 +1062,104 @@ function relativeAge(epoch: number): string {
   return `${Math.round(delta / 86400)}d ago`
 }
 
+function numberFromProfile(value: number | string | undefined): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return 0
+}
+
+function stringFromProfile(value: number | string | undefined): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function formatCount(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  return `${Math.round(value)}`
+}
+
+function formatDurationMs(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0s'
+  if (value < 1000) return `${Math.round(value)}ms`
+  if (value < 60_000) return `${(value / 1000).toFixed(1)}s`
+  const minutes = Math.floor(value / 60_000)
+  const seconds = Math.round((value % 60_000) / 1000)
+  return `${minutes}m ${seconds}s`
+}
+
 const viewScrollStyle: React.CSSProperties = {
   height: '100%',
   overflow: 'auto',
   padding: 18,
+}
+
+const operatorHeroStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+  gap: 18,
+  alignItems: 'start',
+  padding: 18,
+  border: '1px solid var(--line-1)',
+  borderRadius: 'var(--r-2)',
+  background: 'var(--bg-1)',
+}
+
+const operatorMetricGridStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+  gap: 8,
+}
+
+const metricStyle: React.CSSProperties = {
+  background: 'var(--bg-inset)',
+  border: '1px solid var(--line-hair)',
+  borderRadius: 'var(--r-1)',
+  padding: '10px 12px',
+  minWidth: 0,
+}
+
+const quietNoticeStyle: React.CSSProperties = {
+  padding: '10px 18px',
+  borderBottom: '1px solid var(--line-hair)',
+  color: 'var(--fg-3)',
+  fontSize: 12,
+  lineHeight: 1.4,
+  background: 'var(--bg-0)',
+}
+
+const workspaceLineStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: 10,
+  alignItems: 'baseline',
+  padding: '10px 18px',
+  borderBottom: '1px solid var(--line-hair)',
+  background: 'var(--bg-0)',
+  minWidth: 0,
+  flexWrap: 'wrap',
+}
+
+const subtleLineStyle: React.CSSProperties = {
+  color: 'var(--fg-4)',
+  fontSize: 11.5,
+  margin: '-2px 0 10px',
+}
+
+const operatorSectionStyle: React.CSSProperties = {
+  marginTop: 14,
+  background: 'var(--bg-1)',
+  border: '1px solid var(--line-1)',
+  borderRadius: 'var(--r-2)',
+  padding: 14,
+  minWidth: 0,
+}
+
+const operatorTwoColumnStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+  gap: 14,
+  alignItems: 'start',
 }
 
 const focusGridStyle: React.CSSProperties = {
@@ -877,6 +1201,14 @@ const focusJobStyle: React.CSSProperties = {
   background: 'var(--bg-inset)',
   padding: 10,
   minWidth: 0,
+}
+
+const focusProfileGridStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 6,
+  marginTop: 10,
+  paddingTop: 10,
+  borderTop: '1px solid var(--line-hair)',
 }
 
 const signalStyle: React.CSSProperties = {

@@ -68,3 +68,22 @@ def test_basic_mcp_success_sets_structured_content(temp_repo) -> None:
         assert payload["ready"] is True
 
     asyncio.run(_run())
+
+
+def test_strict_mcp_tool_names_are_regex_safe_and_dispatch(temp_repo) -> None:
+    async def _run() -> None:
+        memory = pytest.importorskip("mcp.shared.memory")
+        server = mcp_server.build_server(temp_repo, tool_name_format="strict")
+        async with memory.create_connected_server_and_client_session(server) as session:
+            await session.initialize()
+            listed = {tool.name for tool in (await session.list_tools()).tools}
+            result = await session.call_tool("vaner__status", {})
+
+        assert "vaner__status" in listed
+        assert "vaner.status" not in listed
+        assert all(re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name) for name in listed)
+        assert result.isError is not True
+        payload = json.loads(result.content[0].text)
+        assert payload["ready"] is True
+
+    asyncio.run(_run())

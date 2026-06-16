@@ -147,3 +147,68 @@ def test_evidence_assembly_safe_labels_transport_limited_context():
     assert assembly.items_transport_limited >= 1
     assert any(decision.decision == "transport_limited" for decision in assembly.decisions)
     assert briefing.sections[0].items
+
+
+def test_answerable_briefing_keeps_multiple_evidence_roles_from_one_file():
+    content = "\n".join(
+        [
+            "CACHE_HIT_THRESHOLD = 0.87",
+            "RAW_REWARD_WEIGHT = 0.15",
+            *[f"# filler {index}" for index in range(35)],
+            "def compute_reward(inputs):",
+            "    raw_reward = inputs.cache_tier + inputs.quality_lift",
+            "    return {'reward_total': raw_reward}",
+            *[f"# more filler {index}" for index in range(35)],
+            "def apply_cache_threshold(similarity):",
+            "    return similarity >= CACHE_HIT_THRESHOLD",
+        ]
+    )
+
+    briefing = build_answerable_briefing(
+        "Explain cache thresholds and the raw reward flow.",
+        [_artefact("src/vaner/learning/reward.py", content)],
+        max_tokens=260,
+        assembly_mode="safe",
+    )
+
+    text = briefing.text
+    assert "CACHE_HIT_THRESHOLD" in text
+    assert "RAW_REWARD_WEIGHT" in text
+    assert "raw_reward" in text
+    assert "apply_cache_threshold" in text
+    assert "role=constant_or_default" in text
+    assert "L" in briefing.sections[0].items[0].excerpt
+    assert briefing.metadata.evidence_assembly.items_protected >= 1
+
+
+def test_answerable_briefing_preserves_llm_exploration_json_contract_and_parser():
+    content = "\n".join(
+        [
+            'JSON_CONTRACT_POLICY = """Return JSON with ranked_files and follow_on."""',
+            *[f"# prompt filler {index}" for index in range(30)],
+            "def parse_exploration_response(text):",
+            "    payload = json.loads(text)",
+            "    ranked_files = payload['ranked_files']",
+            "    follow_on = payload.get('follow_on', [])",
+            "    return ranked_files, follow_on",
+            *[f"# behavior filler {index}" for index in range(30)],
+            "def enqueue_follow_on_scenarios(frontier, follow_on):",
+            "    for scenario in follow_on:",
+            "        frontier.add(scenario)",
+        ]
+    )
+
+    briefing = build_answerable_briefing(
+        "Explain the LLM exploration JSON contract, parser behavior, and follow-on behavior.",
+        [_artefact("src/vaner/policy/internal_llm.py", content)],
+        max_tokens=280,
+        assembly_mode="safe",
+    )
+
+    text = briefing.text
+    assert "JSON_CONTRACT_POLICY" in text
+    assert "json.loads" in text
+    assert "ranked_files" in text
+    assert "follow_on" in text
+    assert "enqueue_follow_on_scenarios" in text
+    assert briefing.metadata.evidence_assembly.items_protected >= 1

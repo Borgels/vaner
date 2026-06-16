@@ -8,7 +8,14 @@ import json
 import httpx
 
 from vaner.daemon.engine import generator as generator_mod
-from vaner.daemon.engine.generator import _llm_summarize, agenerate_file_summary, generate_artefact, generate_diff_summary
+from vaner.daemon.engine.generator import (
+    DIFF_SUMMARY_PROMPT,
+    FILE_SUMMARY_PROMPT,
+    _llm_summarize,
+    agenerate_file_summary,
+    generate_artefact,
+    generate_diff_summary,
+)
 from vaner.models.config import BackendConfig, GenerationConfig, VanerConfig
 
 _real_async_client = httpx.AsyncClient
@@ -30,8 +37,40 @@ def test_generate_artefact_for_normal_file(temp_repo):
     artefact = generate_artefact(source, temp_repo)
     assert artefact.source_path == "normal.py"
     assert "Functions:" in artefact.content
+    assert "f(limit: int)" in artefact.content
     assert "Constants:" in artefact.content
     assert "Limits:" in artefact.content
+
+
+def test_generate_artefact_preserves_sql_schema_anchors(temp_repo):
+    source = temp_repo / "store.py"
+    source.write_text(
+        """
+import aiosqlite
+
+class Store:
+    async def initialize(self) -> None:
+        await self.db.execute(\"\"\"
+            CREATE TABLE artefacts (
+                key TEXT PRIMARY KEY,
+                source_path TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+            )
+        \"\"\")
+        await self.db.execute("CREATE INDEX idx_artefacts_source_path ON artefacts(source_path)")
+
+    async def list_by_keys(self, keys: list[str]) -> list[str]:
+        return keys
+""",
+        encoding="utf-8",
+    )
+
+    artefact = generate_artefact(source, temp_repo)
+
+    assert "Schema:" in artefact.content
+    assert "CREATE TABLE artefacts" in artefact.content
+    assert "CREATE INDEX idx_artefacts_source_path" in artefact.content
+    assert "list_by_keys(self, keys: list[str]) -> list[str]" in artefact.content
 
 
 def test_generate_artefact_for_empty_file(temp_repo):
@@ -57,6 +96,14 @@ def test_generate_diff_summary_redacts_patterns(temp_repo):
         redact_patterns=[r"secret\d+"],
     )
     assert "REDACTED" in artefact.content
+
+
+def test_llm_summary_prompts_include_internal_evidence_policy():
+    for prompt in (FILE_SUMMARY_PROMPT, DIFF_SUMMARY_PROMPT):
+        assert "Vaner internal LLM policy" in prompt
+        assert "Evidence summary policy" in prompt
+        assert "Preserve implementation anchors" in prompt
+        assert "Do not let predictions or likely intent become factual behavior" in prompt
 
 
 def test_agenerate_file_summary_uses_llm_when_enabled(temp_repo, monkeypatch):

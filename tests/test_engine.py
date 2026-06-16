@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import uuid
 
@@ -70,6 +71,67 @@ async def test_engine_persists_policy_state_across_restarts(temp_repo):
     await reloaded.initialize()
 
     assert reloaded._scoring_policy.source_multipliers.get("graph", 1.0) == baseline_graph_mult
+
+
+@pytest.mark.asyncio
+async def test_engine_refuses_rejected_training_bundle_by_default(temp_repo):
+    bundle = temp_repo / "bundle-rejected"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(
+        json.dumps(
+            {
+                "bundle_id": "bundle-rejected",
+                "training_metrics": {
+                    "trained": False,
+                    "rejected_for_threshold": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (bundle / "scoring_policy.json").write_text(
+        '{"score_weights":[0.1,0.1,0.1,0.1,0.6],"source_multipliers":{"finance_external_state":2.0}}',
+        encoding="utf-8",
+    )
+    (bundle / "intent_scorer_metadata.json").write_text('{"reason":"rejected"}', encoding="utf-8")
+    engine = VanerEngine(adapter=CodeRepoAdapter(temp_repo))
+
+    loaded = await engine.load_bundle(bundle)
+
+    assert loaded is False
+    assert "finance_external_state" not in engine._scoring_policy.source_multipliers
+
+
+@pytest.mark.asyncio
+async def test_engine_does_not_partially_apply_bundle_when_model_missing(temp_repo):
+    bundle = temp_repo / "bundle-missing-model"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(
+        json.dumps(
+            {
+                "bundle_id": "bundle-missing-model",
+                "training_metrics": {
+                    "trained": True,
+                    "rejected_for_threshold": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (bundle / "scoring_policy.json").write_text(
+        '{"score_weights":[0.1,0.1,0.1,0.1,0.6],"source_multipliers":{"finance_external_state":2.0}}',
+        encoding="utf-8",
+    )
+    (bundle / "intent_scorer_metadata.json").write_text(
+        '{"backend":"xgboost","model_path":"missing.ubj"}',
+        encoding="utf-8",
+    )
+    engine = VanerEngine(adapter=CodeRepoAdapter(temp_repo))
+
+    loaded = await engine.load_bundle(bundle)
+
+    assert loaded is False
+    assert "finance_external_state" not in engine._scoring_policy.source_multipliers
 
 
 @pytest.mark.asyncio

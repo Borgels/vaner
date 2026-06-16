@@ -21,6 +21,15 @@ from vaner.daemon.cockpit_assets import cockpit_dist_dir, cockpit_response, moun
 from vaner.daemon.live_work import read_live_work_events
 from vaner.daemon.precompute_worker import read_prediction_snapshot, read_worker_status, request_precompute_wake, request_worker_control
 from vaner.events.bus import build_stage_payloads
+from vaner.external_state.configurator import (
+    ProviderConfigInput,
+    discover_provider,
+    external_state_payload,
+    save_external_state_enabled,
+    save_finance_settings,
+    save_model_native_search_settings,
+    save_provider_config,
+)
 from vaner.focus import FocusManager
 from vaner.intent.prediction_serialization import compact_serialized_prediction
 from vaner.mcp.contracts import EvidenceItem, Provenance, Resolution
@@ -1351,6 +1360,134 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             }
         )
 
+    @app.get("/external-state")
+    async def get_external_state() -> JSONResponse:
+        return JSONResponse(external_state_payload(config).model_dump(mode="json"))
+
+    @app.post("/external-state")
+    async def update_external_state(payload: dict[str, Any]) -> JSONResponse:
+        nonlocal config
+        allowed = {"enabled", "max_calls_per_cycle", "max_cycle_ms"}
+        for key in payload:
+            if key not in allowed:
+                raise HTTPException(status_code=400, detail=f"Unsupported external-state key: {key}")
+        save_external_state_enabled(
+            config.repo_root,
+            enabled=bool(payload["enabled"]) if "enabled" in payload else None,
+            max_calls_per_cycle=int(payload["max_calls_per_cycle"]) if "max_calls_per_cycle" in payload else None,
+            max_cycle_ms=int(payload["max_cycle_ms"]) if "max_cycle_ms" in payload else None,
+        )
+        config = load_config(config.repo_root)
+        focus_manager.config = config
+        return JSONResponse(external_state_payload(config).model_dump(mode="json"))
+
+    @app.post("/external-state/providers")
+    async def upsert_external_state_provider(payload: dict[str, Any]) -> JSONResponse:
+        nonlocal config
+        provider_id = str(payload.get("id") or payload.get("provider_id") or "").strip()
+        if not provider_id:
+            raise HTTPException(status_code=400, detail="provider id is required")
+        args = payload.get("args", [])
+        if isinstance(args, str):
+            args = [item for item in args.split(" ") if item]
+        if not isinstance(args, list):
+            raise HTTPException(status_code=400, detail="args must be a list")
+        env = payload.get("env", {})
+        if not isinstance(env, dict):
+            raise HTTPException(status_code=400, detail="env must be an object")
+        try:
+            save_provider_config(
+                config.repo_root,
+                ProviderConfigInput(
+                    provider_id=provider_id,
+                    transport=str(payload.get("transport") or "stdio"),
+                    command=str(payload.get("command") or ""),
+                    args=[str(item) for item in args],
+                    url=str(payload.get("url") or ""),
+                    env={str(key): str(value) for key, value in env.items()},
+                    timeout_ms=int(payload.get("timeout_ms") or 10000),
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        config = load_config(config.repo_root)
+        focus_manager.config = config
+        return JSONResponse(external_state_payload(config).model_dump(mode="json"))
+
+    @app.post("/external-state/providers/{provider_id}/discover")
+    async def discover_external_state_provider(provider_id: str, payload: dict[str, Any] | None = None) -> JSONResponse:
+        nonlocal config
+        body = payload or {}
+        try:
+            discovery = await discover_provider(
+                config,
+                provider_id,
+                apply=bool(body.get("apply", False)),
+                trust_unknown_read=bool(body.get("trust_unknown_read", False)),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="provider not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"provider discovery failed: {exc}") from exc
+        if discovery.applied:
+            config = load_config(config.repo_root)
+            focus_manager.config = config
+        return JSONResponse(discovery.model_dump(mode="json"))
+
+    @app.post("/external-state/finance")
+    async def update_external_state_finance(payload: dict[str, Any]) -> JSONResponse:
+        nonlocal config
+        allowed = {"enabled", "provider", "market_data_enabled", "account_state_enabled", "capability_tools"}
+        for key in payload:
+            if key not in allowed:
+                raise HTTPException(status_code=400, detail=f"Unsupported finance external-state key: {key}")
+        capability_tools = payload.get("capability_tools")
+        if capability_tools is not None and not isinstance(capability_tools, dict):
+            raise HTTPException(status_code=400, detail="capability_tools must be an object")
+        try:
+            save_finance_settings(
+                config.repo_root,
+                enabled=bool(payload["enabled"]) if "enabled" in payload else None,
+                provider=str(payload["provider"]) if "provider" in payload and payload.get("provider") is not None else None,
+                market_data_enabled=bool(payload["market_data_enabled"]) if "market_data_enabled" in payload else None,
+                account_state_enabled=bool(payload["account_state_enabled"]) if "account_state_enabled" in payload else None,
+                capability_tools={str(key): str(value) for key, value in capability_tools.items()}
+                if isinstance(capability_tools, dict)
+                else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        config = load_config(config.repo_root)
+        focus_manager.config = config
+        return JSONResponse(external_state_payload(config).model_dump(mode="json"))
+
+    @app.post("/external-state/model-native-search")
+    async def update_model_native_search(payload: dict[str, Any]) -> JSONResponse:
+        nonlocal config
+        allowed = {"enabled", "provider", "base_url", "api_key_env", "max_results", "timeout_seconds"}
+        for key in payload:
+            if key not in allowed:
+                raise HTTPException(status_code=400, detail=f"Unsupported model-native search key: {key}")
+        try:
+            save_model_native_search_settings(
+                config.repo_root,
+                enabled=bool(payload["enabled"]) if "enabled" in payload else None,
+                provider=str(payload["provider"]) if "provider" in payload and payload.get("provider") is not None else None,
+                base_url=str(payload["base_url"]) if "base_url" in payload and payload.get("base_url") is not None else None,
+                api_key_env=str(payload["api_key_env"])
+                if "api_key_env" in payload and payload.get("api_key_env") is not None
+                else None,
+                max_results=int(payload["max_results"]) if "max_results" in payload else None,
+                timeout_seconds=float(payload["timeout_seconds"]) if "timeout_seconds" in payload else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        config = load_config(config.repo_root)
+        focus_manager.config = config
+        return JSONResponse(external_state_payload(config).model_dump(mode="json"))
+
     @app.get("/skills")
     async def list_skills() -> JSONResponse:
         from vaner.intent.skills_discovery import discover_skills
@@ -1420,6 +1557,92 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             label="scenario list",
         )
         return JSONResponse({"count": len(rows), "visibility": visibility_mode, "scenarios": [_scenario_payload(row) for row in rows]})
+
+    async def _heatmap_replay_payload(
+        *,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        range_seconds: float | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        end_ts = float(to_ts or time.time())
+        default_range = float(range_seconds or 15 * 60)
+        start_ts = float(from_ts if from_ts is not None else end_ts - default_range)
+        if start_ts > end_ts:
+            start_ts, end_ts = end_ts, start_ts
+        capped_limit = max(1, min(int(limit), 200))
+        rows = await _best_effort(
+            scenario_store.list_top(limit=capped_limit, visibility="all"),
+            [],
+            label="heatmap scenarios",
+            timeout=2.0,
+        )
+        scenario_ids = [str(row.id) for row in rows]
+        samples = await _best_effort(
+            scenario_store.list_samples(scenario_ids=scenario_ids, start_ts=start_ts, end_ts=end_ts, limit=50_000),
+            [],
+            label="heatmap samples",
+            timeout=2.0,
+        )
+        live_events = [
+            row
+            for row in read_live_work_events(config.repo_root, limit=1000)
+            if start_ts <= float(row.get("ts") or 0.0) <= end_ts
+        ]
+        return {
+            "from_ts": start_ts,
+            "to_ts": end_ts,
+            "scenarios": [_scenario_payload(row) for row in rows],
+            "samples": [sample.__dict__ for sample in samples],
+            "events": live_events,
+            "metadata": {
+                "sample_source": "scenario_samples",
+                "event_source": "live_work_events",
+                "synthetic": False,
+                "sample_count": len(samples),
+                "event_count": len(live_events),
+                "scenario_count": len(rows),
+                "complete": bool(samples),
+            },
+        }
+
+    @app.get("/heatmap/replay/stream")
+    async def heatmap_replay_stream(
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        range_seconds: float | None = None,
+        limit: int = 100,
+    ) -> StreamingResponse:
+        async def event_gen() -> AsyncIterator[str]:
+            last_fingerprint = ""
+            last_keepalive = time.monotonic()
+            sent = 0
+            while True:
+                payload = await _heatmap_replay_payload(
+                    from_ts=from_ts if to_ts is not None else None,
+                    to_ts=to_ts,
+                    range_seconds=range_seconds,
+                    limit=limit,
+                )
+                serialized = json.dumps(payload, sort_keys=True, default=str)
+                if serialized != last_fingerprint:
+                    yield f"event: replay_snapshot\ndata: {serialized}\n\n"
+                    last_fingerprint = serialized
+                    last_keepalive = time.monotonic()
+                    sent += 1
+                    if limit is not None and sent >= max(1, int(limit)):
+                        return
+                now = time.monotonic()
+                if now - last_keepalive >= 10.0:
+                    yield ": keepalive\n\n"
+                    last_keepalive = now
+                await asyncio.sleep(1.0)
+
+        return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+    @app.get("/heatmap/replay")
+    async def heatmap_replay(from_ts: float | None = None, to_ts: float | None = None, limit: int = 100) -> JSONResponse:
+        return JSONResponse(await _heatmap_replay_payload(from_ts=from_ts, to_ts=to_ts, limit=limit))
 
     @app.get("/scenarios/{scenario_id}")
     async def fetch_item(scenario_id: str) -> JSONResponse:
@@ -1537,7 +1760,13 @@ def create_daemon_http_app(config: VanerConfig, *, engine: Any | None = None) ->
             else:
                 from vaner.store.artefacts import ArtefactStore
 
-                store = ArtefactStore(config.repo_root / ".vaner" / "artefacts.db")
+                # Runtime worker state lives in config.store_path. Older
+                # cockpit-only tests and pre-0.9 installs may still seed the
+                # legacy artefacts DB directly, so keep that as a fallback
+                # only when the configured engine store has not been created.
+                legacy_path = config.repo_root / ".vaner" / "artefacts.db"
+                store_path = config.store_path if config.store_path.exists() else legacy_path
+                store = ArtefactStore(store_path)
             await store.initialize()
             work_product_store = store
             return store

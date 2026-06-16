@@ -197,6 +197,17 @@ class PrecomputeWorker:
 
         engine = build_default_engine(self.repo_root, config)
         await engine.initialize()
+        external_state_manager = None
+        if bool(getattr(config.external_state, "enabled", False)):
+            from vaner.external_state import ExternalStateManager, model_search_provider_from_config
+
+            external_state_manager = ExternalStateManager(
+                config.external_state,
+                model_search_provider=model_search_provider_from_config(config.external_state),
+            )
+            await external_state_manager.start()
+            if hasattr(engine, "set_external_state_manager"):
+                engine.set_external_state_manager(external_state_manager)
         if hasattr(engine, "set_prediction_event_listener"):
             engine.set_prediction_event_listener(self._record_prediction_event)
         if hasattr(engine, "set_live_work_event_listener"):
@@ -216,6 +227,8 @@ class PrecomputeWorker:
         finally:
             scheduler.cancel()
             controller.cancel()
+            if external_state_manager is not None:
+                await external_state_manager.stop()
             self._set_state("stopping", explanation="worker stopping")
 
     async def _schedule_periodic(self, focus_manager: FocusManager) -> None:
@@ -367,6 +380,11 @@ class PrecomputeWorker:
             profile["precompute_ms"] = (time.monotonic() - precompute_start) * 1000.0
             profile["total_ms"] = (time.monotonic() - started) * 1000.0
             profile["produced"] = float(produced or 0)
+            if hasattr(engine, "get_last_cycle_profile"):
+                try:
+                    profile.update(engine.get_last_cycle_profile())
+                except Exception:
+                    logger.debug("failed to read engine cycle profile", exc_info=True)
             self._write_predictions(engine, cycle_id=cycle_id)
             self._status["profile"] = profile
             self._set_state("completed", job=job, phase="idle", cycle_id=cycle_id, produced=int(produced or 0))
@@ -533,9 +551,13 @@ class PrecomputeWorker:
             stage = "progress"
             status = "running"
             if isinstance(payload, dict):
+                tokens_used = int(payload.get("tokens_used") or 0)
+                token_budget = int(payload.get("token_budget") or 0)
+                overage = max(0, tokens_used - token_budget)
+                budget_label = f"{token_budget} token target" if token_budget else "token target"
+                overage_label = f" ({overage} over target)" if overage else ""
                 summary = (
-                    f"Progress: {int(payload.get('tokens_used') or 0)}/"
-                    f"{int(payload.get('token_budget') or 0)} tokens, "
+                    f"Progress: {tokens_used} tokens used / {budget_label}{overage_label}, "
                     f"{int(payload.get('scenarios_complete') or 0)} scenarios complete."
                 )
         elif kind == "prediction.artifact_added":

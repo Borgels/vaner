@@ -82,6 +82,68 @@ def test_status_payload_includes_backend(temp_repo) -> None:
     assert payload["prediction_health"]["diagnostic_status"] == "engine_unavailable"
 
 
+def test_external_state_endpoints_save_provider_and_permissions(temp_repo) -> None:
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        provider = client.post(
+            "/external-state/providers",
+            json={
+                "id": "provider",
+                "transport": "stdio",
+                "command": "provider-mcp",
+                "args": ["--stdio"],
+                "env": {"TOKEN": "secret"},
+            },
+        )
+        finance = client.post(
+            "/external-state/finance",
+            json={"enabled": True, "provider": "provider", "market_data_enabled": True, "account_state_enabled": False},
+        )
+        current = client.get("/external-state")
+
+    assert provider.status_code == 200
+    assert finance.status_code == 200
+    assert current.status_code == 200
+    payload = current.json()
+    assert payload["finance"]["provider"] == "provider"
+    assert payload["finance"]["market_data_enabled"] is True
+    assert payload["providers"][0]["env_keys"] == ["TOKEN"]
+    assert "secret" not in json.dumps(payload)
+
+
+def test_external_state_endpoint_saves_model_native_search_settings(temp_repo, monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_API_KEY", "secret")
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        response = client.post(
+            "/external-state/model-native-search",
+            json={
+                "enabled": True,
+                "provider": "ollama",
+                "base_url": "https://ollama.com/api",
+                "api_key_env": "OLLAMA_API_KEY",
+                "max_results": 6,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model_native_search"]["enabled"] is True
+    assert payload["model_native_search"]["provider"] == "ollama"
+    assert payload["model_native_search"]["max_results"] == 6
+    assert "secret" not in json.dumps(payload)
+
+
 def test_ui_route_redirects_to_root(temp_repo) -> None:
     config = VanerConfig(
         repo_root=temp_repo,
@@ -182,6 +244,83 @@ def test_scenarios_endpoint_separates_live_and_history(temp_repo) -> None:
     assert history.status_code == 200
     assert [item["id"] for item in history.json()["scenarios"]] == ["scn_archived"]
     assert history.json()["scenarios"][0]["visibility"] == "archived"
+
+
+def test_heatmap_replay_endpoint_returns_persisted_samples(temp_repo) -> None:
+    now = time.time()
+
+    async def _seed() -> None:
+        store = ScenarioStore(temp_repo / ".vaner" / "scenarios.db")
+        await store.initialize()
+        await store.upsert(
+            Scenario(
+                id="scn_heatmap",
+                kind="debug",
+                score=0.9,
+                confidence=0.8,
+                entities=["src/main.py"],
+                prepared_context="ctx",
+                freshness="fresh",
+                created_at=now,
+                last_refreshed_at=now,
+            )
+        )
+
+    asyncio.run(_seed())
+
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        response = client.get(f"/heatmap/replay?from_ts={now - 5}&to_ts={now + 5}&limit=10")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metadata"]["synthetic"] is False
+    assert [item["id"] for item in payload["scenarios"]] == ["scn_heatmap"]
+    assert payload["samples"]
+    assert payload["samples"][0]["scenario_id"] == "scn_heatmap"
+
+
+def test_heatmap_replay_stream_emits_real_snapshot(temp_repo) -> None:
+    now = time.time()
+
+    async def _seed() -> None:
+        store = ScenarioStore(temp_repo / ".vaner" / "scenarios.db")
+        await store.initialize()
+        await store.upsert(
+            Scenario(
+                id="scn_heatmap_stream",
+                kind="debug",
+                score=0.9,
+                confidence=0.8,
+                entities=["src/main.py"],
+                prepared_context="ctx",
+                freshness="fresh",
+                created_at=now,
+                last_refreshed_at=now,
+            )
+        )
+
+    asyncio.run(_seed())
+
+    config = VanerConfig(
+        repo_root=temp_repo,
+        store_path=temp_repo / ".vaner" / "store.db",
+        telemetry_path=temp_repo / ".vaner" / "telemetry.db",
+    )
+    app = create_daemon_http_app(config)
+    with TestClient(app) as client:
+        with client.stream("GET", "/heatmap/replay/stream?range_seconds=60&limit=1") as response:
+            text = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: replay_snapshot" in text
+    assert '"synthetic": false' in text
+    assert "scn_heatmap_stream" in text
 
 
 def test_scenario_stream_route_not_shadowed_by_id_route(temp_repo) -> None:

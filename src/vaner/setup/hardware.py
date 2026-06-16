@@ -42,6 +42,17 @@ logger = logging.getLogger(__name__)
 
 MemoryKind = Literal["vram", "unified", "system", "unknown"]
 
+_NVIDIA_UNIFIED_MEMORY_MARKERS = (
+    "dgx spark",
+    "gb10",
+    "grace blackwell",
+)
+
+
+def _is_nvidia_unified_memory_name(name: str) -> bool:
+    normalized = name.lower()
+    return any(marker in normalized for marker in _NVIDIA_UNIFIED_MEMORY_MARKERS)
+
 
 @dataclass(frozen=True, slots=True)
 class GPUDevice:
@@ -95,6 +106,9 @@ class HardwareProfile:
     # identify discrete devices — consumers should fall back to the
     # ``gpu`` / ``gpu_vram_gb`` summary fields in that case.
     gpu_devices: tuple[GPUDevice, ...] = field(default_factory=tuple)
+    # Decimal GB free on the user's home volume. Model setup uses this
+    # to avoid recommending a large local download that cannot fit.
+    disk_free_gb: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +152,17 @@ def _read_meminfo_gb() -> int | None:
     except Exception:
         logger.debug("/proc/meminfo probe failed", exc_info=True)
     return None
+
+
+def _probe_disk_free_gb(path: Path | None = None) -> int:
+    """Best-effort decimal GB free on the volume that will hold model caches."""
+
+    try:
+        usage = shutil.disk_usage(path or Path.home())
+        return max(0, round(usage.free / 1_000_000_000))
+    except Exception:
+        logger.debug("disk free probe failed", exc_info=True)
+        return 0
 
 
 def _sysctl_memsize_gb() -> int | None:
@@ -288,7 +313,7 @@ def _probe_gpu_devices_nvidia_pynvml() -> tuple[GPUDevice, ...] | None:
                         kind="nvidia",
                         memory_total_bytes=total_bytes,
                         memory_display_gb=vram_gb,
-                        memory_kind="vram",
+                        memory_kind="unified" if _is_nvidia_unified_memory_name(name) else "vram",
                     )
                 )
             except Exception:
@@ -342,7 +367,7 @@ def _probe_gpu_devices_nvidia_smi() -> tuple[GPUDevice, ...] | None:
                 kind="nvidia",
                 memory_total_bytes=total_bytes,
                 memory_display_gb=vram_gb,
-                memory_kind="vram",
+                memory_kind="unified" if _is_nvidia_unified_memory_name(name) else "vram",
             )
         )
     return tuple(devices) if devices else None
@@ -741,6 +766,7 @@ def detect() -> HardwareProfile:
     thermal = _probe_thermal()
     runtimes = _probe_runtimes()
     models = _probe_models(runtimes)
+    disk_free_gb = _probe_disk_free_gb()
 
     # When the OS probe fails entirely we still need a literal value for the
     # frozen dataclass; fall back to "linux" but force the tier to "unknown"
@@ -778,6 +804,7 @@ def detect() -> HardwareProfile:
         memory_is_unified=memory_is_unified,
         tier="unknown",
         gpu_devices=devices,
+        disk_free_gb=disk_free_gb,
     )
     final_tier: HardwareTier = "unknown" if os_kind is None else tier_for(profile)
     return HardwareProfile(
@@ -795,6 +822,7 @@ def detect() -> HardwareProfile:
         memory_is_unified=memory_is_unified,
         tier=final_tier,
         gpu_devices=devices,
+        disk_free_gb=disk_free_gb,
     )
 
 

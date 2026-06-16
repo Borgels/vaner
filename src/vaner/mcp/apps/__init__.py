@@ -33,8 +33,47 @@ _PREPARED_WORK_PATH = _BUNDLE_DIR / "prepared_work.html"
 
 ACTIVE_PREDICTIONS_HTML: str = _ACTIVE_PREDICTIONS_PATH.read_text(encoding="utf-8")
 """Full HTML bundle as a string. Consumers serve this verbatim."""
-PREPARED_WORK_HTML: str = _PREPARED_WORK_PATH.read_text(encoding="utf-8")
-"""Full Prepared Work HTML bundle as a string."""
+
+
+_SDK_START_SENTINEL = "// === @modelcontextprotocol/ext-apps@0.4.0"
+_SDK_END_SENTINEL = ";const App = gc;"
+
+
+def _extract_ext_apps_sdk(html: str) -> str:
+    """Pull the vendored ext-apps SDK + ``const App = gc`` rebind from a bundle.
+
+    ``active_predictions.html`` is the single source of truth for the
+    vendored SDK; other bundles (currently ``prepared_work.html``) inline
+    the same block via a ``__EXT_APPS_SDK__`` placeholder substitution at
+    import time. Keeping one copy avoids drift on re-vendor and means we
+    only ship the ~300KB SDK twice if a host actually loads both bundles.
+    """
+    start = html.find(_SDK_START_SENTINEL)
+    if start < 0:
+        raise RuntimeError("ext-apps SDK start sentinel missing from active_predictions.html")
+    end = html.find(_SDK_END_SENTINEL, start)
+    if end < 0:
+        raise RuntimeError("ext-apps SDK end sentinel missing from active_predictions.html")
+    end += len(_SDK_END_SENTINEL)
+    return html[start:end]
+
+
+EXT_APPS_SDK_JS: str = _extract_ext_apps_sdk(ACTIVE_PREDICTIONS_HTML)
+"""Vendored ``@modelcontextprotocol/ext-apps`` SDK + ``const App = gc`` rebind.
+
+Sliced from ``active_predictions.html`` between the vendor banner and the
+trailing ``const App = gc`` rebinding. Bundles that need the SDK include
+``__EXT_APPS_SDK__`` as a placeholder; :func:`_inline_sdk` replaces it at
+import time.
+"""
+
+
+def _inline_sdk(template: str) -> str:
+    return template.replace("__EXT_APPS_SDK__", EXT_APPS_SDK_JS)
+
+
+PREPARED_WORK_HTML: str = _inline_sdk(_PREPARED_WORK_PATH.read_text(encoding="utf-8"))
+"""Full Prepared Work HTML bundle as a string (SDK inlined at import time)."""
 
 ACTIVE_PREDICTIONS_SHA256: str = hashlib.sha256(ACTIVE_PREDICTIONS_HTML.encode("utf-8")).hexdigest()
 """Stable content hash — useful for cache validation + CSP pinning."""
@@ -50,6 +89,7 @@ __all__ = [
     "ACTIVE_PREDICTIONS_TITLE",
     "ACTIVE_PREDICTIONS_URI",
     "CSP_RESOURCE_DOMAINS",
+    "EXT_APPS_SDK_JS",
     "PREPARED_WORK_DESCRIPTION",
     "PREPARED_WORK_HTML",
     "PREPARED_WORK_MIME",

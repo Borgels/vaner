@@ -29,7 +29,8 @@ def test_prepared_work_html_bundle_shape() -> None:
     assert "<!doctype html>" in PREPARED_WORK_HTML.lower()
     assert "Prepared work" in PREPARED_WORK_HTML
     assert "<style>" in PREPARED_WORK_HTML
-    assert "<script>" in PREPARED_WORK_HTML
+    # The bundle now imports the vendored ext-apps SDK as a module script.
+    assert "<script type=\"module\">" in PREPARED_WORK_HTML
     assert 'id="cards"' in PREPARED_WORK_HTML
 
 
@@ -54,9 +55,38 @@ def test_prepared_work_bundle_renders_user_facing_card_fields_and_actions() -> N
         assert internal not in PREPARED_WORK_HTML
 
 
+def test_prepared_work_bundle_wires_actions_to_mcp_tools() -> None:
+    """Action buttons must dispatch real ``vaner.*`` tools via App.callTool."""
+    # The bundle uses the vendored ext-apps SDK and instantiates an App.
+    assert "const App = gc;" in PREPARED_WORK_HTML
+    assert "new App({" in PREPARED_WORK_HTML
+    # callTool dispatch path exists.
+    assert ".callTool(tool, args)" in PREPARED_WORK_HTML
+    # Default tool routing covers the five PreparedWorkActionKind values.
+    for tool in (
+        "vaner.work_products.inspect",
+        "vaner.work_products.export",
+        "vaner.work_products.dismiss",
+        "vaner.work_products.feedback",
+        "vaner.predictions.adopt",
+    ):
+        assert tool in PREPARED_WORK_HTML
+    # The bundle re-queries the dashboard on a refresh interval so the panel
+    # stays alive when state changes.
+    assert "vaner.prepared_work.dashboard" in PREPARED_WORK_HTML
+    assert "REFRESH_INTERVAL_MS" in PREPARED_WORK_HTML
+
+
 def test_prepared_work_bundle_has_no_external_runtime_network() -> None:
+    """The bundle must not reach any concrete external host at runtime.
+
+    The vendored ext-apps SDK contains URL-pattern strings inside its
+    Zod validators (mirrors the active_predictions.html exemption); we
+    assert against domain references rather than the bare ``http://``
+    substring.
+    """
     assert CSP_RESOURCE_DOMAINS == ()
-    for bad in ("127.0.0.1", "localhost", "0.0.0.0", "unpkg.com", "https://", "http://"):
+    for bad in ("127.0.0.1", "localhost", "0.0.0.0", "unpkg.com"):
         assert bad not in PREPARED_WORK_HTML
 
 

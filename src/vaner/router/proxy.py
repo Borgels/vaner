@@ -47,6 +47,28 @@ def _inject_context(payload: dict[str, Any], context: str) -> dict[str, Any]:
     return {**payload, "messages": [system_message, *messages]}
 
 
+def _prepared_context_for_injection(context_package: Any, config: VanerConfig) -> str:
+    raw_context = str(getattr(context_package, "injected_context", "") or "")
+    if not config.context_preparation.prepared_briefing_injection_enabled:
+        return raw_context
+    if config.evidence_assembly.mode not in {"safe", "active"}:
+        return raw_context
+    briefing = str(getattr(context_package, "prepared_context_briefing", "") or "")
+    if not briefing:
+        answerable = getattr(context_package, "answerable_briefing", None)
+        briefing = str(getattr(answerable, "text", "") or "") if answerable is not None else ""
+    metadata = getattr(context_package, "answerability_metadata", None)
+    if metadata is None:
+        return raw_context
+    if getattr(metadata, "truncation_risk", "low") == "high":
+        return raw_context
+    if int(getattr(metadata, "dropped_direct_evidence_count", 0) or 0) > 0:
+        return raw_context
+    if getattr(metadata, "answerability", "none") not in {"full", "weak", "conflict"}:
+        return raw_context
+    return briefing or raw_context
+
+
 def _normalize_message_content(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -536,7 +558,7 @@ def create_app(config: VanerConfig, store: ArtefactStore) -> FastAPI:
             metrics.partial_similarity = context_package.partial_similarity
             metrics.context_tokens = context_package.token_used
             metrics.injected_context_tokens = context_package.token_used
-            enriched = _inject_context(payload, context_package.injected_context)
+            enriched = _inject_context(payload, _prepared_context_for_injection(context_package, config))
         else:
             context_package = type("Package", (), {"cache_tier": "disabled", "partial_similarity": 0.0, "token_used": 0})()
             metrics.t1_context_ready = time.monotonic()

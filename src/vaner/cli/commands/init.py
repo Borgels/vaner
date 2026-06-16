@@ -121,7 +121,7 @@ telemetry = "local"
 
 [limits]
 max_age_seconds = 3600
-max_context_tokens = 4096
+max_context_tokens = 8192
 
 [intent]
 enabled = true

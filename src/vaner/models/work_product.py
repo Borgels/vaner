@@ -14,6 +14,11 @@ class WorkProductType(StrEnum):
     DOCS_DRIFT = "docs_drift"
     VIRTUAL_DIFF = "virtual_diff"
     RESEARCH_BRIEF = "research_brief"
+    FINANCE_MORNING_BRIEF = "finance_morning_brief"
+    FINANCE_POSITION_BRIEF = "finance_position_brief"
+    FINANCE_SCREENING_RESULT = "finance_screening_result"
+    FINANCE_OPTION_STRATEGY_PLAN = "finance_option_strategy_plan"
+    FINANCE_TRADE_BRIEF = "finance_trade_brief"
 
 
 class WorkProductStatus(StrEnum):
@@ -44,6 +49,26 @@ class WorkProductFeedbackState(StrEnum):
     PARTIAL = "partial"
     IRRELEVANT = "irrelevant"
     NOT_USEFUL = "not_useful"
+
+
+class WorkProductSensitivity(StrEnum):
+    GENERAL = "general"
+    PUBLIC_MARKET_ONLY = "public_market_only"
+    USER_WATCHLIST = "user_watchlist"
+    ACCOUNT_SUMMARY = "account_summary"
+    POSITION_SPECIFIC = "position_specific"
+    ORDER_ACTIVITY = "order_activity"
+    MIXED_SENSITIVE = "mixed_sensitive"
+
+
+class WorkProductExternalInput(BaseModel):
+    provider_id: str = ""
+    capability: str = ""
+    snapshot_id: str = ""
+    freshness_class: str = ""
+    captured_at: float | None = None
+    expires_at: float | None = None
+    payload_fingerprint: str = ""
 
 
 def _is_absolute_path(value: str) -> bool:
@@ -119,6 +144,11 @@ class WorkProduct(BaseModel):
     provenance: dict[str, Any] = Field(default_factory=dict)
     self_eval: WorkProductSelfEval = Field(default_factory=WorkProductSelfEval)
     feedback_state: WorkProductFeedbackState = WorkProductFeedbackState.NONE
+    sensitivity_class: WorkProductSensitivity = WorkProductSensitivity.GENERAL
+    fresh_precheck_required: bool = False
+    external_inputs: list[WorkProductExternalInput] = Field(default_factory=list)
+    stale_after: float | None = None
+    prohibited_actions: list[str] = Field(default_factory=list)
     created_at: float
     updated_at: float
     target_key: str = ""
@@ -135,8 +165,20 @@ class WorkProduct(BaseModel):
             raise ValueError("exportable work products must be fresh, active, and surfaced/self_evaluated")
         return self
 
+    @model_validator(mode="after")
+    def _external_finance_products_require_precheck(self) -> WorkProduct:
+        if self.type.value.startswith("finance_") and self.external_inputs:
+            self.fresh_precheck_required = True
+            if "execution" not in self.prohibited_actions:
+                self.prohibited_actions.append("execution")
+        return self
+
     def can_export(self, *, now: float | None = None) -> bool:
         if self.adoptability != WorkProductAdoptability.EXPORTABLE:
+            return False
+        if self.fresh_precheck_required:
+            return False
+        if "execution" in {action.lower() for action in self.prohibited_actions}:
             return False
         if self.freshness != WorkProductFreshness.FRESH:
             return False

@@ -12,6 +12,7 @@ from vaner.broker.selector import score_artefact
 from vaner.models.answerable import EvidenceAssemblyMode
 from vaner.models.artefact import Artefact
 from vaner.models.context import ContextPackage, ContextSelection
+from vaner.models.context_preparation import PreparedContextDiagnostics
 from vaner.models.decision import DecisionRecord, ScoreFactor, SelectionDecision
 from vaner.policy.staleness import is_stale_timestamp
 
@@ -42,6 +43,7 @@ def assemble_context_package(
     evidence_assembly_mode: EvidenceAssemblyMode = "shadow",
     evidence_assembly_quality_bias: str = "protect_recall",
     evidence_assembly_cost_sensitivity: str = "balanced",
+    prepared_context_diagnostics: PreparedContextDiagnostics | None = None,
     return_decision: bool = False,
 ) -> ContextPackage | tuple[ContextPackage, DecisionRecord]:
     resolved_score_map = score_map or {artefact.key: score_artefact(prompt, artefact) for artefact in artefacts}
@@ -49,6 +51,7 @@ def assemble_context_package(
         artefacts,
         max_tokens=max_tokens,
         score_by_key=resolved_score_map,
+        query=prompt,
     )
     selection_decisions: list[SelectionDecision] = []
     context_selections: list[ContextSelection] = []
@@ -104,7 +107,7 @@ def assemble_context_package(
     )
     answerable = build_answerable_briefing(
         prompt,
-        [artefact for artefact in artefacts if artefact.key in kept_keys],
+        artefacts,
         repo_root=repo_root,
         max_tokens=max_tokens,
         channels_by_key={
@@ -121,6 +124,12 @@ def assemble_context_package(
     )
     context_package.answerable_briefing = answerable
     context_package.answerability_metadata = answerable.metadata
+    context_package.prepared_context_briefing = answerable.text
+    context_package.prepared_context_mode = _prepared_context_mode(prepared_context_diagnostics, answerable.metadata.answerability)
+    if prepared_context_diagnostics is not None:
+        prepared_context_diagnostics.token_used = used
+        prepared_context_diagnostics.truncation_risk = answerable.metadata.truncation_risk
+    context_package.prepared_context_diagnostics = prepared_context_diagnostics
     decision_record = DecisionRecord(
         id=context_package.id,
         prompt=prompt,
@@ -129,7 +138,31 @@ def assemble_context_package(
         token_budget=max_tokens,
         token_used=used,
         selections=selection_decisions,
+        prepared_context_diagnostics=prepared_context_diagnostics,
     )
     if return_decision:
         return context_package, decision_record
     return context_package
+
+
+def _prepared_context_mode(diagnostics: PreparedContextDiagnostics | None, answerability: str) -> str:
+    if diagnostics is None:
+        return "answerable"
+    need = diagnostics.profile.need
+    if need == "implementation_support":
+        return "implementation"
+    if need == "research_mapping":
+        return "research"
+    if need == "creative_grounding":
+        return "writing"
+    if need == "decision_support":
+        return "decision"
+    if need == "scheduling":
+        return "planning"
+    if need == "conflict_resolution":
+        return "conflict_resolution"
+    if need == "absence_check":
+        return "absence_check"
+    if answerability in {"full", "weak", "conflict"}:
+        return "answerable"
+    return "planning"

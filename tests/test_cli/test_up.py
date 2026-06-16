@@ -30,7 +30,10 @@ model = "qwen3.5:35b"
         def __init__(self, pid: int) -> None:
             self.pid = pid
 
+    spawned: list[list[str]] = []
+
     def _fake_spawn(_cmd, _logfile):
+        spawned.append([str(part) for part in _cmd])
         pid_seed["value"] += 1
         return _Proc(pid_seed["value"])
 
@@ -51,6 +54,8 @@ model = "qwen3.5:35b"
     assert payload["started"] is True
     assert (temp_repo / ".vaner" / "runtime" / "daemon.pid").exists()
     assert (temp_repo / ".vaner" / "runtime" / "cockpit.pid").exists()
+    worker_cmd = next(cmd for cmd in spawned if "precompute-worker" in cmd)
+    assert worker_cmd[worker_cmd.index("--interval-seconds") + 1] == "15"
 
     down_payload = run_down(temp_repo)
     assert down_payload["daemon"]["stopped"] is True

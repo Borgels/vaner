@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from vaner.broker.compressor import EvidenceSpan, extract_evidence_spans
 from vaner.broker.selector import _prompt_terms
 from vaner.models.answerable import (
     Answerability,
@@ -43,9 +44,9 @@ def build_answerable_briefing(
     cost_sensitivity: str = "balanced",
 ) -> AnswerableBriefing:
     terms = _prompt_terms(query)
-    scored = [
-        _build_item(query, terms, artefact, repo_root=repo_root, channel=_channel_for(artefact, channels_by_key)) for artefact in artefacts
-    ]
+    scored: list[tuple[float, int, AnswerableEvidenceItem]] = []
+    for artefact in artefacts:
+        scored.extend(_build_items(query, terms, artefact, repo_root=repo_root, channel=_channel_for(artefact, channels_by_key)))
     scored.sort(key=lambda row: (row[0], -row[1], row[2].path), reverse=True)
 
     direct: list[AnswerableEvidenceItem] = []
@@ -170,6 +171,8 @@ def build_answerable_briefing(
         }
     )
     transport_limited_count = dropped_direct + dropped_supporting + dropped_lower
+    if assembly_mode == "safe" and (direct_truncated or supporting_truncated or lower_truncated):
+        transport_limited_count = max(1, transport_limited_count)
     if transport_limited_count:
         assembly_plan = _mark_transport_limited(assembly_plan, direct + supporting + lower, transport_limited_count)
     truncation_applied = direct_truncated or supporting_truncated or lower_truncated or dropped_direct > 0
@@ -280,35 +283,84 @@ def build_answerable_briefing_from_text(
     return AnswerableBriefing(text=text, answer_plan=answer_plan, sections=sections, metadata=metadata)
 
 
-def _build_item(
+def _build_items(
     query: str,
     terms: list[str],
     artefact: Artefact,
     *,
     repo_root: Path | None,
     channel: EvidenceChannel,
-) -> tuple[float, int, AnswerableEvidenceItem]:
+) -> list[tuple[float, int, AnswerableEvidenceItem]]:
     source_text = _source_text(artefact, repo_root)
-    excerpt, truncated = _best_excerpt(source_text or artefact.content, terms)
+    source_artefact = artefact.model_copy(update={"content": source_text}) if source_text else artefact
     path = artefact.source_path
+    spans = extract_evidence_spans(source_artefact, query, base_score=float(artefact.relevance_score or 0.0), max_spans_per_file=7)
+    if spans:
+        return [_item_from_span(query, terms, artefact, span, channel=channel) for span in spans]
+
+    excerpt, truncated = _best_excerpt(source_text or artefact.content, terms)
     score = _score_path_and_excerpt(query, path.lower(), excerpt.lower(), terms)
     title = _title_for(path, excerpt)
     confidence = max(0.0, min(1.0, score / 24.0))
+    return [
+        (
+            score,
+            -len(path),
+            AnswerableEvidenceItem(
+                path=path,
+                title=title,
+                source=str(artefact.metadata.get("corpus_id", "default")),
+                channel=channel,
+                why_selected=_why_selected(path, terms, score),
+                excerpt=excerpt,
+                relevance_to_query=_relevance(query, path, terms, score),
+                confidence=confidence,
+                token_count=count_tokens(excerpt),
+                revision_or_hash=str(artefact.metadata.get("revision") or artefact.metadata.get("hash") or "") or None,
+                truncated=truncated,
+            ),
+        )
+    ]
+
+
+def _item_from_span(
+    query: str,
+    terms: list[str],
+    artefact: Artefact,
+    span: EvidenceSpan,
+    *,
+    channel: EvidenceChannel,
+) -> tuple[float, int, AnswerableEvidenceItem]:
+    path = artefact.source_path
+    role_bonus = {
+        "direct": 8.0,
+        "constant_or_default": 6.0,
+        "schema_or_storage": 6.0,
+        "caller_or_downstream": 5.0,
+        "test_or_example": 4.0,
+        "supporting": 1.0,
+        "provenance": 0.5,
+    }[span.role]
+    score = span.score + role_bonus + _score_path_and_excerpt(query, path.lower(), span.excerpt.lower(), terms)
+    confidence = max(0.0, min(1.0, score / 32.0))
+    symbol = f" {span.symbol}" if span.symbol else ""
+    title = f"{span.role}{symbol} L{span.start_line}-{span.end_line}"
+    why = f"{_why_selected(path, terms, score)}; role={span.role}; lines={span.start_line}-{span.end_line}; {span.reason}"
     return (
         score,
-        -len(path),
+        -span.start_line,
         AnswerableEvidenceItem(
             path=path,
             title=title,
             source=str(artefact.metadata.get("corpus_id", "default")),
             channel=channel,
-            why_selected=_why_selected(path, terms, score),
-            excerpt=excerpt,
+            why_selected=why,
+            excerpt=span.excerpt,
             relevance_to_query=_relevance(query, path, terms, score),
             confidence=confidence,
-            token_count=count_tokens(excerpt),
+            token_count=count_tokens(span.excerpt),
             revision_or_hash=str(artefact.metadata.get("revision") or artefact.metadata.get("hash") or "") or None,
-            truncated=truncated,
+            truncated=False,
         ),
     )
 
@@ -440,6 +492,15 @@ def _mark_transport_limited(
             marked += 1
         else:
             updated.append(decision)
+    if transport_limited_count and marked == 0 and updated:
+        updated[-1] = updated[-1].model_copy(
+            update={
+                "decision": "transport_limited",
+                "reason": "evidence was constrained by the caller transport limit",
+                "would_change_output_in_shadow": True,
+            }
+        )
+        marked = 1
     return assembly.model_copy(
         update={
             "items_transport_limited": assembly.items_transport_limited + max(transport_limited_count, marked),
@@ -465,6 +526,14 @@ def _dedupe_key(item: AnswerableEvidenceItem) -> str:
 def _protected_reason(item: AnswerableEvidenceItem, role: str, conflict_paths: set[str]) -> str:
     if role == "direct_answer_evidence":
         return "direct answer evidence"
+    for evidence_role, reason in (
+        ("role=constant_or_default", "constant/default evidence"),
+        ("role=schema_or_storage", "schema/storage evidence"),
+        ("role=caller_or_downstream", "caller/downstream evidence"),
+        ("role=test_or_example", "test/example evidence"),
+    ):
+        if evidence_role in item.why_selected:
+            return reason
     if item.path in conflict_paths:
         return "conflict evidence"
     if item.channel == "prediction":

@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re as _re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import aiosqlite
@@ -24,7 +26,51 @@ from vaner.models.work_product import (
     WorkProductStatus,
     WorkProductType,
 )
+from vaner.external_state.models import (
+    ExternalStateFreshnessClass,
+    ExternalStateSensitivity,
+    ExternalStateSnapshot,
+)
 from vaner.policy.privacy import sanitize_no_absolute_paths
+
+SemanticEmbedder = Callable[[list[str]], Awaitable[list[list[float]]]]
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(left * right for left, right in zip(a, b, strict=False))
+    mag_a = math.sqrt(sum(value * value for value in a))
+    mag_b = math.sqrt(sum(value * value for value in b))
+    if mag_a == 0.0 or mag_b == 0.0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+def _semantic_chunks_for_artefact(artefact: Artefact, *, max_chunks: int = 24, max_chars: int = 1600) -> list[tuple[int, str]]:
+    text = f"{artefact.source_path}\n{artefact.content}".strip()
+    if not text:
+        return []
+    paragraphs = [part.strip() for part in _re.split(r"\n\s*\n+", text) if part.strip()]
+    chunks: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        if len(paragraph) > max_chars:
+            for start in range(0, len(paragraph), max_chars):
+                part = paragraph[start : start + max_chars].strip()
+                if part:
+                    chunks.append(part)
+            continue
+        if current and len(current) + len(paragraph) + 2 > max_chars:
+            chunks.append(current)
+            current = paragraph
+        else:
+            current = f"{current}\n\n{paragraph}".strip() if current else paragraph
+    if current:
+        chunks.append(current)
+    if not chunks:
+        chunks = [text[:max_chars]]
+    return [(index, chunk) for index, chunk in enumerate(chunks[: max(1, int(max_chunks))])]
 
 
 class ArtefactStore:
@@ -495,6 +541,11 @@ class ArtefactStore:
                     provenance_json TEXT NOT NULL,
                     self_eval_json TEXT NOT NULL,
                     feedback_state TEXT NOT NULL,
+                    sensitivity_class TEXT NOT NULL DEFAULT 'general',
+                    fresh_precheck_required INTEGER NOT NULL DEFAULT 0,
+                    external_inputs_json TEXT NOT NULL DEFAULT '[]',
+                    stale_after REAL,
+                    prohibited_actions_json TEXT NOT NULL DEFAULT '[]',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     target_key TEXT NOT NULL DEFAULT '',
@@ -507,6 +558,43 @@ class ArtefactStore:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_type ON work_products(type)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_target_key ON work_products(target_key)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_work_products_updated_at ON work_products(updated_at DESC)")
+        await db.execute(
+            """
+                CREATE TABLE IF NOT EXISTS external_state_snapshots (
+                    id TEXT PRIMARY KEY,
+                    provider_id TEXT NOT NULL,
+                    capability TEXT NOT NULL,
+                    query_key TEXT NOT NULL DEFAULT '',
+                    source_tool TEXT NOT NULL DEFAULT '',
+                    freshness_class TEXT NOT NULL,
+                    sensitivity_class TEXT NOT NULL,
+                    captured_at REAL NOT NULL,
+                    expires_at REAL,
+                    payload_fingerprint TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_external_state_provider ON external_state_snapshots(provider_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_external_state_capability ON external_state_snapshots(capability)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_external_state_expires ON external_state_snapshots(expires_at)")
+        await db.execute(
+            """
+                CREATE TABLE IF NOT EXISTS artefact_semantic_chunks (
+                    chunk_id TEXT PRIMARY KEY,
+                    artefact_key TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    embedding_json TEXT NOT NULL,
+                    embedding_model TEXT NOT NULL DEFAULT '',
+                    updated_at REAL NOT NULL
+                )
+                """
+        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_chunks_key ON artefact_semantic_chunks(artefact_key)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_chunks_model ON artefact_semantic_chunks(embedding_model)")
         await db.execute(
             """
                 CREATE TABLE IF NOT EXISTS work_product_events (
@@ -703,6 +791,44 @@ class ArtefactStore:
                 await db.execute("ALTER TABLE workspace_goals ADD COLUMN pc_unfinished_item_state TEXT NOT NULL DEFAULT 'none'")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_workspace_goals_subgoal_of ON workspace_goals(subgoal_of)")
             await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (8)")
+            current_schema_version = 8
+
+        if current_schema_version < 9:
+            await db.execute(
+                """
+                    CREATE TABLE IF NOT EXISTS artefact_semantic_chunks (
+                        chunk_id TEXT PRIMARY KEY,
+                        artefact_key TEXT NOT NULL,
+                        source_path TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL,
+                        text TEXT NOT NULL,
+                        content_hash TEXT NOT NULL,
+                        embedding_json TEXT NOT NULL,
+                        embedding_model TEXT NOT NULL DEFAULT '',
+                        updated_at REAL NOT NULL
+                    )
+                    """
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_chunks_key ON artefact_semantic_chunks(artefact_key)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_chunks_model ON artefact_semantic_chunks(embedding_model)")
+            await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (9)")
+            current_schema_version = 9
+
+        if current_schema_version < 10:
+            async with db.execute("PRAGMA table_info(work_products)") as cursor:
+                work_product_columns = [row[1] for row in await cursor.fetchall()]
+            if "sensitivity_class" not in work_product_columns:
+                await db.execute("ALTER TABLE work_products ADD COLUMN sensitivity_class TEXT NOT NULL DEFAULT 'general'")
+            if "fresh_precheck_required" not in work_product_columns:
+                await db.execute("ALTER TABLE work_products ADD COLUMN fresh_precheck_required INTEGER NOT NULL DEFAULT 0")
+            if "external_inputs_json" not in work_product_columns:
+                await db.execute("ALTER TABLE work_products ADD COLUMN external_inputs_json TEXT NOT NULL DEFAULT '[]'")
+            if "stale_after" not in work_product_columns:
+                await db.execute("ALTER TABLE work_products ADD COLUMN stale_after REAL")
+            if "prohibited_actions_json" not in work_product_columns:
+                await db.execute("ALTER TABLE work_products ADD COLUMN prohibited_actions_json TEXT NOT NULL DEFAULT '[]'")
+            await db.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (10)")
+            current_schema_version = 10
 
         # FTS5 index on artefact source_path + content for sub-millisecond
         # candidate retrieval; the full scorer then re-ranks the top-N hits.
@@ -755,6 +881,7 @@ class ArtefactStore:
                 "INSERT INTO artefacts_fts(key, source_path, content) VALUES (?, ?, ?)",
                 (artefact.key, artefact.source_path, artefact.content[:8192]),
             )
+            await db.execute("DELETE FROM artefact_semantic_chunks WHERE artefact_key = ?", (artefact.key,))
             await db.commit()
 
     async def get(self, key: str) -> Artefact | None:
@@ -787,25 +914,73 @@ class ArtefactStore:
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
 
-        artefacts: list[Artefact] = []
+        return [self._artefact_from_row(row) for row in rows]
+
+    async def list_by_keys(self, keys: set[str] | list[str] | tuple[str, ...], *, limit: int = 200) -> list[Artefact]:
+        ordered = list(dict.fromkeys(str(key) for key in keys if str(key)))
+        if not ordered:
+            return []
+        capped = ordered[: max(1, int(limit))]
+        placeholders = ",".join("?" for _ in capped)
+        query = (
+            "SELECT key, kind, source_path, source_mtime, generated_at, model, content, "
+            "metadata_json, relevance_score, access_count, last_accessed, signal_id "
+            f"FROM artefacts WHERE key IN ({placeholders})"
+        )
+        async with self._connect() as db:
+            cursor = await db.execute(query, tuple(capped))
+            rows = await cursor.fetchall()
+        by_key = {row[0]: self._artefact_from_row(row) for row in rows}
+        return [by_key[key] for key in capped if key in by_key]
+
+    async def list_by_source_paths(self, paths: set[str] | list[str] | tuple[str, ...], *, limit: int = 200) -> list[Artefact]:
+        ordered = list(dict.fromkeys(str(path) for path in paths if str(path)))
+        if not ordered:
+            return []
+        capped = ordered[: max(1, int(limit))]
+        placeholders = ",".join("?" for _ in capped)
+        query = (
+            "SELECT key, kind, source_path, source_mtime, generated_at, model, content, "
+            "metadata_json, relevance_score, access_count, last_accessed, signal_id "
+            f"FROM artefacts WHERE source_path IN ({placeholders})"
+        )
+        async with self._connect() as db:
+            cursor = await db.execute(query, tuple(capped))
+            rows = await cursor.fetchall()
+        by_path: dict[str, list[Artefact]] = {}
         for row in rows:
-            artefacts.append(
-                Artefact(
-                    key=row[0],
-                    kind=ArtefactKind(row[1]),
-                    source_path=row[2],
-                    source_mtime=row[3],
-                    generated_at=row[4],
-                    model=row[5],
-                    content=row[6],
-                    metadata=json.loads(row[7]),
-                    relevance_score=row[8],
-                    access_count=row[9],
-                    last_accessed=row[10],
-                    signal_id=row[11],
-                )
-            )
+            artefact = self._artefact_from_row(row)
+            by_path.setdefault(artefact.source_path, []).append(artefact)
+        artefacts: list[Artefact] = []
+        for path in capped:
+            artefacts.extend(by_path.get(path, []))
         return artefacts
+
+    async def list_source_paths(self, *, limit: int = 2000) -> list[str]:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT DISTINCT source_path FROM artefacts WHERE source_path != '' ORDER BY source_path LIMIT ?",
+                (max(1, int(limit)),),
+            )
+            rows = await cursor.fetchall()
+        return [str(row[0]) for row in rows if row[0]]
+
+    @staticmethod
+    def _artefact_from_row(row: tuple[object, ...]) -> Artefact:
+        return Artefact(
+            key=row[0],
+            kind=ArtefactKind(row[1]),
+            source_path=row[2],
+            source_mtime=row[3],
+            generated_at=row[4],
+            model=row[5],
+            content=row[6],
+            metadata=json.loads(row[7]),
+            relevance_score=row[8],
+            access_count=row[9],
+            last_accessed=row[10],
+            signal_id=row[11],
+        )
 
     async def mark_accessed(self, key: str) -> None:
         async with self._connect() as db:
@@ -853,11 +1028,118 @@ class ArtefactStore:
             provenance=json.loads(str(row[12] or "{}")),
             self_eval=json.loads(str(row[13] or "{}")),
             feedback_state=WorkProductFeedbackState(str(row[14])),
-            created_at=float(row[15]),
-            updated_at=float(row[16]),
-            target_key=str(row[17] or ""),
-            supersedes=str(row[18]) if row[18] is not None else None,
+            sensitivity_class=str(row[15] or "general"),
+            fresh_precheck_required=bool(row[16]),
+            external_inputs=json.loads(str(row[17] or "[]")),
+            stale_after=float(row[18]) if row[18] is not None else None,
+            prohibited_actions=json.loads(str(row[19] or "[]")),
+            created_at=float(row[20]),
+            updated_at=float(row[21]),
+            target_key=str(row[22] or ""),
+            supersedes=str(row[23]) if row[23] is not None else None,
         )
+
+    @staticmethod
+    def _external_state_snapshot_from_row(row: tuple[object, ...]) -> ExternalStateSnapshot:
+        return ExternalStateSnapshot(
+            id=str(row[0]),
+            provider_id=str(row[1]),
+            capability=str(row[2]),
+            query_key=str(row[3] or ""),
+            source_tool=str(row[4] or ""),
+            freshness_class=ExternalStateFreshnessClass(str(row[5])),
+            sensitivity_class=ExternalStateSensitivity(str(row[6])),
+            captured_at=float(row[7]),
+            expires_at=float(row[8]) if row[8] is not None else None,
+            payload_fingerprint=str(row[9]),
+            payload=json.loads(str(row[10] or "{}")),
+        )
+
+    async def upsert_external_state_snapshot(self, snapshot: ExternalStateSnapshot) -> None:
+        clean = ExternalStateSnapshot.model_validate(sanitize_no_absolute_paths(snapshot.model_dump(mode="json")))
+        async with self._write_lock:
+            async with self._connect() as db:
+                await db.execute(
+                    """
+                    INSERT INTO external_state_snapshots(
+                        id, provider_id, capability, query_key, source_tool,
+                        freshness_class, sensitivity_class, captured_at, expires_at,
+                        payload_fingerprint, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        provider_id=excluded.provider_id,
+                        capability=excluded.capability,
+                        query_key=excluded.query_key,
+                        source_tool=excluded.source_tool,
+                        freshness_class=excluded.freshness_class,
+                        sensitivity_class=excluded.sensitivity_class,
+                        captured_at=excluded.captured_at,
+                        expires_at=excluded.expires_at,
+                        payload_fingerprint=excluded.payload_fingerprint,
+                        payload_json=excluded.payload_json
+                    """,
+                    (
+                        clean.id,
+                        clean.provider_id,
+                        clean.capability,
+                        clean.query_key,
+                        clean.source_tool,
+                        clean.freshness_class.value,
+                        clean.sensitivity_class.value,
+                        clean.captured_at,
+                        clean.expires_at,
+                        clean.payload_fingerprint,
+                        json.dumps(clean.payload, sort_keys=True),
+                    ),
+                )
+                await db.commit()
+
+    async def get_external_state_snapshot(self, snapshot_id: str) -> ExternalStateSnapshot | None:
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT id, provider_id, capability, query_key, source_tool,
+                       freshness_class, sensitivity_class, captured_at, expires_at,
+                       payload_fingerprint, payload_json
+                FROM external_state_snapshots
+                WHERE id = ?
+                """,
+                (snapshot_id,),
+            )
+            row = await cursor.fetchone()
+        return self._external_state_snapshot_from_row(row) if row is not None else None
+
+    async def list_external_state_snapshots(
+        self,
+        *,
+        provider_id: str | None = None,
+        capability: str | None = None,
+        include_stale: bool = False,
+        now: float | None = None,
+        limit: int = 50,
+    ) -> list[ExternalStateSnapshot]:
+        ts = time.time() if now is None else float(now)
+        query = (
+            "SELECT id, provider_id, capability, query_key, source_tool, "
+            "freshness_class, sensitivity_class, captured_at, expires_at, "
+            "payload_fingerprint, payload_json FROM external_state_snapshots WHERE 1=1"
+        )
+        params: list[object] = []
+        if provider_id:
+            query += " AND provider_id = ?"
+            params.append(provider_id)
+        if capability:
+            query += " AND capability = ?"
+            params.append(capability)
+        if not include_stale:
+            query += " AND (expires_at IS NULL OR expires_at > ?)"
+            params.append(ts)
+        query += " ORDER BY captured_at DESC LIMIT ?"
+        params.append(max(1, min(200, int(limit))))
+        async with self._connect() as db:
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+        return [self._external_state_snapshot_from_row(row) for row in rows]
 
     async def upsert_work_product(self, product: WorkProduct) -> None:
         payload = sanitize_no_absolute_paths(product.model_dump(mode="json"))
@@ -870,8 +1152,10 @@ class ArtefactStore:
                         id, type, title, summary, body, evidence_refs_json,
                         source_snapshot_json, confidence, freshness, expires_at,
                         status, adoptability, provenance_json, self_eval_json,
-                        feedback_state, created_at, updated_at, target_key, supersedes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        feedback_state, sensitivity_class, fresh_precheck_required,
+                        external_inputs_json, stale_after, prohibited_actions_json,
+                        created_at, updated_at, target_key, supersedes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         type=excluded.type,
                         title=excluded.title,
@@ -887,6 +1171,11 @@ class ArtefactStore:
                         provenance_json=excluded.provenance_json,
                         self_eval_json=excluded.self_eval_json,
                         feedback_state=excluded.feedback_state,
+                        sensitivity_class=excluded.sensitivity_class,
+                        fresh_precheck_required=excluded.fresh_precheck_required,
+                        external_inputs_json=excluded.external_inputs_json,
+                        stale_after=excluded.stale_after,
+                        prohibited_actions_json=excluded.prohibited_actions_json,
                         updated_at=excluded.updated_at,
                         target_key=excluded.target_key,
                         supersedes=excluded.supersedes
@@ -907,6 +1196,11 @@ class ArtefactStore:
                         json.dumps(clean.provenance),
                         json.dumps(clean.self_eval.model_dump(mode="json")),
                         clean.feedback_state.value,
+                        clean.sensitivity_class.value,
+                        1 if clean.fresh_precheck_required else 0,
+                        json.dumps([item.model_dump(mode="json") for item in clean.external_inputs]),
+                        clean.stale_after,
+                        json.dumps(list(clean.prohibited_actions)),
                         clean.created_at,
                         clean.updated_at,
                         clean.target_key,
@@ -922,7 +1216,9 @@ class ArtefactStore:
                 SELECT id, type, title, summary, body, evidence_refs_json,
                        source_snapshot_json, confidence, freshness, expires_at,
                        status, adoptability, provenance_json, self_eval_json,
-                       feedback_state, created_at, updated_at, target_key, supersedes
+                       feedback_state, sensitivity_class, fresh_precheck_required,
+                       external_inputs_json, stale_after, prohibited_actions_json,
+                       created_at, updated_at, target_key, supersedes
                 FROM work_products
                 WHERE id = ?
                 """,
@@ -943,7 +1239,9 @@ class ArtefactStore:
             "SELECT id, type, title, summary, body, evidence_refs_json, "
             "source_snapshot_json, confidence, freshness, expires_at, "
             "status, adoptability, provenance_json, self_eval_json, "
-            "feedback_state, created_at, updated_at, target_key, supersedes "
+            "feedback_state, sensitivity_class, fresh_precheck_required, "
+            "external_inputs_json, stale_after, prohibited_actions_json, "
+            "created_at, updated_at, target_key, supersedes "
             "FROM work_products WHERE 1=1"
         )
         params: list[object] = []
@@ -1657,6 +1955,154 @@ class ArtefactStore:
             return [row[0] for row in rows]
         except Exception:
             return []
+
+    async def index_artefact_semantic(
+        self,
+        artefact: Artefact,
+        *,
+        embed: SemanticEmbedder,
+        embedding_model: str = "",
+        max_chunks: int = 24,
+    ) -> int:
+        """Persist dense semantic chunks for one artefact.
+
+        This is a context-source index, not a prediction cache. It lets Vaner
+        retrieve semantically related raw evidence and then run the normal
+        context-preparation selection, coverage, provenance, and gap logic.
+        """
+
+        chunks = _semantic_chunks_for_artefact(artefact, max_chunks=max_chunks)
+        if not chunks:
+            await self.replace_artefact_semantic_chunks(artefact, [], [], embedding_model=embedding_model)
+            return 0
+        vectors = await embed([chunk for _, chunk in chunks])
+        await self.replace_artefact_semantic_chunks(artefact, chunks, vectors, embedding_model=embedding_model)
+        return len(chunks)
+
+    async def replace_artefact_semantic_chunks(
+        self,
+        artefact: Artefact,
+        chunks: list[tuple[int, str]],
+        vectors: list[list[float]],
+        *,
+        embedding_model: str = "",
+    ) -> None:
+        if len(chunks) != len(vectors):
+            raise ValueError("semantic chunk/vector count mismatch")
+        now = time.time()
+        content_hash = hashlib.sha1(f"{artefact.source_path}\n{artefact.content}".encode()).hexdigest()  # noqa: S324
+        rows = []
+        for chunk_index, text in chunks:
+            chunk_id = hashlib.sha1(f"{artefact.key}:{chunk_index}:{content_hash}".encode()).hexdigest()  # noqa: S324
+            vector = [float(value) for value in vectors[chunk_index]]
+            rows.append(
+                (
+                    chunk_id,
+                    artefact.key,
+                    artefact.source_path,
+                    chunk_index,
+                    text,
+                    content_hash,
+                    json.dumps(vector),
+                    embedding_model,
+                    now,
+                )
+            )
+        async with self._write_lock:
+            async with self._connect() as db:
+                await db.execute("DELETE FROM artefact_semantic_chunks WHERE artefact_key = ?", (artefact.key,))
+                if rows:
+                    await db.executemany(
+                        """
+                        INSERT INTO artefact_semantic_chunks(
+                            chunk_id, artefact_key, source_path, chunk_index, text,
+                            content_hash, embedding_json, embedding_model, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        rows,
+                    )
+                await db.commit()
+
+    async def rebuild_semantic_index(
+        self,
+        *,
+        embed: SemanticEmbedder,
+        embedding_model: str = "",
+        limit: int = 2000,
+        max_chunks_per_artefact: int = 24,
+    ) -> int:
+        artefacts = await self.list(limit=limit)
+        indexed = 0
+        for artefact in artefacts:
+            indexed += await self.index_artefact_semantic(
+                artefact,
+                embed=embed,
+                embedding_model=embedding_model,
+                max_chunks=max_chunks_per_artefact,
+            )
+        return indexed
+
+    async def select_artefacts_semantic(
+        self,
+        query: str,
+        *,
+        embed: SemanticEmbedder | None = None,
+        limit: int = 50,
+        embedding_model: str = "",
+        chunk_limit: int = 2000,
+    ) -> list[str]:
+        """Return artefact keys ranked by semantic chunk similarity."""
+
+        if embed is None or not query.strip():
+            return []
+        try:
+            query_vectors = await embed([query])
+        except Exception:
+            return []
+        if not query_vectors:
+            return []
+        query_vector = [float(value) for value in query_vectors[0]]
+        params: list[object] = []
+        where = ""
+        if embedding_model:
+            where = "WHERE embedding_model = ?"
+            params.append(embedding_model)
+        params.append(max(1, int(chunk_limit)))
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"""
+                SELECT artefact_key, embedding_json
+                FROM artefact_semantic_chunks
+                {where}
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            )
+            rows = await cursor.fetchall()
+        scores: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for key, embedding_json in rows:
+            try:
+                vector = [float(value) for value in json.loads(str(embedding_json))]
+            except Exception:
+                continue
+            score = _cosine_similarity(query_vector, vector)
+            if score <= 0.0:
+                continue
+            key_str = str(key)
+            counts[key_str] = counts.get(key_str, 0) + 1
+            scores[key_str] = max(scores.get(key_str, 0.0), score) + min(0.05, counts[key_str] * 0.005)
+        return [key for key, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))[: max(1, int(limit))]]
+
+    async def semantic_index_snapshot(self) -> dict[str, int]:
+        async with self._connect() as db:
+            chunks_row = await (await db.execute("SELECT COUNT(*) FROM artefact_semantic_chunks")).fetchone()
+            artefacts_row = await (await db.execute("SELECT COUNT(DISTINCT artefact_key) FROM artefact_semantic_chunks")).fetchone()
+        return {
+            "chunks": int(chunks_row[0] or 0),
+            "artefacts": int(artefacts_row[0] or 0),
+        }
 
     async def replace_quality_issues(self, issues: list[dict[str, object]]) -> None:
         async with self._connect() as db:

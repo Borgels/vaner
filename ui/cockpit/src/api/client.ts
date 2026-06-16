@@ -6,8 +6,11 @@ import type {
   ComputeDevice,
   ComputeSettings,
   DecisionRecordPayload,
+  ExternalStateDiscovery,
+  ExternalStateSettings,
   FocusRoutePayload,
   Goal,
+  HeatmapReplayPayload,
   ImpactSummary,
   JobsStatusPayload,
   LearningRecent,
@@ -15,6 +18,7 @@ import type {
   LiveWorkSnapshot,
   MCPSettings,
   PredictionsByState,
+  PreparedWorkAction,
   PreparedWorkCard,
   RecentActivityPayload,
   RecentEventsPayload,
@@ -36,10 +40,18 @@ export function openEventSource(path: string): EventSource {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init)
+  const response = await fetch(path, { headers: { accept: 'application/json', ...(init?.headers || {}) }, ...init })
   if (!response.ok) {
     const detail = await response.text().catch(() => '')
     throw new Error(detail || `HTTP ${response.status}`)
+  }
+  const contentType = response.headers.get('content-type') ?? ''
+  if (!contentType.includes('application/json')) {
+    const text = await response.text().catch(() => '')
+    const hint = text.trimStart().startsWith('<')
+      ? 'The cockpit received HTML instead of daemon JSON. Start Vaner with `vaner up` or use the Vite proxy against the daemon.'
+      : `Expected JSON but received ${contentType || 'an unknown content type'}.`
+    throw new Error(hint)
   }
   return (await response.json()) as T
 }
@@ -163,6 +175,38 @@ export function updateMcp(patch: Partial<MCPSettings>): Promise<{ mcp: MCPSettin
   return request('/mcp', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(patch) })
 }
 
+export function getExternalState(): Promise<ExternalStateSettings> {
+  return request('/external-state')
+}
+
+export function updateExternalState(patch: Partial<Pick<ExternalStateSettings, 'enabled' | 'max_calls_per_cycle' | 'max_cycle_ms'>>): Promise<ExternalStateSettings> {
+  return request('/external-state', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(patch) })
+}
+
+export function saveExternalProvider(payload: {
+  id: string
+  transport: 'stdio' | 'streamable_http'
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+  timeout_ms?: number
+}): Promise<ExternalStateSettings> {
+  return request('/external-state/providers', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(payload) })
+}
+
+export function discoverExternalProvider(providerId: string, options: { apply?: boolean; trust_unknown_read?: boolean } = {}): Promise<ExternalStateDiscovery> {
+  return request(`/external-state/providers/${encodeURIComponent(providerId)}/discover`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(options),
+  })
+}
+
+export function updateExternalFinance(patch: Partial<ExternalStateSettings['finance']>): Promise<ExternalStateSettings> {
+  return request('/external-state/finance', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(patch) })
+}
+
 export function updateContext(max_context_tokens: number): Promise<{ limits: LimitSettings }> {
   return request('/context', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ max_context_tokens }) })
 }
@@ -171,9 +215,12 @@ export function toggleGateway(enabled: boolean): Promise<{ enabled: boolean }> {
   return request('/gateway/toggle', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ enabled }) })
 }
 
-export function runPreparedWorkAction(endpoint: string, kind: string): Promise<unknown> {
-  const method = kind === 'inspect' ? 'GET' : 'POST'
-  const body = kind === 'feedback' ? JSON.stringify({ feedback_state: 'useful' }) : undefined
+export function runPreparedWorkAction(action: PreparedWorkAction): Promise<unknown> {
+  const method = action.kind === 'inspect' ? 'GET' : 'POST'
+  const feedbackState =
+    typeof action.arguments?.feedback_state === 'string' ? action.arguments.feedback_state : 'useful'
+  const body = action.kind === 'feedback' ? JSON.stringify({ feedback_state: feedbackState }) : undefined
+  const endpoint = action.endpoint ?? ''
   return request(endpoint, {
     method,
     headers: body ? JSON_HEADERS : undefined,
@@ -213,6 +260,21 @@ export function listPredictionsByState(): Promise<PredictionsByState> {
 
 export function getActiveWork(): Promise<ActiveWorkPayload> {
   return request('/work/active')
+}
+
+export function getHeatmapReplay(params: { fromTs: number; toTs: number; limit?: number }): Promise<HeatmapReplayPayload> {
+  const query = new URLSearchParams()
+  query.set('from_ts', String(params.fromTs / 1000))
+  query.set('to_ts', String(params.toTs / 1000))
+  if (params.limit) query.set('limit', String(params.limit))
+  return request(`/heatmap/replay?${query.toString()}`)
+}
+
+export function streamHeatmapReplay(params: { rangeMs: number; limit?: number }): EventSource {
+  const query = new URLSearchParams()
+  query.set('range_seconds', String(params.rangeMs / 1000))
+  if (params.limit) query.set('limit', String(params.limit))
+  return openEventSource(`/heatmap/replay/stream?${query.toString()}`)
 }
 
 export function getLiveWork(entityType: string, entityId: string, limit = 80): Promise<LiveWorkSnapshot> {

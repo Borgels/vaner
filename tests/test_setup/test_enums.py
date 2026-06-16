@@ -43,6 +43,7 @@ def test_work_style_values() -> None:
         "support",
         "learning",
         "coding",
+        "trading",
         "general",
         "mixed",
         "unsure",

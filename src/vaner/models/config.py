@@ -81,6 +81,11 @@ class BackendConfig(BaseModel):
     reasoning_token_budget: int = 8192
     # Try response_format={"type":"json_object"} before tolerant parsing.
     prefer_structured_output: bool = True
+    # Provider/runtime knobs for local model calls. For Ollama these are
+    # forwarded under request ``options`` (for example num_ctx, keep_alive,
+    # temperature, top_p, top_k, min_p, repeat_penalty).
+    runtime_options: dict[str, Any] = Field(default_factory=dict)
+    sampling_options: dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerationConfig(BaseModel):
@@ -125,6 +130,18 @@ class EvidenceAssemblyConfig(BaseModel):
     allow_semantic_compression: bool = False
 
 
+class ContextPreparationConfig(BaseModel):
+    mode: Literal["legacy", "balanced", "coverage_plus"] = "balanced"
+    max_query_variants: int = 6
+    max_candidate_keys: int = 640
+    max_expansion_passes: int = 1
+    model_expansion: Literal["off", "local_first", "cloud_allowed"] = "local_first"
+    semantic_memory_enabled: bool = False
+    coverage_floor_enabled: bool = True
+    hard_constraint_validation_enabled: bool = True
+    prepared_briefing_injection_enabled: bool = True
+
+
 class GatewayConfig(BaseModel):
     passthrough_enabled: bool = False
     routes: dict[str, str] = Field(default_factory=dict)
@@ -143,6 +160,49 @@ class MCPConfig(BaseModel):
     clients. Flip to `False` to kill-switch the UI if a specific host
     rejects the profile; the dashboard tool still returns the structured
     text fallback."""
+
+
+class McpConsumerRateBudgetConfig(BaseModel):
+    max_calls_per_cycle: int = Field(default=20, ge=0)
+    max_calls_per_minute: int = Field(default=60, ge=0)
+
+
+class McpConsumerConfig(BaseModel):
+    transport: Literal["stdio", "streamable_http"] = "stdio"
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    url: str = ""
+    env: dict[str, str] = Field(default_factory=dict)
+    timeout_ms: int = Field(default=10000, ge=100)
+    allowed_tools: list[str] = Field(default_factory=list)
+    tool_risks: dict[str, str] = Field(default_factory=dict)
+    rate_budget: McpConsumerRateBudgetConfig = Field(default_factory=McpConsumerRateBudgetConfig)
+
+
+class FinanceExternalStateConfig(BaseModel):
+    enabled: bool = False
+    provider: str = ""
+    market_data_enabled: bool = False
+    account_state_enabled: bool = False
+    capability_tools: dict[str, str] = Field(default_factory=dict)
+
+
+class ModelNativeSearchConfig(BaseModel):
+    enabled: bool = False
+    provider: Literal["ollama", "brave"] = "ollama"
+    base_url: str = "https://ollama.com/api"
+    api_key_env: str = "OLLAMA_API_KEY"
+    max_results: int = Field(default=5, ge=1, le=10)
+    timeout_seconds: float = Field(default=15.0, ge=1.0)
+
+
+class ExternalStateConfig(BaseModel):
+    enabled: bool = False
+    max_calls_per_cycle: int = Field(default=20, ge=0)
+    max_cycle_ms: int = Field(default=10000, ge=0)
+    consumers: dict[str, McpConsumerConfig] = Field(default_factory=dict)
+    finance: FinanceExternalStateConfig = Field(default_factory=FinanceExternalStateConfig)
+    model_native_search: ModelNativeSearchConfig = Field(default_factory=ModelNativeSearchConfig)
 
 
 class ComputeConfig(BaseModel):
@@ -248,6 +308,8 @@ class ExplorationEndpoint(BaseModel):
 
     latency_p50_ms: float = 800.0
     context_window: int = 8192
+    runtime_options: dict[str, Any] = Field(default_factory=dict)
+    sampling_options: dict[str, Any] = Field(default_factory=dict)
     reasoning_depth_hint: Literal["low", "medium", "high"] = "medium"
     structured_output_reliability: float = 0.7
     cost_per_1k_tokens: float = 0.0
@@ -376,6 +438,14 @@ class ExplorationConfig(BaseModel):
     vLLM which requires a non-empty but unauthenticated token.  Leave empty
     to read from the ``VANER_EXPLORATION_API_KEY`` environment variable or
     fall back to ``"EMPTY"`` for local endpoints.
+    """
+
+    runtime_options: dict[str, Any] = Field(default_factory=dict)
+    sampling_options: dict[str, Any] = Field(default_factory=dict)
+    """Provider/runtime options forwarded to the single exploration endpoint.
+
+    Multi-endpoint routing uses the per-endpoint fields on
+    ``ExplorationEndpoint`` instead.
     """
 
     endpoints: list[ExplorationEndpoint] = Field(default_factory=list)
@@ -735,7 +805,7 @@ class VanerConfig(BaseModel):
     store_path: Path
     telemetry_path: Path
     max_age_seconds: int = 3600
-    max_context_tokens: int = 4096
+    max_context_tokens: int = 8192
     backend: BackendConfig = Field(default_factory=BackendConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
@@ -748,7 +818,9 @@ class VanerConfig(BaseModel):
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
+    external_state: ExternalStateConfig = Field(default_factory=ExternalStateConfig)
     setup: SetupConfig = Field(default_factory=SetupConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     cost: CostConfig = Field(default_factory=CostConfig)
     evidence_assembly: EvidenceAssemblyConfig = Field(default_factory=EvidenceAssemblyConfig)
+    context_preparation: ContextPreparationConfig = Field(default_factory=ContextPreparationConfig)

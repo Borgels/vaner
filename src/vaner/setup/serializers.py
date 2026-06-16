@@ -104,6 +104,7 @@ def hardware_to_dict(hw: HardwareProfile) -> dict[str, Any]:
         "thermal_constrained": hw.thermal_constrained,
         "detected_runtimes": list(hw.detected_runtimes),
         "detected_models": [list(row) for row in hw.detected_models],
+        "disk_free_gb": hw.disk_free_gb,
         "tier": hw.tier,
     }
 

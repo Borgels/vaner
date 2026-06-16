@@ -42,6 +42,7 @@ _SETUP_QUESTIONS: tuple[_SetupQuestion, ...] = (
             {"value": "support", "label": "Support — answering questions, troubleshooting"},
             {"value": "learning", "label": "Learning — studying, exploring a new domain"},
             {"value": "coding", "label": "Coding — software development"},
+            {"value": "trading", "label": "Trading — options, equities, derivatives, portfolio management"},
             {"value": "general", "label": "General — knowledge work, mixed light tasks"},
             {"value": "mixed", "label": "Mixed — a bit of everything (safe default)"},
             {"value": "unsure", "label": "Unsure — I'd rather Vaner picks for me"},

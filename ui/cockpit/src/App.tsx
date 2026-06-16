@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { adaptEvidence, adaptScenario } from './api/adapt'
 import {
   deletePinnedFact,
+  discoverExternalProvider,
   expandScenario,
   getBackendPresets,
   getComputeDevices,
+  getExternalState,
   getImpactSummary,
   getSignalCapabilities,
   getSourcesPermissions,
@@ -20,14 +22,17 @@ import {
   updateBackend,
   updateCompute,
   updateContext,
+  updateExternalFinance,
+  updateExternalState,
   updateMcp,
+  saveExternalProvider,
 } from './api/client'
 import { useBootstrap } from './api/useBootstrap'
 import { useActiveWork } from './api/useActiveWork'
 import { useEvents } from './api/useEvents'
 import { useFocusRuntime } from './api/useFocusRuntime'
 import { useLiveWork, type LiveWorkSelection } from './api/useLiveWork'
-import { usePipelineEvents } from './api/usePipelineEvents'
+import { usePipelineEvents, type PipelineEvent } from './api/usePipelineEvents'
 import { usePreparedWork } from './api/usePreparedWork'
 import { useScenarios } from './api/useScenarios'
 import {
@@ -35,6 +40,7 @@ import {
   EvidenceView,
   FocusView,
   NowView,
+  OperatorOverviewView,
   PreparedWorkView,
   TimelineView,
 } from './components/CockpitViews'
@@ -49,6 +55,7 @@ import {
   type CommandItem,
 } from './components/chrome'
 import { EventStreamPanel } from './components/EventStreamPanel'
+import { HeatmapReplayView } from './components/HeatmapReplayView'
 import { Inspector } from './components/Inspector'
 import { LearningPanel } from './components/LearningPanel'
 import { LiveWorkInspector } from './components/LiveWorkInspector'
@@ -62,9 +69,12 @@ import type {
   ComputeDevice,
   ComputeSettings,
   DecisionRecordPayload,
+  ExternalStateDiscovery,
+  ExternalStateSettings,
   ImpactSummary,
   LatestInvalidationSignal,
   LimitSettings,
+  LiveWorkEvent,
   MCPSettings,
   PredictionsByState,
   PredictionSummary,
@@ -86,6 +96,12 @@ const COCKPIT_BUILD_SHA = (import.meta as unknown as { env?: { VITE_COCKPIT_SHA?
 type ScenarioScope = 'live' | 'session' | 'focus' | 'history'
 
 const PREDICTION_STATE_ORDER = ['ready', 'drafting', 'evidence_gathering', 'grounding', 'queued', 'stale']
+const LIVE_STALE_GRACE_SECONDS = 30 * 60
+
+function compactWorkspacePath(path: string): string {
+  const parts = path.split('/').filter(Boolean)
+  return parts.slice(-1)[0] ?? path
+}
 
 function predictionReadiness(prediction: PredictionSummary): string {
   return String(prediction.readiness ?? prediction.run?.readiness ?? 'queued')
@@ -115,6 +131,14 @@ function predictionSortRank(prediction: PredictionSummary): number {
     return state === 'ready' || state === 'drafting' ? -2 : -1
   }
   return stateRank
+}
+
+function isReviewablePreparedCard(card: { kind: string; source_type: string; title: string; summary: string; target_label: string; external_input_count?: number }): boolean {
+  const text = `${card.kind} ${card.title} ${card.summary} ${card.target_label}`.toLowerCase()
+  if (card.kind === 'finance' || text.includes('trading') || text.includes('option') || text.includes('position')) return true
+  if (card.source_type === 'work_product') return true
+  if (card.kind === 'diff' || card.kind === 'review') return true
+  return Number(card.external_input_count ?? 0) > 0
 }
 
 function normalizePrediction(prediction: PredictionSummary): PredictionSummary {
@@ -185,6 +209,8 @@ function scenarioFromPrediction(prediction: PredictionSummary): UIScenario {
     readiness: ready ? 'ready' : readiness === 'stale' ? 'cooling' : 'warming',
     visibility: ready ? 'prominent' : readiness === 'stale' ? 'cooling' : 'warming',
     lifecycleMotion: ready ? 'rising' : readiness === 'stale' ? 'falling' : 'stable',
+    createdAt: prediction.created_at ?? null,
+    lastRefreshedAt: prediction.updated_at ?? prediction.created_at ?? null,
     lastReinforcedAt: prediction.updated_at ?? prediction.created_at ?? null,
     archivedAt: null,
     visibilityReason: ready ? 'prepared prediction is ready' : 'background prediction is warming',
@@ -201,6 +227,165 @@ function scenarioFromPrediction(prediction: PredictionSummary): UIScenario {
 
 function isPredictionScenarioId(id: string): boolean {
   return id.startsWith('prediction:')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function liveWorkEventsFromPipeline(events: PipelineEvent[]): LiveWorkEvent[] {
+  const rows: LiveWorkEvent[] = []
+  for (const event of events) {
+    if (event.kind !== 'work.snapshot') {
+      continue
+    }
+    const items = Array.isArray(event.payload.items) ? event.payload.items : []
+    for (const item of items) {
+      if (!isRecord(item)) {
+        continue
+      }
+      const entityType = String(item.entity_type ?? '')
+      const entityId = String(item.entity_id ?? '')
+      const eventId = String(item.event_id ?? '')
+      if (!entityType || !entityId || !eventId) {
+        continue
+      }
+      rows.push(item as unknown as LiveWorkEvent)
+    }
+  }
+  return rows.sort((a, b) => Number(b.ts ?? 0) - Number(a.ts ?? 0))
+}
+
+function isActiveLiveWorkEvent(event: LiveWorkEvent): boolean {
+  return (
+    ['queued', 'running', 'grounding', 'evidence_gathering', 'drafting'].includes(event.status) ||
+    ['model', 'progress', 'prediction_precompute', 'queued'].includes(event.stage)
+  )
+}
+
+function scenarioCandidatesForLiveWork(event: LiveWorkEvent): string[] {
+  const candidates: string[] = []
+  if (event.entity_type === 'prediction' && event.entity_id) {
+    candidates.push(`prediction:${event.entity_id}`)
+  }
+  if (event.entity_type === 'scenario' && event.entity_id) {
+    candidates.push(event.entity_id)
+  }
+  if (event.scenario_id) {
+    candidates.push(event.scenario_id)
+  }
+  return candidates
+}
+
+function predictionScenarioIdFromLiveWork(event: LiveWorkEvent): string | null {
+  return event.entity_type === 'prediction' && event.entity_id ? `prediction:${event.entity_id}` : null
+}
+
+function activeScenarioIdFromLiveWork(events: PipelineEvent[], scenarios: UIScenario[]): string | null {
+  const scenarioIds = new Set(scenarios.map((scenario) => scenario.id))
+  const workEvents = liveWorkEventsFromPipeline(events)
+  const activeEvents = workEvents.filter(isActiveLiveWorkEvent)
+  for (const event of activeEvents.length ? activeEvents : workEvents) {
+    const candidates = event.scenario_id ? [event.scenario_id, ...scenarioCandidatesForLiveWork(event)] : scenarioCandidatesForLiveWork(event)
+    for (const candidate of candidates) {
+      if (scenarioIds.has(candidate)) {
+        return candidate
+      }
+    }
+  }
+  return null
+}
+
+function activeScenarioCandidateFromPipelineEvent(event: PipelineEvent | undefined): string | null {
+  if (!event) {
+    return null
+  }
+  if (event.scn) {
+    return event.scn
+  }
+  const activeEvent = liveWorkEventsFromPipeline([event]).find(isActiveLiveWorkEvent)
+  return activeEvent ? activeEvent.scenario_id ?? scenarioCandidatesForLiveWork(activeEvent)[0] ?? null : null
+}
+
+function parentScenarioFromLiveWorkEvent(event: LiveWorkEvent): UIScenario | null {
+  const id = predictionScenarioIdFromLiveWork(event) ?? (event.entity_type === 'scenario' ? event.entity_id : null)
+  if (!id) return null
+  const targets = Array.isArray(event.targets) ? event.targets.filter((target): target is string => typeof target === 'string' && target.length > 0) : []
+  const active = isActiveLiveWorkEvent(event)
+  const summary = event.summary || `${event.entity_type} ${event.entity_id}`
+  return {
+    id,
+    kind: event.stage === 'model' ? 'research' : 'change',
+    title: active ? `Working: ${summary}` : summary,
+    score: active ? 0.98 : 0.78,
+    relevance: active ? 0.98 : 0.76,
+    confidence: active ? 0.92 : 0.7,
+    visiblePriority: active ? 0.99 : 0.76,
+    freshness: active ? 'fresh' : 'recent',
+    readiness: active ? 'warming' : 'ready',
+    visibility: active ? 'prominent' : 'warming',
+    lifecycleMotion: active ? 'rising' : 'stable',
+    createdAt: Number(event.ts ?? Date.now() / 1000),
+    lastRefreshedAt: Number(event.ts ?? Date.now() / 1000),
+    lastReinforcedAt: Number(event.ts ?? Date.now() / 1000),
+    archivedAt: null,
+    visibilityReason: active ? 'active background work' : 'recent background work',
+    depth: 0,
+    parent: null,
+    path: targets[0] ?? event.scenario_id ?? event.entity_id,
+    skill: null,
+    decisionState: active ? 'active' : 'pending',
+    reason: summary,
+    entities: targets.slice(0, 10),
+    pinned: active,
+  }
+}
+
+function childScenarioFromLiveWorkEvent(event: LiveWorkEvent): UIScenario | null {
+  if (!event.scenario_id || event.scenario_id === event.entity_id) {
+    return null
+  }
+  const parent = predictionScenarioIdFromLiveWork(event)
+  const targets = Array.isArray(event.targets) ? event.targets.filter((target): target is string => typeof target === 'string' && target.length > 0) : []
+  const active = isActiveLiveWorkEvent(event)
+  return {
+    id: event.scenario_id,
+    kind: event.stage === 'model' ? 'research' : 'change',
+    title: targets[0] ? `Exploring ${targets[0]}` : event.summary || `Scenario ${event.scenario_id.slice(0, 8)}`,
+    score: active ? 0.94 : 0.7,
+    relevance: active ? 0.92 : 0.68,
+    confidence: active ? 0.82 : 0.65,
+    visiblePriority: active ? 0.92 : 0.68,
+    freshness: active ? 'fresh' : 'recent',
+    readiness: active ? 'warming' : 'ready',
+    visibility: active ? 'prominent' : 'warming',
+    lifecycleMotion: active ? 'rising' : 'stable',
+    createdAt: Number(event.ts ?? Date.now() / 1000),
+    lastRefreshedAt: Number(event.ts ?? Date.now() / 1000),
+    lastReinforcedAt: Number(event.ts ?? Date.now() / 1000),
+    archivedAt: null,
+    visibilityReason: active ? 'active scenario under prepared work' : 'recent scenario under prepared work',
+    depth: parent ? 1 : 0,
+    parent,
+    path: targets[0] ?? event.scenario_id,
+    skill: null,
+    decisionState: active ? 'active' : 'pending',
+    reason: event.summary,
+    entities: targets.slice(0, 10),
+    pinned: false,
+  }
+}
+
+function scenariosFromLiveWorkEvent(event: LiveWorkEvent): UIScenario[] {
+  return [parentScenarioFromLiveWorkEvent(event), childScenarioFromLiveWorkEvent(event)].filter((scenario): scenario is UIScenario => Boolean(scenario))
+}
+
+function scenarioBelongsOnActiveMap(scenario: UIScenario, nowSeconds = Date.now() / 1000): boolean {
+  if (scenario.pinned || scenario.visibility === 'prominent' || scenario.freshness !== 'stale') {
+    return true
+  }
+  const reinforcedAt = Number(scenario.lastReinforcedAt ?? 0)
+  return reinforcedAt > 0 && nowSeconds - reinforcedAt <= LIVE_STALE_GRACE_SECONDS
 }
 
 function formatDecisionTime(assembledAt: number): string {
@@ -249,6 +434,8 @@ function App() {
   const [backend, setBackend] = useState<BackendSettings | null>(null)
   const [compute, setCompute] = useState<ComputeSettings | null>(null)
   const [mcp, setMcp] = useState<MCPSettings | null>(null)
+  const [externalState, setExternalState] = useState<ExternalStateSettings | null>(null)
+  const [externalStateDiscovery, setExternalStateDiscovery] = useState<ExternalStateDiscovery | null>(null)
   const [limits, setLimits] = useState<LimitSettings | null>(null)
   const [presets, setPresets] = useState<BackendPreset[]>([])
   const [devices, setDevices] = useState<ComputeDevice[]>([])
@@ -258,6 +445,7 @@ function App() {
   const [pinnedFacts, setPinnedFacts] = useState<UIPinnedFact[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [liveSelection, setLiveSelection] = useState<LiveWorkSelection | null>(null)
+  const [scenarioAutoFocus, setScenarioAutoFocus] = useState(false)
   const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -303,6 +491,8 @@ function App() {
       readiness: 'ready',
       visibility: 'prominent',
       lifecycleMotion: 'rising',
+      createdAt: draft.created_at ?? null,
+      lastRefreshedAt: draft.updated_at ?? draft.created_at ?? null,
       lastReinforcedAt: Date.now() / 1000,
       archivedAt: null,
       visibilityReason: 'active draft plan',
@@ -328,12 +518,28 @@ function App() {
     [predictions],
   )
 
+  const liveWorkScenarios = useMemo<UIScenario[]>(() => {
+    const byId = new Map<string, UIScenario>()
+    for (const event of liveWorkEventsFromPipeline(pipeline.events).filter(isActiveLiveWorkEvent).slice(0, 8)) {
+      for (const scenario of scenariosFromLiveWorkEvent(event)) {
+        if (!byId.has(scenario.id)) {
+          byId.set(scenario.id, scenario)
+        }
+      }
+    }
+    return [...byId.values()]
+  }, [pipeline.events])
+
   const scenarios = useMemo(() => {
     const withLive = (rows: UIScenario[]) => {
       if (scenarioScope === 'history') {
         return rows
       }
-      const combined = [...predictionScenarios, ...rows.filter((row) => !predictionScenarios.some((prediction) => prediction.id === row.id))]
+      const activeRows = scenarioScope === 'live' || scenarioScope === 'focus'
+        ? rows.filter((row) => scenarioBelongsOnActiveMap(row))
+        : rows
+      const seeded = [...predictionScenarios, ...liveWorkScenarios.filter((live) => !predictionScenarios.some((prediction) => prediction.id === live.id))]
+      const combined = [...seeded, ...activeRows.filter((row) => !seeded.some((seed) => seed.id === row.id))]
       return livePlanScenario ? [livePlanScenario, ...combined.filter((row) => row.id !== livePlanScenario.id)] : combined
     }
     if (scenarioScope === 'focus' && !focusMatches) {
@@ -349,7 +555,7 @@ function App() {
       const refreshedAt = scenarioMap[scenario.id]?.last_refreshed_at ?? scenarioMap[scenario.id]?.created_at
       return typeof refreshedAt === 'number' && refreshedAt >= bootstrapPayload.daemon_started_at!
     }))
-  }, [bootstrapPayload?.daemon_started_at, focusMatches, livePlanScenario, predictionScenarios, scenarioMap, scenarioResult.scenarios, scenarioScope])
+  }, [bootstrapPayload?.daemon_started_at, focusMatches, livePlanScenario, liveWorkScenarios, predictionScenarios, scenarioMap, scenarioResult.scenarios, scenarioScope])
 
   const preparedCards = useMemo(() => {
     const freshnessRank = (label: string) => {
@@ -378,6 +584,14 @@ function App() {
       return b.updated_at - a.updated_at
     })
   }, [preparedWork.cards])
+
+  const activeWorkspace = focusRuntime.route?.effective_route?.workspace
+    ?? focusState?.workspaces?.find((workspace) => workspace.id === focusState.active_workspace_id)
+    ?? null
+  const activeWorkspaceLabel = activeWorkspace?.display_name
+    ?? (activeWorkspace?.canonical_path ? compactWorkspacePath(activeWorkspace.canonical_path) : activeWorkspace?.id)
+    ?? null
+  const activeWorkspacePath = activeWorkspace?.canonical_path ?? null
 
   useEffect(() => {
     if (!bootstrapPayload?.cockpit_sha || !COCKPIT_BUILD_SHA) {
@@ -409,7 +623,7 @@ function App() {
   }, [cockpit.accent])
 
   useEffect(() => {
-    const pulseTarget = pipeline.events[0]?.scn
+    const pulseTarget = activeScenarioCandidateFromPipelineEvent(pipeline.events[0])
     if (!pulseTarget) {
       return
     }
@@ -432,6 +646,19 @@ function App() {
       selectScenario(scenarios[0].id)
     }
   }, [scenarios, selectedId])
+
+  const scenarioAutoFocusTargetId = useMemo(
+    () => activeScenarioIdFromLiveWork(pipeline.events, scenarios),
+    [pipeline.events, scenarios],
+  )
+  const scenarioAutoFocusTarget = scenarios.find((scenario) => scenario.id === scenarioAutoFocusTargetId) ?? null
+
+  useEffect(() => {
+    if (!scenarioAutoFocus || view !== 'scenario-map' || !scenarioAutoFocusTargetId || selectedId === scenarioAutoFocusTargetId) {
+      return
+    }
+    selectScenario(scenarioAutoFocusTargetId)
+  }, [scenarioAutoFocus, scenarioAutoFocusTargetId, selectedId, view])
 
   useEffect(() => {
     if (!preparedCards.length) {
@@ -517,12 +744,20 @@ function App() {
     setSignalCapabilities(capabilitiesPayload)
   }, [])
 
+  const refreshExternalState = useCallback(async () => {
+    try {
+      setExternalState(await getExternalState())
+    } catch {
+      setExternalState(null)
+    }
+  }, [])
+
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshStatus(), refreshDevices(), refreshPresets(), refreshSkillsPinned(), preparedWork.refresh(), refreshPredictions(), focusRuntime.refresh(), refreshSourceState(), activeWork.refresh()])
+    await Promise.all([refreshStatus(), refreshDevices(), refreshPresets(), refreshSkillsPinned(), preparedWork.refresh(), refreshPredictions(), focusRuntime.refresh(), refreshSourceState(), refreshExternalState(), activeWork.refresh()])
     if (mode === 'proxy') {
       await refreshProxyData()
     }
-  }, [activeWork.refresh, focusRuntime.refresh, mode, preparedWork.refresh, refreshDevices, refreshPredictions, refreshPresets, refreshProxyData, refreshSkillsPinned, refreshSourceState, refreshStatus])
+  }, [activeWork.refresh, focusRuntime.refresh, mode, preparedWork.refresh, refreshDevices, refreshExternalState, refreshPredictions, refreshPresets, refreshProxyData, refreshSkillsPinned, refreshSourceState, refreshStatus])
 
   useEffect(() => {
     refreshAll().catch(() => {
@@ -535,13 +770,14 @@ function App() {
       refreshStatus().catch(() => undefined)
       refreshPredictions().catch(() => undefined)
       refreshSourceState().catch(() => undefined)
+      refreshExternalState().catch(() => undefined)
       activeWork.refresh().catch(() => undefined)
       if (mode === 'proxy') {
         getImpactSummary().then(setImpact).catch(() => undefined)
       }
     }, 15000)
     return () => window.clearInterval(interval)
-  }, [activeWork.refresh, mode, refreshPredictions, refreshSourceState, refreshStatus])
+  }, [activeWork.refresh, mode, refreshExternalState, refreshPredictions, refreshSourceState, refreshStatus])
 
   function showToast(msg: string, color: string) {
     setToast({ msg, color })
@@ -552,6 +788,13 @@ function App() {
     setSelectedId(id)
     if (id && isPredictionScenarioId(id)) {
       setLiveSelection({ entityType: 'prediction', entityId: id.replace(/^prediction:/, '') })
+    } else if (id) {
+      const scenario = scenarios.find((item) => item.id === id)
+      if (scenario?.parent && isPredictionScenarioId(scenario.parent)) {
+        setLiveSelection({ entityType: 'prediction', entityId: scenario.parent.replace(/^prediction:/, '') })
+        return
+      }
+      setLiveSelection(null)
     } else {
       setLiveSelection(null)
     }
@@ -665,6 +908,53 @@ function App() {
     }
   }
 
+  async function saveExternalState(patch: Partial<ExternalStateSettings>) {
+    try {
+      const response = await updateExternalState({
+        enabled: patch.enabled,
+        max_calls_per_cycle: patch.max_calls_per_cycle,
+        max_cycle_ms: patch.max_cycle_ms,
+      })
+      setExternalState(response)
+      showToast('External data saved', 'var(--ok)')
+    } catch (error) {
+      showToast(String(error instanceof Error ? error.message : 'Failed to save external data').slice(0, 80), 'var(--err)')
+    }
+  }
+
+  async function saveExternalFinance(patch: Partial<ExternalStateSettings['finance']>) {
+    try {
+      const response = await updateExternalFinance(patch)
+      setExternalState(response)
+      showToast('Finance data saved', 'var(--ok)')
+    } catch (error) {
+      showToast(String(error instanceof Error ? error.message : 'Failed to save finance data').slice(0, 80), 'var(--err)')
+    }
+  }
+
+  async function handleSaveExternalProvider(payload: Parameters<typeof saveExternalProvider>[0]) {
+    try {
+      const response = await saveExternalProvider(payload)
+      setExternalState(response)
+      showToast('Provider saved', 'var(--ok)')
+    } catch (error) {
+      showToast(String(error instanceof Error ? error.message : 'Failed to save provider').slice(0, 80), 'var(--err)')
+    }
+  }
+
+  async function handleDiscoverExternalProvider(providerId: string, apply = false) {
+    try {
+      const discovery = await discoverExternalProvider(providerId, { apply })
+      setExternalStateDiscovery(discovery)
+      if (apply) {
+        await refreshExternalState()
+      }
+      showToast(apply ? 'Safe tools applied' : 'Provider discovered', 'var(--ok)')
+    } catch (error) {
+      showToast(String(error instanceof Error ? error.message : 'Discovery failed').slice(0, 80), 'var(--err)')
+    }
+  }
+
   async function saveContextTokens(maxContextTokens: number) {
     try {
       const response = await updateContext(maxContextTokens)
@@ -709,11 +999,12 @@ function App() {
         const shortcutView: Record<string, CockpitView> = {
           '1': 'focus',
           '2': 'prepared-work',
-          '3': 'now',
-          '4': 'scenario-map',
-          '5': 'timeline',
-          '6': 'board',
-          '7': 'evidence',
+          '3': 'scenario-map',
+          '4': 'timeline',
+          '5': 'evidence',
+          '6': 'now',
+          '7': 'heatmap',
+          '8': 'board',
         }
         const nextView = shortcutView[event.key]
         if (nextView) {
@@ -822,13 +1113,14 @@ function App() {
     const common: CommandItem[] = [
       { id: 'refresh', kind: 'action', label: 'Refresh cockpit data', hint: '↻', run: () => void refreshAll() },
       { id: 'settings', kind: 'action', label: 'Open settings', hint: '⌘,', run: () => setDrawerOpen(true) },
-      { id: 'view-focus', kind: 'view', label: 'View Focus', hint: '1', run: () => setView('focus') },
-      { id: 'view-prepared-work', kind: 'view', label: 'View Prepared Work', hint: '2', run: () => setView('prepared-work') },
-      { id: 'view-now', kind: 'view', label: 'View Now', hint: '3', run: () => setView('now') },
-      { id: 'view-scenario-map', kind: 'view', label: 'View Scenario Map', hint: '4', run: () => setView('scenario-map') },
-      { id: 'view-timeline', kind: 'view', label: 'View Timeline', hint: '5', run: () => setView('timeline') },
-      { id: 'view-board', kind: 'view', label: 'View Board', hint: '6', run: () => setView('board') },
-      { id: 'view-evidence', kind: 'view', label: 'View Evidence', hint: '7', run: () => setView('evidence') },
+      { id: 'view-focus', kind: 'view', label: 'View Overview', hint: '1', run: () => setView('focus') },
+      { id: 'view-prepared-work', kind: 'view', label: 'View Ready Work', hint: '2', run: () => setView('prepared-work') },
+      { id: 'view-scenario-map', kind: 'view', label: 'View Map', hint: '3', run: () => setView('scenario-map') },
+      { id: 'view-timeline', kind: 'view', label: 'View Activity', hint: '4', run: () => setView('timeline') },
+      { id: 'view-evidence', kind: 'view', label: 'View Diagnostics', hint: '5', run: () => setView('evidence') },
+      { id: 'view-now', kind: 'view', label: 'View Legacy Now', hint: '6', run: () => setView('now') },
+      { id: 'view-heatmap', kind: 'view', label: 'View Heatmap Replay', hint: '7', run: () => setView('heatmap') },
+      { id: 'view-board', kind: 'view', label: 'View Board', hint: '8', run: () => setView('board') },
       {
         id: 'clear-events',
         kind: 'action',
@@ -898,9 +1190,14 @@ function App() {
         : scenarioScope === 'history'
           ? 'No archived suggestions yet. Cooling scenarios will move here instead of staying on the live map.'
         : 'No suggestions have been created in this cockpit session yet. Switch to History to inspect older suggestions.'
+  const embeddedInspector = view === 'heatmap' && mode !== 'proxy'
+  const showRightRail =
+    !embeddedInspector && (mode === 'proxy' || view === 'scenario-map' || view === 'timeline' || view === 'evidence')
+  const wideGraph = embeddedInspector || !showRightRail
+  const reviewablePreparedCount = preparedCards.filter(isReviewablePreparedCard).length
 
   return (
-    <div className="cockpit-root">
+    <div className={wideGraph ? 'cockpit-root cockpit-root--wide-graph' : 'cockpit-root'}>
       <TopBar
         mode={mode}
         query={query}
@@ -922,6 +1219,13 @@ function App() {
         onUnpin={(id) => void handleUnpinFact(id)}
         scenarioCount={scenarios.length}
         impact={impact}
+        quiet={mode !== 'proxy'}
+        preparedCount={reviewablePreparedCount || preparedCards.length}
+        workerState={focusRuntime.jobs?.worker?.state ?? activeWork.snapshot?.phase ?? null}
+        live={streamLive}
+        modelName={pipeline.model.lastModel ?? null}
+        workspaceLabel={activeWorkspaceLabel}
+        workspacePath={activeWorkspacePath}
         header={
           <SystemVitals
             live={streamLive}
@@ -962,6 +1266,10 @@ function App() {
                 emptyHint={scenarioEmptyHint}
                 selectedId={selectedId}
                 onSelect={selectScenario}
+                autoFocusEnabled={scenarioAutoFocus}
+                autoFocusTargetId={scenarioAutoFocusTargetId}
+                autoFocusTargetLabel={scenarioAutoFocusTarget?.title ?? null}
+                onAutoFocusChange={setScenarioAutoFocus}
                 activePulses={activePulses}
                 pinnedIds={new Set(scenarios.filter((scenario) => scenario.pinned).map((scenario) => scenario.id))}
                 signals={pipeline.signals}
@@ -976,17 +1284,20 @@ function App() {
           ) : (
             <div style={{ minHeight: 0, overflow: 'hidden' }}>
               {view === 'focus' ? (
-                <FocusView
-                  focus={focusState ?? null}
-                  route={focusRuntime.route}
+                <OperatorOverviewView
+                  cards={preparedCards}
+                  loading={preparedWork.loading}
+                  error={preparedWork.error}
+                  selectedId={selectedWorkId}
+                  onSelect={setSelectedWorkId}
+                  onCardsChange={preparedWork.setCards}
+                  onAction={(message) => showToast(message, message.startsWith('HTTP') || message.startsWith('Failed') ? 'var(--err)' : 'var(--accent)')}
+                  activeWork={activeWork.snapshot}
                   jobs={focusRuntime.jobs}
+                  route={focusRuntime.route}
                   activity={focusRuntime.activity}
                   predictions={predictions}
-                  activeWork={activeWork.snapshot}
-                  sources={sourcesPermissions}
-                  capabilities={signalCapabilities}
-                  loading={focusRuntime.loading}
-                  error={focusRuntime.error}
+                  externalState={externalState}
                   onSelectPrediction={selectPrediction}
                 />
               ) : null}
@@ -995,6 +1306,7 @@ function App() {
                   cards={preparedCards}
                   loading={preparedWork.loading}
                   error={preparedWork.error}
+                  route={focusRuntime.route}
                   selectedId={selectedWorkId}
                   onSelect={setSelectedWorkId}
                   onCardsChange={preparedWork.setCards}
@@ -1012,6 +1324,18 @@ function App() {
                   onSelectWork={setSelectedWorkId}
                   onSelectScenario={selectScenario}
                   onSelectPrediction={selectPrediction}
+                />
+              ) : null}
+              {view === 'heatmap' ? (
+                <HeatmapReplayView
+                  scenarios={scenarios}
+                  events={pipeline.events}
+                  selectedScenarioId={selectedId}
+                  onSelectScenario={selectScenario}
+                  onScenarioFeedback={(id, result) => void handleFeedback(id, result)}
+                  onPinScenario={(id) => void handleTogglePin(id)}
+                  onOpenScenarioMap={() => setView('scenario-map')}
+                  onOpenEvidence={() => setView('evidence')}
                 />
               ) : null}
               {view === 'timeline' ? (
@@ -1116,6 +1440,7 @@ function App() {
         </div>
       ) : null}
 
+      {showRightRail ? (
       <div
         style={{
           gridArea: 'stream',
@@ -1188,6 +1513,7 @@ function App() {
           />
         </div>
       </div>
+      ) : null}
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
       <SettingsDrawer
@@ -1197,6 +1523,8 @@ function App() {
         backend={backend}
         compute={compute}
         mcp={mcp}
+        externalState={externalState}
+        externalStateDiscovery={externalStateDiscovery}
         limits={limits}
         cockpit={cockpit}
         presets={presets}
@@ -1206,6 +1534,10 @@ function App() {
         onSaveBackend={saveBackend}
         onSaveCompute={saveCompute}
         onSaveMcp={saveMcp}
+        onSaveExternalState={saveExternalState}
+        onSaveExternalFinance={saveExternalFinance}
+        onSaveExternalProvider={handleSaveExternalProvider}
+        onDiscoverExternalProvider={handleDiscoverExternalProvider}
         onSaveContext={saveContextTokens}
         onPatchCockpit={(patch) => setCockpit((current) => ({ ...current, ...patch }))}
         onToggleGateway={mode === 'proxy' ? handleToggleGateway : undefined}

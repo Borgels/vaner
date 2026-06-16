@@ -8,6 +8,7 @@ import aiosqlite
 import pytest
 
 from vaner.models.artefact import Artefact, ArtefactKind
+from vaner.models.scenario import Scenario
 from vaner.store.artefacts import ArtefactStore
 from vaner.store.scenarios.sqlite import ScenarioStore
 
@@ -110,3 +111,52 @@ async def test_scenario_store_initialize_migrates_legacy_scenarios_table(tmp_pat
     assert "memory_confidence" in columns
     assert "memory_evidence_hashes_json" in columns
     assert "prior_successes" in columns
+
+
+@pytest.mark.asyncio
+async def test_scenario_store_records_real_heatmap_samples(tmp_path):
+    store = ScenarioStore(tmp_path / "scenarios.db")
+    await store.initialize()
+    await store.upsert(
+        Scenario(
+            id="scn_sample",
+            kind="change",
+            score=0.8,
+            confidence=0.7,
+            entities=["src/app.py"],
+            prepared_context="ready",
+            freshness="fresh",
+            created_at=100.0,
+            last_refreshed_at=100.0,
+        )
+    )
+
+    samples = await store.list_samples(scenario_ids=["scn_sample"], start_ts=0.0, end_ts=time.time())
+
+    assert len(samples) == 1
+    assert samples[0].scenario_id == "scn_sample"
+    assert samples[0].readiness == "ready"
+    assert samples[0].status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_scenario_store_samples_change_on_feedback(tmp_path):
+    store = ScenarioStore(tmp_path / "scenarios.db")
+    await store.initialize()
+    await store.upsert(
+        Scenario(
+            id="scn_feedback",
+            kind="debug",
+            score=0.6,
+            confidence=0.6,
+            prepared_context="ready",
+            freshness="recent",
+        )
+    )
+    await store.record_outcome("scn_feedback", "useful")
+
+    samples = await store.list_samples(scenario_ids=["scn_feedback"], start_ts=0.0, end_ts=time.time())
+
+    assert samples
+    assert samples[-1].status == "completed"
+    assert samples[-1].freshness == "fresh"

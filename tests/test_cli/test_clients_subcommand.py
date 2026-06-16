@@ -289,6 +289,13 @@ def test_install_claude_desktop_uses_repo_scoped_server_key(fake_home: Path, tmp
     blob = json.loads(cfg.read_text(encoding="utf-8"))
     # Wizard convention: vaner-<reponame> so multiple repos coexist.
     assert "vaner-myrepo" in blob["mcpServers"]
+    assert blob["mcpServers"]["vaner-myrepo"]["args"] == [
+        "mcp",
+        "--tool-name-format",
+        "strict",
+        "--path",
+        str(repo),
+    ]
 
 
 # ---------------------------------------------------------------------------

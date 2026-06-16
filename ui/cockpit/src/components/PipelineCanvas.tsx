@@ -35,6 +35,10 @@ export interface PipelineCanvasProps {
   emptyHint?: string
   selectedId: string | null
   onSelect: (id: string) => void
+  autoFocusEnabled?: boolean
+  autoFocusTargetId?: string | null
+  autoFocusTargetLabel?: string | null
+  onAutoFocusChange?: (enabled: boolean) => void
   activePulses: Set<string>
   pinnedIds: Set<string>
   signals: SignalRow[]
@@ -66,6 +70,10 @@ export function PipelineCanvas({
   emptyHint = 'No scenarios are available from the daemon yet. They will appear here after Vaner observes useful workspace activity.',
   selectedId,
   onSelect,
+  autoFocusEnabled = false,
+  autoFocusTargetId = null,
+  autoFocusTargetLabel = null,
+  onAutoFocusChange,
   activePulses,
   pinnedIds,
   signals,
@@ -109,6 +117,42 @@ export function PipelineCanvas({
             Higher bubbles are relevant now. Size = readiness, opacity = freshness, border = confidence.
           </div>
         </div>
+        <div style={autoFocusControlStyle}>
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              cursor: onAutoFocusChange ? 'pointer' : 'default',
+            }}
+          >
+            <input
+              type="checkbox"
+              role="switch"
+              checked={autoFocusEnabled}
+              disabled={!onAutoFocusChange}
+              onChange={(event) => onAutoFocusChange?.(event.currentTarget.checked)}
+              style={{ accentColor: 'var(--accent)' }}
+            />
+            <span className="mono" style={{ fontSize: 10.5, color: 'var(--fg-2)' }}>
+              Auto-focus
+            </span>
+          </label>
+          <span
+            className="mono"
+            title={autoFocusTargetLabel ?? undefined}
+            style={{
+              maxWidth: 280,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              color: autoFocusTargetId ? 'var(--accent)' : 'var(--fg-4)',
+              fontSize: 10,
+            }}
+          >
+            {autoFocusTargetId ? autoFocusTargetLabel ?? autoFocusTargetId : 'waiting for active node'}
+          </span>
+        </div>
         {activePlan ? (
           <div style={activePlanStyle}>
             <div className="mono" style={{ color: 'var(--accent)', fontSize: 10, letterSpacing: 1 }}>ACTIVE PLAN</div>
@@ -132,6 +176,22 @@ export function PipelineCanvas({
       </div>
     </div>
   )
+}
+
+const autoFocusControlStyle: React.CSSProperties = {
+  position: 'absolute',
+  right: 18,
+  bottom: 58,
+  zIndex: 4,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  maxWidth: 'calc(100% - 36px)',
+  padding: '7px 10px',
+  border: '1px solid var(--line-1)',
+  borderRadius: 'var(--r-2)',
+  background: 'color-mix(in oklch, var(--bg-1) 94%, transparent)',
+  boxShadow: '0 10px 28px rgba(0,0,0,.2)',
 }
 
 const activePlanStyle: React.CSSProperties = {

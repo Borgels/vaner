@@ -180,15 +180,20 @@ def rank_exact_paths(
     max_paths: int = 8,
 ) -> list[str]:
     candidates = symbol_candidates_for_text(repo_root, text, available_paths=available_paths)
-    ranked: list[str] = []
-    seen: set[str] = set()
+    if not candidates:
+        return []
+    by_path: dict[str, float] = {}
+    matched_terms_by_path: dict[str, set[str]] = {}
     for candidate in candidates:
-        if candidate.path not in seen:
-            ranked.append(candidate.path)
-            seen.add(candidate.path)
-        if len(ranked) >= max_paths:
-            break
-    return ranked
+        matched_terms_by_path.setdefault(candidate.path, set()).update(candidate.matched_terms)
+        by_path[candidate.path] = by_path.get(candidate.path, 0.0) + _path_candidate_score(candidate)
+    for path, terms in matched_terms_by_path.items():
+        # Multi-term matches are usually better implementation anchors than
+        # single generic word hits, especially for prompts like "reward
+        # computation signals" where many signal modules mention "signal".
+        by_path[path] = by_path.get(path, 0.0) + min(2.5, max(0, len(terms) - 1) * 0.45)
+    ranked = sorted(by_path, key=lambda path: (-by_path[path], path))
+    return ranked[:max_paths]
 
 
 def _candidate_paths(root: Path, available_paths: list[str] | tuple[str, ...] | None, *, max_files: int) -> list[str]:
@@ -257,6 +262,58 @@ def _dedupe_and_sort(candidates: list[SymbolCandidate]) -> list[SymbolCandidate]
             candidate.symbol,
         ),
     )
+
+
+_LOW_SPECIFICITY_TERMS = {
+    "combined",
+    "combine",
+    "computation",
+    "context",
+    "database",
+    "extract",
+    "feature",
+    "final",
+    "model",
+    "package",
+    "persist",
+    "produce",
+    "retrieve",
+    "schema",
+    "signal",
+    "signals",
+    "table",
+    "value",
+}
+
+
+def _path_candidate_score(candidate: SymbolCandidate) -> float:
+    relation_weight = float(RELATION_PRIORITY[candidate.relation]) * 4.0
+    score = relation_weight + candidate.score
+    normalized_path_terms = set(path_component_terms(candidate.path))
+    matched_terms = set(candidate.matched_terms)
+    basename = Path(candidate.path).stem
+    normalized_basename = normalize_component(basename)
+    normalized_symbol = normalize_component(candidate.symbol)
+
+    if matched_terms & normalized_path_terms:
+        score += 5.0
+    if normalized_basename and normalized_basename in matched_terms:
+        score += 8.0
+    if normalized_symbol and normalized_symbol in matched_terms:
+        score += 4.0
+    if candidate.relation == "definition_match" and not candidate.symbol.startswith("_"):
+        score += 3.0
+    if candidate.symbol.startswith("_"):
+        score -= 2.0
+    if matched_terms and matched_terms <= _LOW_SPECIFICITY_TERMS and candidate.relation == "usage_match":
+        score -= 12.0
+    if candidate.relation == "usage_match" and not (matched_terms & normalized_path_terms):
+        score -= 8.0
+    if candidate.path.startswith(("src/", "lib/", "app/", "packages/")):
+        score += 0.5
+    if candidate.path.startswith(("tests/", "test/")):
+        score -= 0.5
+    return score
 
 
 def _score_for_relation(relation: SymbolRelation) -> float:

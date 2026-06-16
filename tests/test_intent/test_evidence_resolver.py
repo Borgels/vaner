@@ -198,3 +198,59 @@ def test_weak_component_match_stays_evidence_ready_only() -> None:
 
     assert not ready
     assert reason == "weak_component_match"
+
+
+def test_semantic_aliases_resolve_rollout_rehearsal_terms() -> None:
+    structured = structured_from_prediction_fields(
+        label="Explain release dry-run gate",
+        description="What prevents a candidate release from getting full traffic until replay and smoke checks pass?",
+        anchor="candidate release full traffic dry run",
+        confidence=0.8,
+    )
+
+    targets = resolve_evidence_targets(
+        structured,
+        available_paths=[
+            "src/runtime/traffic_escrow.py",
+            "src/runtime/release_notes.py",
+            "docs/rollout.md",
+        ],
+        artefacts_by_key={
+            "file_summary:src/runtime/traffic_escrow.py": _Artefact(
+                "TrafficEscrow controller coordinates rehearse_proxy replay runs, smoke policy checks, and staged promote gates."
+            ),
+            "file_summary:src/runtime/release_notes.py": _Artefact("Release notes formatter for changelog entries."),
+            "file_summary:docs/rollout.md": _Artefact("Rollout overview for staged canaries."),
+        },
+    )
+
+    assert targets
+    assert targets[0].path == "src/runtime/traffic_escrow.py"
+
+
+def test_semantic_aliases_resolve_vectorization_routing_terms() -> None:
+    structured = structured_from_prediction_fields(
+        label="Explain vectorization routing issue",
+        description="Why did a Western Europe tenant get routed to a Southeast Asia edge during a vectorization load spike?",
+        anchor="western europe vectorization routed southeast asia",
+        confidence=0.8,
+    )
+
+    targets = resolve_evidence_targets(
+        structured,
+        available_paths=[
+            "src/incidents/eu_apac_embedding_egress.py",
+            "src/incidents/general_latency.py",
+            "docs/regions.md",
+        ],
+        artefacts_by_key={
+            "file_summary:src/incidents/eu_apac_embedding_egress.py": _Artefact(
+                "Embedding batch incident: eu-west residency stamp lag caused ap-southeast edge fallback and cross-region egress."
+            ),
+            "file_summary:src/incidents/general_latency.py": _Artefact("Generic latency incident notes."),
+            "file_summary:docs/regions.md": _Artefact("Region naming conventions."),
+        },
+    )
+
+    assert targets
+    assert targets[0].path == "src/incidents/eu_apac_embedding_egress.py"

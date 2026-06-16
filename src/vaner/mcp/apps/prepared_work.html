@@ -4,6 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Vaner Prepared Work</title>
+    <!--
+      Vaner Prepared Work bundle. Renders the unified prepared-work
+      dashboard inside an MCP Apps host iframe. Card actions
+      (Inspect / Adopt / Export / Dismiss / Feedback) dispatch the
+      matching `vaner.work_products.*` (or `vaner.predictions.adopt`)
+      tool through the vendored `@modelcontextprotocol/ext-apps` client
+      SDK. The SDK itself is inlined at server import time from
+      active_predictions.html (see __EXT_APPS_SDK__ placeholder below).
+    -->
     <style>
       :root {
         color-scheme: light dark;
@@ -31,6 +40,12 @@
       #meta {
         color: color-mix(in srgb, CanvasText 62%, transparent);
         font-size: 12px;
+      }
+      #status {
+        color: color-mix(in srgb, CanvasText 60%, transparent);
+        font-size: 12px;
+        margin-bottom: 8px;
+        min-height: 1em;
       }
       #cards {
         display: grid;
@@ -93,6 +108,15 @@
         font: inherit;
         font-size: 11px;
         padding: 4px 7px;
+        cursor: pointer;
+      }
+      .action[disabled] {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .action.acted {
+        border-color: color-mix(in srgb, CanvasText 32%, transparent);
+        background: color-mix(in srgb, Canvas 78%, CanvasText 22%);
       }
       .empty {
         color: color-mix(in srgb, CanvasText 62%, transparent);
@@ -106,10 +130,26 @@
       <h1>Prepared work</h1>
       <span id="meta">Waiting for Vaner</span>
     </header>
-    <main id="cards"><div class="empty">No prepared work has been sent to this view yet.</div></main>
-    <script>
+    <div id="status" role="status" aria-live="polite" aria-label="Status"></div>
+    <main id="cards" aria-label="Prepared work cards"><div class="empty">No prepared work has been sent to this view yet.</div></main>
+    <script type="module">
+      // The vendored @modelcontextprotocol/ext-apps SDK is inlined here at
+      // import time from active_predictions.html (single source of truth).
+      // Re-vendor instructions live in the active_predictions.html banner.
+__EXT_APPS_SDK__
+
+      const REFRESH_INTERVAL_MS = 6000;
       const cardsNode = document.getElementById("cards");
       const metaNode = document.getElementById("meta");
+      const statusNode = document.getElementById("status");
+      let pollTimer = null;
+      const lastByCardId = new Map();
+
+      const app = new App({ name: "Vaner Prepared Work", version: "1.0.0" });
+
+      function setStatus(message) {
+        statusNode.textContent = message ?? "";
+      }
 
       function safeText(value) {
         return String(value ?? "");
@@ -117,7 +157,6 @@
 
       function readPayload(input) {
         if (!input) return null;
-        if (input.prepared_work) return input;
         if (typeof input === "string") {
           try {
             return JSON.parse(input);
@@ -125,22 +164,144 @@
             return null;
           }
         }
+        if (Array.isArray(input?.prepared_work)) return input;
         if (input.text) return readPayload(input.text);
         if (input.detail) return readPayload(input.detail);
         return null;
       }
 
+      function parseToolResultText(result) {
+        try {
+          const blocks = Array.isArray(result?.content) ? result.content : [];
+          for (const block of blocks) {
+            if (block?.type === "text" && typeof block.text === "string") {
+              const parsed = readPayload(block.text);
+              if (parsed) return parsed;
+            }
+          }
+        } catch {
+          /* fall through */
+        }
+        return null;
+      }
+
+      function defaultLabelForKind(kind) {
+        switch (kind) {
+          case "inspect":
+            return "Inspect";
+          case "export":
+            return "Export";
+          case "adopt":
+            return "Adopt";
+          case "dismiss":
+            return "Dismiss";
+          case "feedback":
+            return "Feedback";
+          default:
+            return safeText(kind || "Action");
+        }
+      }
+
+      function defaultToolForAction(card, action) {
+        if (action?.tool) return action.tool;
+        const sourceType = safeText(card?.source_type);
+        switch (safeText(action?.kind)) {
+          case "inspect":
+            return sourceType === "prediction" ? "vaner.inspect" : "vaner.work_products.inspect";
+          case "export":
+            return "vaner.work_products.export";
+          case "adopt":
+            return "vaner.predictions.adopt";
+          case "dismiss":
+            return "vaner.work_products.dismiss";
+          case "feedback":
+            return "vaner.work_products.feedback";
+          default:
+            return null;
+        }
+      }
+
+      function defaultArgsForAction(card, action) {
+        const explicit = (action && typeof action.arguments === "object" && action.arguments) || {};
+        const merged = { ...explicit };
+        const kind = safeText(action?.kind);
+        const sourceId = safeText(card?.source_id);
+        const sourceType = safeText(card?.source_type);
+        if (!("id" in merged) && sourceId) {
+          merged.id = sourceId;
+        }
+        if (kind === "adopt" && sourceType === "prediction") {
+          if (!("source" in merged)) merged.source = "mcp_app";
+        }
+        return merged;
+      }
+
+      function dispatchAction(card, action, button) {
+        const tool = defaultToolForAction(card, action);
+        if (!tool) {
+          setStatus(`No tool wired for action "${safeText(action?.kind)}".`);
+          return;
+        }
+        const args = defaultArgsForAction(card, action);
+        const originalLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = `${originalLabel}…`;
+        app
+          .callTool(tool, args)
+          .then((result) => {
+            if (result && result.isError) {
+              throw new Error(
+                (result.error && result.error.message) || "Tool call failed",
+              );
+            }
+            button.classList.add("acted");
+            button.textContent = `${originalLabel} ✓`;
+            setStatus(`${defaultLabelForKind(action?.kind)} sent for "${safeText(card?.title)}".`);
+            // Refresh shortly after so any state change (dismiss, feedback, adopt)
+            // is reflected without the user re-invoking the tool.
+            window.setTimeout(refresh, 350);
+          })
+          .catch((err) => {
+            button.disabled = false;
+            button.textContent = originalLabel;
+            const message = (err && err.message) || String(err);
+            setStatus(`Action failed: ${message}`);
+          });
+      }
+
+      function appendActionButton(card, action, container) {
+        if (!action) return;
+        const button = document.createElement("button");
+        button.className = "action";
+        button.type = "button";
+        button.dataset.kind = safeText(action.kind);
+        const label = safeText(action.label) || defaultLabelForKind(action.kind);
+        button.textContent = label;
+        button.setAttribute("aria-label", `${label}: ${safeText(card.title)}`);
+        if (action.disabled) {
+          button.disabled = true;
+        }
+        button.addEventListener("click", () => dispatchAction(card, action, button));
+        container.appendChild(button);
+      }
+
       function render(payload) {
         const cards = Array.isArray(payload?.prepared_work) ? payload.prepared_work : [];
-        metaNode.textContent = cards.length ? `${cards.length} item${cards.length === 1 ? "" : "s"}` : "Nothing ready";
+        metaNode.textContent = cards.length
+          ? `${cards.length} item${cards.length === 1 ? "" : "s"}`
+          : "Nothing ready";
         cardsNode.innerHTML = "";
         if (!cards.length) {
           cardsNode.innerHTML = '<div class="empty">No prepared work is ready.</div>';
+          lastByCardId.clear();
           return;
         }
+        const seen = new Set();
         for (const card of cards) {
+          seen.add(card.id);
           const node = document.createElement("article");
           node.className = "card";
+          node.setAttribute("aria-label", safeText(card.title));
           node.innerHTML = `
             <div class="row">
               <h2 class="title"></h2>
@@ -163,25 +324,79 @@
           ]
             .filter(Boolean)
             .join(" · ");
-          const actions = [card.primary_action, ...(Array.isArray(card.secondary_actions) ? card.secondary_actions : [])].filter(Boolean);
           const actionsNode = node.querySelector(".actions");
-          for (const action of actions) {
-            const button = document.createElement("button");
-            button.className = "action";
-            button.type = "button";
-            button.dataset.kind = safeText(action.kind);
-            button.textContent = safeText(action.label || action.kind);
-            button.setAttribute("aria-label", `${button.textContent}: ${safeText(card.title)}`);
-            actionsNode.appendChild(button);
+          if (card.primary_action) {
+            appendActionButton(card, card.primary_action, actionsNode);
+          }
+          if (Array.isArray(card.secondary_actions)) {
+            for (const action of card.secondary_actions) {
+              appendActionButton(card, action, actionsNode);
+            }
           }
           cardsNode.appendChild(node);
+          lastByCardId.set(card.id, card);
+        }
+        for (const cached of [...lastByCardId.keys()]) {
+          if (!seen.has(cached)) lastByCardId.delete(cached);
         }
       }
 
+      async function refresh() {
+        try {
+          const result = await app.callTool("vaner.prepared_work.dashboard", {});
+          const parsed = parseToolResultText(result);
+          if (parsed) {
+            render(parsed);
+            if (Array.isArray(parsed.prepared_work) && parsed.prepared_work.length === 0) {
+              setStatus("No prepared work yet — Vaner is still warming up.");
+            } else {
+              setStatus("");
+            }
+          }
+        } catch (err) {
+          const message = (err && err.message) || "unknown error";
+          setStatus(`Refresh failed: ${message}`);
+        }
+      }
+
+      function startPolling() {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(refresh, REFRESH_INTERVAL_MS);
+      }
+
+      app.ontoolresult = ({ content }) => {
+        if (!Array.isArray(content) || content.length === 0) return;
+        for (const block of content) {
+          if (block?.type === "text" && typeof block.text === "string") {
+            const parsed = readPayload(block.text);
+            if (parsed) {
+              render(parsed);
+              return;
+            }
+          }
+        }
+      };
+
+      // Backward-compat: the previous bundle accepted raw payloads via a
+      // window message listener. Hosts that still pre-seed the iframe with
+      // window.postMessage(payload) will keep working until they migrate to
+      // the standard MCP Apps tool-result channel.
       window.addEventListener("message", (event) => {
-        const payload = readPayload(event.data);
-        if (payload) render(payload);
+        const parsed = readPayload(event.data);
+        if (parsed) render(parsed);
       });
+
+      (async () => {
+        try {
+          await app.connect();
+          setStatus("Connected. Loading prepared work…");
+          await refresh();
+          startPolling();
+        } catch (err) {
+          const message = (err && err.message) || String(err);
+          setStatus(`Could not connect to the host: ${message}`);
+        }
+      })();
     </script>
   </body>
 </html>

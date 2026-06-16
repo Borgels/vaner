@@ -7,6 +7,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from vaner.models.context_preparation import PreparedContextDiagnostics
+
 
 class ScoreFactor(BaseModel):
     name: str
@@ -45,6 +47,7 @@ class DecisionRecord(BaseModel):
     selections: list[SelectionDecision] = Field(default_factory=list)
     prediction_links: dict[str, PredictionLink] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
+    prepared_context_diagnostics: PreparedContextDiagnostics | None = None
 
     def to_legacy_markdown(self) -> str:
         lines = [

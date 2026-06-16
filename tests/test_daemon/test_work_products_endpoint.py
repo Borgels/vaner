@@ -44,6 +44,7 @@ async def _seed(
     product_type: WorkProductType = WorkProductType.RESEARCH_BRIEF,
     path: str = "notes.md",
     body: str = "Body",
+    db_name: str = "artefacts.db",
 ) -> str:
     now = time.time()
     (repo / path).parent.mkdir(parents=True, exist_ok=True)
@@ -74,7 +75,7 @@ async def _seed(
         created_at=now,
         updated_at=now,
     )
-    store = ArtefactStore(repo / ".vaner" / "artefacts.db")
+    store = ArtefactStore(repo / ".vaner" / db_name)
     await store.initialize()
     await store.upsert_work_product(product)
     return product.id
@@ -136,6 +137,21 @@ async def test_work_products_http_blocks_non_exportable(temp_repo: Path) -> None
 
     assert response.status_code == 409
     assert response.json()["code"] == "not_exportable"
+
+
+@pytest.mark.asyncio
+async def test_work_products_http_prefers_configured_engine_store_when_present(temp_repo: Path) -> None:
+    pid = await _seed(temp_repo, db_name="store.db")
+    await _seed(temp_repo, db_name="artefacts.db", body="legacy")
+    app = create_daemon_http_app(_config(temp_repo))
+
+    with TestClient(app) as client:
+        response = client.get("/work-products")
+
+    assert response.status_code == 200
+    rows = response.json()["work_products"]
+    assert rows[0]["id"] == pid
+    assert rows[0]["body"] == "Body"
 
 
 @pytest.mark.asyncio

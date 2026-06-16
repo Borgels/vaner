@@ -17,6 +17,7 @@ from vaner.models.work_product import (
     WorkProduct,
     WorkProductAdoptability,
     WorkProductEvidenceRef,
+    WorkProductExternalInput,
     WorkProductFreshness,
     WorkProductSelfEval,
     WorkProductSourceSnapshot,
@@ -94,6 +95,52 @@ async def test_prepared_work_endpoint_returns_ui_safe_cards(temp_repo: Path) -> 
     assert "adoptability" not in card
     assert "self_eval" not in card
     assert "score" not in card
+
+
+@pytest.mark.asyncio
+async def test_prepared_work_endpoint_surfaces_finance_cards_as_trading_prep(temp_repo: Path) -> None:
+    now = time.time()
+    product = WorkProduct(
+        id="wp-finance",
+        type=WorkProductType.FINANCE_POSITION_BRIEF,
+        title="Prepared finance snapshot brief",
+        summary="Read-only external finance snapshots prepared for inspection.",
+        body="Finance preparation from fresh external-state snapshots.",
+        evidence_refs=[WorkProductEvidenceRef(kind="record", reason="external-state snapshot for screen_market")],
+        source_snapshot=WorkProductSourceSnapshot(project_id="proj", relative_paths=[], file_hashes={}, generated_at=now),
+        confidence=0.72,
+        freshness=WorkProductFreshness.FRESH,
+        status=WorkProductStatus.SURFACED,
+        adoptability=WorkProductAdoptability.ADVISORY,
+        self_eval=WorkProductSelfEval(evidence_coverage=0.7, groundedness=0.7, stale_risk=0.45),
+        sensitivity_class="position_specific",
+        fresh_precheck_required=True,
+        external_inputs=[
+            WorkProductExternalInput(provider_id="provider", capability="screen_market", snapshot_id="ext-1"),
+            WorkProductExternalInput(provider_id="search", capability="search_news", snapshot_id="ext-2"),
+        ],
+        prohibited_actions=["execution"],
+        created_at=now,
+        updated_at=now,
+        target_key="finance:external",
+    )
+    store = ArtefactStore(temp_repo / ".vaner" / "artefacts.db")
+    await store.initialize()
+    await store.upsert_work_product(product)
+    app = create_daemon_http_app(_config(temp_repo))
+
+    with TestClient(app) as client:
+        response = client.get("/prepared-work?surface=cockpit&include_advisory=true&limit=5")
+
+    assert response.status_code == 200
+    card = response.json()["prepared_work"][0]
+    assert card["kind"] == "finance"
+    assert card["title"] == "Trading strategy prep"
+    assert card["badge"] == "Trading"
+    assert card["external_input_count"] == 2
+    assert card["fresh_precheck_required"] is True
+    assert "screen_market" in card["summary"]
+    assert "search_news" in card["summary"]
 
 
 @pytest.mark.asyncio

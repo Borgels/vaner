@@ -19,6 +19,7 @@ class PreparedWorkKind(StrEnum):
     DOCS = "docs"
     DIFF = "diff"
     BRIEF = "brief"
+    FINANCE = "finance"
     DRAFT = "draft"
     PREDICTION = "prediction"
 
@@ -68,6 +69,10 @@ class PreparedWorkCard(BaseModel):
     target_label: str
     why_prepared: str = ""
     action_note: str = ""
+    sensitivity_class: str = "general"
+    fresh_precheck_required: bool = False
+    external_input_count: int = 0
+    prohibited_actions: list[str] = Field(default_factory=list)
     evidence_count: int = 0
     created_at: float
     updated_at: float
@@ -88,6 +93,10 @@ class PreparedWorkInspection(BaseModel):
     confidence_label: str
     freshness_label: str
     freshness_state: str
+    sensitivity_class: str = "general"
+    fresh_precheck_required: bool = False
+    external_input_count: int = 0
+    prohibited_actions: list[str] = Field(default_factory=list)
     target_label: str
     evidence_count: int = 0
     evidence_refs: list[PreparedWorkEvidenceRef] = Field(default_factory=list)

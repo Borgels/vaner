@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from vaner.clients.llm_response import approx_tokens
 from vaner.intent.briefing import Briefing, BriefingAssembler
 from vaner.intent.prediction import PredictedPrompt
+from vaner.policy.internal_llm import DRAFT_POLICY, PREDICTION_POLICY, internal_llm_policy
 
 _log = logging.getLogger(__name__)
 
@@ -168,6 +169,7 @@ class Drafter:
         else:
             recent_hint = "\n".join(recent_queries[-5:]) or "(no recent queries)"
             rewrite_prompt = (
+                f"{internal_llm_policy(PREDICTION_POLICY)}\n\n"
                 "Rewrite the likely next developer prompt as one concrete sentence.\n"
                 "Stay semantically equivalent and concise.\n\n"
                 f"Candidate prompt: {predicted_prompt}\n"
@@ -190,6 +192,7 @@ class Drafter:
         summaries_text = "\n".join(file_summaries) or "(no artefact summaries available)"
         recent_hint = "\n".join(recent_queries[-5:]) or "(no recent queries)"
         draft_prompt_text = (
+            f"{internal_llm_policy(DRAFT_POLICY)}\n\n"
             "You are Vaner, a context engine drafting a speculative answer for a\n"
             "prompt the developer is likely to send next. Stay honest: if the\n"
             "evidence below is insufficient to produce a confident draft, say so\n"

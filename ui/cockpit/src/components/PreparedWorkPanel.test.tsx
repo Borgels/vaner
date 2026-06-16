@@ -43,6 +43,11 @@ function makeCard(overrides: Partial<PreparedWorkCard> = {}): PreparedWorkCard {
       },
     ],
     diagnostic_refs: overrides.diagnostic_refs ?? [],
+    sensitivity_class: overrides.sensitivity_class,
+    fresh_precheck_required: overrides.fresh_precheck_required,
+    external_input_count: overrides.external_input_count,
+    prohibited_actions: overrides.prohibited_actions,
+    action_note: overrides.action_note,
   }
 }
 
@@ -106,6 +111,46 @@ describe('PreparedWorkPanel', () => {
     expect(await screen.findByLabelText('Prepared work detail')).toHaveTextContent('+fixed')
   })
 
+  it('opens inspect results inline on the selected prepared work card', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/prepared-work')) {
+        return new Response(JSON.stringify({ prepared_work: [makeCard()] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({
+        title: 'Prepared parser fix',
+        source_id: 'wp-1',
+        source_type: 'work_product',
+        kind: 'diff',
+        why_prepared: 'Ready because recent parser edits are likely to need follow-up.',
+        body: 'Inspect the parser error branch before using this.',
+        evidence_refs: [],
+        events: [],
+        self_eval: {
+          evidence_coverage: 0.76,
+          groundedness: 0.84,
+          contradiction_risk: 0.12,
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    render(<PreparedWorkPanel fetcher={fetcher as unknown as typeof fetch} />)
+
+    const button = await screen.findByRole('button', { name: 'Inspect' })
+    fireEvent.click(button)
+
+    expect(await screen.findByTestId('prepared-work-inspection')).toHaveTextContent(
+      'Inspect the parser error branch before using this.',
+    )
+    expect(screen.getByText('Ready because recent parser edits are likely to need follow-up.')).toBeInTheDocument()
+    expect(fetcher).toHaveBeenCalledWith('/work-products/wp-1', expect.objectContaining({ method: 'GET' }))
+  })
+
   it('renders an empty state when nothing is ready', async () => {
     const fetcher = vi.fn(async () =>
       new Response(JSON.stringify({ prepared_work: [] }), {
@@ -117,5 +162,41 @@ describe('PreparedWorkPanel', () => {
     render(<PreparedWorkPanel fetcher={fetcher as unknown as typeof fetch} />)
 
     expect(await screen.findByText(/No prepared work is ready/i)).toBeInTheDocument()
+  })
+
+  it('renders finance prepared work as trading prep', async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(JSON.stringify({
+        prepared_work: [
+          makeCard({
+            kind: 'finance',
+            title: 'Trading strategy prep',
+            summary: 'Uses fresh market, account, options, and news inputs.',
+            badge: 'Trading',
+            sensitivity_class: 'position_specific',
+            fresh_precheck_required: true,
+            external_input_count: 5,
+            primary_action: {
+              kind: 'inspect',
+              label: 'Inspect',
+              tool: 'vaner.work_products.inspect',
+              endpoint: '/work-products/wp-finance/inspect',
+              arguments: { work_product_id: 'wp-finance' },
+            },
+          }),
+        ],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    render(<PreparedWorkPanel fetcher={fetcher as unknown as typeof fetch} />)
+
+    expect(await screen.findByText('Trading strategy prep')).toBeInTheDocument()
+    expect(screen.getByText('trading prep')).toBeInTheDocument()
+    expect(screen.getByText('position_specific')).toBeInTheDocument()
+    expect(screen.getByText('fresh precheck')).toBeInTheDocument()
+    expect(screen.getByText('5 external')).toBeInTheDocument()
   })
 })

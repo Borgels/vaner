@@ -76,6 +76,7 @@ def persist_runtime_recommendation(repo_root: Path, recommendation: dict[str, An
     params = selected.get("params") if isinstance(selected.get("params"), dict) else {}
     capability = selected.get("capability") if isinstance(selected.get("capability"), dict) else {}
     runtime_params = selected.get("runtime_params") if isinstance(selected.get("runtime_params"), dict) else {}
+    sampling_params = selected.get("sampling_params") if isinstance(selected.get("sampling_params"), dict) else {}
     reasoning_mode = str(params.get("reasoning_mode") or "allowed")
     max_response_tokens = int(params.get("max_response_tokens") or 3072)
     reasoning_token_budget = int(params.get("reasoning_token_budget") or 4096)
@@ -83,7 +84,7 @@ def persist_runtime_recommendation(repo_root: Path, recommendation: dict[str, An
     # Keep Vaner's own evidence package large enough to use long-context
     # models, while leaving most of the window for the user's prompt,
     # generated answer, reasoning budget, and runtime overhead.
-    max_context_tokens = min(65536, max(8192, context_window // 4))
+    max_context_tokens = min(262144, max(16384, context_window // 3))
     hardware = recommendation.get("hardware", {})
     memory_source = hardware.get("memory_source") if isinstance(hardware, dict) else None
     accelerator_type = hardware.get("accelerator_type") if isinstance(hardware, dict) else None
@@ -107,6 +108,8 @@ def persist_runtime_recommendation(repo_root: Path, recommendation: dict[str, An
             "reasoning_mode": reasoning_mode,
             "max_response_tokens": max_response_tokens,
             "reasoning_token_budget": reasoning_token_budget,
+            "runtime_options": runtime_params,
+            "sampling_options": sampling_params,
         },
     )
     text = update_toml_section(
@@ -116,6 +119,8 @@ def persist_runtime_recommendation(repo_root: Path, recommendation: dict[str, An
             "endpoint": base_url.removesuffix("/v1") if runtime == "ollama" else base_url,
             "model": model_id,
             "backend": "ollama" if runtime == "ollama" else "openai",
+            "runtime_options": runtime_params,
+            "sampling_options": sampling_params,
         },
     )
     text = remove_toml_keys(text, "exploration", {"exploration_endpoint", "exploration_model", "exploration_backend"})
@@ -156,6 +161,12 @@ def toml_literal(value: object) -> str:
             else:
                 items.append(toml_literal(item))
         return "[" + ", ".join(items) + "]"
+    if isinstance(value, dict):
+        items = []
+        for key, item in value.items():
+            key_text = str(key).replace("\\", "\\\\").replace('"', '\\"')
+            items.append(f'"{key_text}" = {toml_literal(item)}')
+        return "{ " + ", ".join(items) + " }"
     escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 

@@ -154,6 +154,22 @@ def feature_vector_for_artefact(features: dict[str, float], artefact: Artefact) 
         features.get("skill_presence", 0.0),
         features.get("skill_kind_match", 0.0),
         features.get("follow_up_offer_strength", 0.0),
+        # Provider-neutral finance preparation signals (FEATURE_SCHEMA_VERSION v5).
+        # These are ex-ante inputs only; realized returns and keep/drop labels stay
+        # in training labels and are intentionally not part of the runtime vector.
+        features.get("finance_public_market_plane", 0.0),
+        features.get("finance_account_state_plane", 0.0),
+        features.get("finance_horizon_days", 0.0),
+        features.get("finance_option_strategy_entry_debit", 0.0),
+        features.get("finance_option_strategy_leg_count", 0.0),
+        features.get("finance_option_strategy_is_single_leg", 0.0),
+        features.get("finance_option_strategy_is_debit_spread", 0.0),
+        features.get("finance_option_strategy_is_call", 0.0),
+        features.get("finance_option_strategy_is_put", 0.0),
+        features.get("finance_option_strategy_min_abs_delta", 0.0),
+        features.get("finance_option_strategy_max_abs_delta", 0.0),
+        features.get("finance_option_strategy_mean_iv", 0.0),
+        features.get("finance_liquidity_penalty", 0.0),
         # Artefact-level fields (always last, matches trainer.py FEATURE_KEYS[-2:])
         float(artefact.access_count),
         float(max(0.0, time.time() - artefact.generated_at)),

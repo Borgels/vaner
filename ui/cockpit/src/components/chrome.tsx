@@ -6,6 +6,8 @@ import type {
   CockpitSettings,
   ComputeDevice,
   ComputeSettings,
+  ExternalStateDiscovery,
+  ExternalStateSettings,
   ImpactSummary,
   LimitSettings,
   MCPSettings,
@@ -27,16 +29,14 @@ export interface CommandItem {
   run: () => void
 }
 
-export type CockpitView = 'focus' | 'prepared-work' | 'now' | 'scenario-map' | 'timeline' | 'board' | 'evidence'
+export type CockpitView = 'focus' | 'prepared-work' | 'now' | 'scenario-map' | 'heatmap' | 'timeline' | 'board' | 'evidence'
 
 const COCKPIT_VIEW_OPTIONS: Array<{ id: CockpitView; label: string; shortcut: string }> = [
-  { id: 'focus', label: 'Focus', shortcut: '1' },
-  { id: 'prepared-work', label: 'Prepared Work', shortcut: '2' },
-  { id: 'now', label: 'Now', shortcut: '3' },
-  { id: 'scenario-map', label: 'Scenario Map', shortcut: '4' },
-  { id: 'timeline', label: 'Timeline', shortcut: '5' },
-  { id: 'board', label: 'Board', shortcut: '6' },
-  { id: 'evidence', label: 'Evidence', shortcut: '7' },
+  { id: 'focus', label: 'Overview', shortcut: '1' },
+  { id: 'prepared-work', label: 'Ready Work', shortcut: '2' },
+  { id: 'scenario-map', label: 'Map', shortcut: '3' },
+  { id: 'timeline', label: 'Activity', shortcut: '4' },
+  { id: 'evidence', label: 'Diagnostics', shortcut: '5' },
 ]
 
 interface TopBarProps {
@@ -267,6 +267,13 @@ interface LeftRailProps {
   scenarioCount: number
   impact?: ImpactSummary
   header?: React.ReactNode
+  quiet?: boolean
+  preparedCount?: number
+  workerState?: string | null
+  live?: boolean
+  modelName?: string | null
+  workspaceLabel?: string | null
+  workspacePath?: string | null
   /**
    * Cockpit refresh: small slot below the existing skills/pinned blocks.
    * Used to render the learning summary so feedback the user gives is
@@ -285,8 +292,71 @@ export function LeftRail({
   scenarioCount,
   impact,
   header,
+  quiet = false,
+  preparedCount = 0,
+  workerState = null,
+  live = false,
+  modelName = null,
+  workspaceLabel = null,
+  workspacePath = null,
   footer,
 }: LeftRailProps) {
+  if (quiet && mode !== 'proxy') {
+    return (
+      <div
+        style={{
+          gridArea: 'rail',
+          borderRight: '1px solid var(--line-1)',
+          background: 'var(--bg-1)',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+        }}
+      >
+        <div style={{ padding: '18px 16px', borderBottom: '1px solid var(--line-hair)' }}>
+          <div className="mono" style={{ fontSize: 9.5, letterSpacing: 1.2, color: 'var(--fg-4)' }}>
+            STATUS
+          </div>
+          <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
+            <RailStat label="ready work" value={preparedCount} tone={preparedCount > 0 ? 'ok' : 'muted'} />
+            <RailStat label="suggestions" value={scenarioCount} tone={scenarioCount > 0 ? 'default' : 'muted'} />
+            <RailStat label="worker" value={workerState ?? 'waiting'} tone={workerState === 'running' ? 'ok' : 'muted'} />
+          </div>
+        </div>
+
+        <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--line-hair)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                background: live ? 'var(--ok)' : 'var(--fg-4)',
+                boxShadow: live ? '0 0 10px var(--ok)' : 'none',
+              }}
+            />
+            <span className="mono" style={{ color: 'var(--fg-2)', fontSize: 10.5, letterSpacing: 0.6 }}>
+              {live ? 'LIVE' : 'RECONNECTING'}
+            </span>
+          </div>
+          <div style={{ color: 'var(--fg-3)', fontSize: 12, lineHeight: 1.45, marginTop: 10 }}>
+            Vaner is preparing background work for the selected workspace.
+          </div>
+        </div>
+
+        <div style={{ padding: '14px 16px', display: 'grid', gap: 8 }}>
+          <div className="mono" style={{ color: 'var(--fg-4)', fontSize: 9.5, letterSpacing: 1.2 }}>
+            ROUTE
+          </div>
+          <Row k="mode" v="daemon" />
+          <Row k="workspace" v={<RailWorkspace label={workspaceLabel ?? 'current'} path={workspacePath} />} />
+          <Row k="model" v={modelName ?? 'standby'} />
+        </div>
+        <div style={{ flex: 1 }} />
+      </div>
+    )
+  }
+
   return (
     <div
       style={{
@@ -470,6 +540,20 @@ export function LeftRail({
   )
 }
 
+function RailStat({ label, value, tone }: { label: string; value: React.ReactNode; tone: 'default' | 'ok' | 'muted' }) {
+  const color = tone === 'ok' ? 'var(--ok)' : tone === 'muted' ? 'var(--fg-4)' : 'var(--fg-1)'
+  return (
+    <div>
+      <div style={{ fontFamily: 'var(--font-display)', fontSize: 24, color, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
+        {value}
+      </div>
+      <div className="mono" style={{ color: 'var(--fg-4)', fontSize: 10.5, marginTop: 4 }}>
+        {label}
+      </div>
+    </div>
+  )
+}
+
 const skillNudgeBtn: React.CSSProperties = {
   background: 'var(--bg-2)',
   border: '1px solid var(--line-hair)',
@@ -488,6 +572,15 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
       <span style={{ color: 'var(--fg-4)' }}>{k}</span>
       <span>{v}</span>
     </div>
+  )
+}
+
+function RailWorkspace({ label, path }: { label: string; path?: string | null }) {
+  return (
+    <span title={path ?? label} style={{ minWidth: 0, textAlign: 'right' }}>
+      <span style={{ display: 'block', color: 'var(--fg-1)' }}>{label}</span>
+      {path ? <span className="mono" style={{ display: 'block', color: 'var(--fg-4)', fontSize: 9.5, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 145 }}>{path}</span> : null}
+    </span>
   )
 }
 
@@ -725,6 +818,8 @@ interface SettingsDrawerProps {
   backend: BackendSettings | null
   compute: ComputeSettings | null
   mcp: MCPSettings | null
+  externalState: ExternalStateSettings | null
+  externalStateDiscovery: ExternalStateDiscovery | null
   limits: LimitSettings | null
   cockpit: CockpitSettings
   presets: BackendPreset[]
@@ -734,6 +829,18 @@ interface SettingsDrawerProps {
   onSaveBackend: (patch: Partial<BackendSettings>) => Promise<void>
   onSaveCompute: (patch: Partial<ComputeSettings>) => Promise<void>
   onSaveMcp: (patch: Partial<MCPSettings>) => Promise<void>
+  onSaveExternalState: (patch: Partial<ExternalStateSettings>) => Promise<void>
+  onSaveExternalFinance: (patch: Partial<ExternalStateSettings['finance']>) => Promise<void>
+  onSaveExternalProvider: (payload: {
+    id: string
+    transport: 'stdio' | 'streamable_http'
+    command?: string
+    args?: string[]
+    url?: string
+    env?: Record<string, string>
+    timeout_ms?: number
+  }) => Promise<void>
+  onDiscoverExternalProvider: (providerId: string, apply?: boolean) => Promise<void>
   onSaveContext: (maxContextTokens: number) => Promise<void>
   onPatchCockpit: (patch: Partial<CockpitSettings>) => void
   onToggleGateway?: (enabled: boolean) => Promise<void>
@@ -775,6 +882,17 @@ const inputStyle: React.CSSProperties = {
   fontSize: 11,
   padding: '5px 8px',
   minWidth: 160,
+}
+
+const settingsButtonStyle: React.CSSProperties = {
+  background: 'var(--bg-inset)',
+  border: '1px solid var(--line-1)',
+  borderRadius: 'var(--r-1)',
+  color: 'var(--fg-2)',
+  cursor: 'pointer',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 10.5,
+  padding: '6px 9px',
 }
 
 function TextInput({
@@ -910,6 +1028,8 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     backend,
     compute,
     mcp,
+    externalState,
+    externalStateDiscovery,
     limits,
     cockpit,
     presets,
@@ -919,6 +1039,10 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     onSaveBackend,
     onSaveCompute,
     onSaveMcp,
+    onSaveExternalState,
+    onSaveExternalFinance,
+    onSaveExternalProvider,
+    onDiscoverExternalProvider,
     onSaveContext,
     onPatchCockpit,
     onToggleGateway,
@@ -929,14 +1053,33 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
     runnerUps = [],
   } = props
 
-  if (!open) {
-    return null
-  }
-
   const presetMatch = presets.find(
     (preset) => backend && preset.base_url === backend.base_url && (preset.default_model === backend.model || preset.default_model === ''),
   )
   const activePresetName = presetMatch?.name ?? backend?.name ?? 'custom'
+  const selectedExternalProvider =
+    externalState?.providers.find((provider) => provider.id === externalState.finance.provider) ??
+    externalState?.providers[0] ??
+    null
+  const [externalProviderId, setExternalProviderId] = useState(selectedExternalProvider?.id ?? 'provider')
+  const [externalTransport, setExternalTransport] = useState<'stdio' | 'streamable_http'>(selectedExternalProvider?.transport ?? 'stdio')
+  const [externalCommand, setExternalCommand] = useState(selectedExternalProvider?.command ?? '')
+  const [externalArgs, setExternalArgs] = useState((selectedExternalProvider?.args ?? []).join(' '))
+  const [externalUrl, setExternalUrl] = useState(selectedExternalProvider?.url ?? '')
+  useEffect(() => {
+    if (!selectedExternalProvider) return
+    setExternalProviderId(selectedExternalProvider.id)
+    setExternalTransport(selectedExternalProvider.transport)
+    setExternalCommand(selectedExternalProvider.command)
+    setExternalArgs(selectedExternalProvider.args.join(' '))
+    setExternalUrl(selectedExternalProvider.url)
+  }, [selectedExternalProvider?.id])
+  const activeDiscovery =
+    externalStateDiscovery && externalStateDiscovery.provider_id === externalProviderId ? externalStateDiscovery : null
+
+  if (!open) {
+    return null
+  }
 
   return (
     <div
@@ -1185,6 +1328,122 @@ export function SettingsDrawer(props: SettingsDrawerProps) {
                 max={65535}
               />
             </Field>
+          </Section>
+
+          <Section title="EXTERNAL DATA">
+            <Field label="External state">
+              <Seg
+                value={externalState?.enabled ? 'on' : 'off'}
+                options={['off', 'on']}
+                onChange={(value) => void onSaveExternalState({ enabled: value === 'on' })}
+              />
+            </Field>
+            <Field label="Finance data">
+              <Seg
+                value={externalState?.finance.enabled ? 'on' : 'off'}
+                options={['off', 'on']}
+                onChange={(value) => void onSaveExternalFinance({ enabled: value === 'on' })}
+              />
+            </Field>
+            <Field label="Market data">
+              <Seg
+                value={externalState?.finance.market_data_enabled ? 'on' : 'off'}
+                options={['off', 'on']}
+                onChange={(value) => void onSaveExternalFinance({ market_data_enabled: value === 'on' })}
+              />
+            </Field>
+            <Field label="Account state">
+              <Seg
+                value={externalState?.finance.account_state_enabled ? 'on' : 'off'}
+                options={['off', 'on']}
+                onChange={(value) => void onSaveExternalFinance({ account_state_enabled: value === 'on' })}
+              />
+            </Field>
+            <Field label="Provider id">
+              <TextInput value={externalProviderId} onCommit={setExternalProviderId} placeholder="provider" />
+            </Field>
+            <Field label="Provider transport">
+              <Seg
+                value={externalTransport}
+                options={['stdio', 'streamable_http']}
+                onChange={(value) => setExternalTransport(value as 'stdio' | 'streamable_http')}
+              />
+            </Field>
+            {externalTransport === 'stdio' ? (
+              <>
+                <Field label="Command">
+                  <TextInput value={externalCommand} onCommit={setExternalCommand} placeholder="mcp-server" />
+                </Field>
+                <Field label="Args">
+                  <TextInput value={externalArgs} onCommit={setExternalArgs} placeholder="--stdio" />
+                </Field>
+              </>
+            ) : (
+              <Field label="URL">
+                <TextInput value={externalUrl} onCommit={setExternalUrl} placeholder="http://127.0.0.1:9000/mcp" />
+              </Field>
+            )}
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                style={settingsButtonStyle}
+                onClick={() => {
+                  const args = externalArgs.trim() ? externalArgs.trim().split(/\s+/) : []
+                  void onSaveExternalProvider({
+                    id: externalProviderId,
+                    transport: externalTransport,
+                    command: externalCommand,
+                    args,
+                    url: externalUrl,
+                  })
+                  void onSaveExternalFinance({ provider: externalProviderId })
+                }}
+              >
+                Save provider
+              </button>
+              <button
+                type="button"
+                style={settingsButtonStyle}
+                onClick={() => void onDiscoverExternalProvider(externalProviderId, false)}
+              >
+                Discover
+              </button>
+              <button
+                type="button"
+                style={settingsButtonStyle}
+                onClick={() => void onDiscoverExternalProvider(externalProviderId, true)}
+              >
+                Apply safe tools
+              </button>
+            </div>
+            <div className="mono" style={{ color: 'var(--fg-4)', fontSize: 10.5, marginTop: 10, lineHeight: 1.5 }}>
+              {selectedExternalProvider
+                ? `${selectedExternalProvider.allowed_tools.length} read tools · ${Object.keys(selectedExternalProvider.capability_tools).length} finance mappings`
+                : 'No provider saved yet'}
+            </div>
+            {activeDiscovery ? (
+              <div style={{ marginTop: 10, border: '1px solid var(--line-hair)', borderRadius: 'var(--r-2)', overflow: 'hidden' }}>
+                {activeDiscovery.tools.slice(0, 8).map((tool) => (
+                  <div
+                    key={tool.name}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr auto',
+                      gap: 8,
+                      padding: '7px 8px',
+                      borderTop: '1px solid var(--line-hair)',
+                      color: 'var(--fg-2)',
+                      fontSize: 11,
+                    }}
+                  >
+                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.name}</span>
+                    <span className="mono" style={{ color: tool.auto_selected ? 'var(--ok)' : tool.safety_allowed ? 'var(--fg-4)' : 'var(--amber)' }}>
+                      {tool.proposed_capability ?? tool.safety_reason}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </Section>
 
           <Section title="APPEARANCE">

@@ -35,10 +35,16 @@ _WORK_PRODUCT_KIND: dict[WorkProductType, PreparedWorkKind] = {
     WorkProductType.DOCS_DRIFT: PreparedWorkKind.DOCS,
     WorkProductType.VIRTUAL_DIFF: PreparedWorkKind.DIFF,
     WorkProductType.RESEARCH_BRIEF: PreparedWorkKind.BRIEF,
+    WorkProductType.FINANCE_MORNING_BRIEF: PreparedWorkKind.FINANCE,
+    WorkProductType.FINANCE_POSITION_BRIEF: PreparedWorkKind.FINANCE,
+    WorkProductType.FINANCE_SCREENING_RESULT: PreparedWorkKind.FINANCE,
+    WorkProductType.FINANCE_OPTION_STRATEGY_PLAN: PreparedWorkKind.FINANCE,
+    WorkProductType.FINANCE_TRADE_BRIEF: PreparedWorkKind.FINANCE,
 }
 
 _KIND_PRIORITY: dict[PreparedWorkKind, float] = {
     PreparedWorkKind.DIFF: 1.0,
+    PreparedWorkKind.FINANCE: 0.96,
     PreparedWorkKind.BRIEF: 0.92,
     PreparedWorkKind.REVIEW: 0.82,
     PreparedWorkKind.DRAFT: 0.8,
@@ -248,8 +254,8 @@ def _card_from_work_product(
         source_id=product.id,
         source_type=PreparedWorkSourceType.WORK_PRODUCT,
         kind=kind,
-        title=str(sanitize_no_absolute_paths(product.title)),
-        summary=str(sanitize_no_absolute_paths(product.summary)),
+        title=_display_title(product),
+        summary=_display_summary(product),
         badge=_badge_for_kind(kind),
         confidence_label=_confidence_label(product.confidence),
         freshness_label=_freshness_label(product.updated_at, now),
@@ -257,6 +263,10 @@ def _card_from_work_product(
         target_label=target_label,
         why_prepared=_why_prepared(product, target_label),
         action_note=_action_note(product),
+        sensitivity_class=product.sensitivity_class.value,
+        fresh_precheck_required=product.fresh_precheck_required,
+        external_input_count=len(product.external_inputs),
+        prohibited_actions=list(product.prohibited_actions),
         evidence_count=len(product.evidence_refs),
         created_at=product.created_at,
         updated_at=product.updated_at,
@@ -516,6 +526,10 @@ def build_work_product_inspection(product: WorkProduct, *, now: float | None = N
         confidence_label=_confidence_label(product.confidence),
         freshness_label=_freshness_label(product.updated_at, ts),
         freshness_state=_freshness_state(product, ts),
+        sensitivity_class=product.sensitivity_class.value,
+        fresh_precheck_required=product.fresh_precheck_required,
+        external_input_count=len(product.external_inputs),
+        prohibited_actions=list(product.prohibited_actions),
         target_label=target_label,
         evidence_count=len(product.evidence_refs),
         evidence_refs=evidence_refs,
@@ -564,6 +578,8 @@ def _why_prepared_prediction(prompt: Any) -> str:
 
 
 def _action_note(product: WorkProduct) -> str:
+    if product.fresh_precheck_required:
+        return "Fresh external-state precheck required before use; execution is prohibited."
     if product.type == WorkProductType.VIRTUAL_DIFF:
         if product.can_export(now=time.time()):
             return "Export returns the prepared diff only; Vaner will not apply it automatically."
@@ -573,8 +589,38 @@ def _action_note(product: WorkProduct) -> str:
     return "Inspect this lead before using it."
 
 
+def _display_title(product: WorkProduct) -> str:
+    if product.type == WorkProductType.FINANCE_POSITION_BRIEF:
+        return "Trading strategy prep"
+    if product.type == WorkProductType.FINANCE_SCREENING_RESULT:
+        return "Trading screen results"
+    if product.type == WorkProductType.FINANCE_OPTION_STRATEGY_PLAN:
+        return "Options strategy plan"
+    if product.type == WorkProductType.FINANCE_TRADE_BRIEF:
+        return "Trade brief"
+    if product.type == WorkProductType.FINANCE_MORNING_BRIEF:
+        return "Market morning brief"
+    return str(sanitize_no_absolute_paths(product.title))
+
+
+def _display_summary(product: WorkProduct) -> str:
+    if product.type.value.startswith("finance_"):
+        capabilities = sorted({item.capability for item in product.external_inputs})
+        suffix = f" Uses {len(product.external_inputs)} fresh external input{'s' if len(product.external_inputs) != 1 else ''}."
+        if capabilities:
+            suffix += f" Capabilities: {', '.join(capabilities)}."
+        return str(sanitize_no_absolute_paths(product.summary + suffix))
+    return str(sanitize_no_absolute_paths(product.summary))
+
+
 def _inspection_warnings(product: WorkProduct) -> list[str]:
     warnings: list[str] = []
+    if product.fresh_precheck_required:
+        warnings.append("Fresh external-state precheck is required before using this prepared work.")
+    if product.prohibited_actions:
+        warnings.append("Prohibited action: " + ", ".join(sorted(set(product.prohibited_actions))) + ".")
+    if product.sensitivity_class.value not in {"general", "public_market_only"}:
+        warnings.append(f"Sensitivity class: {product.sensitivity_class.value}.")
     if product.freshness == WorkProductFreshness.STALE:
         warnings.append("This prepared item is stale. Regenerate it before export or adoption.")
     elif product.freshness == WorkProductFreshness.UNKNOWN:
@@ -665,6 +711,7 @@ def _badge_for_kind(kind: PreparedWorkKind) -> str:
         PreparedWorkKind.DOCS: "Docs",
         PreparedWorkKind.DIFF: "Diff",
         PreparedWorkKind.BRIEF: "Brief",
+        PreparedWorkKind.FINANCE: "Trading",
         PreparedWorkKind.DRAFT: "Draft",
         PreparedWorkKind.PREDICTION: "Ready",
     }[kind]
