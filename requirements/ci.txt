@@ -1297,9 +1297,9 @@ urllib3==2.7.0 \
     --hash=sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c \
     --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
     # via requests
-uvicorn==0.44.0 \
-    --hash=sha256:6c942071b68f07e178264b9152f1f16dfac5da85880c4ce06366a96d70d4f31e \
-    --hash=sha256:ce937c99a2cc70279556967274414c087888e8cec9f9c94644dfca11bd3ced89
+uvicorn==0.46.0 \
+    --hash=sha256:bbebbcbed972d162afca128605223022bedd345b7bc7855ce66deb31487a9048 \
+    --hash=sha256:fb9da0926999cc6cb22dc7cd71a94a632f078e6ae47ff683c5c420750fb7413d
     # via -r requirements/ci.in
 virtualenv==21.2.4 \
     --hash=sha256:29d21e941795206138d0f22f4e45ff7050e5da6c6472299fb7103318763861ac \
