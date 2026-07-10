@@ -11,7 +11,7 @@ argcomplete==3.6.3 \
 build==1.5.0 \
     --hash=sha256:13f3eecb844759ab66efec90ca17639bbf14dc06cb2fdf37a9010322d9c50a6f \
     --hash=sha256:302c22c3ba2a0fd5f3911918651341ebb3896176cbdec15bd421f80b1afc7647
-    # via -r requirements/release-smoke.in
+    # via -r release-smoke.in
 click==8.3.3 \
     --hash=sha256:398329ad4837b2ff7cbe1dd166a4c0f8900c3ca3a218de04466f38f6497f18a2 \
     --hash=sha256:a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613
@@ -25,7 +25,7 @@ packaging==26.1 \
 pipx==1.11.1 \
     --hash=sha256:e57354c3308b0abb75106d3b73a0d1ffa5c25f24f29e9f4a45e575776dbab85c \
     --hash=sha256:f854fbf01c179db4331adcf6e1b95836b524100135b5d35822497a47a3857e89
-    # via -r requirements/release-smoke.in
+    # via -r release-smoke.in
 platformdirs==4.9.6 \
     --hash=sha256:3bfa75b0ad0db84096ae777218481852c0ebc6c727b3168c1b9e0118e458cf0a \
     --hash=sha256:e61adb1d5e5cb3441b4b7710bea7e4c12250ca49439228cc1021c00dcfac0917
@@ -40,7 +40,7 @@ userpath==1.9.2 \
     # via pipx
 
 # The following packages are considered to be unsafe in a requirements file:
-pip==26.1 \
-    --hash=sha256:4e8486d821d814b77319acb7b9e8bf5a4ee7590a643e7cb21029f209be8573c1 \
-    --hash=sha256:81e13ebcca3ffa8cc85e4deff5c27e1ee26dea0aa7fc2f294a073ac208806ff3
-    # via -r requirements/release-smoke.in
+pip==26.1.2 \
+    --hash=sha256:382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab \
+    --hash=sha256:f49cd134c61cf2fd75e0ce2676db03e4054504a5a4986d00f8299ae632dc4605
+    # via -r release-smoke.in
